@@ -147,7 +147,8 @@ def parse_signature_from_source(source: str, function_name: str) -> FortranSigna
     result_name = None
     result_match = re.search(r'RESULT\s*\(\s*(\w+)\s*\)', sig_upper[paren_end:])
     if result_match:
-        result_name = result_match.group(1)
+        # Extract from original sig_line to preserve case
+        result_name = sig_line[paren_end + result_match.start(1):paren_end + result_match.end(1)]
 
     # Now scan subsequent lines for type declarations of the arguments
     # Also look for the result variable's type
@@ -206,7 +207,8 @@ def parse_signature_from_source(source: str, function_name: str) -> FortranSigna
             sig_upper
         )
         if prefix_match:
-            result_type = prefix_match.group(1).strip()
+            # Extract from original sig_line to preserve case
+            result_type = sig_line[prefix_match.start(1):prefix_match.end(1)].strip()
 
     return FortranSignature(
         name=function_name,
@@ -241,7 +243,8 @@ def _parse_type_declaration(line: str, line_upper: str, names_to_find: set):
     for pattern in type_patterns:
         m = re.match(pattern, line_upper)
         if m:
-            type_str = m.group(1).strip()
+            # Extract type string from ORIGINAL line to preserve case (e.g., DbKi not DBKI)
+            type_str = line.strip()[m.start(1):m.end(1)].strip()
             rest = line_upper[m.end():].strip()
             break
 

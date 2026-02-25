@@ -209,14 +209,15 @@ def generate_fortran_wrapper(sig: FortranSignature,
         # Convert result back to project kind if needed
         c_call = f"{c_func_name}({call_str})"
 
-        # Get the original kind name for the result
-        ret_type_upper = ret_type.strip().upper()
-        if "(" in ret_type_upper:
-            ret_kind = ret_type_upper[ret_type_upper.index("(") + 1:ret_type_upper.rindex(")")]
+        # Get the original kind name for the result (preserve case from source)
+        ret_type_stripped = ret_type.strip()
+        ret_type_upper = ret_type_stripped.upper()
+        if "(" in ret_type_stripped:
+            ret_kind = ret_type_stripped[ret_type_stripped.index("(") + 1:ret_type_stripped.rindex(")")]
         else:
             ret_kind = None
 
-        if ret_kind and ret_kind != ret_mapping.c_kind:
+        if ret_kind and ret_kind.upper() != ret_mapping.c_kind.upper():
             lines.append(f"        {result_name} = REAL({c_call}, {ret_kind})")
         else:
             lines.append(f"        {result_name} = {c_call}")
