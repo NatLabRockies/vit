@@ -50,6 +50,7 @@ def find_call_sites(source_dir: str, function_name: str,
 
 
 def insert_kgen_pragma(filepath: str, line_number: int,
+                       function_name: str = "",
                        output_path: Optional[str] = None) -> str:
     """
     Insert KGen extraction pragma around a specific line.
@@ -57,6 +58,7 @@ def insert_kgen_pragma(filepath: str, line_number: int,
     Args:
         filepath: Source file to modify
         line_number: 1-indexed line to wrap with pragma
+        function_name: Name of the function being extracted (required by KGen)
         output_path: Where to write (defaults to overwriting filepath)
 
     Returns:
@@ -77,13 +79,13 @@ def insert_kgen_pragma(filepath: str, line_number: int,
     while end_idx < len(lines) - 1 and lines[end_idx].rstrip().endswith("&"):
         end_idx += 1
 
-    # Insert pragmas
+    # Insert pragmas (KGen requires underscores and function name)
     indent = len(lines[start_idx]) - len(lines[start_idx].lstrip())
     indent_str = " " * indent
 
     # Insert AFTER the end line, then BEFORE the start line (to preserve indices)
-    lines.insert(end_idx + 1, f"{indent_str}!$kgen end callsite")
-    lines.insert(start_idx, f"{indent_str}!$kgen begin callsite")
+    lines.insert(end_idx + 1, f"{indent_str}!$kgen end_callsite")
+    lines.insert(start_idx, f"{indent_str}!$kgen begin_callsite {function_name}")
 
     out_path = output_path or filepath
     Path(out_path).write_text("\n".join(lines))

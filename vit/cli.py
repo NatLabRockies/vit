@@ -200,7 +200,7 @@ def cmd_extract(args, config):
         line_num = args.line
 
     print(f"Inserting KGen pragma at {file_path}:{line_num}")
-    insert_kgen_pragma(file_path, line_num)
+    insert_kgen_pragma(file_path, line_num, function_name=args.function_name)
 
     print(f"Running KGen extraction...")
     result = run_kgen_extract(
