@@ -1,0 +1,41 @@
+# VIT Configuration for ROSCO
+# This is the configuration used for the saturate verification demo.
+
+project:
+  name: ROSCO
+  source_dir: rosco/controller/src
+  build_dir: build
+
+kgen:
+  path: kgen
+  # Build commands for KGen extraction
+  # These run from the project root directory
+  build_cmd: "cd build && cmake --build ."
+  run_cmd: "cd Examples && conda run -n rosco-env python 04_simple_sim.py"
+  clean_cmd: "cd build && make clean"
+
+build_system:
+  type: cmake
+  cmake_file: rosco/controller/CMakeLists.txt
+  target_name: discon
+
+fortran:
+  # ROSCO uses NWTC Library / OpenFAST precision kinds
+  kind_aliases:
+    ReKi: "REAL(8)"     # Real kind (double precision)
+    DbKi: "REAL(8)"     # Double kind
+    SiKi: "REAL(4)"     # Single kind
+    IntKi: "INTEGER(4)" # Integer kind
+    B1Ki: "INTEGER(1)"  # Byte kind
+  compiler: gfortran
+
+verification:
+  tolerance: 1.0e-14
+
+# Completed translations (auto-populated by 'vit run')
+translations:
+  saturate:
+    status: verified
+    cases_passed: 20
+    cases_total: 20
+    cpp_file: saturate.cpp

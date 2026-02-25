@@ -1,0 +1,360 @@
+"""
+Parse Fortran function/subroutine signatures from source files.
+
+Extracts the information needed for deterministic interface generation:
+- Function name
+- Argument names and types
+- Return type (for functions)
+- INTENT attributes
+"""
+
+import re
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Optional
+
+
+class SubprogramKind(Enum):
+    FUNCTION = "function"
+    SUBROUTINE = "subroutine"
+
+
+class IntentKind(Enum):
+    IN = "IN"
+    OUT = "OUT"
+    INOUT = "INOUT"
+    NONE = ""  # no explicit intent
+
+
+@dataclass
+class FortranArg:
+    """A single argument to a Fortran function/subroutine."""
+    name: str
+    fortran_type: str        # e.g., "REAL(ReKi)"
+    intent: IntentKind = IntentKind.NONE
+    is_array: bool = False
+    array_dims: Optional[str] = None  # e.g., "(:)" or "(3,3)"
+    is_optional: bool = False
+
+
+@dataclass
+class FortranSignature:
+    """Complete signature of a Fortran function or subroutine."""
+    name: str
+    kind: SubprogramKind
+    args: list[FortranArg] = field(default_factory=list)
+    result_name: Optional[str] = None       # RESULT(name) clause
+    result_type: Optional[str] = None       # Return type for functions
+    source_file: Optional[str] = None       # Where it was found
+    module_name: Optional[str] = None       # Enclosing module, if any
+    line_number: Optional[int] = None       # Line number in source
+
+    @property
+    def c_func_name(self) -> str:
+        """The extern "C" function name (append _c suffix)."""
+        return f"{self.name.lower()}_c"
+
+    @property
+    def is_function(self) -> bool:
+        return self.kind == SubprogramKind.FUNCTION
+
+    @property
+    def is_subroutine(self) -> bool:
+        return self.kind == SubprogramKind.SUBROUTINE
+
+
+def parse_signature_from_source(source: str, function_name: str) -> FortranSignature:
+    """
+    Parse a Fortran function/subroutine signature from source code.
+
+    This does not require a full Fortran parser — it uses regex patterns
+    to extract the signature line and subsequent type declarations.
+
+    Args:
+        source: Fortran source code (full file or relevant excerpt)
+        function_name: Name of the function to find
+
+    Returns:
+        FortranSignature with all arguments and types resolved
+    """
+    lines = source.split("\n")
+    name_upper = function_name.upper()
+
+    # Find the FUNCTION or SUBROUTINE line
+    sig_line = ""
+    sig_line_num = -1
+    kind = None
+
+    for i, line in enumerate(lines):
+        stripped = line.strip().upper()
+        # Remove comments
+        if "!" in stripped:
+            stripped = stripped[:stripped.index("!")]
+
+        # Match FUNCTION name(...) or SUBROUTINE name(...)
+        func_match = re.search(
+            rf'\bFUNCTION\s+{name_upper}\s*\(', stripped
+        )
+        sub_match = re.search(
+            rf'\bSUBROUTINE\s+{name_upper}\s*\(', stripped
+        )
+
+        if func_match:
+            kind = SubprogramKind.FUNCTION
+        elif sub_match:
+            kind = SubprogramKind.SUBROUTINE
+        else:
+            continue
+
+        # Collect continuation lines (Fortran & continuation)
+        sig_line = line.strip()
+        sig_line_num = i
+        # Handle continuation: if line ends with & or next line starts with &
+        j = i
+        while "&" in sig_line.rstrip().rstrip("!").rstrip():
+            j += 1
+            if j >= len(lines):
+                break
+            next_line = lines[j].strip()
+            if next_line.startswith("&"):
+                next_line = next_line[1:]
+            sig_line = sig_line.rstrip().rstrip("&").rstrip() + " " + next_line
+        break
+
+    if kind is None:
+        raise ValueError(f"Could not find FUNCTION or SUBROUTINE '{function_name}' in source")
+
+    # Parse argument list from signature line
+    sig_upper = sig_line.upper()
+    paren_start = sig_upper.index("(", sig_upper.index(name_upper))
+    # Find matching closing paren
+    depth = 0
+    paren_end = paren_start
+    for ci in range(paren_start, len(sig_upper)):
+        if sig_upper[ci] == "(":
+            depth += 1
+        elif sig_upper[ci] == ")":
+            depth -= 1
+            if depth == 0:
+                paren_end = ci
+                break
+
+    arg_str = sig_line[paren_start + 1:paren_end].strip()
+    arg_names = [a.strip() for a in arg_str.split(",") if a.strip()]
+
+    # Check for RESULT clause (functions)
+    result_name = None
+    result_match = re.search(r'RESULT\s*\(\s*(\w+)\s*\)', sig_upper[paren_end:])
+    if result_match:
+        result_name = result_match.group(1)
+
+    # Now scan subsequent lines for type declarations of the arguments
+    # Also look for the result variable's type
+    args = {name.upper(): FortranArg(name=name, fortran_type="UNKNOWN") for name in arg_names}
+    result_type = None
+
+    # Determine which names to look for
+    names_to_find = set(a.upper() for a in arg_names)
+    if result_name:
+        names_to_find.add(result_name.upper())
+    elif kind == SubprogramKind.FUNCTION:
+        names_to_find.add(name_upper)
+
+    # Scan from the line after the signature to END FUNCTION/SUBROUTINE
+    end_pattern = re.compile(rf'\bEND\s+(FUNCTION|SUBROUTINE)\b', re.IGNORECASE)
+    contains_pattern = re.compile(r'\bCONTAINS\b', re.IGNORECASE)
+
+    for i in range(sig_line_num + 1, len(lines)):
+        line = lines[i].strip()
+        line_upper = line.upper()
+
+        # Remove comments
+        if "!" in line_upper:
+            line_upper = line_upper[:line_upper.index("!")]
+            line = line[:line.index("!")]
+
+        if not line_upper:
+            continue
+
+        # Stop at END FUNCTION/SUBROUTINE or CONTAINS
+        if end_pattern.search(line_upper) or contains_pattern.search(line_upper):
+            break
+
+        # Try to parse as a type declaration
+        decl = _parse_type_declaration(line, line_upper, names_to_find)
+        if decl:
+            for var_name, var_type, intent, is_array, dims, is_optional in decl:
+                var_upper = var_name.upper()
+                if var_upper in args:
+                    args[var_upper].fortran_type = var_type
+                    args[var_upper].intent = intent
+                    args[var_upper].is_array = is_array
+                    args[var_upper].array_dims = dims
+                    args[var_upper].is_optional = is_optional
+                elif var_upper == (result_name or function_name).upper():
+                    result_type = var_type
+
+    # Build ordered arg list
+    ordered_args = [args[name.upper()] for name in arg_names]
+
+    # If result type not found from explicit declaration, check for prefix type
+    if result_type is None and kind == SubprogramKind.FUNCTION:
+        prefix_match = re.match(
+            r'((?:REAL|INTEGER|DOUBLE\s+PRECISION|LOGICAL|CHARACTER)'
+            r'(?:\s*\([^)]*\))?)\s+FUNCTION',
+            sig_upper
+        )
+        if prefix_match:
+            result_type = prefix_match.group(1).strip()
+
+    return FortranSignature(
+        name=function_name,
+        kind=kind,
+        args=ordered_args,
+        result_name=result_name,
+        result_type=result_type,
+        line_number=sig_line_num + 1,  # 1-indexed
+    )
+
+
+def _parse_type_declaration(line: str, line_upper: str, names_to_find: set):
+    """
+    Parse a Fortran type declaration line.
+
+    Returns list of (var_name, type, intent, is_array, dims, is_optional) tuples
+    for any variables that are in names_to_find, or None if not a type decl.
+    """
+    # Match type declarations: TYPE[(...)] [, attrs] :: var1, var2
+    type_patterns = [
+        r'^(REAL(?:\s*\([^)]*\))?)',
+        r'^(INTEGER(?:\s*\([^)]*\))?)',
+        r'^(DOUBLE\s+PRECISION)',
+        r'^(LOGICAL(?:\s*\([^)]*\))?)',
+        r'^(CHARACTER(?:\s*\([^)]*\))?)',
+        r'^(COMPLEX(?:\s*\([^)]*\))?)',
+    ]
+
+    type_str = None
+    rest = None
+
+    for pattern in type_patterns:
+        m = re.match(pattern, line_upper)
+        if m:
+            type_str = m.group(1).strip()
+            rest = line_upper[m.end():].strip()
+            break
+
+    if type_str is None:
+        return None
+
+    # Parse attributes between type and ::
+    intent = IntentKind.NONE
+    is_optional = False
+    has_dimension = False
+    dim_spec = None
+
+    if "::" in rest:
+        attr_part, var_part = rest.split("::", 1)
+    else:
+        # No :: — the rest is variable names (older Fortran style)
+        attr_part = ""
+        var_part = rest
+
+    # Parse attributes
+    attr_part = attr_part.strip().lstrip(",").strip()
+    if attr_part:
+        attrs = attr_part.upper()
+        intent_match = re.search(r'INTENT\s*\(\s*(IN|OUT|INOUT)\s*\)', attrs)
+        if intent_match:
+            intent = IntentKind(intent_match.group(1))
+        if "OPTIONAL" in attrs:
+            is_optional = True
+        dim_match = re.search(r'DIMENSION\s*\(([^)]*)\)', attrs)
+        if dim_match:
+            has_dimension = True
+            dim_spec = dim_match.group(1)
+
+    # Parse variable names
+    results = []
+    var_part = var_part.strip()
+
+    # Split on commas, but respect parentheses (for array dimensions)
+    var_names = _split_respecting_parens(var_part)
+
+    for var_decl in var_names:
+        var_decl = var_decl.strip()
+        if not var_decl:
+            continue
+
+        # Check for inline array dimensions: var(3,3)
+        var_name = var_decl
+        local_dims = dim_spec
+        local_is_array = has_dimension
+
+        paren_match = re.match(r'(\w+)\s*\(([^)]*)\)', var_decl)
+        if paren_match:
+            var_name = paren_match.group(1)
+            local_dims = paren_match.group(2)
+            local_is_array = True
+        else:
+            var_name = re.match(r'(\w+)', var_decl)
+            if var_name:
+                var_name = var_name.group(1)
+            else:
+                continue
+
+        if var_name.upper() in names_to_find:
+            # Use the original case from the source for the type
+            # Find the type in the original line
+            orig_type = line[:len(type_str)]  # rough — use the actual matched span
+            results.append((var_name, type_str, intent, local_is_array, local_dims, is_optional))
+
+    return results if results else None
+
+
+def _split_respecting_parens(s: str) -> list[str]:
+    """Split string on commas, but not inside parentheses."""
+    parts = []
+    depth = 0
+    current = ""
+    for ch in s:
+        if ch == "(":
+            depth += 1
+            current += ch
+        elif ch == ")":
+            depth -= 1
+            current += ch
+        elif ch == "," and depth == 0:
+            parts.append(current)
+            current = ""
+        else:
+            current += ch
+    if current.strip():
+        parts.append(current)
+    return parts
+
+
+def find_function_in_file(filepath: str, function_name: str) -> FortranSignature:
+    """
+    Find and parse a function/subroutine signature from a Fortran file.
+
+    Args:
+        filepath: Path to the .f90/.F90 file
+        function_name: Name of the function/subroutine
+
+    Returns:
+        FortranSignature with source_file set
+    """
+    source = Path(filepath).read_text()
+    sig = parse_signature_from_source(source, function_name)
+    sig.source_file = str(filepath)
+
+    # Try to find enclosing module
+    for line in source.split("\n"):
+        m = re.match(r'\s*MODULE\s+(\w+)', line, re.IGNORECASE)
+        if m and m.group(1).upper() not in ("PROCEDURE", "FUNCTION", "SUBROUTINE"):
+            sig.module_name = m.group(1)
+            break
+
+    return sig
