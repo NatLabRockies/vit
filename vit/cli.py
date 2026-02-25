@@ -16,6 +16,8 @@ Use CodeScribe, any LLM, or hand-write the C++ — then feed it to VIT.
 import argparse
 import json
 import os
+import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -26,7 +28,7 @@ from .interface_gen import (
     generate_fortran_interface_block,
     generate_fortran_wrapper,
 )
-from .extract import find_call_sites, insert_kgen_pragma, run_kgen_extract
+from .extract import find_call_sites, insert_kgen_pragma, remove_kgen_pragma, run_kgen_extract
 from .kernel_verify import setup_kernel_cpp, run_kernel_verify
 from .integrate import generate_integration_plan, apply_integration_plan
 
@@ -199,29 +201,87 @@ def cmd_extract(args, config):
         file_path = args.file
         line_num = args.line
 
-    print(f"Inserting KGen pragma at {file_path}:{line_num}")
-    insert_kgen_pragma(file_path, line_num, function_name=args.function_name)
-
-    print(f"Running KGen extraction...")
-    result = run_kgen_extract(
-        source_file=file_path,
-        build_cmd=config.build_cmd,
-        run_cmd=config.run_cmd,
-        clean_cmd=config.clean_cmd,
-        kgen_path=config.kgen_path,
-        dry_run=args.dry_run,
-    )
-
-    if result["success"]:
-        print(f"✓ Extraction successful")
-        print(f"  Kernel: {result['kernel_dir']}")
-        print(f"  State:  {result['state_dir']}")
-    else:
-        print(f"✗ Extraction failed")
-        print(result["output"])
+    # Verify the file exists
+    if not os.path.isfile(file_path):
+        print(f"ERROR: File not found: {file_path}")
         return 1
 
-    return 0
+    # Back up the source file before modifying
+    backup_path = file_path + ".vit_backup"
+    shutil.copy2(file_path, backup_path)
+
+    try:
+        # Clean any leftover pragmas from previous attempts
+        remove_kgen_pragma(file_path)
+
+        # Re-read line number after pragma removal (may have shifted)
+        # Search for the function call near the original line
+        lines = Path(file_path).read_text().split("\n")
+        name_upper = args.function_name.upper()
+        actual_line = None
+        # Search within ±5 lines of the original
+        for offset in range(0, 6):
+            for candidate in [line_num - 1 + offset, line_num - 1 - offset]:
+                if 0 <= candidate < len(lines):
+                    stripped = lines[candidate].strip().upper()
+                    if "!" in stripped:
+                        stripped = stripped[:stripped.index("!")]
+                    if re.search(rf'\b{name_upper}\s*\(', stripped):
+                        actual_line = candidate + 1  # back to 1-indexed
+                        break
+            if actual_line:
+                break
+
+        if actual_line is None:
+            actual_line = line_num  # Fall back to original
+
+        print(f"Inserting KGen pragma at {file_path}:{actual_line}")
+        insert_kgen_pragma(file_path, actual_line, function_name=args.function_name)
+
+        print(f"Running KGen extraction...")
+        result = run_kgen_extract(
+            source_file=file_path,
+            build_cmd=config.build_cmd,
+            run_cmd=config.run_cmd,
+            clean_cmd=config.clean_cmd,
+            install_cmd=config.install_cmd,
+            kgen_path=config.kgen_path,
+            source_dir=config.abs_source_dir,
+            build_dir=config.abs_build_dir,
+            dry_run=args.dry_run,
+        )
+
+        if result["cleaned"]:
+            print(f"  Cleaned stale: {', '.join(os.path.basename(f) for f in result['cleaned'])}")
+        if result["include_ini"]:
+            print(f"  Generated include.ini with module search paths")
+
+        if result["success"]:
+            cases = result.get("state_cases", 0)
+            print(f"✓ Extraction successful")
+            print(f"  Kernel: {result['kernel_dir']}")
+            if result["state_dir"]:
+                print(f"  State:  {result['state_dir']}")
+            if cases > 0:
+                print(f"  Cases:  {cases}")
+            else:
+                print(f"  WARNING: No state data captured.")
+                print(f"  The simulation may not have run, or the instrumented library")
+                print(f"  wasn't installed where the simulation loads it from.")
+                print(f"  Set install_cmd in vit.yaml, e.g.:")
+                print(f"    install_cmd: cp <build_dir>/libdiscon.so <install_dir>/libdiscon.so")
+        else:
+            print(f"✗ Extraction failed")
+            print(result["output"])
+
+    finally:
+        # Always restore the original source file
+        # (KGen's state/Makefile also does this, but be safe)
+        if os.path.exists(backup_path):
+            shutil.copy2(backup_path, file_path)
+            os.remove(backup_path)
+
+    return 0 if result["success"] else 1
 
 
 def cmd_interface(args, config):

@@ -35,6 +35,7 @@ DEFAULT_CONFIG = {
         "build_cmd": "cmake --build build",
         "run_cmd": "python run_simulation.py",
         "clean_cmd": "cmake --build build --target clean",
+        "install_cmd": "",  # e.g., "cp build/libdiscon.so lib/libdiscon.so"
     },
     "build_system": {
         "type": "cmake",  # or "make"
@@ -68,6 +69,7 @@ class VitConfig:
     build_cmd: str = "cmake --build build"
     run_cmd: str = "python run_simulation.py"
     clean_cmd: str = ""
+    install_cmd: str = ""  # Post-build: copy library to where simulation loads it
 
     build_type: str = "cmake"
     cmake_file: str = "CMakeLists.txt"
@@ -148,6 +150,7 @@ def load_config(config_path: Optional[str] = None) -> VitConfig:
         build_cmd=kgen.get("build_cmd", "cmake --build build"),
         run_cmd=kgen.get("run_cmd", "python run_simulation.py"),
         clean_cmd=kgen.get("clean_cmd", ""),
+        install_cmd=kgen.get("install_cmd", ""),
         build_type=build.get("type", "cmake"),
         cmake_file=build.get("cmake_file", "CMakeLists.txt"),
         target_name=build.get("target_name", "discon"),
@@ -175,6 +178,7 @@ def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
             "build_cmd": config.build_cmd,
             "run_cmd": config.run_cmd,
             "clean_cmd": config.clean_cmd,
+            "install_cmd": config.install_cmd,
         },
         "build_system": {
             "type": config.build_type,
