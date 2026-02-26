@@ -216,7 +216,7 @@ def clean_kgen_artifacts(working_dir: str = ".") -> list[str]:
         List of files removed
     """
     removed = []
-    for artifact in ["strace.log", "kgen.log"]:
+    for artifact in ["strace.log", "kgen.log", "model.ini"]:
         path = os.path.join(working_dir, artifact)
         if os.path.exists(path):
             os.remove(path)
@@ -224,6 +224,9 @@ def clean_kgen_artifacts(working_dir: str = ".") -> list[str]:
 
     # Don't remove include.ini — we generate it ourselves and want KGen to reuse it
     # Don't remove kernel/ or state/ — user may want to keep previous data
+    # model.ini stores KGen's ETime profiling data. If --invocation is used,
+    # this file is bypassed, but stale data could cause issues if the user
+    # later runs without --invocation.
 
     return removed
 
@@ -478,8 +481,8 @@ def generate_kgen_command(
         clean_cmd: Command to clean build artifacts
         kgen_path: Path to KGen executable
         output_dir: Where to put kernel/ and state/ directories
-        invocation: KGen invocation spec: "MPI_rank:OMP_thread:start[:end]"
-                    e.g., "0:0:1:20" captures calls 1-20 on rank 0 thread 0
+        invocation: KGen invocation spec: "MPI_rank:OMP_thread:start-end"
+                    e.g., "0:0:1-20" captures calls 1-20 on rank 0 thread 0
 
     Returns:
         Shell command string
