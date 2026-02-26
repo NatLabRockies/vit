@@ -274,6 +274,9 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
     3. Adding the INTERFACE block above CONTAINS
     4. Replacing the original function body with the C-calling wrapper
     5. Ensuring USE ordering (USE before IMPLICIT NONE)
+    6. Increasing verboseLevel so NaN differences appear in output
+       (KGen's default verboseLevel=1 suppresses "Difference is NaN" lines,
+       which prevents detection of invalid state capture data)
     """
     modified_files = []
     interface_block = generate_fortran_interface_block(sig, kind_aliases)
@@ -287,6 +290,17 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
 
         # Fix USE kgen_utils_mod ONLY → USE kgen_utils_mod (all files)
         content = _fix_kgen_utils_mod_only(content)
+
+        # Increase verboseLevel so NaN differences are visible in output.
+        # At verboseLevel=1, KGen only prints summary counts and suppresses
+        # per-field "Difference is NaN" lines. We need those lines to detect
+        # invalid state capture data (NaN reference values from initialization
+        # calls). verboseLevel=100 prints all per-field comparisons.
+        content = re.sub(
+            r'verboseLevel\s*=\s*\d+',
+            'verboseLevel=100',
+            content,
+        )
 
         # Check if this file contains our function
         func_pattern = rf'\b(FUNCTION|SUBROUTINE)\s+{name_upper}\s*\('
