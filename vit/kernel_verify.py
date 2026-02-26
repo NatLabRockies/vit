@@ -6,11 +6,18 @@ wiring a C++ translation into KGen's generated kernel build system
 and running the verification.
 
 Encodes all lessons learned from the ROSCO saturate experience:
-- Makefile FC_0/FC_FLAGS_SET_0 variables
+
+Makefile fixes:
+- FC_0/FC_FLAGS_SET_0 must be defined (KGen uses these but never defines them)
+- C++ object must be in ALL_OBJS (not just have a compilation rule)
+- -lstdc++ must be in the link command
+- kernel.exe must be chmod +x after linking (some systems need this)
+
+Fortran fixes:
 - USE ISO_C_BINDING must come before IMPLICIT NONE
-- USE kgen_utils_mod must be present in extracted files
-- C++ object compilation and -lstdc++ linking
-- Verification output parsing
+- USE kgen_utils_mod must NOT use ONLY clause (KGen doesn't import all needed symbols)
+- INTERFACE block goes above CONTAINS
+- Function body replaced with C-calling wrapper
 """
 
 import os
@@ -50,16 +57,15 @@ def setup_kernel_cpp(
     """
     Wire a C++ translation into a KGen kernel directory for verification.
 
-    This is the automation of what we did manually for ROSCO saturate.
-
     Steps:
     1. Copy user's C++ implementation into kernel/
     2. Generate the C wrapper (extern "C") file
     3. Modify the kernel Makefile to compile C++ and link stdc++
     4. Modify kernel Fortran sources:
-       a. Add USE ISO_C_BINDING (before IMPLICIT NONE)
-       b. Add the INTERFACE block (above CONTAINS)
-       c. Replace the original function body with the wrapper
+       a. Fix USE kgen_utils_mod ONLY → USE kgen_utils_mod (remove ONLY)
+       b. Add USE ISO_C_BINDING (before IMPLICIT NONE)
+       c. Add the INTERFACE block (above CONTAINS)
+       d. Replace the original function body with the wrapper
 
     Args:
         kernel_dir: Path to KGen kernel/ directory
@@ -120,6 +126,7 @@ def run_kernel_verify(kernel_dir: str, env: Optional[dict] = None,
         VerifyResult with pass/fail details
     """
     kernel = Path(kernel_dir)
+    run_env = {**os.environ, **(env or {})}
 
     # Clean first
     subprocess.run(
@@ -136,7 +143,7 @@ def run_kernel_verify(kernel_dir: str, env: Optional[dict] = None,
         cwd=str(kernel),
         capture_output=True,
         text=True,
-        env={**os.environ, **(env or {})},
+        env=run_env,
     )
 
     if build_result.returncode != 0:
@@ -150,14 +157,19 @@ def run_kernel_verify(kernel_dir: str, env: Optional[dict] = None,
             details=[],
         )
 
+    # chmod +x kernel.exe — some systems/filesystems don't set execute bit
+    kernel_exe = kernel / "kernel.exe"
+    if kernel_exe.exists():
+        kernel_exe.chmod(kernel_exe.stat().st_mode | 0o111)
+
     # Run
     run_result = subprocess.run(
-        "make run",
+        "./kernel.exe",
         shell=True,
         cwd=str(kernel),
         capture_output=True,
         text=True,
-        env={**os.environ, **(env or {})},
+        env=run_env,
     )
 
     output = run_result.stdout + run_result.stderr
@@ -170,82 +182,73 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
                            cpp_source: str) -> None:
     """
     Patch the kernel Makefile to:
-    1. Define FC_0 and FC_FLAGS_SET_0 (KGen bug workaround)
+    1. Define FC_0 and FC_FLAGS_SET_0 (KGen bug: uses but never defines these)
     2. Add C++ compilation rule
     3. Add C++ object to ALL_OBJS
     4. Add -lstdc++ to link flags
+
+    The KGen-generated Makefile looks like:
+        # Makefile for KGEN-generated kernel
+        ALL_OBJS := A.o B.o ...
+        build: ${ALL_OBJS}
+            ${FC_0} ${FC_FLAGS_SET_0} -o kernel.exe $^
+        ...
+        A.o: A.f90 ...
+            ${FC_0} ${FC_FLAGS_SET_0} -c -o $@ $<
+
+    Note: FC_0 and FC_FLAGS_SET_0 are USED but NEVER DEFINED.
+    There is no FC variable either. We must prepend definitions.
     """
     makefile = kernel / "Makefile"
     content = makefile.read_text()
+    lines = content.split("\n")
     obj_name = cpp_source.replace(".cpp", ".o")
 
-    # 1. Add FC_0/FC_FLAGS_SET_0 if not present
-    if "FC_0" not in content:
-        # Insert after the first FC definition
-        content = re.sub(
-            r'(FC\s*[?:]?=\s*.+)',
-            r'\1\nFC_0 ?= $(FC)\nFC_FLAGS_SET_0 ?= $(FC_FLAGS)',
-            content,
-            count=1,
-        )
+    # 1. Prepend FC_0/FC_FLAGS_SET_0 definitions if not present
+    # KGen Makefiles use FC_0 but never define it or FC
+    if not re.search(r'^FC_0\s*[?:]?=', content, re.MULTILINE):
+        lines.insert(0, "FC_FLAGS_SET_0 ?= -O2 -ffree-form -ffree-line-length-none")
+        lines.insert(0, "FC_0 ?= gfortran")
 
-    # 2. Add CXX variable and C++ compilation rule
-    if "CXX" not in content:
-        # Add before the first target
-        cxx_block = f"""
-# VIT: C++ compilation support
-CXX ?= g++
-CXXFLAGS ?= -O2 -fPIC
+    # 2. Add C++ object to ALL_OBJS FIRST (before checking obj_name in content)
+    # This must happen before adding the CXX rule, because the CXX rule
+    # also contains obj_name and would fool the "obj_name not in content" check
+    content_joined = "\n".join(lines)
+    all_objs_match = re.search(r'^(ALL_OBJS\s*[:?]?=\s*)(.*)', content_joined, re.MULTILINE)
+    if all_objs_match and obj_name not in all_objs_match.group(2):
+        old_line = all_objs_match.group(0)
+        new_line = f"{all_objs_match.group(1)}{obj_name} {all_objs_match.group(2)}"
+        content_joined = content_joined.replace(old_line, new_line, 1)
+        lines = content_joined.split("\n")
 
-{obj_name}: {cpp_source}
-\t$(CXX) $(CXXFLAGS) -c $< -o $@
-"""
-        # Insert before "all:" or "build:" target
-        content = re.sub(
-            r'^((?:all|build)\s*:)',
-            cxx_block + r'\n\1',
-            content,
-            count=1,
-            flags=re.MULTILINE,
-        )
-
-    # 3. Add C++ object to ALL_OBJS (or the object list for the link step)
-    if obj_name not in content:
-        # Find ALL_OBJS or the link command and add our object
-        if "ALL_OBJS" in content:
-            content = re.sub(
-                r'(ALL_OBJS\s*[+:]?=.*)',
-                rf'\1 {obj_name}',
-                content,
-                count=1,
-            )
-        else:
-            # Try to find the link command (typically uses $(FC) ... -o kernel.exe)
-            content = re.sub(
-                r'(\$\(FC\).*?-o\s+\S+)',
-                rf'\1 {obj_name}',
-                content,
-                count=1,
-            )
+    # 3. Add CXX variable and C++ compilation rule
+    content_joined = "\n".join(lines)
+    if "CXX" not in content_joined:
+        cxx_lines = [
+            "# VIT: C++ compilation support",
+            "CXX ?= g++",
+            "CXXFLAGS ?= -O2 -fPIC",
+            "",
+            f"{obj_name}: {cpp_source}",
+            f"\t$(CXX) $(CXXFLAGS) -c $< -o $@",
+            "",
+        ]
+        # Insert before "build:" target
+        for i, line in enumerate(lines):
+            if re.match(r'^build\s*:', line):
+                for j, cxx_line in enumerate(cxx_lines):
+                    lines.insert(i + j, cxx_line)
+                break
 
     # 4. Add -lstdc++ to link flags
-    if "-lstdc++" not in content:
-        # Add to the link command
-        content = re.sub(
-            r'(-o\s+kernel\.exe)',
-            rf'\1 -lstdc++',
-            content,
-        )
-        # Also try LDFLAGS
-        if "LDFLAGS" in content:
-            content = re.sub(
-                r'(LDFLAGS\s*[+:]?=.*)',
-                r'\1 -lstdc++',
-                content,
-                count=1,
-            )
+    content_joined = "\n".join(lines)
+    if "-lstdc++" not in content_joined:
+        for i, line in enumerate(lines):
+            if "-o kernel.exe" in line or "-o\tkernel.exe" in line:
+                lines[i] = line.replace("-o kernel.exe", "-o kernel.exe -lstdc++")
+                break
 
-    makefile.write_text(content)
+    makefile.write_text("\n".join(lines))
 
 
 def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
@@ -254,10 +257,12 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
     Patch kernel Fortran source files.
 
     Handles:
-    1. Adding USE ISO_C_BINDING (MUST come before IMPLICIT NONE)
-    2. Adding the INTERFACE block above CONTAINS
-    3. Replacing the original function body with the C-calling wrapper
-    4. Ensuring USE kgen_utils_mod is present where needed
+    1. Fix USE kgen_utils_mod, ONLY: ... → USE kgen_utils_mod
+       (KGen's ONLY clause doesn't include all symbols the code actually uses)
+    2. Adding USE ISO_C_BINDING (MUST come before IMPLICIT NONE)
+    3. Adding the INTERFACE block above CONTAINS
+    4. Replacing the original function body with the C-calling wrapper
+    5. Ensuring USE ordering (USE before IMPLICIT NONE)
     """
     modified_files = []
     interface_block = generate_fortran_interface_block(sig, kind_aliases)
@@ -268,6 +273,9 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
         original = content
         content_upper = content.upper()
         name_upper = sig.name.upper()
+
+        # Fix USE kgen_utils_mod ONLY → USE kgen_utils_mod (all files)
+        content = _fix_kgen_utils_mod_only(content)
 
         # Check if this file contains our function
         func_pattern = rf'\b(FUNCTION|SUBROUTINE)\s+{name_upper}\s*\('
@@ -282,7 +290,7 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
         # This file contains our function — apply all patches
 
         # 1. Add USE ISO_C_BINDING to module level (before IMPLICIT NONE)
-        if "ISO_C_BINDING" not in content_upper:
+        if "ISO_C_BINDING" not in content.upper():
             content = _add_use_iso_c_binding(content)
 
         # 2. Add INTERFACE block above CONTAINS
@@ -302,22 +310,38 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
     return modified_files
 
 
+def _fix_kgen_utils_mod_only(content: str) -> str:
+    """
+    Remove ONLY clause from USE kgen_utils_mod statements.
+
+    KGen generates:
+        USE kgen_utils_mod, ONLY: kgen_dp, kgen_array_sumcheck
+    but the code also references kgen_verboselevel, kgen_init_verify,
+    and other symbols not in the ONLY list. Fix by removing the restriction.
+    """
+    return re.sub(
+        r'(USE\s+kgen_utils_mod)\s*,\s*ONLY\s*:[^\n]*',
+        r'\1',
+        content,
+        flags=re.IGNORECASE
+    )
+
+
 def _fix_use_ordering(content: str) -> str:
     """
-    Ensure USE ISO_C_BINDING comes before IMPLICIT NONE.
+    Ensure USE statements come before IMPLICIT NONE.
 
-    This is a Fortran syntax requirement that caused kernel build failures.
-    USE statements must come before IMPLICIT NONE.
+    This is a Fortran syntax requirement. USE statements must appear
+    before IMPLICIT NONE in the same scoping unit.
     """
     lines = content.split("\n")
     i = 0
     while i < len(lines):
         line_upper = lines[i].strip().upper()
 
-        # If we find IMPLICIT NONE, check if the next USE statements
+        # If we find IMPLICIT NONE, check if subsequent USE statements
         # need to be moved before it
         if line_upper.startswith("IMPLICIT NONE") or line_upper == "IMPLICIT NONE":
-            # Look ahead for USE statements that should come before
             j = i + 1
             use_lines_to_move = []
             while j < len(lines):
@@ -325,6 +349,8 @@ def _fix_use_ordering(content: str) -> str:
                 if next_upper.startswith("USE "):
                     use_lines_to_move.append(lines[j])
                     lines.pop(j)
+                elif not next_upper or next_upper.startswith("!"):
+                    j += 1  # Skip blank lines and comments
                 else:
                     break
 
@@ -357,7 +383,6 @@ def _add_interface_block(content: str, interface_block: str) -> str:
     # Find CONTAINS
     for i, line in enumerate(lines):
         if line.strip().upper() == "CONTAINS":
-            # Insert interface block before CONTAINS
             lines.insert(i, "")
             lines.insert(i, interface_block)
             lines.insert(i, "")
@@ -395,17 +420,15 @@ def _replace_function_body(content: str, sig: FortranSignature,
     for i, line in enumerate(lines):
         stripped = line.strip().upper()
         if re.search(rf'\b{end_keyword}\s+{name_upper}\s*\(', stripped):
-            # Make sure this isn't the END line
             if not stripped.startswith("END"):
                 start_idx = i
                 break
 
     if start_idx is None:
-        return content  # Function not found, return unchanged
+        return content
 
     # Find function end
     end_idx = None
-    depth = 0
     for i in range(start_idx, len(lines)):
         stripped = lines[i].strip().upper()
         if re.match(rf'\s*END\s+{end_keyword}\b', stripped):
@@ -413,7 +436,7 @@ def _replace_function_body(content: str, sig: FortranSignature,
             break
 
     if end_idx is None:
-        return content  # Could not find END, return unchanged
+        return content
 
     # Replace the function body (start to end inclusive) with wrapper
     new_lines = lines[:start_idx] + wrapper_body.split("\n") + lines[end_idx + 1:]
@@ -424,48 +447,84 @@ def _parse_verify_output(output: str, tolerance: float) -> VerifyResult:
     """
     Parse KGen kernel verification output.
 
-    KGen output typically contains lines like:
-        verification PASSED with tolerance 1E-14
-    or per-variable verification results.
+    KGen output has two sections we need to parse:
+
+    Per-case results like:
+        Verification PASSED with saturate.0.0.1
+
+    Summary like:
+        Total number of verification cases  :     1
+        Number of verification-passed cases :     1
+
+    We prefer the summary values when present; per-case counting is fallback.
     """
-    total = 0
-    passed = 0
-    failed = 0
+    per_case_total = 0
+    per_case_passed = 0
+    per_case_failed = 0
+    summary_total = None
+    summary_passed = None
     max_error = 0.0
     details = []
 
     for line in output.split("\n"):
-        line_upper = line.strip().upper()
+        line_stripped = line.strip()
+        line_upper = line_stripped.upper()
 
-        # Count verification results
-        if "PASSED" in line_upper and "VERIFICATION" in line_upper:
-            total += 1
-            passed += 1
-            details.append({"status": "PASSED", "line": line.strip()})
+        # Parse summary lines FIRST (these are authoritative)
+        total_match = re.search(
+            r'Total number of verification cases\s*:\s*(\d+)', line)
+        if total_match:
+            summary_total = int(total_match.group(1))
+            continue
 
-        elif "FAILED" in line_upper and "VERIFICATION" in line_upper:
-            total += 1
-            failed += 1
-            details.append({"status": "FAILED", "line": line.strip()})
+        passed_match = re.search(
+            r'Number of verification-passed cases\s*:\s*(\d+)', line)
+        if passed_match:
+            summary_passed = int(passed_match.group(1))
+            continue
 
-            # Try to extract error value
-            err_match = re.search(r'error\s*[:=]\s*([\d.eE+-]+)', line, re.IGNORECASE)
+        # Skip summary/count lines — don't count them as per-case results
+        if re.search(r'Number of\s+(non-)?identical', line, re.IGNORECASE):
+            continue
+
+        # Per-case results: "Verification PASSED with <name>"
+        # or "kernel: <name>: PASSED verification"
+        if re.search(r'Verification\s+PASSED\s+with\b', line, re.IGNORECASE):
+            per_case_total += 1
+            per_case_passed += 1
+            details.append({"status": "PASSED", "line": line_stripped})
+
+        elif re.search(r'Verification\s+FAILED', line, re.IGNORECASE):
+            per_case_total += 1
+            per_case_failed += 1
+            details.append({"status": "FAILED", "line": line_stripped})
+
+            err_match = re.search(
+                r'error\s*[:=]\s*([\d.eE+-]+)', line, re.IGNORECASE)
             if err_match:
                 try:
-                    err_val = float(err_match.group(1))
-                    max_error = max(max_error, err_val)
+                    max_error = max(max_error, float(err_match.group(1)))
                 except ValueError:
                     pass
 
-        # Also look for summary lines
-        summary_match = re.search(
-            r'(\d+)\s+(?:out of|/)\s+(\d+)\s+(?:passed|PASSED)',
-            line
-        )
-        if summary_match:
-            passed = int(summary_match.group(1))
-            total = int(summary_match.group(2))
-            failed = total - passed
+        elif re.search(r'PASSED\s+verification\b', line, re.IGNORECASE):
+            # "kernel: saturate: PASSED verification" — this is a summary echo
+            # Don't double-count if we already have per-case data
+            if per_case_total == 0:
+                per_case_total += 1
+                per_case_passed += 1
+                details.append({"status": "PASSED", "line": line_stripped})
+
+        elif re.search(r'FAILED\s+verification\b', line, re.IGNORECASE):
+            if per_case_total == 0:
+                per_case_total += 1
+                per_case_failed += 1
+                details.append({"status": "FAILED", "line": line_stripped})
+
+    # Use summary values if available, otherwise fall back to per-case counts
+    total = summary_total if summary_total is not None else per_case_total
+    passed = summary_passed if summary_passed is not None else per_case_passed
+    failed = total - passed
 
     success = total > 0 and failed == 0
 

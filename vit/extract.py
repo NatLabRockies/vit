@@ -7,7 +7,8 @@ Automates:
 3. Generating include.ini for module discovery
 4. Cleaning stale artifacts
 5. Running KGen with the correct build/run commands
-6. Managing the resulting kernel/ and state/ directories
+6. Injecting kgen_utils.f90 into the project build (KGen bug workaround)
+7. Managing the resulting kernel/ and state/ directories
 
 Encodes lessons learned from ROSCO debugging:
 - KGen pragmas must use underscores: begin_callsite / end_callsite
@@ -18,12 +19,20 @@ Encodes lessons learned from ROSCO debugging:
 - The built library must be installed where the simulation loads it from
 - KGen puts kernel/ and state/ in CWD, not relative to the source file
 - Source files must be restored to original state on failure
+- KGen instruments code with calls to kgen_utils functions but doesn't add
+  kgen_utils.f90 to the project's build system. The instrumented shared library
+  builds without error (unresolved symbols allowed) but fails silently at runtime.
+  We wrap --cmd-build in a script that injects kgen_utils.f90 into the build.
+- Editable pip installs (pip install -e .) can point to the wrong checkout,
+  causing the simulation to load a different (uninstrumented) library.
 """
 
 import os
 import re
 import shutil
 import subprocess
+import textwrap
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -242,6 +251,214 @@ def build_kgen_build_cmd(build_cmd: str, install_cmd: str = "") -> str:
     return build_cmd
 
 
+def check_editable_installs(project_dir: str, package_name: str = "") -> list[str]:
+    """
+    Check for editable pip installs that might load the wrong library.
+
+    When a project is installed with `pip install -e .`, Python's import
+    system follows .egg-link files to the original source directory. If the
+    user has multiple checkouts (e.g., /project/original and /project/testing),
+    the editable install may point to the wrong one — meaning the simulation
+    loads an uninstrumented library instead of the KGen-instrumented one.
+
+    This checks for common indicators and returns warnings.
+
+    Args:
+        project_dir: The project directory we WANT to be active
+        package_name: Optional package name to check (e.g., "rosco")
+
+    Returns:
+        List of warning messages (empty if no issues detected)
+    """
+    warnings_list = []
+    project_dir = str(Path(project_dir).resolve())
+
+    # Check if there's a pip editable install pointing elsewhere
+    try:
+        result = subprocess.run(
+            ["pip", "show", "-f", package_name] if package_name else ["pip", "list", "--editable"],
+            capture_output=True, text=True, timeout=30,
+        )
+        output = result.stdout
+
+        if package_name:
+            # Look for "Editable project location:" or "Location:"
+            for line in output.split("\n"):
+                if "location:" in line.lower():
+                    location = line.split(":", 1)[1].strip()
+                    location_resolved = str(Path(location).resolve())
+                    if location_resolved != project_dir:
+                        warnings_list.append(
+                            f"WARNING: Editable install for '{package_name}' points to:\n"
+                            f"  {location_resolved}\n"
+                            f"but VIT is working in:\n"
+                            f"  {project_dir}\n"
+                            f"The simulation may load the WRONG (uninstrumented) library.\n"
+                            f"Fix: cd {project_dir} && pip install -e ."
+                        )
+        else:
+            # Check if any editable installs point outside project_dir
+            for line in output.split("\n"):
+                if project_dir not in line and "editable" in line.lower():
+                    warnings_list.append(
+                        f"WARNING: Found editable install not in project dir: {line.strip()}"
+                    )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass  # pip not available, skip check
+
+    return warnings_list
+
+
+def generate_state_capture_build_script(
+    build_cmd: str,
+    install_cmd: str = "",
+    cmake_file: str = "",
+    source_dir: str = "",
+    kernel_dir: str = "kernel",
+) -> str:
+    """
+    Generate a shell script that wraps the build command for state capture.
+
+    KGen instruments source code with calls to kgen_utils functions
+    (kgen_init_vars, kgen_check_save, etc.) but does NOT add kgen_utils.f90
+    to the project's build system. On Linux, shared libraries allow unresolved
+    symbols at link time, so the build succeeds — but state capture fails
+    silently at runtime because the kgen functions are missing.
+
+    This script:
+    1. Copies kgen_utils.f90 from kernel/ into the source tree
+    2. Patches CMakeLists.txt (or Makefile) to compile it
+    3. Runs the actual build
+    4. Runs the install step (if any)
+    5. Cleans up the patches (so the source tree is restored)
+
+    The script is written to a temp file and returned as a command.
+
+    Args:
+        build_cmd: Original build command
+        install_cmd: Optional post-build install command
+        cmake_file: Path to CMakeLists.txt (for cmake projects)
+        source_dir: Directory containing Fortran source files
+        kernel_dir: Where KGen puts kernel/ (for finding kgen_utils.f90)
+
+    Returns:
+        Path to the generated script
+    """
+    # Find where kgen_utils.f90 will be
+    kgen_utils_src = os.path.join(os.path.abspath(kernel_dir), "kgen_utils.f90")
+
+    # Determine target location for kgen_utils.f90
+    if source_dir:
+        kgen_utils_dest = os.path.join(os.path.abspath(source_dir), "kgen_utils.f90")
+    else:
+        kgen_utils_dest = os.path.join(os.getcwd(), "kgen_utils.f90")
+
+    cmake_file_abs = os.path.abspath(cmake_file) if cmake_file else ""
+
+    script_lines = [
+        "#!/bin/bash",
+        "set -e",
+        "",
+        "# VIT: State capture build wrapper",
+        "# Injects kgen_utils.f90 into the project build so KGen's",
+        "# instrumented code can capture state data at runtime.",
+        "",
+        f'KGEN_UTILS_SRC="{kgen_utils_src}"',
+        f'KGEN_UTILS_DEST="{kgen_utils_dest}"',
+        f'CMAKE_FILE="{cmake_file_abs}"',
+        "",
+        "# Step 1: Copy kgen_utils.f90 into source tree (if it exists)",
+        'if [ -f "$KGEN_UTILS_SRC" ]; then',
+        '    cp "$KGEN_UTILS_SRC" "$KGEN_UTILS_DEST"',
+        '    echo "VIT: Copied kgen_utils.f90 to source tree"',
+        "",
+    ]
+
+    # Step 2: Patch CMakeLists.txt if cmake project
+    if cmake_file_abs:
+        script_lines.extend([
+            '    # Patch CMakeLists.txt to include kgen_utils.f90',
+            '    if [ -f "$CMAKE_FILE" ]; then',
+            '        cp "$CMAKE_FILE" "${CMAKE_FILE}.vit_backup"',
+            "        # Find a .f90 file in the sources list and add kgen_utils.f90 after it",
+            r"""        sed -i '0,/\(src\/[A-Za-z_]*\.f90\)/s//\1\n    src\/kgen_utils.f90/' "$CMAKE_FILE" """,
+            '        echo "VIT: Patched CMakeLists.txt to include kgen_utils.f90"',
+            "    fi",
+        ])
+
+    script_lines.extend([
+        "fi",
+        "",
+        "# Step 3: Run the actual build",
+        f"{build_cmd}",
+        "BUILD_RC=$?",
+        "",
+    ])
+
+    # Step 4: Install
+    if install_cmd:
+        script_lines.extend([
+            "# Step 4: Install",
+            f'if [ $BUILD_RC -eq 0 ]; then',
+            f"    {install_cmd}",
+            "fi",
+            "",
+        ])
+
+    # Step 5: Clean up (always, even on failure)
+    script_lines.extend([
+        "# Step 5: Clean up injected files (restore source tree)",
+        '# NOTE: We do NOT clean up here because KGen may need to rebuild',
+        '# multiple times. Cleanup happens after state capture is complete.',
+        "",
+        "exit $BUILD_RC",
+    ])
+
+    # Write script
+    script_path = os.path.join(os.getcwd(), ".vit_build_wrapper.sh")
+    Path(script_path).write_text("\n".join(script_lines) + "\n")
+    os.chmod(script_path, 0o755)
+
+    return script_path
+
+
+def cleanup_kgen_utils_injection(
+    cmake_file: str = "",
+    source_dir: str = "",
+) -> list[str]:
+    """
+    Remove kgen_utils.f90 injection after state capture is complete.
+
+    Restores CMakeLists.txt from backup and removes the copied kgen_utils.f90.
+
+    Returns:
+        List of files cleaned up
+    """
+    cleaned = []
+
+    # Restore CMakeLists.txt
+    if cmake_file:
+        backup = cmake_file + ".vit_backup"
+        if os.path.exists(backup):
+            shutil.move(backup, cmake_file)
+            cleaned.append(f"Restored {cmake_file}")
+
+    # Remove injected kgen_utils.f90
+    if source_dir:
+        injected = os.path.join(source_dir, "kgen_utils.f90")
+        if os.path.exists(injected):
+            os.remove(injected)
+            cleaned.append(f"Removed {injected}")
+
+    # Remove wrapper script
+    wrapper = os.path.join(os.getcwd(), ".vit_build_wrapper.sh")
+    if os.path.exists(wrapper):
+        os.remove(wrapper)
+        cleaned.append(f"Removed {wrapper}")
+
+    return cleaned
+
+
 def generate_kgen_command(
     source_file: str,
     build_cmd: str,
@@ -287,7 +504,9 @@ def run_kgen_extract(
     kgen_path: str = "kgen",
     source_dir: str = "",
     build_dir: str = "",
+    cmake_file: str = "",
     output_dir: Optional[str] = None,
+    package_name: str = "",
     env: Optional[dict] = None,
     dry_run: bool = False,
 ) -> dict:
@@ -295,19 +514,70 @@ def run_kgen_extract(
     Run KGen extraction with all necessary setup.
 
     This handles:
-    1. Cleaning stale artifacts (strace.log, kgen.log)
-    2. Ensuring the build is clean so strace captures compiler invocations
-    3. Generating include.ini with proper module/source paths
-    4. Combining build + install commands
-    5. Running KGen
-    6. Locating the generated kernel/ and state/ directories
+    1. Checking for editable pip install path conflicts
+    2. Cleaning stale artifacts (strace.log, kgen.log)
+    3. Pre-building so .mod files exist for include.ini generation
+    4. Generating include.ini with proper module/source paths
+    5. Generating a build wrapper script that injects kgen_utils.f90
+    6. Running KGen
+    7. Cleaning up injected files (restoring source tree)
+    8. Locating the generated kernel/ and state/ directories
 
     Returns:
         Dict with keys: 'success', 'kernel_dir', 'state_dir', 'cmd', 'output',
-                        'include_ini', 'cleaned', 'state_cases'
+                        'include_ini', 'cleaned', 'state_cases', 'warnings'
     """
-    # Combine build + install
-    effective_build_cmd = build_kgen_build_cmd(build_cmd, install_cmd)
+    result = {
+        "success": False,
+        "kernel_dir": None,
+        "state_dir": None,
+        "cmd": "",
+        "output": "",
+        "include_ini": None,
+        "cleaned": [],
+        "state_cases": 0,
+        "warnings": [],
+    }
+
+    # Step 1: Check for editable install conflicts
+    if package_name or source_dir:
+        project_dir = source_dir or os.path.dirname(os.path.abspath(source_file))
+        install_warnings = check_editable_installs(project_dir, package_name)
+        result["warnings"].extend(install_warnings)
+        for w in install_warnings:
+            warnings.warn(w, UserWarning, stacklevel=2)
+
+    # Step 2: Clean stale artifacts
+    result["cleaned"] = clean_kgen_artifacts()
+
+    # Step 3: Run clean command to force full rebuild for strace
+    if clean_cmd:
+        subprocess.run(clean_cmd, shell=True, capture_output=True)
+
+    # Step 4: Pre-build so .mod files exist for include.ini generation
+    # KGen needs .mod files to resolve USE statements. They may have been
+    # removed by the clean step above.
+    if build_cmd:
+        subprocess.run(build_cmd, shell=True, capture_output=True)
+
+    # Step 5: Generate include.ini with proper paths
+    if source_dir or build_dir:
+        src_dirs = discover_source_dirs(source_dir) if source_dir else []
+        mod_dirs = discover_mod_dirs(build_dir) if build_dir else []
+        if src_dirs or mod_dirs:
+            ini_path = generate_include_ini(src_dirs, mod_dirs)
+            result["include_ini"] = ini_path
+
+    # Step 6: Generate build wrapper script that injects kgen_utils.f90
+    # into the project build (KGen bug workaround)
+    wrapper_script = generate_state_capture_build_script(
+        build_cmd=build_cmd,
+        install_cmd=install_cmd,
+        cmake_file=cmake_file,
+        source_dir=source_dir,
+        kernel_dir=output_dir or "kernel",
+    )
+    effective_build_cmd = f"bash {wrapper_script}"
 
     cmd = generate_kgen_command(
         source_file=source_file,
@@ -317,51 +587,14 @@ def run_kgen_extract(
         kgen_path=kgen_path,
         output_dir=output_dir,
     )
-
-    result = {
-        "success": False,
-        "kernel_dir": None,
-        "state_dir": None,
-        "cmd": cmd,
-        "output": "",
-        "include_ini": None,
-        "cleaned": [],
-        "state_cases": 0,
-    }
+    result["cmd"] = cmd
 
     if dry_run:
         result["output"] = f"[DRY RUN] Would execute:\n  {cmd}"
+        result["output"] += f"\n\nBuild wrapper script:\n{Path(wrapper_script).read_text()}"
         return result
 
-    # Step 1: Clean stale artifacts
-    result["cleaned"] = clean_kgen_artifacts()
-
-    # Step 2: Run clean command to force full rebuild for strace
-    if clean_cmd:
-        subprocess.run(clean_cmd, shell=True, capture_output=True)
-
-    # Step 3: Generate include.ini with proper paths
-    if source_dir or build_dir:
-        src_dirs = discover_source_dirs(source_dir) if source_dir else []
-        mod_dirs = discover_mod_dirs(build_dir) if build_dir else []
-        if src_dirs or mod_dirs:
-            ini_path = generate_include_ini(src_dirs, mod_dirs)
-            result["include_ini"] = ini_path
-
-    # Step 4: Build first so .mod files exist for include.ini paths
-    # (KGen needs .mod files to resolve USE statements, and they may
-    # have been removed by the clean step above)
-    if build_cmd:
-        subprocess.run(build_cmd, shell=True, capture_output=True)
-        # Regenerate include.ini now that .mod files exist
-        if source_dir or build_dir:
-            src_dirs = discover_source_dirs(source_dir) if source_dir else []
-            mod_dirs = discover_mod_dirs(build_dir) if build_dir else []
-            if src_dirs or mod_dirs:
-                ini_path = generate_include_ini(src_dirs, mod_dirs)
-                result["include_ini"] = ini_path
-
-    # Step 5: Run KGen
+    # Step 7: Run KGen
     try:
         proc = subprocess.run(
             cmd,
@@ -373,8 +606,7 @@ def run_kgen_extract(
         )
         result["output"] = proc.stdout + proc.stderr
 
-        # Step 6: Locate output directories
-        # KGen places kernel/ and state/ in CWD, not relative to source file
+        # Step 8: Locate output directories
         cwd = output_dir or "."
         for candidate_base in [cwd, str(Path(source_file).parent)]:
             kernel_dir = os.path.join(candidate_base, "kernel")
@@ -399,12 +631,26 @@ def run_kgen_extract(
                     "     loads it from. Set install_cmd in vit.yaml to copy the built\n"
                     "     library to the install location.\n"
                     "  3. The call site wasn't reached during the simulation run.\n"
+                    "  4. kgen_utils.f90 wasn't compiled into the shared library.\n"
+                    "     Check that the build wrapper script ran correctly.\n"
+                    "  5. An editable pip install (pip install -e .) may be pointing\n"
+                    "     to a different checkout, causing the simulation to load an\n"
+                    "     uninstrumented library. Run: pip show <package> and check\n"
+                    "     'Editable project location' matches your working directory.\n"
                 )
 
     except subprocess.TimeoutExpired:
         result["output"] = "ERROR: KGen extraction timed out after 1200 seconds"
     except Exception as e:
         result["output"] = f"ERROR: {e}"
+    finally:
+        # Step 9: Clean up kgen_utils.f90 injection (restore source tree)
+        cleanup_result = cleanup_kgen_utils_injection(
+            cmake_file=cmake_file,
+            source_dir=source_dir,
+        )
+        if cleanup_result:
+            result["cleaned"].extend(cleanup_result)
 
     return result
 

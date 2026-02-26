@@ -248,8 +248,14 @@ def cmd_extract(args, config):
             kgen_path=config.kgen_path,
             source_dir=config.abs_source_dir,
             build_dir=config.abs_build_dir,
+            cmake_file=config.abs_cmake_file if config.build_type == "cmake" else "",
+            package_name=config.project_name,
             dry_run=args.dry_run,
         )
+
+        # Display warnings (e.g., editable pip install conflicts)
+        for w in result.get("warnings", []):
+            print(f"\n⚠ {w}")
 
         if result["cleaned"]:
             print(f"  Cleaned stale: {', '.join(os.path.basename(f) for f in result['cleaned'])}")
