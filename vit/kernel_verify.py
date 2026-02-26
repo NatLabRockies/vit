@@ -27,6 +27,12 @@ KGen state capture quirks:
 - NaN-vs-NaN comparisons always report as "non-identical", causing
   spurious verification failures. These are detected and reported
   separately as "skipped" cases with invalid reference data.
+- KGen compares the ENTIRE struct against reference data, not just fields
+  the kernel modifies. Uninitialized fields contain heap/stack residue
+  that may or may not be NaN depending on memory layout (ASLR, stack
+  depth, allocator behavior). This causes non-deterministic verification
+  results across runs. Fixed by patching comparisons so NaN==NaN is
+  treated as IDENTICAL (IEEE 754 guard: x /= x is true only for NaN).
 """
 
 import os
@@ -277,6 +283,10 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
     6. Increasing verboseLevel so NaN differences appear in output
        (KGen's default verboseLevel=1 suppresses "Difference is NaN" lines,
        which prevents detection of invalid state capture data)
+    7. Patching NaN comparisons so NaN==NaN → IDENTICAL
+       (KGen compares entire structs; uninitialized fields contain NaN from
+       heap/stack residue that varies between runs, causing non-deterministic
+       results. IEEE 754 NaN != NaN, so we add a guard clause.)
     """
     modified_files = []
     interface_block = generate_fortran_interface_block(sig, kind_aliases)
@@ -301,6 +311,14 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
             'verboseLevel=100',
             content,
         )
+
+        # Patch NaN comparisons in KGen-generated verification subroutines.
+        # KGen compares the ENTIRE struct (e.g. localvar) against reference
+        # data, not just the fields the kernel modifies. Uninitialized fields
+        # contain heap/stack residue that may or may not be NaN depending on
+        # memory layout — causing non-deterministic verification results.
+        # This makes NaN==NaN → IDENTICAL, eliminating the non-determinism.
+        content = _patch_nan_comparisons(content)
 
         # Check if this file contains our function
         func_pattern = rf'\b(FUNCTION|SUBROUTINE)\s+{name_upper}\s*\('
@@ -333,6 +351,43 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
             modified_files.append(str(f90_file))
 
     return modified_files
+
+
+def _patch_nan_comparisons(content: str) -> str:
+    """
+    Patch KGen-generated verification code to treat NaN==NaN as IDENTICAL.
+
+    KGen generates per-field comparisons like:
+        IF (var%ptfmtdz == kgenref_var%ptfmtdz) THEN
+            ...  ! IDENTICAL branch
+        ELSE
+            diff_ptfmtdz = ABS(var%ptfmtdz - kgenref_var%ptfmtdz)
+            ...  ! out-of-tolerance branch → "Difference is NaN"
+
+    In IEEE 754, NaN == NaN is false, so uninitialized fields (containing
+    NaN from heap/stack residue) always fail verification. Worse, the NaN
+    pattern varies between runs depending on memory layout (ASLR, stack
+    depth, allocator behavior), causing non-deterministic results.
+
+    Fix: extend the equality check so that if BOTH sides are NaN, the
+    comparison still enters the IDENTICAL branch:
+
+        IF ((var%X == kgenref_var%X) .OR.
+            ((var%X /= var%X) .AND. (kgenref_var%X /= kgenref_var%X))) THEN
+
+    The IEEE 754 property x /= x is true ONLY for NaN. For integers,
+    x /= x is always false, so the added clause is harmlessly dead code
+    for non-real types.
+    """
+    # Match KGen's generated comparison pattern:
+    #   IF (var%FIELD == kgenref_var%FIELD) THEN
+    # Capture the two operands to build the NaN guard.
+    content = re.sub(
+        r'IF\s*\(\s*(var%\w+)\s*==\s*(kgenref_var%\w+)\s*\)\s*THEN',
+        r'IF ((\1 == \2) .OR. ((\1 /= \1) .AND. (\2 /= \2))) THEN',
+        content,
+    )
+    return content
 
 
 def _fix_kgen_utils_mod_only(content: str) -> str:
