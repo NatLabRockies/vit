@@ -314,17 +314,45 @@ def _fix_kgen_utils_mod_only(content: str) -> str:
     """
     Remove ONLY clause from USE kgen_utils_mod statements.
 
-    KGen generates:
+    KGen generates single-line:
         USE kgen_utils_mod, ONLY: kgen_dp, kgen_array_sumcheck
-    but the code also references kgen_verboselevel, kgen_init_verify,
-    and other symbols not in the ONLY list. Fix by removing the restriction.
+    or multi-line with continuations:
+        USE kgen_utils_mod, ONLY: kgen_dp, kgen_array_sumcheck, &
+            CHECK_IDENTICAL, CHECK_IN_TOL, CHECK_OUT_TOL
+
+    The code also references kgen_verboselevel, kgen_init_verify,
+    and other symbols not in the ONLY list. Fix by removing the restriction
+    AND any continuation lines that were part of the ONLY clause.
     """
-    return re.sub(
-        r'(USE\s+kgen_utils_mod)\s*,\s*ONLY\s*:[^\n]*',
-        r'\1',
-        content,
-        flags=re.IGNORECASE
-    )
+    lines = content.split("\n")
+    result = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        line_upper = line.strip().upper()
+
+        # Check if this is a USE kgen_utils_mod, ONLY: line
+        if re.match(r'\s*USE\s+kgen_utils_mod\s*,\s*ONLY\s*:', line, re.IGNORECASE):
+            # Replace with just USE kgen_utils_mod (preserve indentation)
+            indent = len(line) - len(line.lstrip())
+            result.append(" " * indent + "USE kgen_utils_mod")
+
+            # Skip any continuation lines (current line ends with &,
+            # or next line starts with &)
+            while i < len(lines) and lines[i].rstrip().endswith("&"):
+                i += 1  # skip this continuation line
+            # Also skip the next line if it starts with & (final continuation)
+            if i + 1 < len(lines) and lines[i + 1].lstrip().startswith("&"):
+                i += 1  # skip the orphaned continuation
+            i += 1
+        else:
+            # Also catch orphaned continuation lines that start with & and
+            # contain only identifiers/commas (left over from a previous
+            # partial fix or unusual formatting)
+            result.append(line)
+            i += 1
+
+    return "\n".join(result)
 
 
 def _fix_use_ordering(content: str) -> str:
