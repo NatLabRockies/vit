@@ -466,6 +466,7 @@ def generate_kgen_command(
     clean_cmd: str = "",
     kgen_path: str = "kgen",
     output_dir: Optional[str] = None,
+    invocation: str = "",
 ) -> str:
     """
     Generate the kgen command line.
@@ -477,6 +478,8 @@ def generate_kgen_command(
         clean_cmd: Command to clean build artifacts
         kgen_path: Path to KGen executable
         output_dir: Where to put kernel/ and state/ directories
+        invocation: KGen invocation spec: "MPI_rank:OMP_thread:start[:end]"
+                    e.g., "0:0:1:20" captures calls 1-20 on rank 0 thread 0
 
     Returns:
         Shell command string
@@ -491,6 +494,9 @@ def generate_kgen_command(
 
     if output_dir:
         parts.append(f"--outdir {output_dir}")
+
+    if invocation:
+        parts.append(f"--invocation {invocation}")
 
     return " ".join(parts)
 
@@ -507,6 +513,7 @@ def run_kgen_extract(
     cmake_file: str = "",
     output_dir: Optional[str] = None,
     package_name: str = "",
+    invocation: str = "",
     env: Optional[dict] = None,
     dry_run: bool = False,
 ) -> dict:
@@ -586,6 +593,7 @@ def run_kgen_extract(
         clean_cmd=clean_cmd,
         kgen_path=kgen_path,
         output_dir=output_dir,
+        invocation=invocation,
     )
     result["cmd"] = cmd
 

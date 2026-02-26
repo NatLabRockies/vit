@@ -250,6 +250,7 @@ def cmd_extract(args, config):
             build_dir=config.abs_build_dir,
             cmake_file=config.abs_cmake_file if config.build_type == "cmake" else "",
             package_name=config.project_name,
+            invocation=config.invocation,
             dry_run=args.dry_run,
         )
 
