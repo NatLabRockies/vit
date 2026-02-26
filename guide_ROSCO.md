@@ -128,6 +128,7 @@ The "Editable project location" must match your current ROSCO directory. If it p
 
 ```bash
 cd Examples
+conda run -p /path/to/envs/rosco python 01_turbine_model.py
 conda run -p /path/to/envs/rosco python 04_simple_sim.py
 cd ..
 ```
