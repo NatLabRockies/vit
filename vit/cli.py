@@ -250,7 +250,6 @@ def cmd_extract(args, config):
             build_dir=config.abs_build_dir,
             cmake_file=config.abs_cmake_file if config.build_type == "cmake" else "",
             package_name=config.project_name,
-            invocation=config.invocation,
             dry_run=args.dry_run,
         )
 
@@ -324,6 +323,21 @@ def cmd_interface(args, config):
     return 0
 
 
+def _format_verify_summary(verify_result) -> str:
+    """Format verification result as a human-readable summary line."""
+    valid = verify_result.total_cases - verify_result.skipped_cases
+    skip_note = ""
+    if verify_result.skipped_cases > 0:
+        skip_note = f" ({verify_result.skipped_cases} skipped: NaN reference data)"
+
+    if verify_result.success:
+        return f"✓ VERIFICATION PASSED: {verify_result.passed_cases}/{valid} passed{skip_note}"
+    elif verify_result.total_cases == 0:
+        return "✗ VERIFICATION FAILED: no cases found"
+    else:
+        return f"✗ VERIFICATION FAILED: {verify_result.passed_cases}/{valid} passed{skip_note}"
+
+
 def cmd_verify(args, config):
     """Run KGen kernel verification with C++ implementation."""
     # Parse the function signature
@@ -365,18 +379,20 @@ def cmd_verify(args, config):
     print(f"\nRunning verification...")
     verify_result = run_kernel_verify(kernel_dir, tolerance=config.tolerance)
 
+    print(f"\n{_format_verify_summary(verify_result)}")
+
     if verify_result.success:
-        print(f"\n✓ VERIFICATION PASSED: {verify_result.passed_cases}/{verify_result.total_cases} cases")
         if verify_result.max_error > 0:
             print(f"  Max error: {verify_result.max_error:.2e} (tolerance: {config.tolerance:.2e})")
 
+        valid = verify_result.total_cases - verify_result.skipped_cases
         record_translation(config, args.function_name, "verified", {
             "cases_passed": verify_result.passed_cases,
-            "cases_total": verify_result.total_cases,
+            "cases_total": valid,
+            "cases_skipped": verify_result.skipped_cases,
             "cpp_file": args.cpp_file,
         })
     else:
-        print(f"\n✗ VERIFICATION FAILED: {verify_result.passed_cases}/{verify_result.total_cases} passed")
         for detail in verify_result.details:
             if detail["status"] == "FAILED":
                 print(f"  FAILED: {detail['line']}")
@@ -458,11 +474,9 @@ def cmd_run(args, config):
                 return 1
 
             verify_result = run_kernel_verify(kernel_dir, tolerance=config.tolerance)
+            print(_format_verify_summary(verify_result))
 
-            if verify_result.success:
-                print(f"✓ PASSED: {verify_result.passed_cases}/{verify_result.total_cases}")
-            else:
-                print(f"✗ FAILED: {verify_result.passed_cases}/{verify_result.total_cases}")
+            if not verify_result.success:
                 print("Aborting pipeline — verification must pass before integration.")
                 return 1
         else:
