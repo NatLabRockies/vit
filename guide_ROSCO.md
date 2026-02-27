@@ -30,9 +30,10 @@ This guide walks through the complete pipeline using the ROSCO wind turbine cont
 | gfortran | Any recent | Compiles KGen kernels |
 | g++ | Any recent | Compiles C++ translations |
 | CMake | ≥ 3.0 | ROSCO build system |
-| conda/mamba | Any | Environment management |
 | KGen | NCAR/KGen (patched) | Runtime state extraction |
 | PyYAML | Any | VIT config files |
+
+> **macOS users:** KGen's Fortran parser does not work on macOS. Run all VIT commands inside a Linux Docker container. See `CLAUDE.md` for the recommended Docker setup with the `vit-dev` container.
 
 ### KGen Setup
 
@@ -57,16 +58,24 @@ python2.7 -c "import sys; print(sys.version)"
 # Should print 2.7.x
 ```
 
-### ROSCO Conda Environment
+### ROSCO Python Environment
+
+You need Python 3.10 or newer. Any environment manager works (conda, venv, system Python, Docker):
 
 ```bash
-# Create the ROSCO environment (Python 3.x)
-conda create -p /path/to/envs/rosco python=3.14
-conda activate /path/to/envs/rosco
-
 # Install ROSCO dependencies
 pip install numpy matplotlib openfast rosco  # or as needed
 ```
+
+<details>
+<summary>Example using conda</summary>
+
+```bash
+conda create -n rosco python=3.12
+conda activate rosco
+pip install numpy matplotlib openfast rosco
+```
+</details>
 
 ### VIT Installation
 
@@ -83,7 +92,7 @@ vit --help
 
 ## Step-by-Step Pipeline
 
-All commands assume you are in the ROSCO project root directory.
+All commands assume you are in the ROSCO project root directory and running in a Linux environment (native or Docker container).
 
 ### Step 0: Fresh ROSCO Checkout
 
@@ -100,43 +109,56 @@ cd rosco/controller
 mkdir -p build && cd build
 cmake .. -DCMAKE_INSTALL_PREFIX=install
 cmake --build .
-cmake --install .
+cp libdiscon.so ../../lib/libdiscon.so
 cd ../../..
 
-# Verify the shared library was created
-ls -la rosco/controller/build/libdiscon.so
+# Verify the shared library is in place
 ls -la rosco/lib/libdiscon.so
 ```
+
+The explicit `cp` is important — the simulation loads the library from `rosco/lib/`, not from the build directory. This same copy step is what `install_cmd` automates in `vit.yaml`.
 
 ### Step 2: Install ROSCO as Editable Package (Critical)
 
 The simulation must load the library from **this** checkout, not another one. Install as an editable package from the current directory:
 
 ```bash
-conda run -p /path/to/envs/rosco pip install -e .
+pip install -e .
 ```
 
 **Verify it points to the right place:**
 
 ```bash
-conda run -p /path/to/envs/rosco pip show rosco | grep -i location
+pip show rosco | grep -i location
 ```
 
 The "Editable project location" must match your current ROSCO directory. If it points elsewhere, the simulation will load an uninstrumented library and state capture will silently fail.
 
 ### Step 3: Verify the Simulation Runs
 
+On a fresh checkout, the pickled turbine model doesn't exist yet. Run the turbine model script once to create it:
+
 ```bash
 cd Examples
-conda run -p /path/to/envs/rosco python 01_turbine_model.py
-conda run -p /path/to/envs/rosco python 04_simple_sim.py
+python3 01_turbine_model.py
 cd ..
 ```
 
-Save this output as your baseline for comparison after integration:
+This creates `Examples/examples_out/01_NREL5MW_saved.p`, which `04_simple_sim.py` loads. You only need to do this once per fresh checkout.
+
+Now run the simulation and save the output as a baseline:
 
 ```bash
-cp Examples/04_simple_sim_results.txt baseline_output.txt
+cd Examples
+python3 04_simple_sim.py > ../baseline_output.txt 2>&1
+cd ..
+```
+
+Verify the baseline was captured:
+
+```bash
+wc -l baseline_output.txt
+# Should show several hundred lines of simulation output
 ```
 
 ### Step 4: Initialize VIT Configuration
@@ -145,7 +167,7 @@ cp Examples/04_simple_sim_results.txt baseline_output.txt
 vit init --name ROSCO \
          --source-dir rosco/controller/src \
          --build-cmd "cd rosco/controller/build && cmake --build ." \
-         --run-cmd "cd Examples && conda run -p /path/to/envs/rosco python 04_simple_sim.py"
+         --run-cmd "cd Examples && python3 04_simple_sim.py"
 ```
 
 Then **edit `vit.yaml`** to use absolute paths and add all required fields. KGen runs build/run commands from unpredictable working directories, so relative paths will break.
@@ -159,9 +181,10 @@ project:
 kgen:
   path: /absolute/path/to/KGen/bin/kgen
   build_cmd: "cd /absolute/path/to/ROSCO/rosco/controller/build && cmake --build ."
-  run_cmd: "cd /absolute/path/to/ROSCO/Examples && conda run -p /absolute/path/to/envs/rosco python 04_simple_sim.py"
+  run_cmd: "cd /absolute/path/to/ROSCO/Examples && python3 04_simple_sim.py"
   clean_cmd: "cd /absolute/path/to/ROSCO/rosco/controller/build && make clean"
   install_cmd: "cp /absolute/path/to/ROSCO/rosco/controller/build/libdiscon.so /absolute/path/to/ROSCO/rosco/lib/libdiscon.so"
+  invocation: "0:0:1-20"
 
 build_system:
   type: cmake
@@ -199,7 +222,7 @@ FUNCTION saturate
     inputValue: REAL(DbKi) INTENT(IN)
     minValue: REAL(DbKi) INTENT(IN)
     maxValue: REAL(DbKi) INTENT(IN)
-  Returns: saturate :: REAL(DbKi)
+  Returns: saturate_result :: REAL(DbKi)
   C name: saturate_c
 ```
 
@@ -229,16 +252,18 @@ Expected output:
 ✓ Extraction successful
   Kernel: ./kernel
   State:  ./state
-  Cases:  1
+  Cases:  20
 ```
 
 **Verify state was captured:**
 
 ```bash
-ls kernel/saturate.0.0.1
+ls kernel/saturate.0.0.*
 ```
 
-If "Cases: 0" or no `saturate.0.0.1` file, see the Troubleshooting section.
+You should see 20 state files (`saturate.0.0.1` through `saturate.0.0.20`), one per captured invocation. The invocation range is controlled by `kgen.invocation` in `vit.yaml` (default: `0:0:1-20`, meaning MPI rank 0, thread 0, invocations 1-20).
+
+If "Cases: 0" or no state files, see the Troubleshooting section.
 
 ### Step 8: Write the C++ Translation
 
@@ -271,8 +296,26 @@ Setting up C++ verification in kernel/...
   Modified 10 files
 
 Running verification...
-✓ VERIFICATION PASSED: 1/1 cases
+
+✓ VERIFICATION PASSED: 40/40 passed
 ```
+
+The 20 captured invocations produce 40 verification points (each invocation checks both input and output state). All 40 must pass for verification to succeed.
+
+If some cases contain NaN reference data (from uninitialized struct fields during initialization calls), VIT classifies them as "skipped" rather than "failed". In that case the output includes a skip note: `✓ VERIFICATION PASSED: 40/40 passed (2 skipped: NaN reference data)`. See the Architecture Notes for details on NaN-safe verification.
+
+### Shortcut: `vit run`
+
+Steps 9 and 10 can be combined using `vit run`, which runs the full pipeline (verify + integrate) in one command:
+
+```bash
+vit run saturate saturate.cpp \
+    -f rosco/controller/src/Functions.f90 \
+    --kernel-dir kernel/ \
+    --apply
+```
+
+Omit `--apply` to preview the integration plan without modifying files. Use `--skip-verify` to skip the verification step (not recommended for production use).
 
 ### Step 10: Generate and Apply Integration Plan
 
@@ -324,22 +367,19 @@ cd rosco/controller/build
 rm -rf *
 cmake .. -DCMAKE_INSTALL_PREFIX=install
 cmake --build .
-cmake --install .
+cp libdiscon.so ../../lib/libdiscon.so
 cd ../../..
 
-# Copy to where simulation loads it
-cp rosco/controller/build/libdiscon.so rosco/lib/libdiscon.so
-
-# Run simulation
+# Run simulation and capture output
 cd Examples
-conda run -p /path/to/envs/rosco python 04_simple_sim.py
+python3 04_simple_sim.py > ../integrated_output.txt 2>&1
 cd ..
 ```
 
 Compare against baseline:
 
 ```bash
-diff baseline_output.txt Examples/04_simple_sim_results.txt
+diff baseline_output.txt integrated_output.txt
 ```
 
 **Empty diff = success.** The simulation output is byte-for-byte identical to the original Fortran.
@@ -373,18 +413,13 @@ diff baseline_output.txt Examples/04_simple_sim_results.txt
 
 ### Kernel build fails: "c: No such file or directory"
 
-KGen's Makefile uses `${FC_0}` and `${FC_FLAGS_SET_0}` but doesn't define them. VIT patches these automatically. If you see this error, the Makefile patcher didn't run — ensure you're using the latest VIT.
+KGen's Makefile uses `${FC_0}` and `${FC_FLAGS_SET_0}` but doesn't define them. VIT patches these automatically during `vit verify`. If you see this error, ensure you're using the latest VIT.
 
 ### Kernel build fails: ROSCO_Types.f90 "Invalid character in name"
 
-KGen sometimes generates multi-line `USE kgen_utils_mod, ONLY:` statements with Fortran continuation lines (`&`). VIT's fixer must remove the ONLY clause **and** all continuation lines. This is fixed in the latest `kernel_verify.py`. If you hit this on an existing kernel:
+KGen sometimes generates multi-line `USE kgen_utils_mod, ONLY:` statements with Fortran continuation lines (`&`). VIT automatically fixes these during `vit verify` by removing the ONLY clause and all continuation lines (handled by `_fix_kgen_utils_mod_only()` in `kernel_verify.py`).
 
-```bash
-# Find the orphaned continuation line
-grep -n "&CHECK_IDENTICAL\|&kgen_" kernel/ROSCO_Types.f90
-# Delete it (replace N with the line number)
-sed -i 'Nd' kernel/ROSCO_Types.f90
-```
+If you encounter this error, ensure you are using the latest VIT. Running `vit verify` again on a fresh kernel should fix it automatically.
 
 ### Verification reports 0/0 cases
 
@@ -426,11 +461,13 @@ KGen uses strace to discover compiler flags. Common causes:
 | Command | Purpose | Key flags |
 |---------|---------|-----------|
 | `vit init` | Create `vit.yaml` | `--name`, `--source-dir`, `--build-cmd`, `--run-cmd` |
-| `vit parse <func>` | Parse function signature | `-f <definition_file>` |
 | `vit find <func>` | Find call sites in source tree | `--source-dir` |
-| `vit extract <func>` | KGen extraction + state capture | `-f <call_site_file>`, `-l <line>` |
+| `vit parse <func>` | Parse function signature | `-f <definition_file>` |
+| `vit extract <func>` | KGen extraction + state capture | `-f <call_site_file>`, `-l <line>`, `--dry-run` |
+| `vit interface <func>` | Generate Fortran↔C interface files | `-f <definition_file>`, `-o <output_dir>` |
 | `vit verify <func> <cpp>` | Verify C++ against captured state | `-f <definition_file>`, `--kernel-dir` |
-| `vit integrate <func> <cpp>` | Generate/apply integration patches | `-f <definition_file>`, `--apply` |
+| `vit integrate <func> <cpp>` | Generate/apply integration patches | `-f <definition_file>`, `--apply`, `--dry-run` |
+| `vit run <func> <cpp>` | Full pipeline (verify + integrate) | `-f <definition_file>`, `--kernel-dir`, `--skip-verify`, `--apply` |
 | `vit status` | Show translation status | |
 
 **Important distinction:** `extract` takes the file with the **call site**. `parse`, `verify`, and `integrate` take the file with the function **definition**.
@@ -457,10 +494,27 @@ Given a function signature and kind aliases, the `extern "C"` wrapper, `ISO_C_BI
 
 3. **The result:** If verification passes, your C++ produces the exact same output as the original Fortran for every captured invocation, within the specified tolerance (default: 1E-14).
 
+### NaN-Safe Verification
+
+KGen captures state for every call to the target function within the enclosing routine, not just the pragma'd call site. Some invocations occur during initialization where struct fields are uninitialized, containing heap/stack residue that may be NaN. This causes two problems:
+
+1. **IEEE 754 NaN != NaN.** Standard floating-point comparison reports NaN as not equal to itself. When both the computed and reference values are NaN (from the same uninitialized field), KGen reports a failure even though the code is correct.
+
+2. **Non-deterministic results across runs.** The NaN pattern in uninitialized memory varies between runs (due to ASLR, allocator behavior, stack depth). A field might be NaN in one run but a valid float in another, causing verification to pass sometimes and fail other times.
+
+VIT solves this with two patches applied during `vit verify`:
+
+- **`verboseLevel=100`**: Forces KGen to print per-field comparison details. At the default verbosity, "Difference is NaN" lines are suppressed, making it impossible to detect NaN cases programmatically.
+
+- **NaN==NaN guard**: Extends each field comparison from `IF (var%X == kgenref_var%X)` to also accept the case where both sides are NaN, using the IEEE 754 property that `x /= x` is true only for NaN. For integer fields, the guard is harmlessly always-false.
+
+Cases where all differences are NaN are classified as "skipped" in the verification summary rather than "failed". At least one valid (non-NaN) case must pass for verification to succeed overall.
+
 ### What VIT Patches in the Kernel
 
 When you run `vit verify`, VIT modifies the KGen kernel directory:
 
-- **Makefile:** Adds `FC_0`/`FC_FLAGS_SET_0` definitions, C++ compilation rule, adds `.o` to `ALL_OBJS`, adds `-lstdc++`
-- **Fortran files:** Fixes `USE kgen_utils_mod, ONLY:` → `USE kgen_utils_mod`, adds `USE ISO_C_BINDING` before `IMPLICIT NONE`, inserts interface block above `CONTAINS`, replaces function body with C-calling wrapper
-- **New files:** `saturate_impl.hpp` (your C++ code), `saturate_cpp.cpp` (extern "C" wrapper)
+- **Makefile:** Adds `FC_0`/`FC_FLAGS_SET_0` definitions, C++ compilation rule, adds `.o` to `ALL_OBJS`, adds `-lstdc++`, ensures `kernel.exe` gets execute permission after linking
+- **Fortran files — structural:** Fixes `USE kgen_utils_mod, ONLY:` → `USE kgen_utils_mod` (including multi-line continuation cleanup), adds `USE ISO_C_BINDING` before `IMPLICIT NONE`, inserts interface block above `CONTAINS`, replaces function body with C-calling wrapper
+- **Fortran files — verification correctness:** Sets `verboseLevel=100` so per-field comparison output is visible, patches NaN comparisons with IEEE 754 guards so NaN==NaN is treated as IDENTICAL
+- **New files:** `saturate_impl.hpp` (your C++ code copied in), `saturate_cpp.cpp` (extern "C" wrapper)
