@@ -355,7 +355,8 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
 
 def _patch_nan_comparisons(content: str) -> str:
     """
-    Patch KGen-generated verification code to treat NaN==NaN as IDENTICAL.
+    Patch KGen-generated verification code to treat NaN==NaN as IDENTICAL,
+    with a diagnostic message distinguishing NaN matches from real matches.
 
     KGen generates per-field comparisons like:
         IF (var%ptfmtdz == kgenref_var%ptfmtdz) THEN
@@ -370,21 +371,31 @@ def _patch_nan_comparisons(content: str) -> str:
     depth, allocator behavior), causing non-deterministic results.
 
     Fix: extend the equality check so that if BOTH sides are NaN, the
-    comparison still enters the IDENTICAL branch:
+    comparison still enters the IDENTICAL branch, and print a diagnostic
+    so NaN matches are distinguishable from real matches:
 
         IF ((var%X == kgenref_var%X) .OR.
             ((var%X /= var%X) .AND. (kgenref_var%X /= kgenref_var%X))) THEN
+            IF (var%X /= var%X) WRITE(*, *) "...is IDENTICAL (both NaN, uninitialized)."
 
     The IEEE 754 property x /= x is true ONLY for NaN. For integers,
-    x /= x is always false, so the added clause is harmlessly dead code
-    for non-real types.
+    x /= x is always false, so both the guard clause and the diagnostic
+    WRITE are harmlessly dead code for non-real types.
     """
-    # Match KGen's generated comparison pattern:
-    #   IF (var%FIELD == kgenref_var%FIELD) THEN
-    # Capture the two operands to build the NaN guard.
+    def _nan_guard(m):
+        var = m.group(1)      # e.g. var%ptfmtdz
+        field = m.group(2)    # e.g. ptfmtdz
+        ref = m.group(3)      # e.g. kgenref_var%ptfmtdz
+        return (
+            f'IF (({var} == {ref}) .OR. '
+            f'(({var} /= {var}) .AND. ({ref} /= {ref}))) THEN\n'
+            f'        IF ({var} /= {var}) '
+            f'WRITE(*, *) "localvar%{field} is IDENTICAL (both NaN, uninitialized)."'
+        )
+
     content = re.sub(
-        r'IF\s*\(\s*(var%\w+)\s*==\s*(kgenref_var%\w+)\s*\)\s*THEN',
-        r'IF ((\1 == \2) .OR. ((\1 /= \1) .AND. (\2 /= \2))) THEN',
+        r'IF\s*\(\s*(var%(\w+))\s*==\s*(kgenref_var%\w+)\s*\)\s*THEN',
+        _nan_guard,
         content,
     )
     return content
