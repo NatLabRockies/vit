@@ -7,6 +7,12 @@ Given a parsed Fortran function signature, generates:
 3. Fortran wrapper function that replaces the original
 
 This is NOT an LLM task — the mapping is fully mechanical.
+
+Handles derived types and assumed-shape arrays:
+- Derived types that are not BIND(C)-compatible are "passthrough" args:
+  accepted by the Fortran wrapper but NOT forwarded to the C function.
+- Assumed-shape arrays (DIMENSION(:)) become assumed-size (*) in the
+  BIND(C) interface, with a synthetic size parameter inserted.
 """
 
 from pathlib import Path
@@ -14,6 +20,12 @@ from typing import Optional
 
 from .fortran_parser import FortranSignature, SubprogramKind, IntentKind, FortranArg
 from .type_map import get_type_mapping, TypeMapping
+
+
+def _is_passthrough(arg: FortranArg, kind_aliases: Optional[dict] = None) -> bool:
+    """Check if an argument is a passthrough (non-C-compatible derived type)."""
+    mapping = get_type_mapping(arg.fortran_type, kind_aliases)
+    return mapping.is_derived and not mapping.is_c_compatible
 
 
 def generate_cpp_wrapper(sig: FortranSignature, cpp_impl_file: str,
@@ -60,7 +72,7 @@ def generate_cpp_wrapper(sig: FortranSignature, cpp_impl_file: str,
         ret_mapping = _get_return_type_mapping(sig, kind_aliases)
         ret_c_type = ret_mapping.c_type
 
-        # Build parameter list
+        # Build parameter list (skips passthrough, adds size params for arrays)
         params = _build_c_params(sig, kind_aliases)
         param_str = ", ".join(f"{p[0]} {p[1]}" for p in params)
 
@@ -98,9 +110,15 @@ def generate_fortran_interface_block(sig: FortranSignature,
 
     This goes inside the module that contains the original function,
     ABOVE the CONTAINS statement.
+
+    Passthrough args (non-C-compatible derived types) are excluded.
+    Assumed-shape arrays become assumed-size (*) with size parameters.
     """
     lines = []
     c_func_name = sig.c_func_name
+
+    # Build the list of C-interface args (excluding passthrough)
+    c_args = _build_interface_args(sig, kind_aliases)
 
     lines.append(f"    ! Auto-generated interface for C++ implementation of {sig.name}")
     lines.append(f"    INTERFACE")
@@ -108,46 +126,30 @@ def generate_fortran_interface_block(sig: FortranSignature,
     if sig.is_function:
         ret_mapping = _get_return_type_mapping(sig, kind_aliases)
 
-        # Build arg list
-        arg_names = [a.name for a in sig.args]
+        # Build arg name list for interface declaration
+        arg_names = [a["iface_name"] for a in c_args]
         arg_str = ", ".join(arg_names)
 
         lines.append(f"        FUNCTION {c_func_name}({arg_str}) BIND(C, NAME='{c_func_name}')")
         lines.append(f"            USE ISO_C_BINDING")
 
         # Declare each argument
-        for arg in sig.args:
-            mapping = get_type_mapping(arg.fortran_type, kind_aliases)
-            if arg.is_array:
-                # Arrays are passed by reference in C interop
-                lines.append(f"            {mapping.iso_c_type}, INTENT({arg.intent.value or 'IN'}) :: {arg.name}{_format_dims(arg)}")
-            else:
-                # Scalars passed by VALUE
-                lines.append(f"            {mapping.iso_c_type}, VALUE :: {arg.name}")
+        for a in c_args:
+            lines.append(f"            {a['iface_decl']}")
 
         # Declare return type
         lines.append(f"            {ret_mapping.iso_c_type} :: {c_func_name}")
         lines.append(f"        END FUNCTION {c_func_name}")
 
     else:  # Subroutine
-        arg_names = [a.name for a in sig.args]
+        arg_names = [a["iface_name"] for a in c_args]
         arg_str = ", ".join(arg_names)
 
         lines.append(f"        SUBROUTINE {c_func_name}({arg_str}) BIND(C, NAME='{c_func_name}')")
         lines.append(f"            USE ISO_C_BINDING")
 
-        for arg in sig.args:
-            mapping = get_type_mapping(arg.fortran_type, kind_aliases)
-            if arg.is_array:
-                intent_str = arg.intent.value or "INOUT"
-                lines.append(f"            {mapping.iso_c_type}, INTENT({intent_str}) :: {arg.name}{_format_dims(arg)}")
-            else:
-                if arg.intent in (IntentKind.OUT, IntentKind.INOUT):
-                    # OUT/INOUT args can't be VALUE
-                    intent_str = arg.intent.value
-                    lines.append(f"            {mapping.iso_c_type}, INTENT({intent_str}) :: {arg.name}")
-                else:
-                    lines.append(f"            {mapping.iso_c_type}, VALUE :: {arg.name}")
+        for a in c_args:
+            lines.append(f"            {a['iface_decl']}")
 
         lines.append(f"        END SUBROUTINE {c_func_name}")
 
@@ -162,56 +164,51 @@ def generate_fortran_wrapper(sig: FortranSignature,
     Generate the Fortran wrapper function that replaces the original.
 
     The wrapper:
-    1. Has the same signature as the original function
-    2. Converts arguments from project kinds to C kinds
-    3. Calls the C function via the interface
-    4. Converts the result back to the project kind
+    1. Has the same signature as the original function (ALL args, including passthrough)
+    2. Adds USE statements for modules providing derived types
+    3. Converts arguments from project kinds to C kinds
+    4. Calls the C function via the interface (excluding passthrough args)
+    5. Converts the result back to the project kind
     """
     lines = []
     c_func_name = sig.c_func_name
 
     if sig.is_function:
-        # Function header
+        # Function header — includes ALL args
         arg_str = ", ".join(a.name for a in sig.args)
         result_name = sig.result_name or f"{sig.name}_result"
         lines.append(f"    FUNCTION {sig.name}({arg_str}) RESULT({result_name})")
         lines.append(f"        USE ISO_C_BINDING")
+
+        # Add USE statements for modules providing derived types
+        for use_stmt in _get_use_statements_for_derived_types(sig):
+            lines.append(f"        {use_stmt}")
+
         lines.append(f"        IMPLICIT NONE")
 
         # Declare arguments with original types
         for arg in sig.args:
             intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ", INTENT(IN)"
+            optional_str = ", OPTIONAL" if arg.is_optional else ""
             if arg.is_array:
-                lines.append(f"        {arg.fortran_type}{intent_str} :: {arg.name}{_format_dims(arg)}")
+                lines.append(f"        {arg.fortran_type}{intent_str}{optional_str} :: {arg.name}{_format_dims(arg)}")
             else:
-                lines.append(f"        {arg.fortran_type}{intent_str} :: {arg.name}")
+                lines.append(f"        {arg.fortran_type}{intent_str}{optional_str} :: {arg.name}")
 
         # Declare result with original type
         ret_type = sig.result_type or sig.args[0].fortran_type if sig.args else "REAL(8)"
         lines.append(f"        {ret_type} :: {result_name}")
 
-        # Build the C function call with type conversions
+        # Build the C function call (only non-passthrough args, with size params for arrays)
         ret_mapping = _get_return_type_mapping(sig, kind_aliases)
-        converted_args = []
-        for arg in sig.args:
-            mapping = get_type_mapping(arg.fortran_type, kind_aliases)
-            if arg.is_array:
-                # Arrays don't need conversion — they're passed by reference
-                converted_args.append(arg.name)
-            elif mapping.c_kind != mapping.fortran_kind and mapping.fortran_kind:
-                # Need to convert from project kind to C kind
-                converted_args.append(f"REAL({arg.name}, {mapping.c_kind})")
-            else:
-                converted_args.append(arg.name)
-
-        call_str = ", ".join(converted_args)
+        call_args = _build_wrapper_call_args(sig, kind_aliases)
+        call_str = ", ".join(call_args)
 
         # Convert result back to project kind if needed
         c_call = f"{c_func_name}({call_str})"
 
         # Get the original kind name for the result (preserve case from source)
         ret_type_stripped = ret_type.strip()
-        ret_type_upper = ret_type_stripped.upper()
         if "(" in ret_type_stripped:
             ret_kind = ret_type_stripped[ret_type_stripped.index("(") + 1:ret_type_stripped.rindex(")")]
         else:
@@ -228,30 +225,24 @@ def generate_fortran_wrapper(sig: FortranSignature,
         arg_str = ", ".join(a.name for a in sig.args)
         lines.append(f"    SUBROUTINE {sig.name}({arg_str})")
         lines.append(f"        USE ISO_C_BINDING")
+
+        # Add USE statements for modules providing derived types
+        for use_stmt in _get_use_statements_for_derived_types(sig):
+            lines.append(f"        {use_stmt}")
+
         lines.append(f"        IMPLICIT NONE")
 
         for arg in sig.args:
             intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ""
+            optional_str = ", OPTIONAL" if arg.is_optional else ""
             if arg.is_array:
-                lines.append(f"        {arg.fortran_type}{intent_str} :: {arg.name}{_format_dims(arg)}")
+                lines.append(f"        {arg.fortran_type}{intent_str}{optional_str} :: {arg.name}{_format_dims(arg)}")
             else:
-                lines.append(f"        {arg.fortran_type}{intent_str} :: {arg.name}")
+                lines.append(f"        {arg.fortran_type}{intent_str}{optional_str} :: {arg.name}")
 
-        # Build call with conversions
-        converted_args = []
-        for arg in sig.args:
-            mapping = get_type_mapping(arg.fortran_type, kind_aliases)
-            if arg.is_array:
-                converted_args.append(arg.name)
-            elif arg.intent in (IntentKind.OUT, IntentKind.INOUT):
-                converted_args.append(arg.name)
-            elif mapping.c_kind != mapping.fortran_kind and mapping.fortran_kind:
-                base = mapping.iso_c_type.split("(")[0]
-                converted_args.append(f"{base}({arg.name}, {mapping.c_kind})")
-            else:
-                converted_args.append(arg.name)
-
-        call_str = ", ".join(converted_args)
+        # Build call with conversions (only non-passthrough args)
+        call_args = _build_wrapper_call_args(sig, kind_aliases)
+        call_str = ", ".join(call_args)
         lines.append(f"        CALL {c_func_name}({call_str})")
         lines.append(f"    END SUBROUTINE {sig.name}")
 
@@ -272,15 +263,152 @@ def _get_return_type_mapping(sig: FortranSignature,
 
 def _build_c_params(sig: FortranSignature,
                     kind_aliases: Optional[dict] = None) -> list[tuple[str, str]]:
-    """Build the C parameter list: [(c_type, param_name), ...]"""
+    """
+    Build the C parameter list: [(c_type, param_name), ...]
+
+    Skips passthrough args. Adds size params for assumed-shape arrays.
+    """
     params = []
     for arg in sig.args:
         mapping = get_type_mapping(arg.fortran_type, kind_aliases)
+
+        # Skip passthrough args
+        if mapping.is_derived and not mapping.is_c_compatible:
+            continue
+
         if arg.is_array:
             params.append((f"{mapping.c_type}*", arg.name))
+            # Add size parameter for assumed-shape arrays
+            if arg.is_assumed_shape:
+                params.append(("int", f"n_{arg.name}"))
         else:
             params.append((mapping.c_type, arg.name))
     return params
+
+
+def _build_interface_args(sig: FortranSignature,
+                          kind_aliases: Optional[dict] = None) -> list[dict]:
+    """
+    Build the interface argument list for the BIND(C) interface.
+
+    Returns list of dicts with:
+      - iface_name: arg name in the interface
+      - iface_decl: full Fortran declaration line
+
+    Skips passthrough args. Adds size params for assumed-shape arrays.
+    Converts assumed-shape (:) to assumed-size (*).
+    """
+    args = []
+    for arg in sig.args:
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases)
+
+        # Skip passthrough args
+        if mapping.is_derived and not mapping.is_c_compatible:
+            continue
+
+        if arg.is_array:
+            intent_str = arg.intent.value or "IN"
+            if sig.is_subroutine and not arg.intent.value:
+                intent_str = "INOUT"
+            # Use assumed-size (*) for BIND(C) interface
+            args.append({
+                "iface_name": arg.name,
+                "iface_decl": f"{mapping.iso_c_type}, INTENT({intent_str}) :: {arg.name}(*)",
+            })
+            # Add size parameter for assumed-shape arrays
+            if arg.is_assumed_shape:
+                args.append({
+                    "iface_name": f"n_{arg.name}",
+                    "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}",
+                })
+        else:
+            if sig.is_subroutine and arg.intent in (IntentKind.OUT, IntentKind.INOUT):
+                # OUT/INOUT args can't be VALUE
+                intent_str = arg.intent.value
+                args.append({
+                    "iface_name": arg.name,
+                    "iface_decl": f"{mapping.iso_c_type}, INTENT({intent_str}) :: {arg.name}",
+                })
+            else:
+                # Scalars passed by VALUE
+                args.append({
+                    "iface_name": arg.name,
+                    "iface_decl": f"{mapping.iso_c_type}, VALUE :: {arg.name}",
+                })
+
+    return args
+
+
+def _build_wrapper_call_args(sig: FortranSignature,
+                             kind_aliases: Optional[dict] = None) -> list[str]:
+    """
+    Build the argument list for the C function call inside the Fortran wrapper.
+
+    Skips passthrough args. Adds SIZE(array) for assumed-shape arrays.
+    Handles type conversions for kind mismatches.
+    """
+    call_args = []
+    for arg in sig.args:
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases)
+
+        # Skip passthrough args
+        if mapping.is_derived and not mapping.is_c_compatible:
+            continue
+
+        if arg.is_array:
+            # Arrays are passed by reference
+            call_args.append(arg.name)
+            # Pass SIZE for assumed-shape arrays
+            if arg.is_assumed_shape:
+                call_args.append(f"SIZE({arg.name})")
+        elif sig.is_subroutine and arg.intent in (IntentKind.OUT, IntentKind.INOUT):
+            call_args.append(arg.name)
+        elif mapping.c_kind != mapping.fortran_kind and mapping.fortran_kind:
+            # Need to convert from project kind to C kind
+            if mapping.iso_c_type.startswith("REAL"):
+                call_args.append(f"REAL({arg.name}, {mapping.c_kind})")
+            else:
+                base = mapping.iso_c_type.split("(")[0]
+                call_args.append(f"{base}({arg.name}, {mapping.c_kind})")
+        else:
+            call_args.append(arg.name)
+
+    return call_args
+
+
+def _get_use_statements_for_derived_types(sig: FortranSignature) -> list[str]:
+    """
+    Get USE statements needed for derived type declarations in the wrapper.
+
+    Searches the function's captured USE statements for modules that
+    provide the derived types used in passthrough args.
+    """
+    use_stmts = []
+    # Collect derived type names that need USE statements
+    derived_type_names = set()
+    for arg in sig.args:
+        if arg.is_derived_type:
+            derived_type_names.add(arg.derived_type_name.upper())
+
+    if not derived_type_names:
+        return use_stmts
+
+    # Search the function's USE statements for ones that import these types
+    for use_stmt in sig.use_statements:
+        use_upper = use_stmt.upper()
+        # Check if this USE imports any of our derived types
+        for type_name in derived_type_names:
+            if type_name in use_upper:
+                use_stmts.append(use_stmt)
+                break
+        else:
+            # Also include "USE Module" without ONLY if the module name
+            # could plausibly provide the type (heuristic)
+            if "ONLY" not in use_upper and "PRECISION" not in use_upper:
+                # Don't add generic USE statements unless they match a type pattern
+                pass
+
+    return use_stmts
 
 
 def _format_dims(arg: FortranArg) -> str:

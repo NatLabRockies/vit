@@ -31,11 +31,28 @@ class IntentKind(Enum):
 class FortranArg:
     """A single argument to a Fortran function/subroutine."""
     name: str
-    fortran_type: str        # e.g., "REAL(ReKi)"
+    fortran_type: str        # e.g., "REAL(ReKi)" or "TYPE(ErrorVariables)"
     intent: IntentKind = IntentKind.NONE
     is_array: bool = False
     array_dims: Optional[str] = None  # e.g., "(:)" or "(3,3)"
     is_optional: bool = False
+
+    @property
+    def is_derived_type(self) -> bool:
+        """True if this argument is a derived type (TYPE(...))."""
+        return self.fortran_type.upper().startswith("TYPE(")
+
+    @property
+    def derived_type_name(self) -> Optional[str]:
+        """Extract the type name from TYPE(Foo) → 'Foo', or None if not derived."""
+        if self.is_derived_type:
+            return self.fortran_type[5:-1].strip()
+        return None
+
+    @property
+    def is_assumed_shape(self) -> bool:
+        """True if this is an assumed-shape array (has ':' in dims)."""
+        return self.is_array and self.array_dims is not None and ":" in self.array_dims
 
 
 @dataclass
@@ -49,6 +66,7 @@ class FortranSignature:
     source_file: Optional[str] = None       # Where it was found
     module_name: Optional[str] = None       # Enclosing module, if any
     line_number: Optional[int] = None       # Line number in source
+    use_statements: list[str] = field(default_factory=list)  # USE lines from function body
 
     @property
     def c_func_name(self) -> str:
@@ -165,6 +183,7 @@ def parse_signature_from_source(source: str, function_name: str) -> FortranSigna
     # Scan from the line after the signature to END FUNCTION/SUBROUTINE
     end_pattern = re.compile(rf'\bEND\s+(FUNCTION|SUBROUTINE)\b', re.IGNORECASE)
     contains_pattern = re.compile(r'\bCONTAINS\b', re.IGNORECASE)
+    use_statements = []
 
     for i in range(sig_line_num + 1, len(lines)):
         line = lines[i].strip()
@@ -181,6 +200,10 @@ def parse_signature_from_source(source: str, function_name: str) -> FortranSigna
         # Stop at END FUNCTION/SUBROUTINE or CONTAINS
         if end_pattern.search(line_upper) or contains_pattern.search(line_upper):
             break
+
+        # Capture USE statements from the function body
+        if line_upper.startswith("USE "):
+            use_statements.append(lines[i].strip())
 
         # Try to parse as a type declaration
         decl = _parse_type_declaration(line, line_upper, names_to_find)
@@ -217,6 +240,7 @@ def parse_signature_from_source(source: str, function_name: str) -> FortranSigna
         result_name=result_name,
         result_type=result_type,
         line_number=sig_line_num + 1,  # 1-indexed
+        use_statements=use_statements,
     )
 
 
@@ -235,6 +259,7 @@ def _parse_type_declaration(line: str, line_upper: str, names_to_find: set):
         r'^(LOGICAL(?:\s*\([^)]*\))?)',
         r'^(CHARACTER(?:\s*\([^)]*\))?)',
         r'^(COMPLEX(?:\s*\([^)]*\))?)',
+        r'^(TYPE\s*\([^)]*\))',
     ]
 
     type_str = None

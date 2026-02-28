@@ -20,6 +20,7 @@ from .fortran_parser import FortranSignature
 from .interface_gen import (
     generate_fortran_interface_block,
     generate_fortran_wrapper,
+    _build_c_params,
 )
 
 
@@ -217,6 +218,9 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
                               kind_aliases: Optional[dict] = None) -> str:
     """
     Generate a standalone C++ file with implementation + extern "C" wrapper.
+
+    Skips passthrough args (non-C-compatible derived types).
+    Adds size parameters for assumed-shape arrays.
     """
     from .type_map import get_type_mapping
 
@@ -234,23 +238,16 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
     lines.append(impl_content.rstrip())
     lines.append("")
 
-    # Generate extern "C" wrapper
+    # Generate extern "C" wrapper using shared param builder
     lines.append("// --- Fortran-callable C wrapper ---")
     c_func_name = sig.c_func_name
+    c_params = _build_c_params(sig, kind_aliases)
+
+    param_str = ", ".join(f"{p[0]} {p[1]}" for p in c_params)
+    arg_str = ", ".join(p[1] for p in c_params)
 
     if sig.is_function:
         ret_mapping = get_type_mapping(sig.result_type or "REAL(8)", kind_aliases)
-
-        params = []
-        for arg in sig.args:
-            mapping = get_type_mapping(arg.fortran_type, kind_aliases)
-            if arg.is_array:
-                params.append(f"{mapping.c_type}* {arg.name}")
-            else:
-                params.append(f"{mapping.c_type} {arg.name}")
-
-        param_str = ", ".join(params)
-        arg_str = ", ".join(a.name for a in sig.args)
 
         lines.append(f'extern "C" {{')
         lines.append(f"    {ret_mapping.c_type} {c_func_name}({param_str}) {{")
@@ -258,17 +255,6 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
         lines.append(f"    }}")
         lines.append(f"}}")
     else:
-        params = []
-        for arg in sig.args:
-            mapping = get_type_mapping(arg.fortran_type, kind_aliases)
-            if arg.is_array:
-                params.append(f"{mapping.c_type}* {arg.name}")
-            else:
-                params.append(f"{mapping.c_type} {arg.name}")
-
-        param_str = ", ".join(params)
-        arg_str = ", ".join(a.name for a in sig.args)
-
         lines.append(f'extern "C" {{')
         lines.append(f"    void {c_func_name}({param_str}) {{")
         lines.append(f"        {sig.name.lower()}({arg_str});")

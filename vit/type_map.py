@@ -12,12 +12,14 @@ from typing import Optional
 @dataclass
 class TypeMapping:
     """A complete mapping between Fortran and C/C++ types."""
-    fortran_type: str          # e.g., "REAL(ReKi)"
+    fortran_type: str          # e.g., "REAL(ReKi)" or "TYPE(ErrorVariables)"
     fortran_kind: str          # e.g., "ReKi"
     c_kind: str                # e.g., "C_DOUBLE"
-    c_type: str                # e.g., "double"
-    iso_c_type: str            # e.g., "REAL(C_DOUBLE)"
+    c_type: str                # e.g., "double" or "ErrorVariables"
+    iso_c_type: str            # e.g., "REAL(C_DOUBLE)" or "TYPE(C_PTR)"
     byte_size: int             # e.g., 8
+    is_derived: bool = False   # True for TYPE(...) args
+    is_c_compatible: bool = True  # False → passthrough (not included in C interface)
 
 
 # Standard Fortran kind → C mappings
@@ -83,6 +85,10 @@ def normalize_fortran_type(type_str: str, kind_aliases: Optional[dict] = None) -
     aliases = kind_aliases or DEFAULT_KIND_ALIASES
     t = type_str.strip().upper()
 
+    # Derived types pass through unchanged (no kind resolution needed)
+    if t.startswith("TYPE("):
+        return t
+
     # Handle "kind=" prefix: REAL(KIND=8) → REAL(8)
     t = t.replace("KIND=", "")
 
@@ -102,21 +108,47 @@ def normalize_fortran_type(type_str: str, kind_aliases: Optional[dict] = None) -
     return t
 
 
-def get_type_mapping(fortran_type: str, kind_aliases: Optional[dict] = None) -> TypeMapping:
+def get_type_mapping(fortran_type: str, kind_aliases: Optional[dict] = None,
+                     derived_types: Optional[dict] = None) -> TypeMapping:
     """
     Get the C/C++ type mapping for a Fortran type.
 
     Args:
-        fortran_type: Fortran type string, e.g., "REAL(ReKi)", "INTEGER(IntKi)"
+        fortran_type: Fortran type string, e.g., "REAL(ReKi)", "INTEGER(IntKi)",
+                      or "TYPE(ErrorVariables)"
         kind_aliases: Project-specific kind name → numeric kind mapping
+        derived_types: Registry of known derived types (name → DerivedTypeInfo).
+                       If provided and the type is TYPE(...), uses this to
+                       determine C compatibility. If not provided or type not
+                       found, defaults to passthrough (non-C-compatible).
 
     Returns:
         TypeMapping with all the C/ISO_C_BINDING equivalents
 
     Raises:
-        ValueError if the type cannot be mapped
+        ValueError if the type cannot be mapped (primitive types only)
     """
     normalized = normalize_fortran_type(fortran_type, kind_aliases)
+
+    # Handle derived types: TYPE(...)
+    if normalized.startswith("TYPE("):
+        type_name = normalized[5:-1].strip()
+        if derived_types and type_name.upper() in {k.upper() for k in derived_types}:
+            # Look up case-insensitively
+            info = next(v for k, v in derived_types.items()
+                        if k.upper() == type_name.upper())
+            return get_derived_type_mapping(fortran_type.strip(), info)
+        # Unknown derived type → passthrough
+        return TypeMapping(
+            fortran_type=fortran_type.strip(),
+            fortran_kind="",
+            c_kind="",
+            c_type=type_name,
+            iso_c_type="TYPE(C_PTR)",
+            byte_size=0,
+            is_derived=True,
+            is_c_compatible=False,
+        )
 
     if normalized in FORTRAN_TO_C:
         mapping = FORTRAN_TO_C[normalized]
@@ -134,4 +166,27 @@ def get_type_mapping(fortran_type: str, kind_aliases: Optional[dict] = None) -> 
         f"Cannot map Fortran type '{fortran_type}' (normalized: '{normalized}'). "
         f"Known types: {list(FORTRAN_TO_C.keys())}. "
         f"Add a kind_alias mapping if this is a project-specific kind."
+    )
+
+
+def get_derived_type_mapping(fortran_type: str, type_info) -> TypeMapping:
+    """
+    Create a TypeMapping for a parsed derived type.
+
+    Args:
+        fortran_type: Original Fortran type string, e.g., "TYPE(ErrorVariables)"
+        type_info: DerivedTypeInfo from derived_type_parser
+
+    Returns:
+        TypeMapping with is_derived=True and is_c_compatible set appropriately
+    """
+    return TypeMapping(
+        fortran_type=fortran_type,
+        fortran_kind="",
+        c_kind="",
+        c_type=type_info.name,
+        iso_c_type="TYPE(C_PTR)",
+        byte_size=0,
+        is_derived=True,
+        is_c_compatible=type_info.is_c_compatible,
     )
