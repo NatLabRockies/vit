@@ -19,6 +19,7 @@ from vit.integrate import (
     apply_integration_plan,
     _generate_standalone_cpp,
     _generate_cmake_patches,
+    _generate_fortran_patches,
 )
 from vit.fortran_parser import (
     parse_signature_from_source,
@@ -197,6 +198,9 @@ class TestGenerateCmakePatches:
     def test_adds_enable_cxx(self, tmp_path):
         cmake = self._write_cmake(tmp_path,
             "project(ROSCO VERSION 2.9.0 LANGUAGES Fortran C)\n"
+            "set(SOURCES\n"
+            "    src/Functions.f90\n"
+            ")\n"
             "add_library(discon SHARED ${SOURCES})\n"
         )
         patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
@@ -216,11 +220,18 @@ class TestGenerateCmakePatches:
     def test_adds_cpp_source(self, tmp_path):
         cmake = self._write_cmake(tmp_path,
             "project(ROSCO LANGUAGES Fortran C)\n"
+            "set(SOURCES\n"
+            "    src/Functions.f90\n"
+            "    src/Controllers.f90\n"
+            ")\n"
             "add_library(discon SHARED ${SOURCES})\n"
         )
         patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
-        descriptions = [p.description for p in patches]
-        assert any("saturate_cpp.cpp" in d for d in descriptions)
+        cpp_patch = [p for p in patches if "saturate_cpp.cpp" in p.description]
+        assert len(cpp_patch) == 1
+        assert cpp_patch[0].action == "modify"
+        assert cpp_patch[0].original_snippet is not None
+        assert "saturate_cpp.cpp" in cpp_patch[0].replacement_snippet
 
     def test_skips_cpp_source_if_present(self, tmp_path):
         cmake = self._write_cmake(tmp_path,
@@ -235,11 +246,17 @@ class TestGenerateCmakePatches:
     def test_adds_stdc_link(self, tmp_path):
         cmake = self._write_cmake(tmp_path,
             "project(ROSCO LANGUAGES Fortran C)\n"
+            "set(SOURCES\n"
+            "    src/Functions.f90\n"
+            ")\n"
             "add_library(discon SHARED ${SOURCES})\n"
         )
         patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
-        descriptions = [p.description for p in patches]
-        assert any("stdc++" in d for d in descriptions)
+        stdc_patch = [p for p in patches if "stdc++" in p.description]
+        assert len(stdc_patch) == 1
+        assert stdc_patch[0].action == "modify"
+        assert stdc_patch[0].original_snippet is not None
+        assert "target_link_libraries" in stdc_patch[0].replacement_snippet
 
     def test_skips_stdc_if_present(self, tmp_path):
         cmake = self._write_cmake(tmp_path,
@@ -363,6 +380,198 @@ class TestApplyIntegrationPlan:
         result = apply_integration_plan(plan, dry_run=False)
         assert result["success"] is False
         assert len(result["errors"]) > 0
+
+
+# === Multi-function test data ===
+
+TWO_FUNCTION_MODULE = """\
+MODULE Functions
+
+USE Constants
+
+IMPLICIT NONE
+
+CONTAINS
+
+    REAL(8) FUNCTION saturate(inputValue, minValue, maxValue)
+        IMPLICIT NONE
+        REAL(8), INTENT(IN) :: inputValue
+        REAL(8), INTENT(IN) :: minValue
+        REAL(8), INTENT(IN) :: maxValue
+        saturate = MIN(MAX(inputValue, minValue), maxValue)
+    END FUNCTION saturate
+
+    REAL(8) FUNCTION wrap_180(x)
+        IMPLICIT NONE
+        REAL(8), INTENT(IN) :: x
+        wrap_180 = MODULO(x + 180.0d0, 360.0d0) - 180.0d0
+    END FUNCTION wrap_180
+
+END MODULE Functions
+"""
+
+MULTI_SOURCE_CMAKE = """\
+project(ROSCO VERSION 2.9.0 LANGUAGES Fortran C)
+set(SOURCES
+    src/Constants.f90
+    src/Controllers.f90
+    src/Functions.f90
+    src/ExtControl.f90
+)
+add_library(discon SHARED ${SOURCES})
+"""
+
+
+# === Multi-function CMake tests ===
+
+class TestMultiFunctionCmakePatches:
+
+    def _write_cmake(self, tmp_path, content):
+        cmake = tmp_path / "CMakeLists.txt"
+        cmake.write_text(content)
+        return str(cmake)
+
+    def test_first_function_cpp_patch_is_modify(self, tmp_path):
+        cmake = self._write_cmake(tmp_path, MULTI_SOURCE_CMAKE)
+        patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
+        cpp_patch = [p for p in patches if "saturate_cpp.cpp" in p.description]
+        assert len(cpp_patch) == 1
+        assert cpp_patch[0].action == "modify"
+
+    def test_stdc_patch_is_modify(self, tmp_path):
+        cmake = self._write_cmake(tmp_path, MULTI_SOURCE_CMAKE)
+        patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
+        stdc_patch = [p for p in patches if "stdc++" in p.description]
+        assert len(stdc_patch) == 1
+        assert stdc_patch[0].action == "modify"
+
+    def test_sequential_apply_adds_both_cpp_files(self, tmp_path):
+        cmake_path = self._write_cmake(tmp_path, MULTI_SOURCE_CMAKE)
+
+        # Apply first function's patches
+        patches1 = _generate_cmake_patches(cmake_path, "saturate_cpp.cpp", "discon")
+        plan1 = IntegrationPlan("saturate", patches1, "")
+        result1 = apply_integration_plan(plan1)
+        assert result1["success"]
+
+        # Apply second function's patches (re-reads file)
+        patches2 = _generate_cmake_patches(cmake_path, "wrap_180_cpp.cpp", "discon")
+        plan2 = IntegrationPlan("wrap_180", patches2, "")
+        result2 = apply_integration_plan(plan2)
+        assert result2["success"]
+
+        content = (tmp_path / "CMakeLists.txt").read_text()
+        assert "saturate_cpp.cpp" in content
+        assert "wrap_180_cpp.cpp" in content
+
+    def test_second_function_skips_stdc(self, tmp_path):
+        cmake_path = self._write_cmake(tmp_path, MULTI_SOURCE_CMAKE)
+
+        # Apply first function
+        patches1 = _generate_cmake_patches(cmake_path, "saturate_cpp.cpp", "discon")
+        plan1 = IntegrationPlan("saturate", patches1, "")
+        apply_integration_plan(plan1)
+
+        # Second function should not re-add stdc++
+        patches2 = _generate_cmake_patches(cmake_path, "wrap_180_cpp.cpp", "discon")
+        stdc_patches = [p for p in patches2 if "stdc++" in p.description]
+        assert len(stdc_patches) == 0
+
+    def test_second_function_skips_enable_cxx(self, tmp_path):
+        cmake_path = self._write_cmake(tmp_path, MULTI_SOURCE_CMAKE)
+
+        # Apply first function
+        patches1 = _generate_cmake_patches(cmake_path, "saturate_cpp.cpp", "discon")
+        plan1 = IntegrationPlan("saturate", patches1, "")
+        apply_integration_plan(plan1)
+
+        # Second function should not re-add enable_language(CXX)
+        patches2 = _generate_cmake_patches(cmake_path, "wrap_180_cpp.cpp", "discon")
+        cxx_patches = [p for p in patches2 if "CXX" in p.description]
+        assert len(cxx_patches) == 0
+
+    def test_cpp_file_positioned_before_closing_paren(self, tmp_path):
+        cmake_path = self._write_cmake(tmp_path, MULTI_SOURCE_CMAKE)
+        patches = _generate_cmake_patches(cmake_path, "saturate_cpp.cpp", "discon")
+        cpp_patch = [p for p in patches if "saturate_cpp.cpp" in p.description][0]
+
+        # The original snippet should be the last source entry
+        assert "ExtControl.f90" in cpp_patch.original_snippet
+        # The replacement appends the new file after it
+        assert cpp_patch.replacement_snippet.endswith("src/saturate_cpp.cpp")
+
+    def test_no_patch_without_sources_block(self, tmp_path):
+        """If CMakeLists.txt has no set(SOURCES ...) block, no cpp source patch is generated."""
+        cmake = self._write_cmake(tmp_path,
+            "project(ROSCO LANGUAGES Fortran C)\n"
+            "add_library(discon SHARED ${SOURCES})\n"
+        )
+        patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
+        cpp_patches = [p for p in patches if "saturate_cpp.cpp" in p.description]
+        assert len(cpp_patches) == 0
+
+
+# === Multi-function Fortran tests ===
+
+class TestMultiFunctionFortranPatches:
+
+    def test_two_interface_blocks_added(self, tmp_path):
+        f90 = tmp_path / "Functions.f90"
+        f90.write_text(TWO_FUNCTION_MODULE)
+
+        sig1 = parse_signature_from_source(TWO_FUNCTION_MODULE, "saturate")
+        patches1 = _generate_fortran_patches(sig1, str(f90))
+        plan1 = IntegrationPlan("saturate", patches1, "")
+        result1 = apply_integration_plan(plan1)
+        assert result1["success"]
+
+        # Re-read updated content for second function
+        sig2 = parse_signature_from_source(TWO_FUNCTION_MODULE, "wrap_180")
+        patches2 = _generate_fortran_patches(sig2, str(f90))
+        plan2 = IntegrationPlan("wrap_180", patches2, "")
+        result2 = apply_integration_plan(plan2)
+        assert result2["success"]
+
+        content = f90.read_text()
+        assert content.count("INTERFACE") >= 2
+
+    def test_iso_c_binding_not_duplicated(self, tmp_path):
+        f90 = tmp_path / "Functions.f90"
+        f90.write_text(TWO_FUNCTION_MODULE)
+
+        sig1 = parse_signature_from_source(TWO_FUNCTION_MODULE, "saturate")
+        patches1 = _generate_fortran_patches(sig1, str(f90))
+        plan1 = IntegrationPlan("saturate", patches1, "")
+        apply_integration_plan(plan1)
+
+        sig2 = parse_signature_from_source(TWO_FUNCTION_MODULE, "wrap_180")
+        patches2 = _generate_fortran_patches(sig2, str(f90))
+
+        # Second function should not add USE ISO_C_BINDING again
+        iso_patches = [p for p in patches2 if "ISO_C_BINDING" in p.description]
+        assert len(iso_patches) == 0
+
+    def test_both_function_bodies_replaced(self, tmp_path):
+        f90 = tmp_path / "Functions.f90"
+        f90.write_text(TWO_FUNCTION_MODULE)
+
+        sig1 = parse_signature_from_source(TWO_FUNCTION_MODULE, "saturate")
+        patches1 = _generate_fortran_patches(sig1, str(f90))
+        plan1 = IntegrationPlan("saturate", patches1, "")
+        apply_integration_plan(plan1)
+
+        sig2 = parse_signature_from_source(TWO_FUNCTION_MODULE, "wrap_180")
+        patches2 = _generate_fortran_patches(sig2, str(f90))
+        plan2 = IntegrationPlan("wrap_180", patches2, "")
+        apply_integration_plan(plan2)
+
+        content = f90.read_text()
+        # Original function bodies should be replaced with C-calling wrappers
+        assert "saturate_c" in content.lower()
+        assert "wrap_180_c" in content.lower()
+        # Original implementation lines should be gone
+        assert "MIN(MAX(" not in content
+        assert "MODULO(" not in content
 
 
 if __name__ == "__main__":

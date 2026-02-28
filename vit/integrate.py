@@ -370,20 +370,40 @@ def _generate_cmake_patches(cmake_file: str, cpp_source_name: str,
 
     # Add C++ source to target
     if cpp_source_name not in content:
-        patches.append(IntegrationPatch(
-            filepath=cmake_file,
-            description=f"Add {cpp_source_name} to source list",
-            action="insert",
-            content=f"# Add {cpp_source_name} to the source files for target {target_name}",
-        ))
+        sources_match = re.search(
+            r'set\s*\(\s*SOURCES\b(.*?)(^\))',
+            content, re.MULTILINE | re.DOTALL | re.IGNORECASE,
+        )
+        if sources_match:
+            block_body = sources_match.group(1)
+            # Find the last non-blank, non-comment line in the block
+            source_lines = [l for l in block_body.strip().split('\n')
+                            if l.strip() and not l.strip().startswith('#')]
+            if source_lines:
+                last_entry = source_lines[-1]
+                patches.append(IntegrationPatch(
+                    filepath=cmake_file,
+                    description=f"Add {cpp_source_name} to source list",
+                    action="modify",
+                    content="",
+                    original_snippet=last_entry,
+                    replacement_snippet=f"{last_entry}\n    src/{cpp_source_name}",
+                ))
 
     # Link stdc++
     if "stdc++" not in content:
-        patches.append(IntegrationPatch(
-            filepath=cmake_file,
-            description="Link stdc++ library",
-            action="insert",
-            content=f"target_link_libraries({target_name} PRIVATE stdc++)",
-        ))
+        lib_match = re.search(
+            rf'(add_library\s*\(\s*{re.escape(target_name)}\s+SHARED\s+\$\{{SOURCES\}}\s*\))',
+            content,
+        )
+        if lib_match:
+            patches.append(IntegrationPatch(
+                filepath=cmake_file,
+                description="Link stdc++ library",
+                action="modify",
+                content="",
+                original_snippet=lib_match.group(0),
+                replacement_snippet=f"{lib_match.group(0)}\ntarget_link_libraries({target_name} PRIVATE stdc++)",
+            ))
 
     return patches
