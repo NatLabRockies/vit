@@ -35,11 +35,12 @@ KGen state capture quirks:
   treated as IDENTICAL (IEEE 754 guard: x /= x is true only for NaN).
 """
 
+import csv
 import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -62,6 +63,7 @@ class VerifyResult:
     max_error: float
     output: str
     details: list[dict]  # Per-case results
+    field_data: list[dict] = field(default_factory=list)  # Per-field results
 
 
 def setup_kernel_cpp(
@@ -69,6 +71,7 @@ def setup_kernel_cpp(
     sig: FortranSignature,
     cpp_impl_path: str,
     kind_aliases: Optional[dict] = None,
+    field_log: bool = True,
 ) -> dict:
     """
     Wire a C++ translation into a KGen kernel directory for verification.
@@ -118,7 +121,8 @@ def setup_kernel_cpp(
 
     # --- Step 4: Modify Fortran sources ---
     try:
-        modified = _patch_kernel_fortran(kernel, sig, kind_aliases)
+        modified = _patch_kernel_fortran(kernel, sig, kind_aliases,
+                                         field_log=field_log)
         result["files_modified"].extend(modified)
     except Exception as e:
         result["errors"].append(f"Fortran patch failed: {e}")
@@ -129,7 +133,8 @@ def setup_kernel_cpp(
 
 
 def run_kernel_verify(kernel_dir: str, env: Optional[dict] = None,
-                      tolerance: float = 1e-14) -> VerifyResult:
+                      tolerance: float = 1e-14,
+                      field_log: bool = True) -> VerifyResult:
     """
     Build and run the KGen kernel verification.
 
@@ -192,7 +197,21 @@ def run_kernel_verify(kernel_dir: str, env: Optional[dict] = None,
     output = run_result.stdout + run_result.stderr
 
     # Parse verification output
-    return _parse_verify_output(output, tolerance)
+    result = _parse_verify_output(output, tolerance)
+
+    # Write field data to CSV if field logging is enabled
+    if field_log and result.field_data:
+        csv_path = kernel / "verify_fields.csv"
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["case", "field", "type", "status",
+                            "computed", "reference", "diff"],
+            )
+            writer.writeheader()
+            writer.writerows(result.field_data)
+
+    return result
 
 
 def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
@@ -269,7 +288,8 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
 
 
 def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
-                          kind_aliases: Optional[dict] = None) -> list[str]:
+                          kind_aliases: Optional[dict] = None,
+                          field_log: bool = True) -> list[str]:
     """
     Patch kernel Fortran source files.
 
@@ -319,6 +339,11 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
         # memory layout — causing non-deterministic verification results.
         # This makes NaN==NaN → IDENTICAL, eliminating the non-determinism.
         content = _patch_nan_comparisons(content)
+
+        # Inject WRITE statements to log field values during verification.
+        # Must run after NaN patching since it detects the NaN-patched form.
+        if field_log:
+            content = _patch_field_value_logging(content)
 
         # Check if this file contains our function
         func_pattern = rf'\b(FUNCTION|SUBROUTINE)\s+{name_upper}\s*\('
@@ -399,6 +424,129 @@ def _patch_nan_comparisons(content: str) -> str:
         content,
     )
     return content
+
+
+def _patch_field_value_logging(content: str) -> str:
+    """
+    Inject WRITE statements to log field values during verification.
+
+    Detects scalar and array comparison patterns in KGen-generated code
+    (after NaN patching) and injects [VIT_FIELD] / [VIT_ARRAY] tagged
+    WRITE statements after each check_result assignment.
+
+    Handles three field types:
+    - Numeric scalars: have diff_FIELD variable, three check_result branches
+    - Character scalars: no diff_FIELD, only IDENTICAL/OUT_TOL branches
+    - Numeric arrays: have rmsdiff_FIELD, three branches
+    - Character arrays: no rmsdiff_FIELD, only IDENTICAL/OUT_TOL branches
+    """
+    # Idempotency: skip if already patched
+    if "[VIT_FIELD]" in content or "[VIT_ARRAY]" in content:
+        return content
+
+    # Pre-scan for declared diff/rmsdiff variables to detect field types.
+    # Numeric fields have diff_FIELD = ABS(...); character fields don't.
+    diff_fields = {m.group(1).lower()
+                   for m in re.finditer(r'\bdiff_(\w+)\s*=\s*ABS\b', content, re.IGNORECASE)}
+    rmsdiff_fields = {m.group(1).lower()
+                      for m in re.finditer(r'\brmsdiff_(\w+)\s*=', content, re.IGNORECASE)}
+
+    lines = content.split("\n")
+    result = []
+    current_field = None
+    current_type = None  # "scalar" or "array"
+
+    # Regex patterns for comparison starts
+    # Scalar: NaN-patched form: IF ((var%FIELD == kgenref_var%FIELD) .OR. ...
+    scalar_re = re.compile(
+        r'\s*IF\s*\(\(var%(\w+)\s*==\s*kgenref_var%\w+\)\s*\.OR\.',
+        re.IGNORECASE,
+    )
+    # Array: IF (ALL(var%FIELD == kgenref_var%FIELD)) THEN
+    array_re = re.compile(
+        r'\s*IF\s*\(ALL\(var%(\w+)\s*==\s*kgenref_var%',
+        re.IGNORECASE,
+    )
+    # check_result assignment
+    check_re = re.compile(
+        r'(\s*)check_result\s*=\s*(CHECK_IDENTICAL|CHECK_IN_TOL|CHECK_OUT_TOL)\s*$',
+        re.IGNORECASE,
+    )
+
+    for line in lines:
+        # Detect scalar comparison start
+        m = scalar_re.match(line)
+        if m:
+            current_field = m.group(1)
+            current_type = "scalar"
+
+        # Detect array comparison start
+        m = array_re.match(line)
+        if m:
+            current_field = m.group(1)
+            current_type = "array"
+
+        result.append(line)
+
+        # Inject WRITE after check_result assignments
+        if current_field:
+            m = check_re.match(line)
+            if m:
+                indent = m.group(1)
+                check_type = m.group(2).upper()
+                f = current_field
+                has_diff = f.lower() in diff_fields
+                has_rmsdiff = f.lower() in rmsdiff_fields
+
+                if current_type == "scalar":
+                    if check_type == "CHECK_IDENTICAL":
+                        result.append(
+                            f'{indent}WRITE(*, *) "[VIT_FIELD] {f} | IDENTICAL | ", '
+                            f'var%{f}, " | ", kgenref_var%{f}'
+                        )
+                    elif check_type == "CHECK_IN_TOL" and has_diff:
+                        result.append(
+                            f'{indent}WRITE(*, *) "[VIT_FIELD] {f} | IN_TOL | ", '
+                            f'var%{f}, " | ", kgenref_var%{f}, " | ", diff_{f}'
+                        )
+                    elif check_type == "CHECK_OUT_TOL":
+                        if has_diff:
+                            result.append(
+                                f'{indent}WRITE(*, *) "[VIT_FIELD] {f} | OUT_TOL | ", '
+                                f'var%{f}, " | ", kgenref_var%{f}, " | ", diff_{f}'
+                            )
+                        else:
+                            # CHARACTER type — no diff variable
+                            result.append(
+                                f'{indent}WRITE(*, *) "[VIT_FIELD] {f} | OUT_TOL | ", '
+                                f'var%{f}, " | ", kgenref_var%{f}'
+                            )
+
+                elif current_type == "array":
+                    if check_type == "CHECK_IDENTICAL":
+                        result.append(
+                            f'{indent}WRITE(*, *) "[VIT_ARRAY] {f} | IDENTICAL | size=", '
+                            f'SIZE(var%{f})'
+                        )
+                    elif check_type == "CHECK_IN_TOL" and has_rmsdiff:
+                        result.append(
+                            f'{indent}WRITE(*, *) "[VIT_ARRAY] {f} | IN_TOL | n_diff=", '
+                            f'n_{f}, " | rms=", rmsdiff_{f}'
+                        )
+                    elif check_type == "CHECK_OUT_TOL":
+                        if has_rmsdiff:
+                            result.append(
+                                f'{indent}WRITE(*, *) "[VIT_ARRAY] {f} | OUT_TOL | n_diff=", '
+                                f'n_{f}, " | rms=", rmsdiff_{f}'
+                            )
+                        else:
+                            # CHARACTER array — no rmsdiff variable
+                            result.append(
+                                f'{indent}WRITE(*, *) "[VIT_ARRAY] {f} | OUT_TOL | n_diff=", '
+                                f'n_{f}'
+                            )
+
+    return "\n".join(result)
 
 
 def _fix_kgen_utils_mod_only(content: str) -> str:
@@ -596,20 +744,61 @@ def _parse_verify_output(output: str, tolerance: float) -> VerifyResult:
     summary_passed = None
     max_error = 0.0
     details = []
+    field_data = []
 
     # Track NaN differences within each case block.
     # When we see a case header (*** Verification against ***), reset the flag.
     # When we see "Difference is NaN", set it.
     # When we see FAILED, check if NaN was present → classify as skipped.
     current_case_has_nan = False
+    current_case_name = ""
 
     for line in output.split("\n"):
         line_stripped = line.strip()
         line_upper = line_stripped.upper()
 
-        # Detect case header — reset NaN tracking
-        if re.search(r'Verification against', line, re.IGNORECASE):
+        # Detect case header — reset NaN tracking, capture case name
+        case_match = re.search(r"Verification against '([^']+)'", line, re.IGNORECASE)
+        if case_match:
+            current_case_name = case_match.group(1)
             current_case_has_nan = False
+            continue
+
+        # Parse field value logging lines
+        if "[VIT_FIELD]" in line:
+            rest = line[line.index("[VIT_FIELD]") + len("[VIT_FIELD]"):].strip()
+            parts = [p.strip() for p in rest.split("|")]
+            if len(parts) >= 3:
+                entry = {
+                    "case": current_case_name,
+                    "field": parts[0],
+                    "type": "scalar",
+                    "status": parts[1],
+                    "computed": parts[2] if len(parts) > 2 else "",
+                    "reference": parts[3] if len(parts) > 3 else "",
+                    "diff": parts[4] if len(parts) > 4 else "",
+                }
+                field_data.append(entry)
+            continue
+
+        if "[VIT_ARRAY]" in line:
+            rest = line[line.index("[VIT_ARRAY]") + len("[VIT_ARRAY]"):].strip()
+            parts = [p.strip() for p in rest.split("|")]
+            if len(parts) >= 2:
+                entry = {
+                    "case": current_case_name,
+                    "field": parts[0],
+                    "type": "array",
+                    "status": parts[1],
+                    "computed": "",
+                    "reference": "",
+                    "diff": "",
+                }
+                # Extract array-specific info from remaining parts
+                for p in parts[2:]:
+                    entry["diff"] += p.strip() + " "
+                entry["diff"] = entry["diff"].strip()
+                field_data.append(entry)
             continue
 
         # Detect NaN differences within a case block
@@ -706,4 +895,5 @@ def _parse_verify_output(output: str, tolerance: float) -> VerifyResult:
         max_error=max_error,
         output=output,
         details=details,
+        field_data=field_data,
     )

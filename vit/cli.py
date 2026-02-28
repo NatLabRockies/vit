@@ -79,6 +79,8 @@ def main():
     p_verify.add_argument("cpp_file", help="Path to C++ implementation")
     p_verify.add_argument("--kernel-dir", help="Path to KGen kernel/ directory")
     p_verify.add_argument("--file", "-f", help="Fortran source with function definition")
+    p_verify.add_argument("--no-field-log", action="store_true",
+                          help="Suppress per-field value logging")
 
     # --- integrate ---
     p_integrate = subparsers.add_parser("integrate", help="Generate integration plan")
@@ -95,6 +97,8 @@ def main():
     p_run.add_argument("--file", "-f", help="Fortran source file")
     p_run.add_argument("--kernel-dir", help="KGen kernel/ directory")
     p_run.add_argument("--skip-verify", action="store_true")
+    p_run.add_argument("--no-field-log", action="store_true",
+                       help="Suppress per-field value logging")
     p_run.add_argument("--apply", action="store_true")
 
     # --- status ---
@@ -360,12 +364,15 @@ def cmd_verify(args, config):
         print("Run 'vit extract' first, or specify --kernel-dir")
         return 1
 
+    field_log = not getattr(args, 'no_field_log', False)
+
     print(f"Setting up C++ verification in {kernel_dir}...")
     setup_result = setup_kernel_cpp(
         kernel_dir=kernel_dir,
         sig=sig,
         cpp_impl_path=args.cpp_file,
         kind_aliases=config.kind_aliases,
+        field_log=field_log,
     )
 
     if not setup_result["success"]:
@@ -377,9 +384,14 @@ def cmd_verify(args, config):
     print(f"  Modified {len(setup_result['files_modified'])} files")
 
     print(f"\nRunning verification...")
-    verify_result = run_kernel_verify(kernel_dir, tolerance=config.tolerance)
+    verify_result = run_kernel_verify(kernel_dir, tolerance=config.tolerance,
+                                      field_log=field_log)
 
     print(f"\n{_format_verify_summary(verify_result)}")
+
+    if field_log and verify_result.field_data:
+        csv_path = os.path.join(kernel_dir, "verify_fields.csv")
+        print(f"  Field log: {csv_path} ({len(verify_result.field_data)} entries)")
 
     if verify_result.success:
         if verify_result.max_error > 0:
@@ -461,20 +473,28 @@ def cmd_run(args, config):
                     break
 
         if kernel_dir and os.path.isdir(kernel_dir):
+            field_log = not getattr(args, 'no_field_log', False)
+
             print(f"\nStep 2: KGen kernel verification ({kernel_dir})...")
             setup_result = setup_kernel_cpp(
                 kernel_dir=kernel_dir,
                 sig=sig,
                 cpp_impl_path=args.cpp_file,
                 kind_aliases=config.kind_aliases,
+                field_log=field_log,
             )
 
             if not setup_result["success"]:
                 print(f"✗ Kernel setup failed: {setup_result['errors']}")
                 return 1
 
-            verify_result = run_kernel_verify(kernel_dir, tolerance=config.tolerance)
+            verify_result = run_kernel_verify(kernel_dir, tolerance=config.tolerance,
+                                              field_log=field_log)
             print(_format_verify_summary(verify_result))
+
+            if field_log and verify_result.field_data:
+                csv_path = os.path.join(kernel_dir, "verify_fields.csv")
+                print(f"  Field log: {csv_path} ({len(verify_result.field_data)} entries)")
 
             if not verify_result.success:
                 print("Aborting pipeline — verification must pass before integration.")

@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from vit.kernel_verify import (
     _patch_nan_comparisons,
+    _patch_field_value_logging,
     _fix_kgen_utils_mod_only,
     _fix_use_ordering,
     _add_use_iso_c_binding,
@@ -412,6 +413,302 @@ class TestParseVerifyOutput:
         assert len(result.details) == 2
         assert result.details[0]["status"] == "PASSED"
         assert result.details[1]["status"] == "SKIPPED"
+
+
+# === _patch_field_value_logging tests ===
+
+class TestPatchFieldValueLogging:
+
+    # Scalar comparison block (after NaN patching) — numeric type
+    SCALAR_BLOCK = (
+        "    dtype_check_status%numTotal = dtype_check_status%numTotal + 1\n"
+        "    IF ((var%dt_out == kgenref_var%dt_out) .OR. "
+        "((var%dt_out /= var%dt_out) .AND. (kgenref_var%dt_out /= kgenref_var%dt_out))) THEN\n"
+        "        IF (var%dt_out /= var%dt_out) WRITE(*, *) \"both NaN\"\n"
+        "        dtype_check_status%numIdentical = dtype_check_status%numIdentical + 1\n"
+        "        check_result = CHECK_IDENTICAL\n"
+        "    ELSE\n"
+        "        diff_dt_out = ABS(var%dt_out - kgenref_var%dt_out)\n"
+        "        IF (diff_dt_out <= kgen_tolerance) THEN\n"
+        "            check_result = CHECK_IN_TOL\n"
+        "        ELSE\n"
+        "            check_result = CHECK_OUT_TOL\n"
+        "        END IF\n"
+        "    END IF\n"
+    )
+
+    # Character scalar — no diff variable, only IDENTICAL/OUT_TOL
+    CHAR_SCALAR_BLOCK = (
+        "    dtype_check_status%numTotal = dtype_check_status%numTotal + 1\n"
+        "    IF ((var%dll_filename == kgenref_var%dll_filename) .OR. "
+        "((var%dll_filename /= var%dll_filename) .AND. (kgenref_var%dll_filename /= kgenref_var%dll_filename))) THEN\n"
+        "        dtype_check_status%numIdentical = dtype_check_status%numIdentical + 1\n"
+        "        check_result = CHECK_IDENTICAL\n"
+        "    ELSE\n"
+        "        dtype_check_status%numOutTol = dtype_check_status%numOutTol + 1\n"
+        "        check_result = CHECK_OUT_TOL\n"
+        "    END IF\n"
+    )
+
+    # Numeric array comparison block
+    ARRAY_BLOCK = (
+        "    IF (ALL(var%blpitch == kgenref_var%blpitch)) THEN\n"
+        "        dtype_check_status%numIdentical = dtype_check_status%numIdentical + 1\n"
+        "        check_result = CHECK_IDENTICAL\n"
+        "    ELSE\n"
+        "        n_blpitch = COUNT(var%blpitch /= kgenref_var%blpitch)\n"
+        "        rmsdiff_blpitch = SQRT(SUM(buf2)/REAL(n_blpitch))\n"
+        "        IF (rmsdiff_blpitch > kgen_tolerance) THEN\n"
+        "            check_result = CHECK_OUT_TOL\n"
+        "        ELSE\n"
+        "            check_result = CHECK_IN_TOL\n"
+        "        END IF\n"
+        "    END IF\n"
+    )
+
+    # Character array — no rmsdiff variable, only IDENTICAL/OUT_TOL
+    CHAR_ARRAY_BLOCK = (
+        "    IF (ALL(var%acc_infile == kgenref_var%acc_infile)) THEN\n"
+        "        dtype_check_status%numIdentical = dtype_check_status%numIdentical + 1\n"
+        "        check_result = CHECK_IDENTICAL\n"
+        "    ELSE\n"
+        "        n_acc_infile = COUNT(var%acc_infile /= kgenref_var%acc_infile)\n"
+        "        dtype_check_status%numOutTol = dtype_check_status%numOutTol + 1\n"
+        "        check_result = CHECK_OUT_TOL\n"
+        "    END IF\n"
+    )
+
+    def test_scalar_identical_write(self):
+        """Injects [VIT_FIELD] WRITE after scalar CHECK_IDENTICAL."""
+        result = _patch_field_value_logging(self.SCALAR_BLOCK)
+        assert '[VIT_FIELD] dt_out | IDENTICAL' in result
+        assert 'var%dt_out' in result.split('[VIT_FIELD]')[1]
+        assert 'kgenref_var%dt_out' in result.split('[VIT_FIELD]')[1]
+
+    def test_scalar_in_tol_write(self):
+        """Injects [VIT_FIELD] WRITE after scalar CHECK_IN_TOL."""
+        result = _patch_field_value_logging(self.SCALAR_BLOCK)
+        lines = result.split("\n")
+        in_tol_writes = [l for l in lines if '[VIT_FIELD]' in l and 'IN_TOL' in l]
+        assert len(in_tol_writes) == 1
+        assert 'diff_dt_out' in in_tol_writes[0]
+
+    def test_scalar_out_tol_write(self):
+        """Injects [VIT_FIELD] WRITE after scalar CHECK_OUT_TOL."""
+        result = _patch_field_value_logging(self.SCALAR_BLOCK)
+        lines = result.split("\n")
+        out_tol_writes = [l for l in lines if '[VIT_FIELD]' in l and 'OUT_TOL' in l]
+        assert len(out_tol_writes) == 1
+        assert 'diff_dt_out' in out_tol_writes[0]
+
+    def test_array_identical_write(self):
+        """Injects [VIT_ARRAY] WRITE after array CHECK_IDENTICAL."""
+        result = _patch_field_value_logging(self.ARRAY_BLOCK)
+        assert '[VIT_ARRAY] blpitch | IDENTICAL' in result
+        assert 'SIZE(var%blpitch)' in result
+
+    def test_array_out_tol_write(self):
+        """Injects [VIT_ARRAY] WRITE after array CHECK_OUT_TOL."""
+        result = _patch_field_value_logging(self.ARRAY_BLOCK)
+        lines = result.split("\n")
+        out_tol_writes = [l for l in lines if '[VIT_ARRAY]' in l and 'OUT_TOL' in l]
+        assert len(out_tol_writes) == 1
+        assert 'n_blpitch' in out_tol_writes[0]
+        assert 'rmsdiff_blpitch' in out_tol_writes[0]
+
+    def test_array_in_tol_write(self):
+        """Injects [VIT_ARRAY] WRITE after array CHECK_IN_TOL."""
+        result = _patch_field_value_logging(self.ARRAY_BLOCK)
+        lines = result.split("\n")
+        in_tol_writes = [l for l in lines if '[VIT_ARRAY]' in l and 'IN_TOL' in l]
+        assert len(in_tol_writes) == 1
+        assert 'n_blpitch' in in_tol_writes[0]
+
+    def test_multiple_fields(self):
+        """Handles multiple scalar fields in sequence."""
+        second_block = self.SCALAR_BLOCK.replace("dt_out", "pc_maxpit")
+        content = self.SCALAR_BLOCK + second_block
+        result = _patch_field_value_logging(content)
+        assert result.count('[VIT_FIELD] dt_out') == 3
+        assert result.count('[VIT_FIELD] pc_maxpit') == 3
+
+    def test_mixed_scalar_and_array(self):
+        """Handles scalar followed by array fields."""
+        content = self.SCALAR_BLOCK + self.ARRAY_BLOCK
+        result = _patch_field_value_logging(content)
+        assert '[VIT_FIELD] dt_out' in result
+        assert '[VIT_ARRAY] blpitch' in result
+
+    def test_preserves_indentation(self):
+        """Injected WRITEs match the indentation of check_result."""
+        result = _patch_field_value_logging(self.SCALAR_BLOCK)
+        lines = result.split("\n")
+        for line in lines:
+            if '[VIT_FIELD]' in line and 'IDENTICAL' in line and 'IN_TOL' not in line and 'OUT_TOL' not in line:
+                # The check_result = CHECK_IDENTICAL line has 8 spaces indent
+                assert line.startswith("        WRITE")
+
+    def test_no_match_is_noop(self):
+        """Content without comparison patterns is unchanged."""
+        content = "    x = 1.0\n    IF (a > b) THEN\n    END IF\n"
+        result = _patch_field_value_logging(content)
+        assert result == content
+
+    def test_does_not_match_if_condition(self):
+        """Does not inject after IF (check_result == CHECK_*) conditions."""
+        content = (
+            "    diff_foo = ABS(var%foo - kgenref_var%foo)\n"
+            "    IF ((var%foo == kgenref_var%foo) .OR. "
+            "((var%foo /= var%foo) .AND. (kgenref_var%foo /= kgenref_var%foo))) THEN\n"
+            "        check_result = CHECK_IDENTICAL\n"
+            "    END IF\n"
+            "    IF (check_result == CHECK_IDENTICAL) THEN\n"
+            "        CONTINUE\n"
+            "    END IF\n"
+        )
+        result = _patch_field_value_logging(content)
+        # Only 1 VIT_FIELD write (after the assignment), not after the IF condition
+        assert result.count('[VIT_FIELD]') == 1
+
+    def test_char_scalar_no_diff(self):
+        """CHARACTER scalars don't reference diff_FIELD in OUT_TOL WRITE."""
+        result = _patch_field_value_logging(self.CHAR_SCALAR_BLOCK)
+        lines = result.split("\n")
+        out_tol_writes = [l for l in lines if '[VIT_FIELD]' in l and 'OUT_TOL' in l]
+        assert len(out_tol_writes) == 1
+        # No diff_ reference for character fields
+        assert 'diff_dll_filename' not in out_tol_writes[0]
+        # But values are still logged
+        assert 'var%dll_filename' in out_tol_writes[0]
+
+    def test_char_array_no_rmsdiff(self):
+        """CHARACTER arrays don't reference rmsdiff_FIELD in OUT_TOL WRITE."""
+        result = _patch_field_value_logging(self.CHAR_ARRAY_BLOCK)
+        lines = result.split("\n")
+        out_tol_writes = [l for l in lines if '[VIT_ARRAY]' in l and 'OUT_TOL' in l]
+        assert len(out_tol_writes) == 1
+        # No rmsdiff reference for character arrays
+        assert 'rmsdiff_acc_infile' not in out_tol_writes[0]
+        # But n_diff count is still logged
+        assert 'n_acc_infile' in out_tol_writes[0]
+
+    def test_idempotent(self):
+        """Patching already-patched content is a no-op."""
+        result1 = _patch_field_value_logging(self.SCALAR_BLOCK)
+        result2 = _patch_field_value_logging(result1)
+        assert result1 == result2
+
+
+# === Field data parsing tests ===
+
+class TestParseFieldData:
+
+    def test_scalar_field_parsing(self):
+        """Parses [VIT_FIELD] lines into structured field_data."""
+        output = (
+            "***************** Verification against 'saturate.0.0.1' *****************\n"
+            ' [VIT_FIELD] zmq_id | IDENTICAL |            0  |            0\n'
+            ' [VIT_FIELD] dt_out | IN_TOL |   0.125E+00  |   0.125E+00  |   1.11E-16\n'
+            "Verification PASSED with saturate.0.0.1\n"
+            "\n"
+            " Total number of verification cases  :     1\n"
+            " Number of verification-passed cases :     1\n"
+        )
+        result = _parse_verify_output(output, 1e-14)
+        assert len(result.field_data) == 2
+        assert result.field_data[0]["field"] == "zmq_id"
+        assert result.field_data[0]["type"] == "scalar"
+        assert result.field_data[0]["status"] == "IDENTICAL"
+        assert result.field_data[0]["case"] == "saturate.0.0.1"
+        assert result.field_data[1]["field"] == "dt_out"
+        assert result.field_data[1]["status"] == "IN_TOL"
+
+    def test_array_field_parsing(self):
+        """Parses [VIT_ARRAY] lines into structured field_data."""
+        output = (
+            "***************** Verification against 'saturate.0.0.1' *****************\n"
+            ' [VIT_ARRAY] blpitch | IDENTICAL | size=           3\n'
+            ' [VIT_ARRAY] notch | OUT_TOL | n_diff=           2  | rms=  5.55E-17\n'
+            "Verification PASSED with saturate.0.0.1\n"
+            "\n"
+            " Total number of verification cases  :     1\n"
+            " Number of verification-passed cases :     1\n"
+        )
+        result = _parse_verify_output(output, 1e-14)
+        assert len(result.field_data) == 2
+        assert result.field_data[0]["field"] == "blpitch"
+        assert result.field_data[0]["type"] == "array"
+        assert result.field_data[0]["status"] == "IDENTICAL"
+        assert result.field_data[1]["field"] == "notch"
+        assert result.field_data[1]["status"] == "OUT_TOL"
+
+    def test_field_data_tracks_cases(self):
+        """Field data entries are associated with the correct case."""
+        output = (
+            "***************** Verification against 'saturate.0.0.1' *****************\n"
+            ' [VIT_FIELD] zmq_id | IDENTICAL |  0  |  0\n'
+            "Verification PASSED with saturate.0.0.1\n"
+            "***************** Verification against 'saturate.0.0.2' *****************\n"
+            ' [VIT_FIELD] zmq_id | IDENTICAL |  0  |  0\n'
+            "Verification PASSED with saturate.0.0.2\n"
+            "\n"
+            " Total number of verification cases  :     2\n"
+            " Number of verification-passed cases :     2\n"
+        )
+        result = _parse_verify_output(output, 1e-14)
+        assert len(result.field_data) == 2
+        assert result.field_data[0]["case"] == "saturate.0.0.1"
+        assert result.field_data[1]["case"] == "saturate.0.0.2"
+
+    def test_no_field_data_when_no_tags(self):
+        """Standard output without VIT tags produces empty field_data."""
+        output = (
+            "***************** Verification against 'saturate.0.0.1' *****************\n"
+            "localvar%istatus is IDENTICAL.\n"
+            "Verification PASSED with saturate.0.0.1\n"
+            "\n"
+            " Total number of verification cases  :     1\n"
+            " Number of verification-passed cases :     1\n"
+        )
+        result = _parse_verify_output(output, 1e-14)
+        assert result.field_data == []
+        assert result.success is True
+
+    def test_field_data_with_verification_still_works(self):
+        """Field data parsing does not interfere with pass/fail detection."""
+        output = (
+            "***************** Verification against 'saturate.0.0.1' *****************\n"
+            ' [VIT_FIELD] zmq_id | IDENTICAL |  0  |  0\n'
+            ' [VIT_FIELD] dt_out | IDENTICAL |  0.125  |  0.125\n'
+            "Verification PASSED with saturate.0.0.1\n"
+            "***************** Verification against 'saturate.0.0.2' *****************\n"
+            ' [VIT_FIELD] zmq_id | IDENTICAL |  0  |  0\n'
+            "Verification PASSED with saturate.0.0.2\n"
+            "\n"
+            " Total number of verification cases  :     2\n"
+            " Number of verification-passed cases :     2\n"
+        )
+        result = _parse_verify_output(output, 1e-14)
+        assert result.success is True
+        assert result.total_cases == 2
+        assert result.passed_cases == 2
+        assert len(result.field_data) == 3
+
+    def test_scalar_computed_reference_values(self):
+        """Computed and reference values are extracted from scalar fields."""
+        output = (
+            "***************** Verification against 'saturate.0.0.1' *****************\n"
+            ' [VIT_FIELD] pc_maxpit | IN_TOL |   1.5708E+00  |   1.5708E+00  |   1.11E-16\n'
+            "Verification PASSED with saturate.0.0.1\n"
+            "\n"
+            " Total number of verification cases  :     1\n"
+            " Number of verification-passed cases :     1\n"
+        )
+        result = _parse_verify_output(output, 1e-14)
+        entry = result.field_data[0]
+        assert entry["computed"] == "1.5708E+00"
+        assert entry["reference"] == "1.5708E+00"
+        assert entry["diff"] == "1.11E-16"
 
 
 if __name__ == "__main__":
