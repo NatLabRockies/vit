@@ -20,7 +20,7 @@ from .fortran_parser import FortranSignature
 from .interface_gen import (
     generate_fortran_interface_block,
     generate_fortran_wrapper,
-    _build_c_params,
+    build_c_params,
 )
 
 
@@ -241,7 +241,7 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
     # Generate extern "C" wrapper using shared param builder
     lines.append("// --- Fortran-callable C wrapper ---")
     c_func_name = sig.c_func_name
-    c_params = _build_c_params(sig, kind_aliases)
+    c_params = build_c_params(sig, kind_aliases)
 
     param_str = ", ".join(f"{p[0]} {p[1]}" for p in c_params)
     arg_str = ", ".join(p[1] for p in c_params)

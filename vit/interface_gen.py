@@ -73,7 +73,7 @@ def generate_cpp_wrapper(sig: FortranSignature, cpp_impl_file: str,
         ret_c_type = ret_mapping.c_type
 
         # Build parameter list (skips passthrough, adds size params for arrays)
-        params = _build_c_params(sig, kind_aliases)
+        params = build_c_params(sig, kind_aliases)
         param_str = ", ".join(f"{p[0]} {p[1]}" for p in params)
 
         lines.append(f'extern "C" {{')
@@ -87,7 +87,7 @@ def generate_cpp_wrapper(sig: FortranSignature, cpp_impl_file: str,
         lines.append(f"}}")
 
     else:  # Subroutine
-        params = _build_c_params(sig, kind_aliases)
+        params = build_c_params(sig, kind_aliases)
         param_str = ", ".join(f"{p[0]} {p[1]}" for p in params)
 
         lines.append(f'extern "C" {{')
@@ -261,7 +261,7 @@ def _get_return_type_mapping(sig: FortranSignature,
     return get_type_mapping("REAL(8)", kind_aliases)
 
 
-def _build_c_params(sig: FortranSignature,
+def build_c_params(sig: FortranSignature,
                     kind_aliases: Optional[dict] = None) -> list[tuple[str, str]]:
     """
     Build the C parameter list: [(c_type, param_name), ...]

@@ -18,7 +18,7 @@ from vit.interface_gen import (
     generate_cpp_wrapper,
     generate_fortran_interface_block,
     generate_fortran_wrapper,
-    _build_c_params,
+    build_c_params,
 )
 from vit.integrate import _generate_standalone_cpp
 
@@ -324,14 +324,14 @@ class TestPassthroughInterface:
     def test_c_params_exclude_passthrough(self):
         """Passthrough args (TYPE(ErrorVariables)) not in C param list."""
         sig = self._get_interp1d_sig()
-        params = _build_c_params(sig)
+        params = build_c_params(sig)
         param_names = [p[1] for p in params]
         assert "ErrVar" not in param_names
 
     def test_c_params_include_non_passthrough(self):
         """Primitive and array args are in C param list."""
         sig = self._get_interp1d_sig()
-        params = _build_c_params(sig)
+        params = build_c_params(sig)
         param_names = [p[1] for p in params]
         assert "xData" in param_names
         assert "yData" in param_names
@@ -340,7 +340,7 @@ class TestPassthroughInterface:
     def test_c_params_have_size_for_assumed_shape(self):
         """Assumed-shape arrays get n_<name> size parameters."""
         sig = self._get_interp1d_sig()
-        params = _build_c_params(sig)
+        params = build_c_params(sig)
         param_names = [p[1] for p in params]
         assert "n_xData" in param_names
         assert "n_yData" in param_names
@@ -348,7 +348,7 @@ class TestPassthroughInterface:
     def test_size_params_are_int(self):
         """Size parameters are int type."""
         sig = self._get_interp1d_sig()
-        params = _build_c_params(sig)
+        params = build_c_params(sig)
         size_params = [(t, n) for t, n in params if n.startswith("n_")]
         for c_type, _ in size_params:
             assert c_type == "int"
@@ -457,7 +457,7 @@ class TestScalarRegression:
     def test_scalar_function_c_params_unchanged(self):
         """Scalar-only function generates same params as before."""
         sig = parse_signature_from_source(SCALAR_SOURCE, "saturate")
-        params = _build_c_params(sig)
+        params = build_c_params(sig)
         assert len(params) == 3
         assert all(t == "double" for t, _ in params)
 
