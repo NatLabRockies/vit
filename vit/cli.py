@@ -267,6 +267,29 @@ def cmd_extract(args, config):
             print(f"  Generated include.ini with module search paths")
 
         if result["success"]:
+            # Move KGen's output into kernel/{function_name}/ for per-function isolation.
+            # KGen deposits files directly into kernel/ (which may already contain
+            # subdirectories from previous extractions like kernel/saturate/).
+            # We move only the loose files into a new per-function subdirectory.
+            if result["kernel_dir"] and Path(result["kernel_dir"]).is_dir():
+                kernel_root = Path(result["kernel_dir"])
+                per_func_dir = kernel_root / args.function_name
+                if kernel_root.resolve() != per_func_dir.resolve():
+                    if per_func_dir.exists():
+                        shutil.rmtree(per_func_dir)
+                    per_func_dir.mkdir(parents=True, exist_ok=True)
+                    # Move only files (not subdirectories, which are other functions)
+                    for item in list(kernel_root.iterdir()):
+                        if item.is_file():
+                            shutil.move(str(item), str(per_func_dir / item.name))
+                    result["kernel_dir"] = str(per_func_dir)
+
+            # Clean up state/ (intermediate artifacts, not needed after extraction)
+            state_dir = Path(result.get("state_dir", "") or "state")
+            if state_dir.is_dir():
+                shutil.rmtree(state_dir)
+                result["state_dir"] = None
+
             cases = result.get("state_cases", 0)
             print(f"✓ Extraction successful")
             print(f"  Kernel: {result['kernel_dir']}")
@@ -353,8 +376,9 @@ def cmd_verify(args, config):
     # Find kernel directory
     kernel_dir = args.kernel_dir
     if not kernel_dir:
-        # Look in common locations
-        for candidate in ["kernel", "state/../kernel", f"{args.function_name}/kernel"]:
+        # Look in common locations (per-function first, then legacy flat)
+        for candidate in [f"kernel/{args.function_name}", "kernel",
+                          "state/../kernel", f"{args.function_name}/kernel"]:
             if os.path.isdir(candidate):
                 kernel_dir = candidate
                 break
@@ -403,6 +427,7 @@ def cmd_verify(args, config):
             "cases_total": valid,
             "cases_skipped": verify_result.skipped_cases,
             "cpp_file": args.cpp_file,
+            "kernel_dir": kernel_dir,
         })
     else:
         for detail in verify_result.details:
@@ -467,7 +492,8 @@ def cmd_run(args, config):
     if not args.skip_verify:
         kernel_dir = args.kernel_dir
         if not kernel_dir:
-            for candidate in ["kernel", f"{args.function_name}/kernel"]:
+            for candidate in [f"kernel/{args.function_name}", "kernel",
+                              f"{args.function_name}/kernel"]:
                 if os.path.isdir(candidate):
                     kernel_dir = candidate
                     break
