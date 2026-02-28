@@ -135,21 +135,3 @@ def get_type_mapping(fortran_type: str, kind_aliases: Optional[dict] = None) -> 
         f"Known types: {list(FORTRAN_TO_C.keys())}. "
         f"Add a kind_alias mapping if this is a project-specific kind."
     )
-
-
-def c_to_fortran_cast(expr: str, from_kind: str, to_c_kind: str) -> str:
-    """
-    Generate a Fortran expression that casts from a project kind to C kind.
-
-    Example: c_to_fortran_cast("val", "ReKi", "C_DOUBLE") → "REAL(val, C_DOUBLE)"
-    """
-    return f"REAL({expr}, {to_c_kind})"
-
-
-def fortran_to_project_cast(expr: str, to_kind: str) -> str:
-    """
-    Generate a Fortran expression that casts from C kind back to project kind.
-
-    Example: fortran_to_project_cast("saturate_c(...)", "ReKi") → "REAL(saturate_c(...), ReKi)"
-    """
-    return f"REAL({expr}, {to_kind})"

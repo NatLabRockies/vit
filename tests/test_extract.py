@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from vit.extract import (
     insert_kgen_pragma,
     remove_kgen_pragma,
-    build_kgen_build_cmd,
     count_kernel_cases,
     generate_include_ini,
 )
@@ -178,23 +177,6 @@ class TestRemoveKgenPragma:
         remove_kgen_pragma(str(src))
 
         assert src.read_text() == original
-
-
-# === build_kgen_build_cmd tests ===
-
-class TestBuildKgenBuildCmd:
-
-    def test_build_only(self):
-        result = build_kgen_build_cmd("make -j4")
-        assert result == "make -j4"
-
-    def test_build_and_install(self):
-        result = build_kgen_build_cmd("make -j4", "cp lib.so /install/lib.so")
-        assert result == "make -j4 && cp lib.so /install/lib.so"
-
-    def test_empty_install_cmd(self):
-        result = build_kgen_build_cmd("cmake --build .", "")
-        assert result == "cmake --build ."
 
 
 # === count_kernel_cases tests ===

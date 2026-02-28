@@ -14,7 +14,6 @@ Use CodeScribe, any LLM, or hand-write the C++ — then feed it to VIT.
 """
 
 import argparse
-import json
 import os
 import re
 import shutil
@@ -441,7 +440,7 @@ def cmd_integrate(args, config):
 
 
 def cmd_run(args, config):
-    """Full pipeline: parse → interface → verify → integrate."""
+    """Full pipeline: parse → verify → integrate."""
     print(f"═══ VIT Full Pipeline: {args.function_name} ═══\n")
 
     # Step 1: Parse signature

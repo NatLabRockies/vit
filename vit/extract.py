@@ -31,7 +31,6 @@ import os
 import re
 import shutil
 import subprocess
-import textwrap
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -229,29 +228,6 @@ def clean_kgen_artifacts(working_dir: str = ".") -> list[str]:
     # later runs without --invocation.
 
     return removed
-
-
-def build_kgen_build_cmd(build_cmd: str, install_cmd: str = "") -> str:
-    """
-    Combine build and install commands for KGen's --cmd-build.
-
-    KGen's state Makefile runs the build command, then runs the simulation.
-    But the built library must be installed where the simulation expects it.
-
-    Example: ROSCO build produces rosco/controller/build/libdiscon.so
-    but the simulation loads rosco/lib/libdiscon.so. The install_cmd
-    copies the library to the right place.
-
-    Args:
-        build_cmd: The base build command (e.g., "make -C build")
-        install_cmd: Post-build command (e.g., "cp build/lib.so install/lib.so")
-
-    Returns:
-        Combined command string for --cmd-build
-    """
-    if install_cmd:
-        return f"{build_cmd} && {install_cmd}"
-    return build_cmd
 
 
 def check_editable_installs(project_dir: str, package_name: str = "") -> list[str]:

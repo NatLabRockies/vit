@@ -258,54 +258,6 @@ def generate_fortran_wrapper(sig: FortranSignature,
     return "\n".join(lines)
 
 
-def generate_kernel_makefile_patch(sig: FortranSignature,
-                                   cpp_source_name: str) -> str:
-    """
-    Generate the Makefile additions needed for KGen kernel verification.
-
-    Encodes the lessons learned from our ROSCO experience:
-    - FC_0 and FC_FLAGS_SET_0 variables
-    - C++ compilation rule
-    - -lstdc++ link flag
-    """
-    obj_name = cpp_source_name.replace(".cpp", ".o")
-
-    return f"""
-# === VIT: C++ integration for {sig.name} ===
-# Add these to the kernel Makefile
-
-# Ensure FC_0 is defined (KGen sometimes uses FC_0 instead of FC)
-FC_0 ?= $(FC)
-FC_FLAGS_SET_0 ?= $(FC_FLAGS)
-
-# C++ compilation rule
-CXX ?= g++
-CXXFLAGS ?= -O2 -fPIC
-
-{obj_name}: {cpp_source_name}
-\t$(CXX) $(CXXFLAGS) -c $< -o $@
-
-# Add {obj_name} to ALL_OBJS
-# Add -lstdc++ to link flags
-# === End VIT additions ===
-"""
-
-
-def generate_cmake_patch(sig: FortranSignature,
-                         cpp_source_name: str,
-                         target_name: str = "discon") -> str:
-    """
-    Generate CMakeLists.txt additions for codebase integration.
-    """
-    return f"""
-# === VIT: C++ integration for {sig.name} ===
-enable_language(CXX)
-# Add {cpp_source_name} to the source list for target {target_name}
-# target_link_libraries({target_name} PRIVATE stdc++)
-# === End VIT additions ===
-"""
-
-
 # --- Internal helpers ---
 
 def _get_return_type_mapping(sig: FortranSignature,
