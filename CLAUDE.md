@@ -398,6 +398,29 @@ The derived type and assumed-shape array support (added for interp1d) has severa
 
 - **USE statement matching is string-based**: `_get_use_statements_for_derived_types()` checks if the derived type name appears in the USE line text. This works for `USE Module, ONLY: TypeName` but would miss bare `USE Module` (can't tell what it exports) or false-match on substring collisions.
 
+## Development Notes Convention
+
+Development notes live in `dev/` and are named with a datetime tag: `YYYYMMDDHHMM-descriptor.md` (e.g., `202603101739-project-inception.md`).
+
+When the user says "add this to development notes", "make a dev note", or similar:
+1. Get the current time by running `date '+%Y%m%d%H%M'` — do NOT guess or invent timestamps
+2. Create a new file in `dev/` with that datetime tag and a descriptive slug
+3. The note should provide **comprehensive detail** — not a summary, but a thorough record that gives full context to anyone reading it later
+4. Include relevant background, rationale, technical details, decisions made, alternatives considered, and next steps
+5. Reference related dev notes, code, or external resources where applicable
+6. Use the standard header format:
+
+```markdown
+# Title
+**Date:** YYYY-MM-DD
+**Status:** completed | in-progress | abandoned
+**Scope:** [area of change]
+```
+
+## Demo
+
+There is a scripted demo in `demo/demo_script.md`. When the user says "Start VIT", read that file and follow it exactly — every text block, tool call, and command, in order, verbatim. Do not improvise, add extra commentary, or skip steps. The script has two phases: an Opening (output function list, then wait for user input) and Acts 1–6 (triggered when the user says "interp1d").
+
 ## Git
 
 The user manages git in a separate terminal. Do not run git commands except `git checkout .` on ROSCO as part of a clean build test (see "Clean Build Test" above). When asked for a commit message, provide a complete command that can be copied and pasted directly:
