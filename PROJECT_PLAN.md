@@ -155,65 +155,97 @@ Translation must proceed bottom-up through this graph. A function can only be tr
 
 ## 4. Derived Type Translation Strategy
 
-Every ROSCO module depends on ROSCO_Types. The types are the keystone of the entire translation effort.
+Every ROSCO module depends on ROSCO_Types. The types are the keystone of the entire translation effort. Deep investigation (2026-03-17) determined that **all 12 types can become C structs** — no opaque pointers, no accessor APIs, no deferred work. Phase 4.5 solves the entire type system in one shot.
 
-### Type Classification
+### Key Finding: Field Extraction Does Not Scale
 
-**Tier 1 — BIND(C) Compatible (can map directly to C structs):**
+Field extraction — passing individual derived type fields as separate C arguments — does not scale beyond Functions.f90. Controllers access 30–70 fields per function. This would produce unmaintainable signatures. Instead, all types become C structs passed by pointer.
+
+### Type-by-Type Strategy
+
+**Already BIND(C) compatible — no changes needed (7 types):**
 
 | Type | Fields | Notes |
 |------|--------|-------|
-| `FilterParameters` | ~50 | Fixed-size `(1024)` arrays only |
-| `rlParams` | 4 | Fixed-size `(1024)` array |
-| `piParams` | 8 | Fixed-size `(1024)` arrays |
-| `resParams` | 5 | Fixed-size `(1024)` arrays |
-| `WE` | 7 | Fixed-size matrices `(3,3)` and `(3,1)` |
-| `ObjectInstances` | 9 | All INTEGER |
-| `DebugVariables` | ~30 | All REAL/INTEGER |
+| `FilterParameters` | 27 | All `REAL(DbKi), DIMENSION(1024)`. ~221 KB. |
+| `piParams` | 5 | All `REAL(DbKi), DIMENSION(1024)`. |
+| `resParams` | 4 | All `REAL(DbKi), DIMENSION(1024)`. |
+| `rlParams` | 1 | Single `REAL(DbKi), DIMENSION(1024)`. |
+| `WE` | 7 | 4 scalars + `DIMENSION(3,3)` + 2× `DIMENSION(3,1)`. Note: Fortran column-major layout. |
+| `ObjectInstances` | 9 | All `INTEGER(IntKi)`. |
+| `DebugVariables` | 22 | All `REAL(DbKi)` scalars. |
 
-These can be mapped to C structs with fixed-size arrays and passed across the Fortran/C boundary directly. VIT should generate these struct definitions automatically from the Fortran TYPE definitions.
+These become C structs with identical memory layout. Zero-copy pass-by-pointer.
 
-**Tier 2 — Contains ALLOCATABLE (needs std::vector or pointer+size):**
+**LocalVariables — 4 surgical fixes, then fully BIND(C) (161 fields):**
 
-| Type | Fields | Key Issue |
-|------|--------|-----------|
-| `ControlParameters` | ~115 | Many `DIMENSION(:), ALLOCATABLE` arrays |
-| `PerformanceData` | 5 | All ALLOCATABLE (lookup tables) |
-| `ExtControlType` | 1 | ALLOCATABLE avrSWAP array |
+LocalVariables contains 139 REAL(DbKi) scalars, fixed-size arrays, and 5 nested BIND(C)-compatible types. Four fields block compatibility:
 
-These cannot cross the C boundary as-is. Two strategies:
-1. **During transition**: Extract individual fields and pass them as separate C args (pointer + size for each array)
-2. **In final C++ form**: C++ structs with `std::vector<double>` members
+| Field | Type | Fix | Impact |
+|-------|------|-----|--------|
+| `ACC_INFILE` | `CHARACTER(:), ALLOCATABLE` | Move to separate `char*` parameter or file-scope storage. Only used at init (ReadSetParameters), never in control loop. | Trivial — init-only field. |
+| `AWC_complexangle(3)` | `COMPLEX(DbKi)` | Replace with `AWC_complexangle_re(3)` + `AWC_complexangle_im(3)` as `REAL(DbKi)`. Only the REAL part is ever extracted downstream (`REAL(LocalVar%AWC_complexangle(K))`). | Low — used only in ActiveWakeControl. |
+| `WriteThisStep` | `LOGICAL` | Change to `INTEGER(C_INT)` (0/1) or `LOGICAL(C_BOOL)`. Fortran `LOGICAL` size varies by compiler (1–8 bytes); C `bool` is 1 byte. | Low — rarely used. |
+| `restart` | `LOGICAL` | Same fix as WriteThisStep. Change to `INTEGER(C_INT)` or `LOGICAL(C_BOOL)`. | Medium — passed to all filters and controllers, but fix is just a type change. |
 
-**Tier 3 — Contains nested types or strings:**
+After these fixes, the entire 161-field type (including nested WE, FilterParameters, piParams, resParams, rlParams) is a plain C struct. Total size ~305 KB, passed by pointer.
 
-| Type | Fields | Key Issue |
-|------|--------|-----------|
-| `ErrorVariables` | 6 | `CHARACTER(:), ALLOCATABLE :: ErrMsg` |
-| `LocalVariables` | ~170 | Contains nested WE, FilterParameters, piParams, resParams, rlParams |
-| `ExtDLL_Type` | 7 | `C_PTR`, `C_FUNPTR`, `CHARACTER(1024)` |
+**ControlParameters — fixed-size arrays replacing ALLOCATABLE (213 fields):**
 
-These require the most work. LocalVariables is the biggest challenge — it's used everywhere and contains nested types that are themselves Tier 1 (so the inner types are translatable, but the outer container needs careful handling).
+Investigation overturned the earlier "opaque pointer" assumption:
 
-### Strategy: Early Struct Mapping, Not Field Extraction
+1. **Truly read-only**: Every access in Controllers, Filters, and ControllerBlocks is read-only. No algorithmic function writes to CntrPar. `INTENT(INOUT)` in signatures is legacy.
+2. **All ALLOCATABLE arrays allocated once at init**: Sizes come from config file scalars (`PC_GS_n`, `VS_n`, `F_NumNotchFilts`, etc.) and never change.
+3. **Sizes are bounded and small**: Gain schedules 20–50 entries, notch filters 0–10, performance tables 36×26, open-loop timeseries 100–1000.
 
-Pre-execution analysis (2026-03-17) determined that field extraction — passing individual derived type fields as separate C arguments — does not scale beyond Functions.f90. Filters access ~30 fields, Controllers access ~70 fields per function. This would produce unmaintainable 50+ argument C signatures.
+**Strategy**: Replace each ALLOCATABLE with a fixed-size array using a compile-time max bound:
+```c
+#define MAX_GS_POINTS 100
+#define MAX_NOTCH_FILTERS 15
+#define MAX_OL_POINTS 2000
+#define MAX_PERF_PITCH 60
+#define MAX_PERF_TSR 60
+// etc.
+```
 
-Instead, the plan uses **early struct mapping** (Phase 4.5): define C++ structs for all BIND(C)-compatible types *before* translating Filters and Controllers. This is viable because 7 of 12 types are already pure numeric with fixed-size arrays, and LocalVariables is 99% compatible (1 ALLOCATABLE CHARACTER field to externalize).
+Each array keeps its existing size scalar (e.g., `PC_GS_n`) to indicate how many elements are valid. The 135 scalar fields and ~55 INTEGER fields are already C-compatible. The 4 CHARACTER fields become `char[1024]`.
 
-**Three-tier approach by type category:**
+Total struct size ~500 KB with generous bounds — large but allocated once and passed by pointer.
 
-1. **Struct pass-by-pointer** (Tier 1 + refactored LocalVariables): BIND(C) structs passed directly. C++ accesses fields naturally. Zero-copy, zero-marshalling. Used for: FilterParameters, piParams, resParams, rlParams, WE, ObjectInstances, DebugVariables, LocalVariables.
+**PerformanceData — merge into ControlParameters or use fixed-size arrays (5 fields):**
 
-2. **Opaque pointer + accessor** (ControlParameters): Passed as opaque pointer. C-callable Fortran accessors extract specific fields on demand. Avoids marshalling 225 fields (51 ALLOCATABLE). Replaced with full C++ struct in Phase 8.
+All fields are ALLOCATABLE lookup tables allocated once from `Cp_Ct_Cq.NREL5MW.txt`:
+- `TSR_vec(:)` — typically 26 entries
+- `Beta_vec(:)` — typically 36 entries
+- `Cp_mat(:,:)`, `Ct_mat(:,:)`, `Cq_mat(:,:)` — typically 26×36
 
-3. **Passthrough** (ErrorVariables): Continues existing pattern — accepted by Fortran wrapper, excluded from C interface. Error reporting stays in Fortran until Phase 8.
+Never modified after init. Strategy: fixed-size arrays with max bounds (`double Cp_mat[MAX_PERF_TSR][MAX_PERF_PITCH]`), same pattern as ControlParameters. Can be kept as a separate struct or merged into ControlParameters (which already holds `PerfTableSize`).
 
-**Timeline:**
-- Phase 4: First BIND(C) struct (rlParams) for `ratelimit`. Field extraction for `AeroDynTorque` (only 3 fields).
-- Phase 4.5: All state type C structs defined. LocalVariables refactored. ControlParameters accessor created.
-- Phases 5–7: All functions receive structs by pointer.
-- Phase 8: ControlParameters, PerformanceData, ErrorVariables fully translated. C++ becomes source of truth for all types.
+**ErrorVariables — passthrough + simple C error args (3 fields + 1 ALLOCATABLE):**
+
+Critical finding: **ErrVar is purely for error reporting. It never affects computed control outputs.** The pattern everywhere:
+1. Function sets `aviFAIL = -1` and writes `ErrMsg`
+2. Caller checks `aviFAIL < 0` and propagates
+3. Error data flows *out* to the simulator, never *into* the algorithm
+
+Strategy for complete translation:
+- `aviFAIL` and `ErrStat` are already `INTEGER(C_INT)` — directly C-compatible.
+- `ErrMsg`: Replace `CHARACTER(:), ALLOCATABLE` with `CHARACTER(1024)`. The DLL interface already uses a 1024-char buffer. No observed error message exceeds ~500 chars.
+- For C++ functions that need error reporting: pass `int* aviFAIL` and `char* ErrMsg` as separate C args. The Fortran wrapper maps these to/from the ErrVar struct.
+- For functions that don't touch errors: continue passthrough pattern.
+
+**Remaining types (handled in Phase 9):**
+
+| Type | Fields | Strategy |
+|------|--------|----------|
+| `ExtDLL_Type` | 4 | Already uses `C_PTR`, `C_FUNPTR`, `CHARACTER(1024)` — excellent BIND(C) candidate. |
+| `ExtControlType` | 1 | Single ALLOCATABLE `avrSWAP` array. Replace with fixed-size or pointer+size. |
+
+### Timeline
+
+- **Phase 4.5**: All type changes applied. C++ struct headers generated. BIND(C) attributes added to Fortran types. Memory layout validated.
+- **Phases 5–7**: All functions receive full structs by pointer. C++ accesses fields naturally.
+- **Phase 8**: C++ becomes source of truth for type definitions. Fortran types become thin BIND(C) wrappers.
 
 ---
 
@@ -272,39 +304,52 @@ Each phase unlocks new translation targets. Phases are ordered by dependency —
 
 **New functions unlocked**: `ratelimit`, `AeroDynTorque`
 
-### Phase 4.5: State Type C Structs
-**Target: C++ struct definitions for all state types, unblocking Phases 5–7**
+### Phase 4.5: Complete Type System C Structs
+**Target: C++ struct definitions for ALL types, unblocking Phases 5–7**
 
-This phase was identified during pre-execution analysis as critical. The original plan assumed field extraction (passing individual derived type fields as C args) would scale to Filters and Controllers. Investigation showed this is not viable: functions in those modules access 30–70+ fields each. However, 7 of ROSCO's 12 derived types are already BIND(C)-compatible (pure numeric, fixed-size), and `LocalVariables` is 99% compatible (blocked only by 1 ALLOCATABLE CHARACTER field).
+Deep investigation (2026-03-17) found that **every ROSCO type can become a C struct** — no opaque pointers or accessor APIs needed. This phase solves the entire type system in one shot.
 
-The strategy: define C++ structs for the state types *before* translating Filters and Controllers, so every subsequent function can receive full structs by pointer.
-
-**BIND(C)-compatible types (define C structs):**
+**Already BIND(C)-compatible types (define C structs, no Fortran changes):**
 - [ ] `FilterParameters` — 27 arrays of `double[1024]` (~221 KB). Used by all filters.
 - [ ] `piParams` — 5 arrays of `double[1024]`. Used by PI/PID controllers.
 - [ ] `resParams` — 4 arrays of `double[1024]`. Used by resonance controller.
 - [ ] `rlParams` — 1 array of `double[1024]`. Already handled in Phase 4 for `ratelimit`.
-- [ ] `WE` — 7 fields: 4 scalars + `double[3][3]` + 2× `double[3]`. Wind estimator state. Note: Fortran stores multi-dimensional arrays column-major; C++ struct must use same layout.
-- [ ] `ObjectInstances` — 9 integers. Instance counters for filters/controllers.
-- [ ] `DebugVariables` — 22 REAL(8) scalars. Write-only debug output.
+- [ ] `WE` — 7 fields: 4 scalars + `double[3][3]` + 2× `double[3]`. Note: Fortran column-major layout for multi-dimensional arrays.
+- [ ] `ObjectInstances` — 9 integers.
+- [ ] `DebugVariables` — 22 `REAL(DbKi)` scalars.
 
-**Refactor LocalVariables:**
-- [ ] Externalize `ACC_INFILE` (the sole ALLOCATABLE CHARACTER field) — move it to a separate Fortran-managed buffer or pass as a C string pointer. This is the *only* field blocking BIND(C) compatibility for the entire 161-field type.
-- [ ] Define C++ struct for `LocalVariables` with nested `WE`, `FilterParameters`, `piParams`, `resParams`, `rlParams` structs. 139 scalar fields + fixed-size arrays + 5 nested BIND(C) structs.
-- [ ] Add `BIND(C)` attributes to Fortran TYPE definitions.
+**LocalVariables — 4 surgical Fortran fixes, then define C struct:**
+- [ ] Replace `ACC_INFILE` (`CHARACTER(:), ALLOCATABLE`) — move to separate `char*` parameter or file-scope storage. Only used at init (ReadSetParameters), never in control loop.
+- [ ] Replace `AWC_complexangle(3)` (`COMPLEX(DbKi)`) — split into `AWC_complexangle_re(3)` + `AWC_complexangle_im(3)` as `REAL(DbKi)`. Only the REAL part is ever extracted downstream.
+- [ ] Replace `WriteThisStep` (`LOGICAL`) — change to `INTEGER(C_INT)` (0/1). Fortran `LOGICAL` size varies by compiler; `INTEGER(C_INT)` is guaranteed portable.
+- [ ] Replace `restart` (`LOGICAL`) — same fix. Heavily used (passed to all filters/controllers) but fix is just a type change.
+- [ ] Define C++ struct for `LocalVariables` with nested `WE`, `FilterParameters`, `piParams`, `resParams`, `rlParams`. 139 scalar fields + fixed-size arrays + 5 nested structs. ~305 KB total.
+- [ ] Add `BIND(C)` attributes to all Fortran TYPE definitions.
+- [ ] Update all Fortran code referencing changed fields (COMPLEX → split reals, LOGICAL → integer).
 
-**ControlParameters strategy:**
-- [ ] `ControlParameters` has 225 fields with 51 ALLOCATABLE arrays — cannot be a C struct. It is read-only configuration, never modified by algorithmic functions.
-- [ ] Create C accessor pattern: pass `ControlParameters` as opaque pointer to C, with a small C-callable Fortran accessor API that extracts individual fields. Alternatively, create a C-compatible config subset containing only the fields used by the current translation targets.
+**ControlParameters — replace ALLOCATABLE with fixed-size arrays, then define C struct:**
+- [ ] Define compile-time max bounds for all 76 ALLOCATABLE arrays. Investigation confirmed all arrays are allocated once at init, never reallocated, with bounded sizes (gain schedules 20–50, notch filters 0–10, performance tables 36×26, open-loop timeseries 100–1000).
+- [ ] Replace each `DIMENSION(:), ALLOCATABLE` with `DIMENSION(MAX_*)`. Size scalars (PC_GS_n, VS_n, etc.) remain to indicate valid element count.
+- [ ] Replace 4 CHARACTER fields with `CHARACTER(1024)` (fixed-length).
+- [ ] Verify ControlParameters is truly read-only in algorithmic code (investigation confirmed: INTENT(INOUT) is legacy, all accesses are reads).
+- [ ] Define C++ struct. Total ~500 KB with generous bounds. Allocated once, passed by pointer.
 
-**PerformanceData strategy:**
-- [ ] `PerformanceData` has all ALLOCATABLE fields (lookup tables). Pass individual arrays as pointer+size pairs to C functions that need them (same pattern as interp1d's assumed-shape handling).
+**PerformanceData — same fixed-size pattern:**
+- [ ] Replace ALLOCATABLE arrays with fixed-size: `TSR_vec(MAX_PERF_TSR)`, `Beta_vec(MAX_PERF_PITCH)`, `Cp_mat(MAX_PERF_TSR, MAX_PERF_PITCH)`, etc. Typical sizes: 26×36.
+- [ ] Define C++ struct. Can remain separate or merge into ControlParameters.
+
+**ErrorVariables — replace ALLOCATABLE ErrMsg, keep passthrough pattern:**
+- [ ] Replace `CHARACTER(:), ALLOCATABLE :: ErrMsg` with `CHARACTER(1024)`. The DLL interface already uses a 1024-char buffer. No observed error message exceeds ~500 chars.
+- [ ] `aviFAIL` and `ErrStat` are already `INTEGER(C_INT)` — no changes needed.
+- [ ] For C++ functions that need error reporting: pass `int* aviFAIL` and `char* ErrMsg` as separate C args. Fortran wrapper maps to/from ErrVar struct.
+- [ ] For functions that don't touch errors: continue passthrough.
 
 **Validation:**
-- [ ] Verify memory layout matches between Fortran and C++ structs (write a test that compares field offsets)
-- [ ] Verify mixed Fortran/C++ build still produces byte-identical simulation output with BIND(C) type modifications
+- [ ] Write memory layout test: compare field offsets between Fortran `BIND(C)` type and C++ struct to verify binary compatibility.
+- [ ] Verify mixed Fortran/C++ build produces byte-identical simulation output after type modifications.
+- [ ] Run full verification regression on all previously verified functions.
 
-**Why this must come before Phase 5:** Functions in Filters.f90 access ~30 fields on FilterParameters via instance indexing. Controllers access ~70 fields on LocalVariables. Field extraction at that scale produces unmaintainable 50+ argument C function signatures. With C structs, the C++ code accesses fields naturally (`state->lpf1_a1[inst]`) and the Fortran wrapper just passes the struct address.
+**Why this must come before Phase 5:** Filters access ~30 fields on FilterParameters, Controllers access ~70 fields on LocalVariables. With C structs, C++ accesses fields naturally (`state->lpf1_a1[inst]`) and the Fortran wrapper just passes the struct address.
 
 ### Phase 5: Filters Module
 **Target: All of Filters.f90**
@@ -312,7 +357,7 @@ The strategy: define C++ structs for the state types *before* translating Filter
 With Phase 4.5 complete, `FilterParameters` is a C struct passed by pointer. All filters receive it directly.
 
 - [ ] Instance-based state access in C++ — filters use `FP%fieldname(inst)` pattern, which becomes `fp->fieldname[inst]` in C++. Validate this pattern works correctly across the BIND(C) boundary.
-- [ ] Multi-state-type functions — `PreFilterMeasuredSignals` takes 5 derived type args (CntrPar, LocalVar, DebugVar, objInst, ErrVar). LocalVar, DebugVar, and objInst are C structs (Phase 4.5). CntrPar uses the accessor pattern. ErrVar continues as passthrough.
+- [ ] Multi-state-type functions — `PreFilterMeasuredSignals` takes 5 derived type args (CntrPar, LocalVar, DebugVar, objInst, ErrVar). All are C structs (Phase 4.5) except ErrVar which continues as passthrough with `int* aviFAIL` + `char* ErrMsg` when C++ needs error reporting.
 - [ ] Translate + verify + integrate `LPFilter`
 - [ ] Translate + verify + integrate `SecLPFilter`
 - [ ] Translate + verify + integrate `SecLPFilter_Vel`
@@ -326,7 +371,7 @@ With Phase 4.5 complete, `FilterParameters` is a C struct passed by pointer. All
 ### Phase 6: Controllers Module
 **Target: All of Controllers.f90**
 
-With Phase 4.5 complete, `LocalVariables` (including nested piParams, resParams, rlParams) and `ControlParameters` (via accessor) are available to C++. Controllers can read and write state struct fields directly.
+With Phase 4.5 complete, all types are C structs passed by pointer — `LocalVariables`, `ControlParameters`, `FilterParameters`, and all nested state types. Controllers read and write struct fields directly.
 
 - [ ] Large subroutine support — controller subroutines are 100-200 lines with complex control flow. VIT's extraction and verification should handle these mechanically, but testing at scale is needed.
 - [ ] Read+write derived type access — controllers read AND write fields on LocalVariables. C++ code modifies the struct in place; changes are visible to Fortran since the struct is passed by pointer.
@@ -367,16 +412,14 @@ With Phase 4.5 complete, `WE` nested struct is accessible through `LocalVariable
 **New functions unlocked**: All 8 ControllerBlocks.f90 subroutines
 
 ### Phase 8: Type System Finalization
-**Target: Complete C++ ownership of all types**
+**Target: C++ becomes source of truth for all types**
 
-Phase 4.5 created BIND(C) struct definitions and added interop attributes. Phase 8 completes the transition: C++ becomes the source of truth for all type definitions, and Fortran uses thin wrappers during the remaining transition period.
+Phase 4.5 did the heavy lifting: all types are already C structs with BIND(C) attributes. Phase 8 completes the transition by making C++ the canonical owner of the type definitions.
 
-- [ ] Move struct definitions from Fortran to C++ headers — C++ structs become the canonical definitions, Fortran types become `BIND(C)` wrappers that mirror them.
-- [ ] Translate `ControlParameters` fully — replace the opaque-pointer accessor pattern with a C++ struct. ALLOCATABLE arrays become `std::vector<double>` or pointer+size pairs with a Fortran marshalling layer.
-- [ ] Translate `PerformanceData` — ALLOCATABLE lookup table arrays become C++ owned.
-- [ ] Translate `ErrorVariables` — replace ALLOCATABLE CHARACTER with `char[1024]` or `std::string` with C bridge.
-- [ ] C++ constants header — `constexpr double PI = ...`, `using DbKi = double`, etc.
-- [ ] Verify mixed Fortran/C++ build still produces byte-identical simulation output
+- [ ] Move struct definitions from Fortran to C++ headers — C++ structs become the canonical definitions. Fortran types become thin `BIND(C)` wrappers that mirror the C++ layout.
+- [ ] C++ constants header — `constexpr double PI = ...`, `using DbKi = double`, etc. Replace Constants.f90 as the source of truth.
+- [ ] Remove fixed-size array workarounds if desired — ControlParameters and PerformanceData can optionally transition from fixed-max arrays to `std::vector<double>` now that C++ owns the types. (Only worthwhile if the fixed bounds cause practical issues.)
+- [ ] Verify mixed Fortran/C++ build still produces byte-identical simulation output.
 
 ### Phase 9: I/O and Platform Modules
 **Target: ReadSetParameters, ROSCO_Helpers, ROSCO_IO, SysSubs, ExtControl, ZeroMQInterface**
