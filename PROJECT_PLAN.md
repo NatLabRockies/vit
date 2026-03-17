@@ -215,11 +215,11 @@ Each phase unlocks new translation targets. Phases are ordered by dependency —
 ### Phase 1: Low-Hanging Fruit — No VIT Changes
 **Target: 7/14 Functions.f90**
 
-| Task | Details |
-|------|---------|
-| Integrate `wrap_360` | Already verified. Run `vit integrate wrap_360 ...` |
-| Translate + verify + integrate `sigma` | All scalar + ErrorVariables passthrough. Same pattern as existing verified functions |
-| Translate + verify + integrate `CPfunction` | Fixed `CP(4)` array + scalar. Calls `saturate` — translation just implements the exponential-polynomial formula |
+- [ ] Integrate `wrap_360` — already verified, run `vit integrate wrap_360 ...`
+- [ ] Translate + verify + integrate `sigma` — all scalar + ErrorVariables passthrough, same pattern as existing verified functions
+- [ ] Translate + verify + integrate `CPfunction` — fixed `CP(4)` array + scalar, calls `saturate` internally but translation just implements the exponential-polynomial formula
+- [ ] Run full verification regression (all 7 functions pass)
+- [ ] Update `vit.yaml` translations section
 
 **VIT changes**: None.
 **Effort estimate**: Small — writing 3 C++ translations and running the pipeline.
@@ -227,75 +227,103 @@ Each phase unlocks new translation targets. Phases are ordered by dependency —
 ### Phase 2: Fixed-Size Arrays + Subroutines
 **Target: 11/14 Functions.f90**
 
-| VIT Enhancement | Details |
-|----------------|---------|
-| Explicit-dimension array support | `A(3,3)` in Fortran → `double* A` with known size in C. Interface gen must recognize `DIMENSION(3,3)` vs `DIMENSION(:)` and handle accordingly. No synthetic size param needed — the size is compile-time known. |
-| Subroutine pipeline validation | VIT's interface_gen.py has subroutine support (BIND(C) SUBROUTINE, INTENT(OUT) args) but it's never been tested end-to-end. Validate with ColemanTransform as the first real SUBROUTINE target. |
-| Array-valued function results | `matinv3` returns `B(3,3)`, `identity` returns `A(n,n)`. In C, array returns become pointer args. VIT needs to transform the interface: Fortran FUNCTION returning array → C function with output pointer parameter. |
+- [ ] Explicit-dimension array support — `A(3,3)` in Fortran → `double* A` with known size in C. Interface gen must recognize `DIMENSION(3,3)` vs `DIMENSION(:)` and handle accordingly. No synthetic size param needed — the size is compile-time known.
+- [ ] Subroutine pipeline validation — VIT's interface_gen.py has subroutine support (BIND(C) SUBROUTINE, INTENT(OUT) args) but it's never been tested end-to-end. Validate with ColemanTransform as the first real SUBROUTINE target.
+- [ ] Array-valued function results — `matinv3` returns `B(3,3)`, `identity` returns `A(n,n)`. In C, array returns become pointer args. VIT needs to transform the interface: Fortran FUNCTION returning array → C function with output pointer parameter.
+- [ ] Fix INTENT(OUT) array handling in subroutine interface generation
+- [ ] Translate + verify + integrate `matinv3`
+- [ ] Translate + verify + integrate `identity`
+- [ ] Translate + verify + integrate `ColemanTransform`
+- [ ] Translate + verify + integrate `ColemanTransformInverse`
+- [ ] Translate + verify + integrate `unwrap`
+- [ ] Run full verification regression (all 11 functions pass)
 
 **New functions unlocked**: `matinv3`, `identity`, `ColemanTransform`, `ColemanTransformInverse`, `unwrap`
 
 ### Phase 3: 2D Assumed-Shape Arrays
 **Target: 12/14 Functions.f90**
 
-| VIT Enhancement | Details |
-|----------------|---------|
-| Multi-dimensional assumed-shape | `DIMENSION(:,:)` must generate two size params (`n_rows`, `n_cols`), not one. Current code silently generates broken interfaces for 2D. Add rank detection and per-dimension size params. |
-| Guard against unsupported ranks | Add explicit error for `DIMENSION(:,:,:)` and higher until supported. |
+- [ ] Multi-dimensional assumed-shape — `DIMENSION(:,:)` must generate two size params (`n_rows`, `n_cols`), not one. Current code silently generates broken interfaces for 2D. Add rank detection and per-dimension size params.
+- [ ] Guard against unsupported ranks — add explicit error for `DIMENSION(:,:,:)` and higher until supported.
+- [ ] Translate + verify + integrate `interp2d`
+- [ ] Run full verification regression (all 12 functions pass)
 
 **New function unlocked**: `interp2d`
 
 ### Phase 4: Load-Bearing Derived Types
 **Target: 14/14 Functions.f90 (module complete)**
 
-| VIT Enhancement | Details |
-|----------------|---------|
-| Derived type registry in CLI | Wire the `derived_types` parameter from `get_type_mapping()` through the CLI pipeline. Currently hardcoded to None, defaulting all TYPE(...) to passthrough. |
-| BIND(C) struct generation | For Tier 1 types (FilterParameters, rlParams, etc.), auto-generate C struct definitions from parsed TYPE blocks. |
-| Field extraction strategy | For read-only derived type access (like AeroDynTorque reading `CntrPar%WE_BladeRadius`), generate a Fortran wrapper that extracts fields and passes them individually to the C function. |
-| OPTIONAL argument support | `ratelimit` has `OPTIONAL :: ResetValue`. Interface gen must handle PRESENT() checks in the Fortran wrapper and default values in C. |
+- [ ] Derived type registry in CLI — wire the `derived_types` parameter from `get_type_mapping()` through the CLI pipeline. Currently hardcoded to None, defaulting all TYPE(...) to passthrough.
+- [ ] BIND(C) struct generation — for Tier 1 types (FilterParameters, rlParams, etc.), auto-generate C struct definitions from parsed TYPE blocks.
+- [ ] Field extraction strategy — for read-only derived type access (like AeroDynTorque reading `CntrPar%WE_BladeRadius`), generate a Fortran wrapper that extracts fields and passes them individually to the C function.
+- [ ] OPTIONAL argument support — `ratelimit` has `OPTIONAL :: ResetValue`. Interface gen must handle PRESENT() checks in the Fortran wrapper and default values in C.
+- [ ] Translate + verify + integrate `ratelimit`
+- [ ] Translate + verify + integrate `AeroDynTorque`
+- [ ] Run full verification regression (all 14 functions pass — Functions.f90 complete)
 
 **New functions unlocked**: `ratelimit`, `AeroDynTorque`
 
 ### Phase 5: Filters Module
 **Target: All of Filters.f90**
 
-| VIT Enhancement | Details |
-|----------------|---------|
-| Instance-based state pattern | All filters use `FilterParameters` with an `inst` index selecting which of 1024 slots to use. The C++ translation needs the struct (Tier 1, BIND(C)-compatible) and the instance index. |
-| Multi-state-type functions | `PreFilterMeasuredSignals` takes 5 derived type args, most of which are load-bearing. |
+- [ ] Instance-based state pattern — all filters use `FilterParameters` with an `inst` index selecting which of 1024 slots to use. The C++ translation needs the struct (Tier 1, BIND(C)-compatible) and the instance index.
+- [ ] Multi-state-type functions — `PreFilterMeasuredSignals` takes 5 derived type args, most of which are load-bearing.
+- [ ] Translate + verify + integrate `LPFilter`
+- [ ] Translate + verify + integrate `SecLPFilter`
+- [ ] Translate + verify + integrate `SecLPFilter_Vel`
+- [ ] Translate + verify + integrate `HPFilter`
+- [ ] Translate + verify + integrate `NotchFilterSlopes`
+- [ ] Translate + verify + integrate `NotchFilter`
+- [ ] Translate + verify + integrate `PreFilterMeasuredSignals`
 
 **New functions unlocked**: `LPFilter`, `SecLPFilter`, `SecLPFilter_Vel`, `HPFilter`, `NotchFilter`, `NotchFilterSlopes`, `PreFilterMeasuredSignals`
 
 ### Phase 6: Controllers Module
 **Target: All of Controllers.f90**
 
-| VIT Enhancement | Details |
-|----------------|---------|
-| Large subroutine support | Controller subroutines are 100-200 lines with complex control flow. VIT's extraction and verification should handle these mechanically, but testing at scale is needed. |
-| Complex derived type field access | Controllers read AND write fields on LocalVariables and ControlParameters. This goes beyond Phase 4's read-only extraction. |
-| Cross-module call chains | Controllers call Filters and Functions. By this phase, those modules are already translated, so the C++ controllers call C++ filters and functions directly. |
+- [ ] Large subroutine support — controller subroutines are 100-200 lines with complex control flow. VIT's extraction and verification should handle these mechanically, but testing at scale is needed.
+- [ ] Complex derived type field access — controllers read AND write fields on LocalVariables and ControlParameters. This goes beyond Phase 4's read-only extraction.
+- [ ] Cross-module call chains — controllers call Filters and Functions. By this phase, those modules are already translated, so the C++ controllers call C++ filters and functions directly.
+- [ ] Translate + verify + integrate `PIController`
+- [ ] Translate + verify + integrate `PIDController`
+- [ ] Translate + verify + integrate `PIIController`
+- [ ] Translate + verify + integrate `ResController`
+- [ ] Translate + verify + integrate `PitchControl`
+- [ ] Translate + verify + integrate `VariableSpeedControl`
+- [ ] Translate + verify + integrate `YawRateControl`
+- [ ] Translate + verify + integrate `IPC`
+- [ ] Translate + verify + integrate `ForeAftDamping`
+- [ ] Translate + verify + integrate `FloatingFeedback`
+- [ ] Translate + verify + integrate `FlapControl`
+- [ ] Translate + verify + integrate `ActiveWakeControl`
+- [ ] Translate + verify + integrate `CableControl`
+- [ ] Translate + verify + integrate `StructuralControl`
 
 **New functions unlocked**: All 14 Controllers.f90 subroutines/functions
 
 ### Phase 7: ControllerBlocks Module
 **Target: All of ControllerBlocks.f90**
 
-| Key Challenges | Details |
-|---------------|---------|
-| Kalman filter | `WindSpeedEstimator` uses 3×3 matrix operations via the WE derived type. By this phase, matinv3 and identity are already translated. |
-| State machines | `StateMachine`, `Startup`, `Shutdown` have multi-stage sequential logic with persistent state. |
+- [ ] Kalman filter support — `WindSpeedEstimator` uses 3×3 matrix operations via the WE derived type. By this phase, matinv3 and identity are already translated.
+- [ ] State machine support — `StateMachine`, `Startup`, `Shutdown` have multi-stage sequential logic with persistent state.
+- [ ] Translate + verify + integrate `WindSpeedEstimator`
+- [ ] Translate + verify + integrate `StateMachine`
+- [ ] Translate + verify + integrate `ComputeVariablesSetpoints`
+- [ ] Translate + verify + integrate `Startup`
+- [ ] Translate + verify + integrate `Shutdown`
+- [ ] Translate + verify + integrate `PowerControlSetpoints`
+- [ ] Translate + verify + integrate `SetpointSmoother`
+- [ ] Translate + verify + integrate `RefSpeedExclusion`
 
 **New functions unlocked**: All 8 ControllerBlocks.f90 subroutines
 
 ### Phase 8: Type System Translation
 **Target: ROSCO_Types.f90, Constants.f90**
 
-| Task | Details |
-|------|---------|
-| C++ struct definitions | Rewrite all 12 derived types as C++ structs. ALLOCATABLE arrays become `std::vector<double>`. CHARACTER becomes `std::string`. Nested types become nested structs. |
-| C++ constants header | `constexpr double PI = ...`, `typedef double DbKi`, etc. |
-| Fortran interop shims | Thin BIND(C) Fortran module wrapping C++ structs so remaining Fortran code can use them during transition. |
+- [ ] C++ struct definitions — rewrite all 12 derived types as C++ structs. ALLOCATABLE arrays become `std::vector<double>`. CHARACTER becomes `std::string`. Nested types become nested structs.
+- [ ] C++ constants header — `constexpr double PI = ...`, `typedef double DbKi`, etc.
+- [ ] Fortran interop shims — thin BIND(C) Fortran module wrapping C++ structs so remaining Fortran code can use them during transition.
+- [ ] Verify mixed Fortran/C++ build still produces byte-identical simulation output
 
 ### Phase 9: I/O and Platform Modules
 **Target: ReadSetParameters, ROSCO_Helpers, ROSCO_IO, SysSubs, ExtControl, ZeroMQInterface**
@@ -313,26 +341,30 @@ These modules are better translated directly (human or LLM rewrite) than through
 
 However, VIT's simulation regression test (baseline vs. integrated diff) is still essential for verifying that the translated I/O code produces identical behavior.
 
+- [ ] Translate `ReadSetParameters` (5 subroutines, ~1,804 lines)
+- [ ] Translate `ROSCO_Helpers` (~20 functions, ~1,724 lines)
+- [ ] Translate `ROSCO_IO` (3 subroutines, ~1,199 lines)
+- [ ] Translate `SysSubs` (3 functions, ~100 lines)
+- [ ] Translate `ExtControl` (2 subroutines, 137 lines)
+- [ ] Translate `ZeroMQInterface` (1 subroutine, 84 lines)
+- [ ] Full simulation regression after each module
+
 ### Phase 10: Entry Point and Final Assembly
 **Target: DISCON.F90 → pure C++ libdiscon.so**
 
-| Task | Details |
-|------|---------|
-| Translate DISCON | 162-line orchestrator: initialization, parameter reading, controller dispatch. By this phase, everything it calls is already C++. |
-| Remove Fortran from build | CMakeLists.txt becomes C++-only. No more `gfortran`. |
-| Full simulation regression | Run the complete wind turbine simulation and confirm byte-identical output to the original pure-Fortran baseline. |
-| Binary compatibility | Verify the C++ `libdiscon.so` works as a drop-in replacement: same symbol names, same calling convention (Bladed DLL interface). |
+- [ ] Translate `DISCON` — 162-line orchestrator: initialization, parameter reading, controller dispatch. By this phase, everything it calls is already C++.
+- [ ] Remove Fortran from build — CMakeLists.txt becomes C++-only. No more `gfortran`.
+- [ ] Full simulation regression — run the complete wind turbine simulation and confirm byte-identical output to the original pure-Fortran baseline.
+- [ ] Binary compatibility — verify the C++ `libdiscon.so` works as a drop-in replacement: same symbol names, same calling convention (Bladed DLL interface).
 
 ### Phase 11: Generalization Beyond ROSCO
 **Target: VIT as a general-purpose tool**
 
-| Task | Details |
-|------|---------|
-| Abstract kind aliases | Support arbitrary `kind_aliases` configuration, not just ROSCO's ReKi/DbKi/IntKi |
-| Build system support | Add support for Make, Autotools, and other build systems beyond CMake |
-| Documentation | User guide, API reference, tutorial for new codebases |
-| Packaging | PyPI distribution, Docker image, CI/CD |
-| Test on another codebase | Validate VIT on a second Fortran project to prove generality |
+- [ ] Abstract kind aliases — support arbitrary `kind_aliases` configuration, not just ROSCO's ReKi/DbKi/IntKi
+- [ ] Build system support — add support for Make, Autotools, and other build systems beyond CMake
+- [ ] Documentation — user guide, API reference, tutorial for new codebases
+- [ ] Packaging — PyPI distribution, Docker image, CI/CD
+- [ ] Test on another codebase — validate VIT on a second Fortran project to prove generality
 
 ---
 

@@ -417,6 +417,23 @@ When the user says "add this to development notes", "make a dev note", or simila
 **Scope:** [area of change]
 ```
 
+## Project Plan
+
+`PROJECT_PLAN.md` is the master roadmap for translating all of ROSCO from Fortran to C++. It contains the function-by-function assessment, full module map, derived type strategy, and an 11-phase enhancement roadmap.
+
+### Execution Process
+
+We execute the plan one phase at a time. For each phase:
+
+1. **Review**: Read the phase in `PROJECT_PLAN.md` and understand the scope
+2. **Plan**: Create a detailed implementation plan for the phase
+3. **Execute**: Implement the VIT enhancements and/or write C++ translations
+4. **Test**: Run unit tests, verification regression, and any phase-specific validation
+5. **Update**: Mark the phase and its sub-items as complete in `PROJECT_PLAN.md`. Update the phase description to reflect what was actually done — adjustments, additional work discovered, or better approaches found during implementation
+6. **Dev note**: Write a dev note capturing the phase completion
+
+`PROJECT_PLAN.md` uses checkboxes (`- [ ]` / `- [x]`) for phases and sub-items so progress is visible at a glance. The document is a living record: it should always reflect reality, not just the original plan.
+
 ## Demo
 
 There is a scripted demo in `demo/demo_script.md`. When the user says "Start VIT", read that file and follow it exactly — every text block, tool call, and command, in order, verbatim. Do not improvise, add extra commentary, or skip steps. The script has two phases: an Opening (output function list, then wait for user input) and Acts 1–6 (triggered when the user says "interp1d").
