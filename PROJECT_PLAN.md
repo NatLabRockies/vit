@@ -494,28 +494,56 @@ Phase 4.5 created BIND(C) structs and pointer+size views. Phase 8 transfers owne
 ### Phase 9: I/O and Platform Modules
 **Target: ReadSetParameters, ROSCO_Helpers, ROSCO_IO, SysSubs, ExtControl, ZeroMQInterface**
 
-VIT will develop an I/O verification capability for these modules. I/O code has different "runtime state" than algorithmic code — the outputs are populated structs, serialized bytes, and formatted strings rather than numerical computation results. The verification approach will differ from the extract/verify pipeline used for algorithmic functions, but verification must exist. (I/O verification design TBD — to be detailed before Phase 9 execution.)
+Investigation (2026-03-17) classified every I/O function into four categories, each with a distinct VIT verification strategy. The verification capabilities are built at the start of this phase, then used to verify each translation.
 
-Candidate approaches under consideration:
-- **Struct snapshot comparison**: Capture populated ControlParameters/PerformanceData structs after Fortran and C++ parsers each process the same config file; diff field by field.
-- **Output equivalence**: Compare downstream simulation behavior — any I/O bug propagates to different simulation output.
-- **Round-trip verification**: For serialization (WriteRestartFile/ReadRestartFile), verify Fortran-written files can be read by C++ and vice versa with identical struct state.
+**Category 1 — Pure transformers (standard VIT pipeline):**
+Functions with no file I/O — pure input→output transformations. Verified using the existing extract → verify pipeline.
+
+- `ReadAvrSWAP` — unpacks avrSWAP array into LocalVar fields
+- Helper functions: `ParseDbAry`, `ParseInAry`, `FindLine`, `GetWords`, `Conv2UC`, `GetPath`, `GetRoot`, `PathIsRelative`, `Int2LStr`
+
+**Category 2 — File readers (VIT pipeline + file pre-staging):**
+Functions that read files and populate structs. Deterministic: same input file → same output struct. VIT enhancement: `vit extract` captures file dependencies (which files the function opens) and copies them into the kernel directory. Verification compares the populated struct between Fortran and C++ given the same input file.
+
+- `ReadControlParameterFileSub` — reads DISCON.in → populates ControlParameters
+- `ReadCpFile` — reads Cp_Ct_Cq CSV → populates PerformanceData
+- `ReadRestartFile` — reads binary checkpoint → populates LocalVar
+
+**Category 3 — File writers (VIT `--io` mode with output file comparison):**
+Functions whose output is a file on disk, not a Fortran argument. KGen cannot capture file system side effects. VIT enhancement: `vit verify --io` captures input struct state, runs both Fortran and C++ with those inputs, byte-compares the output files.
+
+- `WriteRestartFile` — serializes LocalVar → binary checkpoint file
+
+**Category 4 — Diagnostic/logging (VIT `--diagnostic` mode with structured diff):**
+Functions with side effects only, stateful (SAVE variables), non-deterministic elements (timestamps). Correctness means "equivalent information," not "identical bytes." This pattern recurs across Fortran codebases. VIT enhancement: `vit verify --diagnostic` uses a configurable comparison spec (which columns to compare, which to ignore, tolerance for numeric fields, format-agnostic whitespace handling).
+
+- `Debug` — formatted text output to debug files
+
+**Platform modules (direct translation + simulation regression):**
 
 | Module | Lines | C++ Approach |
 |--------|-------|-------------|
-| ReadSetParameters | 1,804 | Structured config parser, avrSWAP array accessor |
-| ROSCO_Helpers | 1,724 | Standard C++ string/file utilities (`<fstream>`, `<string>`, `<sstream>`) |
-| ROSCO_IO | 1,199 | Binary I/O with `fread`/`fwrite`, text output with `<fstream>` |
 | SysSubs | ~100 | `dlopen`/`dlsym` on Linux, `LoadLibrary`/`GetProcAddress` on Windows |
 | ExtControl | 137 | Thin wrapper around dlopen |
 | ZeroMQInterface | 84 | Direct C++ ZMQ bindings (libzmq or cppzmq) |
 
-- [ ] Translate `ReadSetParameters` (5 subroutines, ~1,804 lines)
-- [ ] Translate `ROSCO_Helpers` (~20 functions, ~1,724 lines)
-- [ ] Translate `ROSCO_IO` (3 subroutines, ~1,199 lines)
-- [ ] Translate `SysSubs` (3 functions, ~100 lines)
-- [ ] Translate `ExtControl` (2 subroutines, 137 lines)
-- [ ] Translate `ZeroMQInterface` (1 subroutine, 84 lines)
+**VIT I/O verification capabilities (build first, then use):**
+- [ ] File pre-staging in `vit extract` — capture file dependencies alongside function state
+- [ ] `vit verify --io` mode — output file comparison for file writers
+- [ ] `vit verify --diagnostic` mode — structured diff with configurable comparison spec (columns to compare/ignore, numeric tolerance, whitespace handling)
+- [ ] `vit.yaml` configuration for I/O modes (`io_mode: file_reader | file_writer | diagnostic`, `file_dependencies`, `output_files`, `comparison_spec`)
+
+**Translations:**
+- [ ] Translate `ReadAvrSWAP` (Category 1 — standard pipeline)
+- [ ] Translate helper functions: `ParseDbAry`, `ParseInAry`, `FindLine`, `GetWords`, etc. (Category 1)
+- [ ] Translate `ReadControlParameterFileSub` (Category 2 — file pre-staging)
+- [ ] Translate `ReadCpFile` (Category 2)
+- [ ] Translate `ReadRestartFile` (Category 2)
+- [ ] Translate `WriteRestartFile` (Category 3 — output file comparison)
+- [ ] Translate `Debug` (Category 4 — structured diff)
+- [ ] Translate `SysSubs` (platform — simulation regression)
+- [ ] Translate `ExtControl` (platform — simulation regression)
+- [ ] Translate `ZeroMQInterface` (platform — simulation regression)
 - [ ] Full simulation regression after each module
 
 ### Phase 10: Entry Point and Final Assembly
@@ -551,6 +579,7 @@ Issues that should be addressed during the enhancement roadmap. These are not bl
 | ELEMENTAL/PURE/RECURSIVE prefixes not recognized | Function declaration not matched by parser | Phase 6 |
 | Fortran/C struct memory layout mismatch | Fields at wrong offsets if compiler pads differently | Phase 4.5 |
 | Column-major arrays passed to C++ without transposition | C++ computes wrong results with Fortran-layout matrices | Phase 4.5 |
+| No I/O verification capability | File readers/writers/diagnostics cannot be verified through existing pipeline | Phase 9 |
 
 ### Correctness Issues
 
