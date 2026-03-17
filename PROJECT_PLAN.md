@@ -4,7 +4,7 @@
 
 ### Vision
 
-Fully translate the ROSCO wind turbine controller from Fortran to C++, producing a drop-in replacement `libdiscon.so` that is pure C++ and produces byte-identical simulation output to the Fortran original. VIT orchestrates the verification and integration; humans or LLMs write the C++ translations.
+Fully translate the ROSCO wind turbine controller from Fortran to C++, producing a drop-in replacement `libdiscon.so` that is pure C++ and produces byte-identical simulation output to the Fortran original. VIT orchestrates the verification and integration. Claude (AI) writes the C++ translations, scaffolded by the `vit translate` command (see Section 4a).
 
 ### Current State (2026-03-17)
 
@@ -171,7 +171,7 @@ Field extraction — passing individual derived type fields as separate C argume
 | `piParams` | 5 | All `REAL(DbKi), DIMENSION(1024)`. |
 | `resParams` | 4 | All `REAL(DbKi), DIMENSION(1024)`. |
 | `rlParams` | 1 | Single `REAL(DbKi), DIMENSION(1024)`. |
-| `WE` | 7 | 4 scalars + `DIMENSION(3,3)` + 2× `DIMENSION(3,1)`. Note: Fortran column-major layout. |
+| `WE` | 7 | 4 scalars + `DIMENSION(3,3)` + 2× `DIMENSION(3,1)`. VIT auto-generates transposition at BIND(C) boundary so C++ always uses row-major indexing. |
 | `ObjectInstances` | 9 | All `INTEGER(IntKi)`. |
 | `DebugVariables` | 22 | All `REAL(DbKi)` scalars. |
 
@@ -190,36 +190,27 @@ LocalVariables contains 139 REAL(DbKi) scalars, fixed-size arrays, and 5 nested 
 
 After these fixes, the entire 161-field type (including nested WE, FilterParameters, piParams, resParams, rlParams) is a plain C struct. Total size ~305 KB, passed by pointer.
 
-**ControlParameters — fixed-size arrays replacing ALLOCATABLE (213 fields):**
+**ControlParameters — pointer+size view during transition, C++ ownership in final state (213 fields):**
 
-Investigation overturned the earlier "opaque pointer" assumption:
+Investigation confirmed:
+1. **Truly read-only**: Every access in Controllers, Filters, and ControllerBlocks is read-only. `INTENT(INOUT)` in signatures is legacy.
+2. **All ALLOCATABLE arrays allocated once at init**: Sizes from config file scalars, never reallocated.
 
-1. **Truly read-only**: Every access in Controllers, Filters, and ControllerBlocks is read-only. No algorithmic function writes to CntrPar. `INTENT(INOUT)` in signatures is legacy.
-2. **All ALLOCATABLE arrays allocated once at init**: Sizes come from config file scalars (`PC_GS_n`, `VS_n`, `F_NumNotchFilts`, etc.) and never change.
-3. **Sizes are bounded and small**: Gain schedules 20–50 entries, notch filters 0–10, performance tables 36×26, open-loop timeseries 100–1000.
+**Strategy — two-phase ownership model:**
+- **During transition** (mixed Fortran/C++): C++ receives a pointer+size view struct. A thin Fortran BIND(C) routine populates it once at init by copying scalar values and taking `C_LOC` of each ALLOCATABLE array. C++ reads through pointers into Fortran-owned memory. No ROSCO source modifications, no arbitrary max bounds.
+- **Final state** (pure C++): C++ owns the data with `std::vector<double>`. The translated ReadSetParameters allocates naturally from the config file.
+- **VIT tracks ownership state** of each type — "view" (Fortran-owned, C++ reads via pointers) vs. "owned" (C++ allocates and manages). When all Fortran consumers of a type are translated, VIT flags that ownership can transfer.
 
-**Strategy**: Replace each ALLOCATABLE with a fixed-size array using a compile-time max bound:
-```c
-#define MAX_GS_POINTS 100
-#define MAX_NOTCH_FILTERS 15
-#define MAX_OL_POINTS 2000
-#define MAX_PERF_PITCH 60
-#define MAX_PERF_TSR 60
-// etc.
-```
+The 135 scalar fields and ~55 INTEGER fields are copied directly into the view struct. The 76 ALLOCATABLE arrays become `double*` + `int` size pairs. The 4 CHARACTER fields become `char[1024]`.
 
-Each array keeps its existing size scalar (e.g., `PC_GS_n`) to indicate how many elements are valid. The 135 scalar fields and ~55 INTEGER fields are already C-compatible. The 4 CHARACTER fields become `char[1024]`.
-
-Total struct size ~500 KB with generous bounds — large but allocated once and passed by pointer.
-
-**PerformanceData — merge into ControlParameters or use fixed-size arrays (5 fields):**
+**PerformanceData — same pointer+size pattern (5 fields):**
 
 All fields are ALLOCATABLE lookup tables allocated once from `Cp_Ct_Cq.NREL5MW.txt`:
 - `TSR_vec(:)` — typically 26 entries
 - `Beta_vec(:)` — typically 36 entries
 - `Cp_mat(:,:)`, `Ct_mat(:,:)`, `Cq_mat(:,:)` — typically 26×36
 
-Never modified after init. Strategy: fixed-size arrays with max bounds (`double Cp_mat[MAX_PERF_TSR][MAX_PERF_PITCH]`), same pattern as ControlParameters. Can be kept as a separate struct or merged into ControlParameters (which already holds `PerfTableSize`).
+Never modified after init. Same pointer+size view during transition, `std::vector` in final state.
 
 **ErrorVariables — passthrough + simple C error args (3 fields + 1 ALLOCATABLE):**
 
@@ -241,11 +232,64 @@ Strategy for complete translation:
 | `ExtDLL_Type` | 4 | Already uses `C_PTR`, `C_FUNPTR`, `CHARACTER(1024)` — excellent BIND(C) candidate. |
 | `ExtControlType` | 1 | Single ALLOCATABLE `avrSWAP` array. Replace with fixed-size or pointer+size. |
 
+### KGen Strategy
+
+KGen workarounds are handled case-by-case. Every new Fortran pattern (subroutines, 2D arrays, stateful functions) may surface new KGen issues. Strategy: favor workarounds over KGen patches until the system is stable with rigorous regression tests. Once the full pipeline is running, selectively replace brittle workarounds with targeted KGen patches. KGen has been forked and is open to modification when justified.
+
 ### Timeline
 
-- **Phase 4.5**: All type changes applied. C++ struct headers generated. BIND(C) attributes added to Fortran types. Memory layout validated.
+- **Phase 4.5**: All type changes applied. C++ struct headers generated. BIND(C) attributes added to Fortran types. Memory layout validated. Pointer+size view structs for ALLOCATABLE types.
 - **Phases 5–7**: All functions receive full structs by pointer. C++ accesses fields naturally.
-- **Phase 8**: C++ becomes source of truth for type definitions. Fortran types become thin BIND(C) wrappers.
+- **Phase 8**: Ownership transfer — types move from Fortran-owned (view) to C++ owned (`std::vector`). C++ becomes source of truth for type definitions.
+
+---
+
+## 4a. Translation Workflow
+
+### `vit translate` Command
+
+VIT provides a `vit translate` command that scaffolds a C++ translation file from a parsed Fortran function signature. The command generates:
+- The correct `extern "C"` wrapper with BIND(C)-compatible parameter types
+- `#include` directives for relevant C++ struct headers
+- Parameter conventions matching VIT's interface generation (size params for arrays, pointer params for structs, passthrough exclusions for ErrorVariables)
+- A placeholder body for the algorithm implementation
+
+Claude fills in the algorithm body. VIT then verifies the translation against runtime state (extract → verify) and integrates it (integrate → rebuild → diff).
+
+### Translation Storage
+
+Translations are organized by module:
+```
+translations/
+  Functions/
+    saturate.cpp
+    wrap_180.cpp
+    interp1d.cpp
+    sigma.cpp
+    ...
+  Filters/
+    LPFilter.cpp
+    SecLPFilter.cpp
+    ...
+  Controllers/
+    PIController.cpp
+    PitchControl.cpp
+    ...
+  ControllerBlocks/
+    WindSpeedEstimator.cpp
+    ...
+```
+
+### Translation Metadata
+
+Each translation file carries metadata (in a header comment block):
+- Source Fortran file and function name
+- Fortran function signature at time of translation
+- Hash of original Fortran source (to detect upstream changes)
+- VIT version used for scaffolding
+- Verification status (verified/not yet verified)
+
+Canonical copies live in `translations/`. They are copied into the ROSCO working directory for verification and integration, matching the existing pattern.
 
 ---
 
@@ -292,17 +336,17 @@ Each phase unlocks new translation targets. Phases are ordered by dependency —
 **New function unlocked**: `interp2d`
 
 ### Phase 4: Load-Bearing Derived Types
-**Target: 14/14 Functions.f90 (module complete)**
+**Target: 13/14 Functions.f90**
 
 - [ ] Derived type registry in CLI — wire the `derived_types` parameter from `get_type_mapping()` through the CLI pipeline. Currently hardcoded to None, defaulting all TYPE(...) to passthrough.
 - [ ] BIND(C) struct generation for `rlParams` — auto-generate C struct from parsed TYPE block. `rlParams` is the simplest load-bearing type (1 fixed-size array), used by `ratelimit`.
 - [ ] OPTIONAL argument support — `ratelimit` has `OPTIONAL :: ResetValue`. Interface gen must handle PRESENT() checks in the Fortran wrapper and default values in C.
-- [ ] ControlParameters field extraction for `AeroDynTorque` — this function reads only 3 fields (`WE_BladeRadius`, `WE_RhoAir` from CntrPar, `WE_Vw` from LocalVar). Small enough for field extraction as a bridge until Phase 4.5. PerformanceData arrays (`Beta_vec`, `TSR_vec`, `Cp_mat`) passed as separate pointer+size args.
 - [ ] Translate + verify + integrate `ratelimit`
-- [ ] Translate + verify + integrate `AeroDynTorque`
-- [ ] Run full verification regression (all 14 functions pass — Functions.f90 complete)
+- [ ] Run full verification regression (all 13 functions pass)
 
-**New functions unlocked**: `ratelimit`, `AeroDynTorque`
+`AeroDynTorque` requires ControlParameters, PerformanceData, and LocalVariables — it moves to after Phase 4.5 where it gets the real struct solution, not a bridge workaround.
+
+**New function unlocked**: `ratelimit`
 
 ### Phase 4.5: Complete Type System C Structs
 **Target: C++ struct definitions for ALL types, unblocking Phases 5–7**
@@ -340,16 +384,28 @@ This makes the type system work reproducible and generalizable beyond ROSCO (Pha
 - [ ] Add `BIND(C)` attributes to all Fortran TYPE definitions.
 - [ ] Update all Fortran code referencing changed fields (COMPLEX → split reals, LOGICAL → integer).
 
-**ControlParameters — replace ALLOCATABLE with fixed-size arrays, then define C struct:**
-- [ ] Define compile-time max bounds for all 76 ALLOCATABLE arrays. Investigation confirmed all arrays are allocated once at init, never reallocated, with bounded sizes (gain schedules 20–50, notch filters 0–10, performance tables 36×26, open-loop timeseries 100–1000).
-- [ ] Replace each `DIMENSION(:), ALLOCATABLE` with `DIMENSION(MAX_*)`. Size scalars (PC_GS_n, VS_n, etc.) remain to indicate valid element count.
-- [ ] Replace 4 CHARACTER fields with `CHARACTER(1024)` (fixed-length).
+**ControlParameters — pointer+size view struct:**
+- [ ] Create C++ view struct with scalar fields copied and ALLOCATABLE arrays as `double*` + `int` size pairs. No ROSCO source modifications.
+- [ ] Write Fortran BIND(C) routine that populates the view struct once at init: copy scalars, take `C_LOC` of each ALLOCATABLE array, pass array sizes.
+- [ ] Replace 4 CHARACTER fields with `char[1024]` in the view struct.
 - [ ] Verify ControlParameters is truly read-only in algorithmic code (investigation confirmed: INTENT(INOUT) is legacy, all accesses are reads).
-- [ ] Define C++ struct. Total ~500 KB with generous bounds. Allocated once, passed by pointer.
 
-**PerformanceData — same fixed-size pattern:**
-- [ ] Replace ALLOCATABLE arrays with fixed-size: `TSR_vec(MAX_PERF_TSR)`, `Beta_vec(MAX_PERF_PITCH)`, `Cp_mat(MAX_PERF_TSR, MAX_PERF_PITCH)`, etc. Typical sizes: 26×36.
-- [ ] Define C++ struct. Can remain separate or merge into ControlParameters.
+**PerformanceData — same pointer+size view pattern:**
+- [ ] Create C++ view struct with ALLOCATABLE arrays as `double*` + size pairs.
+- [ ] Write Fortran BIND(C) routine to populate view.
+
+**Ownership tracking:**
+- [ ] Implement VIT ownership tracking for types — each type is tagged as "view" (Fortran-owned, C++ reads via pointers) or "owned" (C++ allocates and manages).
+- [ ] When all Fortran consumers of a type are translated, VIT flags that ownership can transfer to C++.
+
+**Multi-dimensional array transposition:**
+- [ ] VIT auto-detects multi-dimensional arrays in BIND(C) interfaces (e.g., `WE%P(3,3)`, `Cp_mat(:,:)`).
+- [ ] Generates transposition code in the Fortran wrapper at the boundary, so C++ always receives row-major data.
+- [ ] When Fortran is removed and C++ owns the data natively, transposition disappears.
+
+**AeroDynTorque — first function using the complete type system:**
+- [ ] Translate + verify + integrate `AeroDynTorque` — uses ControlParameters (view struct), PerformanceData (view struct), LocalVariables (BIND(C) struct), ErrorVariables (passthrough). This validates that the full type system works end-to-end.
+- [ ] Run full verification regression (all 14 functions pass — Functions.f90 complete)
 
 **ErrorVariables — replace ALLOCATABLE ErrMsg, keep passthrough pattern:**
 - [ ] Replace `CHARACTER(:), ALLOCATABLE :: ErrMsg` with `CHARACTER(1024)`. The DLL interface already uses a 1024-char buffer. No observed error message exceeds ~500 chars.
@@ -424,31 +480,35 @@ With Phase 4.5 complete, `WE` nested struct is accessible through `LocalVariable
 
 **New functions unlocked**: All 8 ControllerBlocks.f90 subroutines
 
-### Phase 8: Type System Finalization
+### Phase 8: Type Ownership Transfer
 **Target: C++ becomes source of truth for all types**
 
-Phase 4.5 did the heavy lifting: all types are already C structs with BIND(C) attributes. Phase 8 completes the transition by making C++ the canonical owner of the type definitions.
+Phase 4.5 created BIND(C) structs and pointer+size views. Phase 8 transfers ownership: C++ allocates and manages all data, Fortran wrappers become thin shims.
 
+- [ ] Transfer ALLOCATABLE types to C++ ownership — ControlParameters and PerformanceData pointer+size views become C++ structs with `std::vector<double>`. C++ ReadSetParameters (translated in Phase 9) allocates directly.
 - [ ] Move struct definitions from Fortran to C++ headers — C++ structs become the canonical definitions. Fortran types become thin `BIND(C)` wrappers that mirror the C++ layout.
 - [ ] C++ constants header — `constexpr double PI = ...`, `using DbKi = double`, etc. Replace Constants.f90 as the source of truth.
-- [ ] Remove fixed-size array workarounds if desired — ControlParameters and PerformanceData can optionally transition from fixed-max arrays to `std::vector<double>` now that C++ owns the types. (Only worthwhile if the fixed bounds cause practical issues.)
+- [ ] VIT ownership tracker confirms all types are now "owned" by C++.
 - [ ] Verify mixed Fortran/C++ build still produces byte-identical simulation output.
 
 ### Phase 9: I/O and Platform Modules
 **Target: ReadSetParameters, ROSCO_Helpers, ROSCO_IO, SysSubs, ExtControl, ZeroMQInterface**
 
-These modules are better translated directly (human or LLM rewrite) than through VIT's extract/verify pipeline. I/O and string-parsing logic doesn't have meaningful "runtime state" to capture — the value is in the logic, not in numerical correctness.
+VIT will develop an I/O verification capability for these modules. I/O code has different "runtime state" than algorithmic code — the outputs are populated structs, serialized bytes, and formatted strings rather than numerical computation results. The verification approach will differ from the extract/verify pipeline used for algorithmic functions, but verification must exist. (I/O verification design TBD — to be detailed before Phase 9 execution.)
+
+Candidate approaches under consideration:
+- **Struct snapshot comparison**: Capture populated ControlParameters/PerformanceData structs after Fortran and C++ parsers each process the same config file; diff field by field.
+- **Output equivalence**: Compare downstream simulation behavior — any I/O bug propagates to different simulation output.
+- **Round-trip verification**: For serialization (WriteRestartFile/ReadRestartFile), verify Fortran-written files can be read by C++ and vice versa with identical struct state.
 
 | Module | Lines | C++ Approach |
 |--------|-------|-------------|
-| ReadSetParameters | 1,804 | Structured config parser (key-value or YAML), avrSWAP array accessor |
-| ROSCO_Helpers | 1,724 | Standard C++ string/file utilities, mostly `<fstream>`, `<string>`, `<sstream>` |
+| ReadSetParameters | 1,804 | Structured config parser, avrSWAP array accessor |
+| ROSCO_Helpers | 1,724 | Standard C++ string/file utilities (`<fstream>`, `<string>`, `<sstream>`) |
 | ROSCO_IO | 1,199 | Binary I/O with `fread`/`fwrite`, text output with `<fstream>` |
 | SysSubs | ~100 | `dlopen`/`dlsym` on Linux, `LoadLibrary`/`GetProcAddress` on Windows |
-| ExtControl | 137 | Thin wrapper around dlopen — trivial |
+| ExtControl | 137 | Thin wrapper around dlopen |
 | ZeroMQInterface | 84 | Direct C++ ZMQ bindings (libzmq or cppzmq) |
-
-However, VIT's simulation regression test (baseline vs. integrated diff) is still essential for verifying that the translated I/O code produces identical behavior.
 
 - [ ] Translate `ReadSetParameters` (5 subroutines, ~1,804 lines)
 - [ ] Translate `ROSCO_Helpers` (~20 functions, ~1,724 lines)
@@ -490,6 +550,7 @@ Issues that should be addressed during the enhancement roadmap. These are not bl
 | CHARACTER function results assume numeric kind conversion | Would generate broken wrapper | Phase 4.5 |
 | ELEMENTAL/PURE/RECURSIVE prefixes not recognized | Function declaration not matched by parser | Phase 6 |
 | Fortran/C struct memory layout mismatch | Fields at wrong offsets if compiler pads differently | Phase 4.5 |
+| Column-major arrays passed to C++ without transposition | C++ computes wrong results with Fortran-layout matrices | Phase 4.5 |
 
 ### Correctness Issues
 
