@@ -309,6 +309,19 @@ Each phase unlocks new translation targets. Phases are ordered by dependency —
 
 Deep investigation (2026-03-17) found that **every ROSCO type can become a C struct** — no opaque pointers or accessor APIs needed. This phase solves the entire type system in one shot.
 
+**VIT `analyze-types` command — build the tool, then use it:**
+
+Rather than applying type fixes manually, this phase implements a new `vit analyze-types` command that performs the analysis deterministically and generates the artifacts. The manual investigation we did for ROSCO becomes the spec and golden test cases.
+
+The command takes a source directory and produces:
+- [ ] **Per-type BIND(C) compatibility report** — field-by-field analysis with specific blockers (ALLOCATABLE, CHARACTER, COMPLEX, LOGICAL, nested non-BIND(C) types).
+- [ ] **Fix prescriptions** — deterministic for known patterns: ALLOCATABLE → fixed-size with max bound, `CHARACTER(:), ALLOCATABLE` → `CHARACTER(N)`, `COMPLEX` → split real/imag `REAL` pair, `LOGICAL` → `INTEGER(C_INT)`.
+- [ ] **Usage analysis** — scan source tree for `TypeName%FieldName` patterns, classify read vs. write, report which functions access which fields.
+- [ ] **C++ struct header generation** — produce the `.h` file with C struct definitions matching the (fixed) Fortran layout.
+- [ ] **Fortran BIND(C) type modifications** — generate patched TYPE definitions with `BIND(C)` attributes and incompatible fields replaced.
+
+This makes the type system work reproducible and generalizable beyond ROSCO (Phase 11). The ROSCO analysis we already did serves as the validation target: the tool's output for ROSCO must match our manual findings.
+
 **Already BIND(C)-compatible types (define C structs, no Fortran changes):**
 - [ ] `FilterParameters` — 27 arrays of `double[1024]` (~221 KB). Used by all filters.
 - [ ] `piParams` — 5 arrays of `double[1024]`. Used by PI/PID controllers.
