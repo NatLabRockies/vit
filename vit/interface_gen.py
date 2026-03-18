@@ -399,6 +399,9 @@ def _build_wrapper_call_args(sig: FortranSignature,
             # Need to convert from project kind to C kind
             if mapping.iso_c_type.startswith("REAL"):
                 call_args.append(f"REAL({arg.name}, {mapping.c_kind})")
+            elif mapping.iso_c_type.startswith("INTEGER"):
+                # Fortran's integer conversion function is INT(), not INTEGER()
+                call_args.append(f"INT({arg.name}, {mapping.c_kind})")
             else:
                 base = mapping.iso_c_type.split("(")[0]
                 call_args.append(f"{base}({arg.name}, {mapping.c_kind})")
