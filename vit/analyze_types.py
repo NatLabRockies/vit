@@ -113,6 +113,101 @@ class FixResult:
         return len(self.errors) == 0
 
 
+def infer_character_length(source_dir: str, type_name: str,
+                           field_name: str) -> Optional[tuple[int, str]]:
+    """
+    Try to infer the intended length of a CHARACTER(:), ALLOCATABLE field
+    by searching for ALLOCATE calls in the source directory.
+
+    Searches both active and commented-out ALLOCATE lines.
+
+    Args:
+        source_dir: Root directory of Fortran sources
+        type_name: Name of the derived type (e.g., "ErrorVariables")
+        field_name: Name of the CHARACTER field (e.g., "ErrMsg")
+
+    Returns:
+        (inferred_length, evidence_string) if ALLOCATE found and evaluable,
+        (None, evidence_string) if ALLOCATE found but expression not evaluable,
+        or None if no ALLOCATE found at all
+    """
+    source_path = Path(source_dir)
+
+    # Match: ALLOCATE(Var%field_name(size_expr))
+    # Also match commented-out: ! ALLOCATE(Var%field_name(size_expr))
+    alloc_re = re.compile(
+        rf'^\s*!?\s*ALLOCATE\s*\(\s*\w+%{re.escape(field_name)}\s*\(([^)]+)\)\s*\)',
+        re.IGNORECASE,
+    )
+
+    for pattern in ("**/*.f90", "**/*.F90"):
+        for f90_file in sorted(source_path.glob(pattern)):
+            content = f90_file.read_text()
+            for line_num, line in enumerate(content.split("\n"), 1):
+                m = alloc_re.match(line.strip())
+                if m:
+                    size_expr = m.group(1).strip()
+                    rel_path = f90_file.name
+                    evidence = f"ALLOCATE(%{field_name}({size_expr})) in {rel_path}:{line_num}"
+                    length = _evaluate_size_expression(size_expr, content)
+                    return (length, evidence)
+
+    return None
+
+
+def _evaluate_size_expression(expr: str, source_content: str) -> Optional[int]:
+    """
+    Try to evaluate a simple Fortran size expression to an integer.
+
+    Handles:
+    - Literal integers: "1024" → 1024
+    - Simple subtraction: "N-1" where N is a PARAMETER → N-1
+    - Simple addition: "N+1" → N+1
+    """
+    expr = expr.strip()
+
+    # Literal integer
+    if expr.isdigit():
+        return int(expr)
+
+    # variable - N or variable + N
+    m = re.match(r'^(\w+)\s*([+-])\s*(\d+)$', expr)
+    if m:
+        var_name = m.group(1)
+        op = m.group(2)
+        offset = int(m.group(3))
+        var_value = _find_parameter_value(var_name, source_content)
+        if var_value is not None:
+            return var_value + offset if op == "+" else var_value - offset
+
+    # Single variable
+    if re.match(r'^\w+$', expr):
+        var_value = _find_parameter_value(expr, source_content)
+        if var_value is not None:
+            return var_value
+
+    return None
+
+
+def _find_parameter_value(var_name: str, source_content: str) -> Optional[int]:
+    """
+    Search source for a PARAMETER declaration or simple assignment of a variable.
+
+    Matches:
+    - INTEGER, PARAMETER :: var = 1025
+    - INTEGER(4), PARAMETER :: var = 1025
+    """
+    param_re = re.compile(
+        rf'^\s*INTEGER(?:\s*\([^)]*\))?\s*,\s*PARAMETER\s*::\s*'
+        rf'{re.escape(var_name)}\s*=\s*(\d+)',
+        re.IGNORECASE | re.MULTILINE,
+    )
+    m = param_re.search(source_content)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def fix_character_allocatable(source_dir: str, type_name: str,
                               field_name: str, fixed_length: int = 1024,
                               dry_run: bool = True) -> FixResult:

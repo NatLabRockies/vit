@@ -31,7 +31,11 @@ from .extract import find_call_sites, insert_kgen_pragma, remove_kgen_pragma, ru
 from .kernel_verify import setup_kernel_cpp, run_kernel_verify
 from .integrate import generate_integration_plan, apply_integration_plan
 from .translate import generate_translation_scaffold, generate_translation_prompt
-from .analyze_types import analyze_all_types, format_analysis_report, fix_character_allocatable
+from .analyze_types import (
+    analyze_all_types, format_analysis_report, fix_character_allocatable,
+    infer_character_length,
+)
+from .confirm import Assumption, EXIT_CONFIRM, print_assumption
 
 
 def main():
@@ -126,8 +130,8 @@ def main():
                            help="Type name to fix (required with --fix)")
     p_analyze.add_argument("--field", dest="field_name",
                            help="Field name to fix (required with --fix)")
-    p_analyze.add_argument("--length", type=int, default=1024,
-                           help="Fixed length for CHARACTER fix (default: 1024)")
+    p_analyze.add_argument("--length", type=int, default=None,
+                           help="Fixed length for CHARACTER fix (inferred if omitted)")
     p_analyze.add_argument("--apply", action="store_true",
                            help="Apply changes (default is dry-run)")
 
@@ -726,11 +730,45 @@ def cmd_analyze_types(args, config):
         print(f"Fixing {args.fix}: {args.type_name}.{args.field_name}")
 
         if args.fix == "character":
+            # If --length not provided, infer and require confirmation
+            fixed_length = args.length
+            if fixed_length is None:
+                inference = infer_character_length(
+                    source_dir, args.type_name, args.field_name
+                )
+                if inference is not None:
+                    inferred_length, evidence = inference
+                    if inferred_length is not None:
+                        assumed = inferred_length
+                        source_info = evidence
+                    else:
+                        assumed = 1024
+                        source_info = f"{evidence} (expression not evaluable; using default 1024)"
+                else:
+                    assumed = 1024
+                    source_info = "no ALLOCATE found; using default 1024"
+
+                assumption = Assumption(
+                    id="character_length",
+                    summary=f"CHARACTER buffer size for {args.type_name}.{args.field_name}",
+                    assumed_value=str(assumed),
+                    inferred_from=source_info,
+                    context=(
+                        f"The field {args.type_name}.{args.field_name} is "
+                        f"CHARACTER(:), ALLOCATABLE.\n"
+                        f"VIT will convert it to CHARACTER({assumed}).\n"
+                        f"Confirm this length is correct for your project."
+                    ),
+                    cli_override=f"--length {assumed}",
+                )
+                print_assumption(assumption)
+                return EXIT_CONFIRM
+
             result = fix_character_allocatable(
                 source_dir=source_dir,
                 type_name=args.type_name,
                 field_name=args.field_name,
-                fixed_length=args.length,
+                fixed_length=fixed_length,
                 dry_run=dry_run,
             )
 

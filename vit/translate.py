@@ -215,7 +215,10 @@ def _get_c_return_type(sig: FortranSignature, kind_aliases: Optional[dict] = Non
     if sig.result_type:
         mapping = get_type_mapping(sig.result_type, kind_aliases)
         return mapping.c_type
-    return "double"  # fallback for unresolved types
+    raise ValueError(
+        f"Cannot determine return type for function '{sig.name}'. "
+        f"Ensure the Fortran parser captures the result type."
+    )
 
 
 def _format_fortran_signature(sig: FortranSignature) -> str:

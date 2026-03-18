@@ -78,6 +78,44 @@ pip3 install -e /workspace/ROSCO --break-system-packages
 - **Clock skew warnings** during `make` are harmless (filesystem timestamp differences between Mac and container).
 - **No network access** from inside the container due to corporate TLS inspection. All packages were pre-installed.
 
+## VIT Assumption Confirmation Protocol
+
+When VIT encounters a value it has inferred from source evidence but cannot be certain is correct, it signals the caller via **exit code 10** and a `[VIT:CONFIRM]` block on stdout.
+
+### When to use which approach
+
+- **Has evidence, inferred a value** → exit code 10 (confirmation needed). VIT found source evidence and derived a value, but the inference could be wrong. Human must validate.
+- **No evidence, arbitrary fallback** → hard error (exit 1). VIT doesn't have enough information to proceed. Guessing would silently produce wrong code.
+- **Technical/performance default** → safe to hardcode. Wrong value = slower or noisier, not semantically incorrect. Examples: `max_iterations=5`, `tolerance=1e-14`.
+
+**The test:** if a wrong default would produce code that compiles but behaves incorrectly, it needs either EXIT_CONFIRM (if inference exists) or a hard error (if no evidence).
+
+### Claude's responsibilities when exit code is 10
+
+1. Parse the `[VIT:CONFIRM]` block(s) from VIT's output
+2. Present the assumption to the user clearly — what VIT inferred, from where, what value it will use
+3. Wait for the user to confirm or provide an alternative value
+4. Re-run VIT with the confirmed value as an explicit CLI argument (the `cli_override` field tells which flag to use)
+
+**Claude must NEVER auto-confirm an assumption.** The entire point of exit code 10 is that VIT has identified a decision that requires human judgment. Even if the inferred value looks correct, present it to the user and wait.
+
+### Example interaction
+
+```
+Claude runs: vit analyze-types --fix character --type ErrorVariables --field ErrMsg --apply
+VIT outputs: [VIT:CONFIRM] block with assumed_value: 1024, inferred from ALLOCATE
+
+Claude: VIT analyzed ErrorVariables.ErrMsg and inferred a buffer size of 1024
+        from the ALLOCATE call in ReadSetParameters.f90. This will replace
+        CHARACTER(:), ALLOCATABLE with CHARACTER(1024).
+        Does 1024 look correct, or should it be a different size?
+
+User: 1024 is correct.
+
+Claude runs: vit analyze-types --fix character --type ErrorVariables --field ErrMsg --length 1024 --apply
+VIT proceeds with the confirmed value.
+```
+
 ## Full Workflow: Start to Finish
 
 All commands run inside the container from `/workspace/ROSCO`.

@@ -238,7 +238,15 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
             lines.append(f"        {arg.fortran_type}{intent_str}{optional_str}{target_str} :: {arg.name}")
 
     # Declare result with original type
-    ret_type = sig.result_type or sig.args[0].fortran_type if sig.args else "REAL(8)"
+    if sig.result_type:
+        ret_type = sig.result_type
+    elif sig.args:
+        ret_type = sig.args[0].fortran_type
+    else:
+        raise ValueError(
+            f"Cannot determine result type for wrapper of '{sig.name}'. "
+            f"Function has no result_type and no arguments to infer from."
+        )
     if sig.result_is_array and sig.result_dims:
         lines.append(f"        {ret_type}, DIMENSION({sig.result_dims}) :: {result_name}")
     else:

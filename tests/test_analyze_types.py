@@ -21,6 +21,7 @@ from vit.analyze_types import (
     analyze_all_types,
     format_analysis_report,
     fix_character_allocatable,
+    infer_character_length,
 )
 
 
@@ -392,3 +393,101 @@ class TestAnalyzeAllTypes:
         report = format_analysis_report(analyses, verbose=True)
         assert "SimpleParams" in report
         assert "Compatible Types" in report
+
+
+# --- Inference test fixtures ---
+
+ALLOCATE_LITERAL_SOURCE = textwrap.dedent("""\
+    SUBROUTINE Init(ErrVar)
+    USE ROSCO_Types
+    TYPE(ErrorVariables), INTENT(INOUT) :: ErrVar
+
+    ALLOCATE(ErrVar%ErrMsg(256))
+    ErrVar%ErrMsg = ''
+
+    END SUBROUTINE Init
+""")
+
+ALLOCATE_WITH_PARAMETER_SOURCE = textwrap.dedent("""\
+    SUBROUTINE Init(ErrVar, size_avcMSG)
+    USE ROSCO_Types
+    TYPE(ErrorVariables), INTENT(INOUT) :: ErrVar
+    INTEGER, PARAMETER :: MAX_SIZE = 1025
+    INTEGER, INTENT(IN) :: size_avcMSG
+
+    ALLOCATE(ErrVar%ErrMsg(MAX_SIZE-1))
+    ErrVar%ErrMsg = ''
+
+    END SUBROUTINE Init
+""")
+
+ALLOCATE_COMPLEX_EXPR_SOURCE = textwrap.dedent("""\
+    SUBROUTINE Init(ErrVar, n)
+    USE ROSCO_Types
+    TYPE(ErrorVariables), INTENT(INOUT) :: ErrVar
+    INTEGER, INTENT(IN) :: n
+
+    ALLOCATE(ErrVar%ErrMsg(compute_size(n)))
+
+    END SUBROUTINE Init
+""")
+
+
+class TestInferCharacterLength:
+    """Test CHARACTER length inference from ALLOCATE calls."""
+
+    def test_infer_from_literal_allocate(self, tmp_path):
+        (tmp_path / "init.f90").write_text(ALLOCATE_LITERAL_SOURCE)
+        result = infer_character_length(str(tmp_path), "ErrorVariables", "ErrMsg")
+        assert result is not None
+        length, evidence = result
+        assert length == 256
+        assert "ErrMsg" in evidence
+
+    def test_infer_from_commented_allocate_with_literal(self, tmp_path):
+        """Commented-out ALLOCATE with a literal size should still be inferred."""
+        source = textwrap.dedent("""\
+            SUBROUTINE Init(ErrVar)
+            USE ROSCO_Types
+            TYPE(ErrorVariables), INTENT(INOUT) :: ErrVar
+            ! ALLOCATE(ErrVar%ErrMsg(512))
+            ErrVar%ErrMsg = ''
+            END SUBROUTINE Init
+        """)
+        (tmp_path / "init.f90").write_text(source)
+        result = infer_character_length(str(tmp_path), "ErrorVariables", "ErrMsg")
+        assert result is not None
+        length, evidence = result
+        assert length == 512
+        assert "ErrMsg" in evidence
+
+    def test_infer_returns_evidence_for_runtime_variable(self, tmp_path):
+        """ALLOCATE with a runtime variable returns (None, evidence)."""
+        (tmp_path / "init.f90").write_text(ALLOCATE_ALREADY_COMMENTED)
+        result = infer_character_length(str(tmp_path), "ErrorVariables", "ErrMsg")
+        assert result is not None
+        length, evidence = result
+        assert length is None  # Can't evaluate runtime expression
+        assert "ErrMsg" in evidence
+        assert "size_avcMSG" in evidence
+
+    def test_infer_from_parameter_expression(self, tmp_path):
+        (tmp_path / "init.f90").write_text(ALLOCATE_WITH_PARAMETER_SOURCE)
+        result = infer_character_length(str(tmp_path), "ErrorVariables", "ErrMsg")
+        assert result is not None
+        length, evidence = result
+        assert length == 1024  # MAX_SIZE(1025) - 1
+
+    def test_returns_none_when_no_allocate(self, tmp_path):
+        (tmp_path / "types.f90").write_text(SIMPLE_TYPE_SOURCE)
+        result = infer_character_length(str(tmp_path), "ErrorVariables", "ErrMsg")
+        assert result is None
+
+    def test_returns_none_length_for_complex_expression(self, tmp_path):
+        """Complex expression returns (None, evidence) — found but can't evaluate."""
+        (tmp_path / "init.f90").write_text(ALLOCATE_COMPLEX_EXPR_SOURCE)
+        result = infer_character_length(str(tmp_path), "ErrorVariables", "ErrMsg")
+        assert result is not None
+        length, evidence = result
+        assert length is None
+        assert "compute_size" in evidence
