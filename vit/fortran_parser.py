@@ -63,6 +63,8 @@ class FortranSignature:
     args: list[FortranArg] = field(default_factory=list)
     result_name: Optional[str] = None       # RESULT(name) clause
     result_type: Optional[str] = None       # Return type for functions
+    result_is_array: bool = False           # True if result is an array
+    result_dims: Optional[str] = None       # e.g., "3,3" or "n, n"
     source_file: Optional[str] = None       # Where it was found
     module_name: Optional[str] = None       # Enclosing module, if any
     line_number: Optional[int] = None       # Line number in source
@@ -172,6 +174,8 @@ def parse_signature_from_source(source: str, function_name: str) -> FortranSigna
     # Also look for the result variable's type
     args = {name.upper(): FortranArg(name=name, fortran_type="UNKNOWN") for name in arg_names}
     result_type = None
+    result_is_array = False
+    result_dims = None
 
     # Determine which names to look for
     names_to_find = set(a.upper() for a in arg_names)
@@ -218,6 +222,8 @@ def parse_signature_from_source(source: str, function_name: str) -> FortranSigna
                     args[var_upper].is_optional = is_optional
                 elif var_upper == (result_name or function_name).upper():
                     result_type = var_type
+                    result_is_array = is_array
+                    result_dims = dims
 
     # Build ordered arg list
     ordered_args = [args[name.upper()] for name in arg_names]
@@ -239,6 +245,8 @@ def parse_signature_from_source(source: str, function_name: str) -> FortranSigna
         args=ordered_args,
         result_name=result_name,
         result_type=result_type,
+        result_is_array=result_is_array,
+        result_dims=result_dims,
         line_number=sig_line_num + 1,  # 1-indexed
         use_statements=use_statements,
     )

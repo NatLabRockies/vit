@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from vit.type_map import get_type_mapping, normalize_fortran_type, DEFAULT_KIND_ALIASES
 from vit.fortran_parser import parse_signature_from_source, SubprogramKind, IntentKind
 from vit.interface_gen import (
+    build_c_params,
     generate_cpp_wrapper,
     generate_fortran_interface_block,
     generate_fortran_wrapper,
@@ -303,6 +304,239 @@ class TestSubroutine:
                 # INOUT args shouldn't have VALUE
             if ":: y" in line.lower():
                 assert "INTENT" in line.upper()
+
+
+# === Subroutine + Fixed-Size Array Tests ===
+
+COLEMAN_SOURCE = """\
+MODULE Functions
+USE Constants
+IMPLICIT NONE
+CONTAINS
+    SUBROUTINE ColemanTransform(rootMOOP, aziAngle, nHarmonic, axTOut, axYOut)
+        IMPLICIT NONE
+        REAL(DbKi), INTENT(IN)     :: rootMOOP(3)
+        REAL(DbKi), INTENT(IN)     :: aziAngle
+        INTEGER(IntKi), INTENT(IN) :: nHarmonic
+        REAL(DbKi), INTENT(OUT)    :: axTOut, axYOut
+        axTOut = 0.0
+        axYOut = 0.0
+    END SUBROUTINE ColemanTransform
+
+    SUBROUTINE ColemanTransformInverse(axTIn, axYIn, aziAngle, nHarmonic, aziOffset, PitComIPC)
+        IMPLICIT NONE
+        REAL(DbKi), INTENT(IN)     :: axTIn, axYIn
+        REAL(DbKi), INTENT(IN)     :: aziAngle
+        REAL(DbKi), INTENT(IN)     :: aziOffset
+        INTEGER(IntKi), INTENT(IN) :: nHarmonic
+        REAL(DbKi), INTENT(OUT)    :: PitComIPC(3)
+        PitComIPC = 0.0
+    END SUBROUTINE ColemanTransformInverse
+END MODULE Functions
+"""
+
+
+class TestSubroutineFixedArrays:
+    """Tests for subroutines with fixed-size array args (Phase 2A)."""
+
+    def test_parse_coleman_transform_args(self):
+        sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransform")
+        assert sig.kind == SubprogramKind.SUBROUTINE
+        assert len(sig.args) == 5
+        names = [a.name.lower() for a in sig.args]
+        assert names == ["rootmoop", "aziangle", "nharmonic", "axtout", "axyout"]
+
+    def test_parse_fixed_array_dims(self):
+        """rootMOOP(3) should be a fixed-size array, not assumed-shape."""
+        sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransform")
+        rootmoop = sig.args[0]
+        assert rootmoop.is_array
+        assert rootmoop.array_dims == "3"
+        assert not rootmoop.is_assumed_shape
+
+    def test_parse_scalar_out(self):
+        sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransform")
+        axtout = sig.args[3]
+        assert not axtout.is_array
+        assert axtout.intent == IntentKind.OUT
+
+    def test_build_c_params_scalar_out_is_pointer(self):
+        """Scalar INTENT(OUT) args in subroutines must be pointers in C."""
+        sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransform")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES)
+        param_dict = {name: ctype for ctype, name in params}
+        assert param_dict["axTOut"] == "double*"
+        assert param_dict["axYOut"] == "double*"
+
+    def test_build_c_params_fixed_array_no_size_param(self):
+        """Fixed-size arrays should NOT get an n_ size parameter."""
+        sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransform")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES)
+        param_names = [name for _, name in params]
+        assert "rootMOOP" in param_names
+        assert "n_rootMOOP" not in param_names
+
+    def test_build_c_params_fixed_array_is_pointer(self):
+        sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransform")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES)
+        param_dict = {name: ctype for ctype, name in params}
+        assert param_dict["rootMOOP"] == "double*"
+
+    def test_build_c_params_in_scalar_not_pointer(self):
+        """Scalar INTENT(IN) args should be by value, not pointer."""
+        sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransform")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES)
+        param_dict = {name: ctype for ctype, name in params}
+        assert param_dict["aziAngle"] == "double"
+        assert param_dict["nHarmonic"] == "int"
+
+    def test_inverse_out_array_no_size_param(self):
+        """INTENT(OUT) fixed-size array should have no size param."""
+        sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransformInverse")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES)
+        param_names = [name for _, name in params]
+        assert "PitComIPC" in param_names
+        assert "n_PitComIPC" not in param_names
+
+    def test_inverse_out_array_is_pointer(self):
+        sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransformInverse")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES)
+        param_dict = {name: ctype for ctype, name in params}
+        assert param_dict["PitComIPC"] == "double*"
+
+    def test_cpp_wrapper_void_for_subroutine(self):
+        sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransform")
+        cpp = generate_cpp_wrapper(sig, "coleman_impl.hpp", ROSCO_KIND_ALIASES)
+        assert "void " in cpp
+        assert 'extern "C"' in cpp
+
+    def test_fortran_interface_subroutine(self):
+        sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransform")
+        iface = generate_fortran_interface_block(sig, ROSCO_KIND_ALIASES)
+        assert "SUBROUTINE" in iface
+        assert "FUNCTION" not in iface
+
+    def test_fortran_interface_out_no_value(self):
+        """OUT scalars in interface should NOT have VALUE."""
+        sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransform")
+        iface = generate_fortran_interface_block(sig, ROSCO_KIND_ALIASES)
+        for line in iface.split("\n"):
+            if ":: axtout" in line.lower() or ":: axyout" in line.lower():
+                assert "VALUE" not in line.upper()
+
+    def test_fortran_interface_in_scalar_has_value(self):
+        """IN scalars should have VALUE in the interface."""
+        sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransform")
+        iface = generate_fortran_interface_block(sig, ROSCO_KIND_ALIASES)
+        for line in iface.split("\n"):
+            if ":: aziangle" in line.lower():
+                assert "VALUE" in line.upper()
+            if ":: nharmonic" in line.lower():
+                assert "VALUE" in line.upper()
+
+    def test_fortran_wrapper_call_syntax(self):
+        """Subroutine wrapper should use CALL, not assignment."""
+        sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransform")
+        wrapper = generate_fortran_wrapper(sig, ROSCO_KIND_ALIASES)
+        assert "CALL" in wrapper.upper()
+        assert "colemantransform_c" in wrapper.lower()
+
+
+# === Array-Valued Function Result Tests ===
+
+IDENTITY_SOURCE = """\
+MODULE Functions
+USE Constants
+IMPLICIT NONE
+CONTAINS
+    FUNCTION identity(n) RESULT(A)
+        IMPLICIT NONE
+        INTEGER, INTENT(IN)         :: n
+        REAL(DbKi), DIMENSION(n, n) :: A
+        INTEGER                     :: i, j
+        DO i=1,n
+            DO j=1,n
+                IF (i == j) THEN
+                    A(i,j) = 1.0
+                ELSE
+                    A(i,j) = 0.0
+                ENDIF
+            END DO
+        END DO
+    END FUNCTION identity
+END MODULE Functions
+"""
+
+
+class TestArrayValuedResult:
+    """Tests for functions that return arrays (Phase 2B)."""
+
+    def test_parse_result_is_array(self):
+        sig = parse_signature_from_source(IDENTITY_SOURCE, "identity")
+        assert sig.result_is_array
+        assert sig.result_dims is not None
+
+    def test_parse_result_dims(self):
+        sig = parse_signature_from_source(IDENTITY_SOURCE, "identity")
+        assert "N" in sig.result_dims.upper()
+
+    def test_parse_result_type(self):
+        sig = parse_signature_from_source(IDENTITY_SOURCE, "identity")
+        assert "REAL" in sig.result_type.upper()
+
+    def test_build_c_params_has_result_pointer(self):
+        """Array-valued results should produce an output pointer param."""
+        sig = parse_signature_from_source(IDENTITY_SOURCE, "identity")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES)
+        param_dict = {name: ctype for ctype, name in params}
+        assert "identity_result" in param_dict
+        assert param_dict["identity_result"] == "double*"
+
+    def test_build_c_params_n_is_value(self):
+        """Input scalar n should be by value, not pointer."""
+        sig = parse_signature_from_source(IDENTITY_SOURCE, "identity")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES)
+        param_dict = {name: ctype for ctype, name in params}
+        assert param_dict["n"] == "int"
+
+    def test_cpp_wrapper_void_for_array_result(self):
+        sig = parse_signature_from_source(IDENTITY_SOURCE, "identity")
+        cpp = generate_cpp_wrapper(sig, "identity_impl.hpp", ROSCO_KIND_ALIASES)
+        assert "void " in cpp
+        assert "identity_result" in cpp
+
+    def test_fortran_interface_is_subroutine(self):
+        """Array-valued function's BIND(C) interface should be a SUBROUTINE."""
+        sig = parse_signature_from_source(IDENTITY_SOURCE, "identity")
+        iface = generate_fortran_interface_block(sig, ROSCO_KIND_ALIASES)
+        assert "SUBROUTINE" in iface
+        assert "FUNCTION" not in iface
+        assert "identity_result" in iface
+
+    def test_fortran_wrapper_is_function(self):
+        """The Fortran wrapper remains a FUNCTION (drop-in replacement)."""
+        sig = parse_signature_from_source(IDENTITY_SOURCE, "identity")
+        wrapper = generate_fortran_wrapper(sig, ROSCO_KIND_ALIASES)
+        assert "FUNCTION identity" in wrapper
+        assert "END FUNCTION identity" in wrapper
+
+    def test_fortran_wrapper_calls_subroutine(self):
+        """The wrapper internally CALLs the C subroutine."""
+        sig = parse_signature_from_source(IDENTITY_SOURCE, "identity")
+        wrapper = generate_fortran_wrapper(sig, ROSCO_KIND_ALIASES)
+        assert "CALL identity_c" in wrapper
+
+    def test_fortran_wrapper_declares_array_result(self):
+        """The wrapper should declare the result with DIMENSION."""
+        sig = parse_signature_from_source(IDENTITY_SOURCE, "identity")
+        wrapper = generate_fortran_wrapper(sig, ROSCO_KIND_ALIASES)
+        assert "DIMENSION" in wrapper
+
+    def test_scalar_result_not_affected(self):
+        """Scalar functions should NOT have result_is_array."""
+        sig = parse_signature_from_source(ROSCO_FUNCTIONS_SOURCE, "saturate")
+        assert not sig.result_is_array
+        assert sig.result_dims is None
 
 
 # === Run tests ===

@@ -68,7 +68,8 @@ def generate_cpp_wrapper(sig: FortranSignature, cpp_impl_file: str,
     lines.append("")
 
     # Generate extern "C" wrapper
-    if sig.is_function:
+    if sig.is_function and not sig.result_is_array:
+        # Scalar-returning function: return value directly
         ret_mapping = _get_return_type_mapping(sig, kind_aliases)
         ret_c_type = ret_mapping.c_type
 
@@ -86,7 +87,7 @@ def generate_cpp_wrapper(sig: FortranSignature, cpp_impl_file: str,
         lines.append(f"    }}")
         lines.append(f"}}")
 
-    else:  # Subroutine
+    else:  # Subroutine or array-valued function (both use void + output params)
         params = build_c_params(sig, kind_aliases)
         param_str = ", ".join(f"{p[0]} {p[1]}" for p in params)
 
@@ -123,7 +124,8 @@ def generate_fortran_interface_block(sig: FortranSignature,
     lines.append(f"    ! Auto-generated interface for C++ implementation of {sig.name}")
     lines.append(f"    INTERFACE")
 
-    if sig.is_function:
+    if sig.is_function and not sig.result_is_array:
+        # Scalar-returning function: BIND(C) FUNCTION with return type
         ret_mapping = _get_return_type_mapping(sig, kind_aliases)
 
         # Build arg name list for interface declaration
@@ -141,7 +143,7 @@ def generate_fortran_interface_block(sig: FortranSignature,
         lines.append(f"            {ret_mapping.iso_c_type} :: {c_func_name}")
         lines.append(f"        END FUNCTION {c_func_name}")
 
-    else:  # Subroutine
+    else:  # Subroutine or array-valued function (both use BIND(C) SUBROUTINE)
         arg_names = [a["iface_name"] for a in c_args]
         arg_str = ", ".join(arg_names)
 
@@ -197,27 +199,34 @@ def generate_fortran_wrapper(sig: FortranSignature,
 
         # Declare result with original type
         ret_type = sig.result_type or sig.args[0].fortran_type if sig.args else "REAL(8)"
-        lines.append(f"        {ret_type} :: {result_name}")
+        if sig.result_is_array and sig.result_dims:
+            lines.append(f"        {ret_type}, DIMENSION({sig.result_dims}) :: {result_name}")
+        else:
+            lines.append(f"        {ret_type} :: {result_name}")
 
         # Build the C function call (only non-passthrough args, with size params for arrays)
         ret_mapping = _get_return_type_mapping(sig, kind_aliases)
         call_args = _build_wrapper_call_args(sig, kind_aliases)
         call_str = ", ".join(call_args)
 
-        # Convert result back to project kind if needed
-        c_call = f"{c_func_name}({call_str})"
-
-        # Get the original kind name for the result (preserve case from source)
-        ret_type_stripped = ret_type.strip()
-        if "(" in ret_type_stripped:
-            ret_kind = ret_type_stripped[ret_type_stripped.index("(") + 1:ret_type_stripped.rindex(")")]
+        if sig.result_is_array:
+            # Array-valued result: CALL the C subroutine, which writes into result_name
+            lines.append(f"        CALL {c_func_name}({call_str})")
         else:
-            ret_kind = None
+            # Scalar result: assign from C function return value
+            c_call = f"{c_func_name}({call_str})"
 
-        if ret_kind and ret_kind.upper() != ret_mapping.c_kind.upper():
-            lines.append(f"        {result_name} = REAL({c_call}, {ret_kind})")
-        else:
-            lines.append(f"        {result_name} = {c_call}")
+            # Get the original kind name for the result (preserve case from source)
+            ret_type_stripped = ret_type.strip()
+            if "(" in ret_type_stripped:
+                ret_kind = ret_type_stripped[ret_type_stripped.index("(") + 1:ret_type_stripped.rindex(")")]
+            else:
+                ret_kind = None
+
+            if ret_kind and ret_kind.upper() != ret_mapping.c_kind.upper():
+                lines.append(f"        {result_name} = REAL({c_call}, {ret_kind})")
+            else:
+                lines.append(f"        {result_name} = {c_call}")
 
         lines.append(f"    END FUNCTION {sig.name}")
 
@@ -267,6 +276,7 @@ def build_c_params(sig: FortranSignature,
     Build the C parameter list: [(c_type, param_name), ...]
 
     Skips passthrough args. Adds size params for assumed-shape arrays.
+    For array-valued function results, appends a result output pointer.
     """
     params = []
     for arg in sig.args:
@@ -282,7 +292,20 @@ def build_c_params(sig: FortranSignature,
             if arg.is_assumed_shape:
                 params.append(("int", f"n_{arg.name}"))
         else:
-            params.append((mapping.c_type, arg.name))
+            # Scalar INTENT(OUT/INOUT) args in subroutines must be pointers —
+            # the Fortran BIND(C) interface passes them by reference (no VALUE).
+            if sig.is_subroutine and arg.intent in (IntentKind.OUT, IntentKind.INOUT):
+                params.append((f"{mapping.c_type}*", arg.name))
+            else:
+                params.append((mapping.c_type, arg.name))
+
+    # Array-valued function results become an output pointer parameter.
+    # The C function returns void; the result is written via this pointer.
+    if sig.is_function and sig.result_is_array:
+        ret_mapping = _get_return_type_mapping(sig, kind_aliases)
+        result_param_name = f"{sig.name}_result"
+        params.append((f"{ret_mapping.c_type}*", result_param_name))
+
     return params
 
 
@@ -336,6 +359,15 @@ def _build_interface_args(sig: FortranSignature,
                     "iface_decl": f"{mapping.iso_c_type}, VALUE :: {arg.name}",
                 })
 
+    # Array-valued function results become an INTENT(OUT) assumed-size parameter
+    if sig.is_function and sig.result_is_array:
+        ret_mapping = _get_return_type_mapping(sig, kind_aliases)
+        result_param_name = f"{sig.name}_result"
+        args.append({
+            "iface_name": result_param_name,
+            "iface_decl": f"{ret_mapping.iso_c_type}, INTENT(OUT) :: {result_param_name}(*)",
+        })
+
     return args
 
 
@@ -372,6 +404,11 @@ def _build_wrapper_call_args(sig: FortranSignature,
                 call_args.append(f"{base}({arg.name}, {mapping.c_kind})")
         else:
             call_args.append(arg.name)
+
+    # Array-valued function results: pass the result variable as the output pointer
+    if sig.is_function and sig.result_is_array:
+        result_name = sig.result_name or f"{sig.name}_result"
+        call_args.append(result_name)
 
     return call_args
 

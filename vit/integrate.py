@@ -246,7 +246,7 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
     param_str = ", ".join(f"{p[0]} {p[1]}" for p in c_params)
     arg_str = ", ".join(p[1] for p in c_params)
 
-    if sig.is_function:
+    if sig.is_function and not sig.result_is_array:
         ret_mapping = get_type_mapping(sig.result_type or "REAL(8)", kind_aliases)
 
         lines.append(f'extern "C" {{')
@@ -254,7 +254,7 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
         lines.append(f"        return {sig.name.lower()}({arg_str});")
         lines.append(f"    }}")
         lines.append(f"}}")
-    else:
+    else:  # Subroutine or array-valued function
         lines.append(f'extern "C" {{')
         lines.append(f"    void {c_func_name}({param_str}) {{")
         lines.append(f"        {sig.name.lower()}({arg_str});")
