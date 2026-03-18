@@ -321,24 +321,23 @@ Build the translation workflow tooling described in Section 4a before any new tr
 - [x] Unit tests for `vit translate` scaffolding
 - [x] Verify existing pipeline still works with translations in new locations
 
-### Phase 1: Low-Hanging Fruit
+### Phase 1: Low-Hanging Fruit ✓
 **Target: 3/14 Functions.f90**
 
 Starting from a clean ROSCO fork with no integrations and no golden fixtures.
 
-- [ ] Build clean Fortran ROSCO and capture baseline simulation output
-- [ ] Extract kernels for all 3 functions (saturate, wrap_180, wrap_360)
-- [ ] Verify `saturate`, `wrap_180`, `wrap_360` against extracted kernels
-- [ ] Integrate `saturate` → rebuild → diff against baseline
-- [ ] Integrate `wrap_180` → rebuild → diff against baseline
-- [ ] Integrate `wrap_360` → rebuild → diff against baseline
-- [ ] Run full verification regression (all 3 functions pass)
-- [ ] Update `vit.yaml` translations section
+- [x] Build clean Fortran ROSCO and capture baseline simulation output
+- [x] Extract kernels for all 3 functions (saturate, wrap_180, wrap_360)
+- [x] Verify `saturate`, `wrap_180`, `wrap_360` against extracted kernels (40/40 each)
+- [x] Integrate `saturate` → rebuild → diff against baseline
+- [x] Integrate `wrap_180` → rebuild → diff against baseline
+- [x] Integrate `wrap_360` → rebuild → diff against baseline
+- [x] Run full verification regression (all 3 functions pass post-integration)
+- [x] Update `vit.yaml` translations section
 
 `CPfunction` is dead code (no call sites in ROSCO) — skipped.
 
-**VIT changes**: None (translation infrastructure built in Phase 0).
-**Effort estimate**: Small — extract three kernels, integrate three functions.
+**Completed 2026-03-18.** Created `Examples/vit_sim.py` — a VIT-specific multi-scenario simulation that exercises all controller code paths including Y_ControlMode=2 (for wrap_360, which is never called by the standard `04_simple_sim.py`). The `vit.yaml` run_cmd now uses `vit_sim.py`. Discovered that `translations/Functions/*.cpp` had been overwritten by scaffolds from `vit translate`; restored from canonical copies in `vit_translation/translations/`.
 
 ### Phase 2: Fixed-Size Arrays + Subroutines
 **Target: 7/14 Functions.f90**

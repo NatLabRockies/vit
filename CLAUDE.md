@@ -95,7 +95,7 @@ cd /workspace/ROSCO
 
 ### 1b. Initialize Turbine Model (first run only)
 
-On a fresh clone, the pickled turbine model does not exist yet. `04_simple_sim.py` (used by both extraction and baseline capture) loads `Examples/examples_out/01_NREL5MW_saved.p`, which is created by `01_turbine_model.py`. Run this once before any simulation:
+On a fresh clone, the pickled turbine model does not exist yet. `vit_sim.py` (used by both extraction and baseline capture) loads `Examples/examples_out/01_NREL5MW_saved.p`, which is created by `01_turbine_model.py`. Run this once before any simulation:
 
 ```bash
 cd Examples
@@ -155,7 +155,7 @@ cp libdiscon.so ../../lib/libdiscon.so
 cd /workspace/ROSCO
 
 cd Examples
-python3 04_simple_sim.py > /workspace/ROSCO/integrated_output.txt 2>&1
+python3 vit_sim.py > /workspace/ROSCO/integrated_output.txt 2>&1
 cd /workspace/ROSCO
 diff baseline_output.txt integrated_output.txt
 ```
@@ -174,7 +174,7 @@ project:
 kgen:
   path: /workspace/KGen/bin/kgen
   build_cmd: cd /workspace/ROSCO/rosco/controller/build && cmake --build .
-  run_cmd: cd /workspace/ROSCO/Examples && python3 04_simple_sim.py
+  run_cmd: cd /workspace/ROSCO/Examples && python3 vit_sim.py
   clean_cmd: cd /workspace/ROSCO/rosco/controller/build && make clean
   install_cmd: cp /workspace/ROSCO/rosco/controller/build/libdiscon.so /workspace/ROSCO/rosco/lib/libdiscon.so
   invocation: 0:0:1-20
@@ -217,7 +217,7 @@ docker exec -it vit-dev bash -c "cd /workspace/vit && python3 -m pytest tests/ -
 
 ### Golden Test Fixtures
 
-Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/interp1d/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
+Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/interp1d/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
 
 **Extraction parameters (for regenerating golden fixtures):**
 
@@ -225,6 +225,7 @@ Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful ex
 |----------|---------------|------|---------|
 | `saturate` | `Controllers.f90` | 102 | `vit extract saturate -f rosco/controller/src/Controllers.f90 -l 102` |
 | `wrap_180` | `Filters.f90` | 430 | `vit extract wrap_180 -f rosco/controller/src/Filters.f90 -l 430` |
+| `wrap_360` | `Controllers.f90` | 517 | `vit extract wrap_360 -f rosco/controller/src/Controllers.f90 -l 517` |
 | `interp1d` | `Controllers.f90` | 62 | `vit extract interp1d -f rosco/controller/src/Controllers.f90 -l 62` |
 
 Each extraction deposits into `kernel/<function_name>/` and restores the source file automatically.
@@ -252,9 +253,10 @@ After every feature implementation, run:
 
 2. **Verification regression (fast, uses golden fixtures):**
    ```bash
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify saturate saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/saturate 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify wrap_180 wrap_180.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_180 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify interp1d interp1d.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/interp1d 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify saturate translations/Functions/saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/saturate 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify wrap_180 translations/Functions/wrap_180.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_180 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify wrap_360 translations/Functions/wrap_360.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_360 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify interp1d translations/Functions/interp1d.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/interp1d 2>&1 | tail -3"
    ```
    Must show: `40/40 passed` for each function.
 
@@ -289,58 +291,52 @@ rm -rf kernel/ state/ model.ini include.ini kgen.log baseline_output.txt integra
 
 This resets all tracked source files to their upstream state and removes all VIT work products. Untracked config files (`vit.yaml`) and the `translations/` directory are preserved.
 
-**Step 2 — Copy translations into ROSCO root for verification (runs on Mac):**
-
-```bash
-cp translations/Functions/saturate.cpp .
-cp translations/Functions/wrap_180.cpp .
-```
-
-Translations live in `ROSCO/translations/Functions/`. The copies in the ROSCO root are only needed for verification commands that reference them by relative path. Add more functions as phases complete.
-
-**Step 3 — Build clean Fortran baseline and capture baseline output (in container):**
+**Step 2 — Build clean Fortran baseline and capture baseline output (in container):**
 
 ```bash
 cd rosco/controller/build && rm -rf * && cmake .. -DCMAKE_INSTALL_PREFIX=install && cmake --build . && cp libdiscon.so ../../lib/libdiscon.so && cd /workspace/ROSCO
-cd Examples && python3 04_simple_sim.py > /workspace/ROSCO/baseline_output.txt 2>&1 && cd /workspace/ROSCO
+cd Examples && python3 vit_sim.py > /workspace/ROSCO/baseline_output.txt 2>&1 && cd /workspace/ROSCO
 ```
 
 If the turbine model pickle doesn't exist yet, run `python3 01_turbine_model.py` in `Examples/` first (see "Initialize Turbine Model" above).
 
-**Step 4 — Extract kernels (in container):**
+**Step 3 — Extract kernels (in container):**
 
 Each extraction instruments the source, rebuilds, runs the simulation, captures runtime state, and deposits the kernel into `kernel/<function_name>/`. The source file is restored automatically between runs.
 
 ```bash
 vit extract saturate -f rosco/controller/src/Controllers.f90 -l 102
 vit extract wrap_180 -f rosco/controller/src/Filters.f90 -l 430
+vit extract wrap_360 -f rosco/controller/src/Controllers.f90 -l 517
 ```
 
 Each must show `Extraction successful` with `Cases: 20`.
 
-**Step 5 — Verify C++ translations against extracted kernels (in container):**
+**Step 4 — Verify C++ translations against extracted kernels (in container):**
 
 ```bash
-vit verify saturate saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/saturate
-vit verify wrap_180 wrap_180.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_180
+vit verify saturate translations/Functions/saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/saturate
+vit verify wrap_180 translations/Functions/wrap_180.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_180
+vit verify wrap_360 translations/Functions/wrap_360.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_360
 ```
 
 Each must show `40/40 passed`.
 
-**Step 6 — Integrate all functions (in container):**
+**Step 5 — Integrate all functions (in container):**
 
 ```bash
-vit integrate saturate saturate.cpp -f rosco/controller/src/Functions.f90 --apply
-vit integrate wrap_180 wrap_180.cpp -f rosco/controller/src/Functions.f90 --apply
+vit integrate saturate translations/Functions/saturate.cpp -f rosco/controller/src/Functions.f90 --apply
+vit integrate wrap_180 translations/Functions/wrap_180.cpp -f rosco/controller/src/Functions.f90 --apply
+vit integrate wrap_360 translations/Functions/wrap_360.cpp -f rosco/controller/src/Functions.f90 --apply
 ```
 
 Each `--apply` reads the current file state and generates correct patches, skipping items already present (e.g., `enable_language(CXX)`, `stdc++` link, `USE ISO_C_BINDING`).
 
-**Step 7 — Rebuild with C++ and diff against baseline (in container):**
+**Step 6 — Rebuild with C++ and diff against baseline (in container):**
 
 ```bash
 cd rosco/controller/build && rm -rf * && cmake .. -DCMAKE_INSTALL_PREFIX=install && cmake --build . && cp libdiscon.so ../../lib/libdiscon.so && cd /workspace/ROSCO
-cd Examples && python3 04_simple_sim.py > /workspace/ROSCO/integrated_output.txt 2>&1 && cd /workspace/ROSCO
+cd Examples && python3 vit_sim.py > /workspace/ROSCO/integrated_output.txt 2>&1 && cd /workspace/ROSCO
 diff baseline_output.txt integrated_output.txt
 ```
 
