@@ -366,6 +366,12 @@ diff baseline_output.txt integrated_output.txt
 
 Empty diff = success. All 7 C++ translations produce byte-identical simulation output.
 
+After confirming the diff is empty, delete the test output file:
+```bash
+rm -f integrated_output.txt
+```
+The `baseline_output.txt` is kept as a reference. Only delete transient output files (e.g., `integrated_output.txt`, `errvar_fix_output.txt`) — these are not committed and cause confusion if left around.
+
 ### Development Workflow
 
 1. **Understand the current code** before making changes. Read the relevant source files.

@@ -133,6 +133,7 @@ def build_and_fix(
     max_iterations: int = 5,
     fix_registry: Optional[list[FixPattern]] = None,
     dry_run: bool = False,
+    compiler: str = "gfortran",
 ) -> BuildFixResult:
     """
     Build the project, parse errors, apply known fixes, and retry.
@@ -143,7 +144,16 @@ def build_and_fix(
         max_iterations: Maximum build-fix cycles
         fix_registry: Fix patterns to try. Defaults to DEFAULT_FIX_REGISTRY.
         dry_run: If True, report fixes without applying them
+        compiler: Fortran compiler name (only "gfortran" is supported)
     """
+    if compiler.lower() != "gfortran":
+        import sys
+        print(
+            f"WARNING: build_fixer error parser only supports gfortran "
+            f"(configured compiler: {compiler}). "
+            f"Compiler errors may not be parsed correctly.",
+            file=sys.stderr,
+        )
     registry = fix_registry if fix_registry is not None else DEFAULT_FIX_REGISTRY
     all_fixes: list[ErrorFix] = []
     files_modified: set[str] = set()

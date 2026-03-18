@@ -465,13 +465,6 @@ def classify_field_blockers(type_info: DerivedTypeInfo,
                 reason="nested_type",
                 fix_suggestion=f"Nested derived type {f.fortran_type} must also be C-compatible",
             ))
-        elif normalized.startswith("LOGICAL"):
-            blockers.append(FieldBlocker(
-                field_name=f.name,
-                fortran_type=f.fortran_type,
-                reason="logical",
-                fix_suggestion=f"LOGICAL fields may need BIND(C) or INTEGER replacement",
-            ))
         elif normalized.startswith("COMPLEX"):
             blockers.append(FieldBlocker(
                 field_name=f.name,

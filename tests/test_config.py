@@ -195,6 +195,38 @@ class TestRecordTranslation:
         loaded = load_config(str(tmp_path / CONFIG_FILENAME))
         assert loaded.translations["saturate"]["status"] == "integrated"
 
+    def test_does_not_downgrade_status(self, tmp_path):
+        config = VitConfig(
+            config_dir=str(tmp_path),
+            translations={"saturate": {
+                "status": "integrated",
+                "cpp_file": "saturate.cpp",
+            }},
+        )
+        save_config(config, str(tmp_path / CONFIG_FILENAME))
+
+        # Verification should not downgrade from integrated to verified
+        record_translation(config, "saturate", "verified",
+                           {"cases_passed": 40, "cases_total": 40})
+
+        loaded = load_config(str(tmp_path / CONFIG_FILENAME))
+        assert loaded.translations["saturate"]["status"] == "integrated"
+        # But details should still be updated
+        assert loaded.translations["saturate"]["cases_passed"] == 40
+
+    def test_upgrade_status_works(self, tmp_path):
+        config = VitConfig(
+            config_dir=str(tmp_path),
+            translations={"saturate": {"status": "verified"}},
+        )
+        save_config(config, str(tmp_path / CONFIG_FILENAME))
+
+        record_translation(config, "saturate", "integrated",
+                           {"cpp_file": "saturate.cpp"})
+
+        loaded = load_config(str(tmp_path / CONFIG_FILENAME))
+        assert loaded.translations["saturate"]["status"] == "integrated"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

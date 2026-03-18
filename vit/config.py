@@ -218,13 +218,36 @@ def init_config(project_dir: str = ".", **overrides) -> str:
     return save_config(config, os.path.join(project_dir, CONFIG_FILENAME))
 
 
+_STATUS_RANK = {
+    "blocked": 0,
+    "scaffold": 1,
+    "translated": 2,
+    "verified": 3,
+    "integrated": 4,
+}
+
+
 def record_translation(config: VitConfig, function_name: str,
                        status: str, details: dict) -> None:
-    """Record a completed translation in the config."""
-    config.translations[function_name] = {
-        "status": status,
-        **details,
-    }
+    """Record a completed translation in the config.
+
+    Will not downgrade status (e.g., "integrated" will not be
+    overwritten by "verified", since integration implies verification).
+    """
+    existing = config.translations.get(function_name, {})
+    existing_status = existing.get("status", "")
+    existing_rank = _STATUS_RANK.get(existing_status, -1)
+    new_rank = _STATUS_RANK.get(status, -1)
+
+    if new_rank < existing_rank:
+        # Don't downgrade — just update details without changing status
+        existing.update(details)
+        config.translations[function_name] = existing
+    else:
+        config.translations[function_name] = {
+            "status": status,
+            **details,
+        }
     save_config(config)
 
 

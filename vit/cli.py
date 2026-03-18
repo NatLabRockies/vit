@@ -752,6 +752,7 @@ def cmd_analyze_types(args, config):
                         build_result = build_and_fix(
                             build_cmd=config.build_cmd,
                             source_dir=source_dir,
+                            compiler=config.fortran_compiler,
                         )
                         for fix in build_result.fixes_applied:
                             print(f"  Auto-fixed: {fix.description}")
