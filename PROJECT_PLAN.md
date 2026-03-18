@@ -34,11 +34,11 @@ Functions.f90 is the primary target module: 14 utility functions used throughout
 
 All translations start from a clean ROSCO (nothing integrated). Integration happens in phase order.
 
-### Ready Now — No VIT Changes Needed
+### Dead Code (no call sites in ROSCO)
 
-| Function | Lines | Description | Why It Works Today |
-|----------|-------|-------------|-------------------|
-| `CPfunction` | 13 | Parameterized Cp(λ) (fixed `CP(4)` array + scalar → scalar) | Fixed-size 1D array `CP(4)` has explicit dimensions — no assumed-shape complexity. Calls `saturate` internally but translation only implements the math |
+| Function | Lines | Description | Notes |
+|----------|-------|-------------|-------|
+| `CPfunction` | 13 | Parameterized Cp(λ) (fixed `CP(4)` array + scalar → scalar) | Defined in Functions.f90 but never called. Cannot be extracted or verified — no runtime state to capture. Skip until a call site exists. |
 
 ### Minor VIT Work Required
 
@@ -322,20 +322,26 @@ Build the translation workflow tooling described in Section 4a before any new tr
 - [x] Verify existing pipeline still works with translations in new locations
 
 ### Phase 1: Low-Hanging Fruit
-**Target: 4/14 Functions.f90**
+**Target: 3/14 Functions.f90**
 
-- [ ] Integrate `saturate` — already verified
-- [ ] Integrate `wrap_180` — already verified
-- [ ] Integrate `wrap_360` — already verified
-- [ ] `vit translate CPfunction` → scaffold, fill in algorithm body, extract, verify, integrate
-- [ ] Run full verification regression (all 4 functions pass)
+Starting from a clean ROSCO fork with no integrations and no golden fixtures.
+
+- [ ] Build clean Fortran ROSCO and capture baseline simulation output
+- [ ] Extract kernels for all 3 functions (saturate, wrap_180, wrap_360)
+- [ ] Verify `saturate`, `wrap_180`, `wrap_360` against extracted kernels
+- [ ] Integrate `saturate` → rebuild → diff against baseline
+- [ ] Integrate `wrap_180` → rebuild → diff against baseline
+- [ ] Integrate `wrap_360` → rebuild → diff against baseline
+- [ ] Run full verification regression (all 3 functions pass)
 - [ ] Update `vit.yaml` translations section
 
+`CPfunction` is dead code (no call sites in ROSCO) — skipped.
+
 **VIT changes**: None (translation infrastructure built in Phase 0).
-**Effort estimate**: Small — fill in 1 algorithm body and run the pipeline.
+**Effort estimate**: Small — extract three kernels, integrate three functions.
 
 ### Phase 2: Fixed-Size Arrays + Subroutines
-**Target: 8/14 Functions.f90**
+**Target: 7/14 Functions.f90**
 
 - [ ] Explicit-dimension array support — `A(3,3)` in Fortran → `double* A` with known size in C. Interface gen must recognize `DIMENSION(3,3)` vs `DIMENSION(:)` and handle accordingly. No synthetic size param needed — the size is compile-time known.
 - [ ] Subroutine pipeline validation — VIT's interface_gen.py has subroutine support (BIND(C) SUBROUTINE, INTENT(OUT) args) but it's never been tested end-to-end. Validate with ColemanTransform as the first real SUBROUTINE target.
@@ -345,18 +351,18 @@ Build the translation workflow tooling described in Section 4a before any new tr
 - [ ] Translate + verify + integrate `identity`
 - [ ] Translate + verify + integrate `ColemanTransform`
 - [ ] Translate + verify + integrate `ColemanTransformInverse`
-- [ ] Run full verification regression (all 8 functions pass)
+- [ ] Run full verification regression (all 7 functions pass)
 
 **New functions unlocked**: `matinv3`, `identity`, `ColemanTransform`, `ColemanTransformInverse`
 
 ### Phase 3: Load-Bearing Derived Types
-**Target: 9/14 Functions.f90**
+**Target: 8/14 Functions.f90**
 
 - [ ] Derived type registry in CLI — wire the `derived_types` parameter from `get_type_mapping()` through the CLI pipeline. Currently hardcoded to None. All TYPE(...) args will become BIND(C) structs passed by pointer.
 - [ ] BIND(C) struct generation for `rlParams` — auto-generate C struct from parsed TYPE block. `rlParams` is the simplest load-bearing type (1 fixed-size array), used by `ratelimit`.
 - [ ] OPTIONAL argument support — `ratelimit` has `OPTIONAL :: ResetValue`. Interface gen must handle PRESENT() checks in the Fortran wrapper and default values in C.
 - [ ] Translate + verify + integrate `ratelimit`
-- [ ] Run full verification regression (all 9 functions pass)
+- [ ] Run full verification regression (all 8 functions pass)
 
 **New function unlocked**: `ratelimit`
 
@@ -428,7 +434,7 @@ This makes the type system work reproducible and generalizable beyond ROSCO (Pha
 **Why this must come before Phase 5:** All ErrVar functions are blocked until ErrorVariables is a BIND(C) struct. Filters access ~30 fields on FilterParameters, Controllers access ~70 fields on LocalVariables. With C structs, C++ accesses fields naturally (`state->lpf1_a1[inst]`) and the Fortran wrapper just passes the struct address.
 
 ### Phase 5: ErrorVariables Functions + 2D Assumed-Shape Arrays
-**Target: 14/14 Functions.f90 complete**
+**Target: 13/14 Functions.f90 (CPfunction skipped — dead code)**
 
 With Phase 4 complete, ErrorVariables is a BIND(C) struct. All 5 ErrVar-blocked functions can now be translated. This phase also adds 2D assumed-shape array support needed by `interp2d`.
 
@@ -440,7 +446,7 @@ With Phase 4 complete, ErrorVariables is a BIND(C) struct. All 5 ErrVar-blocked 
 - [ ] Translate + verify + integrate `unwrap`
 - [ ] Translate + verify + integrate `interp2d`
 - [ ] Translate + verify + integrate `AeroDynTorque` — first function using the complete type system: ControlParameters (view struct), PerformanceData (view struct), LocalVariables (BIND(C) struct), ErrorVariables (BIND(C) struct)
-- [ ] Run full verification regression (all 14 functions pass — Functions.f90 complete)
+- [ ] Run full verification regression (all 13 translated functions pass)
 
 **New functions unlocked**: `interp1d`, `sigma`, `unwrap`, `interp2d`, `AeroDynTorque`
 
@@ -638,8 +644,8 @@ The existing interp1d demo (validated 2026-03-17) shows the complete VIT pipelin
 ### Key Talking Points
 
 - **VIT verifies, it doesn't translate.** Humans or LLMs write the C++; VIT proves it's correct against real runtime data and integrates it into the build.
-- **Current coverage**: 3/14 Functions.f90 functions verified (ErrVar-free). 1 more achievable immediately with no tool changes.
-- **Clear phased roadmap**: 4 → 8 → 9 → 14 Functions.f90 functions, then Filters, Controllers, ControllerBlocks, I/O, and finally the entry point.
+- **Current coverage**: 3/14 Functions.f90 functions verified (ErrVar-free). These 3 are ready to integrate in Phase 1.
+- **Clear phased roadmap**: 3 → 7 → 8 → 13 Functions.f90 functions (1 dead code), then Filters, Controllers, ControllerBlocks, I/O, and finally the entry point.
 - **Verification against reality**: Not synthetic test cases — actual runtime data from the NREL 5MW reference turbine simulation.
 - **Incremental and reversible**: Each function is verified and integrated independently. The mixed Fortran/C++ codebase works at every step.
 - **Full ROSCO is the goal**: Every module, every function, culminating in a pure C++ `libdiscon.so`.
