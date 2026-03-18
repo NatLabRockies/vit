@@ -356,16 +356,20 @@ Starting from a clean ROSCO fork with no integrations and no golden fixtures.
 
 **New functions integrated**: `ColemanTransform`, `ColemanTransformInverse`, `identity`
 
-### Phase 3: Load-Bearing Derived Types
+### Phase 3: Load-Bearing Derived Types ✓
 **Target: 8/14 Functions.f90**
 
-- [ ] Derived type registry in CLI — wire the `derived_types` parameter from `get_type_mapping()` through the CLI pipeline. Currently hardcoded to None. All TYPE(...) args will become BIND(C) structs passed by pointer.
-- [ ] BIND(C) struct generation for `rlParams` — auto-generate C struct from parsed TYPE block. `rlParams` is the simplest load-bearing type (1 fixed-size array), used by `ratelimit`.
-- [ ] OPTIONAL argument support — `ratelimit` has `OPTIONAL :: ResetValue`. Interface gen must handle PRESENT() checks in the Fortran wrapper and default values in C.
-- [ ] Translate + verify + integrate `ratelimit`
-- [ ] Run full verification regression (all 8 functions pass)
+- [x] Scalar INOUT in functions — removed `sig.is_subroutine` guard; scalar INTENT(OUT/INOUT) args are always pointers regardless of function vs subroutine. Required for `ratelimit`'s `inst` parameter.
+- [x] Derived type auto-discovery and registry — `build_derived_type_registry()` scans function args for TYPE(...), searches source directory for definitions via `find_and_parse_derived_type()`. Registry threaded through entire pipeline (cli → interface_gen → kernel_verify → integrate → translate).
+- [x] BIND(C) struct generation — `generate_c_struct_header()` emits C typedef from parsed TYPE block. C-compatible derived types become struct pointers (`rlparams_t*` in C, `TYPE(C_PTR) VALUE` in interface, `C_LOC()` in wrapper with `TARGET` attribute).
+- [x] OPTIONAL argument support — OPTIONAL args split into flag+value pair (`int has_ResetValue`, `double ResetValue`). Wrapper generates `PRESENT()` preamble with local variables.
+- [x] LOGICAL type conversion — explicit `LOGICAL(x, C_BOOL)` in wrapper calls for safe kind conversion.
+- [x] Translate + verify + integrate `ratelimit` (40/40)
+- [x] Run full clean build test — all 7 functions extracted from clean source, verified 40/40, integrated, rebuilt, byte-identical simulation output.
 
-**New function unlocked**: `ratelimit`
+**Completed 2026-03-18.** Three new VIT capabilities: derived type struct passing, OPTIONAL argument handling, scalar INOUT in functions. Extraction requires clean (pre-integration) source — golden kernel fixtures persist for fast regression. `ratelimit` is the first function with a derived type (`TYPE(rlParams)`), OPTIONAL parameter, LOGICAL input, and scalar INOUT in a FUNCTION.
+
+**New function integrated**: `ratelimit`
 
 ### Phase 4: Complete Type System C Structs
 **Target: C++ struct definitions for ALL types (including ErrorVariables), unblocking Phases 5–8**

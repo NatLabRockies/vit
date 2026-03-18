@@ -90,6 +90,7 @@ def generate_integration_plan(
     src_dir: Optional[str] = None,
     target_name: str = "discon",
     kind_aliases: Optional[dict] = None,
+    derived_types: Optional[dict] = None,
 ) -> IntegrationPlan:
     """
     Generate a complete integration plan for a verified C++ function.
@@ -118,7 +119,8 @@ def generate_integration_plan(
     cpp_impl_content = Path(cpp_impl_path).read_text()
 
     # Generate the complete C++ file (impl + wrapper)
-    cpp_complete = _generate_standalone_cpp(sig, cpp_impl_content, kind_aliases)
+    cpp_complete = _generate_standalone_cpp(sig, cpp_impl_content, kind_aliases,
+                                             derived_types)
 
     patches.append(IntegrationPatch(
         filepath=cpp_wrapper_path,
@@ -129,7 +131,7 @@ def generate_integration_plan(
 
     # 2. Modify the Fortran source file
     fortran_patches = _generate_fortran_patches(
-        sig, source_file, kind_aliases
+        sig, source_file, kind_aliases, derived_types
     )
     patches.extend(fortran_patches)
 
@@ -215,7 +217,8 @@ def apply_integration_plan(plan: IntegrationPlan, dry_run: bool = False) -> dict
 
 
 def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
-                              kind_aliases: Optional[dict] = None) -> str:
+                              kind_aliases: Optional[dict] = None,
+                              derived_types: Optional[dict] = None) -> str:
     """
     Generate a standalone C++ file with implementation + extern "C" wrapper.
 
@@ -233,6 +236,15 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
     lines.append("#include <cmath>")
     lines.append("")
 
+    # Embed struct typedefs for C-compatible derived types
+    if derived_types:
+        from .derived_type_parser import generate_c_struct_header
+        for type_name, type_info in derived_types.items():
+            if type_info.is_c_compatible:
+                header = generate_c_struct_header(type_info, kind_aliases)
+                lines.append(header.rstrip())
+                lines.append("")
+
     # Include the user's implementation
     lines.append("// --- User-provided C++ implementation ---")
     lines.append(impl_content.rstrip())
@@ -241,13 +253,13 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
     # Generate extern "C" wrapper using shared param builder
     lines.append("// --- Fortran-callable C wrapper ---")
     c_func_name = sig.c_func_name
-    c_params = build_c_params(sig, kind_aliases)
+    c_params = build_c_params(sig, kind_aliases, derived_types)
 
     param_str = ", ".join(f"{p[0]} {p[1]}" for p in c_params)
     arg_str = ", ".join(p[1] for p in c_params)
 
     if sig.is_function and not sig.result_is_array:
-        ret_mapping = get_type_mapping(sig.result_type or "REAL(8)", kind_aliases)
+        ret_mapping = get_type_mapping(sig.result_type or "REAL(8)", kind_aliases, derived_types)
 
         lines.append(f'extern "C" {{')
         lines.append(f"    {ret_mapping.c_type} {c_func_name}({param_str}) {{")
@@ -266,7 +278,8 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
 
 
 def _generate_fortran_patches(sig: FortranSignature, source_file: str,
-                               kind_aliases: Optional[dict] = None) -> list[IntegrationPatch]:
+                               kind_aliases: Optional[dict] = None,
+                               derived_types: Optional[dict] = None) -> list[IntegrationPatch]:
     """Generate patches for the Fortran source file."""
     patches = []
     content = Path(source_file).read_text()
@@ -289,7 +302,7 @@ def _generate_fortran_patches(sig: FortranSignature, source_file: str,
                 break
 
     # Patch 2: Add INTERFACE block above CONTAINS
-    interface_block = generate_fortran_interface_block(sig, kind_aliases)
+    interface_block = generate_fortran_interface_block(sig, kind_aliases, derived_types)
     for i, line in enumerate(lines):
         if line.strip().upper() == "CONTAINS":
             patches.append(IntegrationPatch(
@@ -303,7 +316,7 @@ def _generate_fortran_patches(sig: FortranSignature, source_file: str,
             break
 
     # Patch 3: Replace function body with wrapper
-    wrapper = generate_fortran_wrapper(sig, kind_aliases)
+    wrapper = generate_fortran_wrapper(sig, kind_aliases, derived_types)
     end_keyword = "FUNCTION" if sig.is_function else "SUBROUTINE"
 
     # Find the original function body

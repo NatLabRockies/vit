@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from .config import load_config, init_config, save_config, record_translation
+from .derived_type_parser import build_derived_type_registry
 from .fortran_parser import find_function_in_file, FortranSignature
 from .interface_gen import (
     generate_cpp_wrapper,
@@ -341,6 +342,8 @@ def cmd_translate(args, config):
         # Fall back to filename stem
         module_name = Path(args.file).stem
 
+    derived_types = _build_registry(sig, config)
+
     # Determine output directory
     if args.output:
         out_dir = Path(args.output)
@@ -354,6 +357,7 @@ def cmd_translate(args, config):
         kind_aliases=config.kind_aliases,
         source_file=args.file,
         vit_version=__version__,
+        derived_types=derived_types,
     )
 
     # Write scaffold
@@ -379,6 +383,7 @@ def cmd_translate(args, config):
         fortran_source_text=fortran_text,
         scaffold_text=scaffold,
         tips_text=tips_text,
+        derived_types=derived_types,
     )
 
     # Print summary
@@ -404,17 +409,19 @@ def cmd_interface(args, config):
 
     _print_signature(sig)
 
+    derived_types = _build_registry(sig, config)
+
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate interface block
-    iface = generate_fortran_interface_block(sig, config.kind_aliases)
+    iface = generate_fortran_interface_block(sig, config.kind_aliases, derived_types)
     iface_path = out_dir / f"{sig.name.lower()}_interface.f90"
     iface_path.write_text(iface)
     print(f"\n✓ Interface block:  {iface_path}")
 
     # Generate wrapper function
-    wrapper = generate_fortran_wrapper(sig, config.kind_aliases)
+    wrapper = generate_fortran_wrapper(sig, config.kind_aliases, derived_types)
     wrapper_path = out_dir / f"{sig.name.lower()}_wrapper.f90"
     wrapper_path.write_text(wrapper)
     print(f"✓ Wrapper function: {wrapper_path}")
@@ -466,6 +473,7 @@ def cmd_verify(args, config):
         print("Run 'vit extract' first, or specify --kernel-dir")
         return 1
 
+    derived_types = _build_registry(sig, config)
     field_log = not getattr(args, 'no_field_log', False)
 
     print(f"Setting up C++ verification in {kernel_dir}...")
@@ -475,6 +483,7 @@ def cmd_verify(args, config):
         cpp_impl_path=args.cpp_file,
         kind_aliases=config.kind_aliases,
         field_log=field_log,
+        derived_types=derived_types,
     )
 
     if not setup_result["success"]:
@@ -522,6 +531,7 @@ def cmd_integrate(args, config):
     else:
         sig = _find_function_in_project(args.function_name, config)
 
+    derived_types = _build_registry(sig, config)
     cmake_file = config.abs_cmake_file if config.build_type == "cmake" else None
 
     plan = generate_integration_plan(
@@ -531,6 +541,7 @@ def cmd_integrate(args, config):
         cmake_file=cmake_file,
         target_name=config.target_name,
         kind_aliases=config.kind_aliases,
+        derived_types=derived_types,
     )
 
     print(plan.to_markdown())
@@ -566,6 +577,8 @@ def cmd_run(args, config):
         sig = _find_function_in_project(args.function_name, config)
     _print_signature(sig)
 
+    derived_types = _build_registry(sig, config)
+
     # Step 2: Verify (if kernel dir exists and not skipped)
     if not args.skip_verify:
         kernel_dir = args.kernel_dir
@@ -586,6 +599,7 @@ def cmd_run(args, config):
                 cpp_impl_path=args.cpp_file,
                 kind_aliases=config.kind_aliases,
                 field_log=field_log,
+                derived_types=derived_types,
             )
 
             if not setup_result["success"]:
@@ -618,6 +632,7 @@ def cmd_run(args, config):
         cmake_file=cmake_file,
         target_name=config.target_name,
         kind_aliases=config.kind_aliases,
+        derived_types=derived_types,
     )
 
     print(plan.to_markdown())
@@ -671,6 +686,14 @@ def cmd_status(args, config):
 
 
 # --- Helpers ---
+
+def _build_registry(sig: FortranSignature, config) -> dict:
+    """Build a derived type registry for the function's TYPE(...) args."""
+    source_dir = config.abs_source_dir
+    if source_dir and os.path.isdir(source_dir):
+        return build_derived_type_registry(sig, source_dir)
+    return {}
+
 
 def _find_function_in_project(function_name: str, config) -> FortranSignature:
     """Search the project source tree for a function definition."""

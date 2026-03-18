@@ -217,7 +217,7 @@ docker exec -it vit-dev bash -c "cd /workspace/vit && python3 -m pytest tests/ -
 
 ### Golden Test Fixtures
 
-Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
+Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
 
 **Extraction parameters (for regenerating golden fixtures):**
 
@@ -229,9 +229,18 @@ Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful ex
 | `ColemanTransform` | `Controllers.f90` | 510 | `vit extract ColemanTransform -f rosco/controller/src/Controllers.f90 -l 510` |
 | `ColemanTransformInverse` | `Controllers.f90` | 561 | `vit extract ColemanTransformInverse -f rosco/controller/src/Controllers.f90 -l 561` |
 | `identity` | `ControllerBlocks.f90` | 454 | `vit extract identity -f rosco/controller/src/ControllerBlocks.f90 -l 454` |
+| `ratelimit` | `Controllers.f90` | 103 | `vit extract ratelimit -f rosco/controller/src/Controllers.f90 -l 103` |
 | `interp1d` | `Controllers.f90` | 62 | `vit extract interp1d -f rosco/controller/src/Controllers.f90 -l 62` |
 
 Each extraction deposits into `kernel/<function_name>/` and restores the source file automatically.
+
+**IMPORTANT:** Extraction requires clean (pre-integration) source files. If ROSCO source has already-integrated C++ wrappers, the kernel will contain unresolved `_c` function calls. Before extracting, reset tracked source files to upstream state:
+```bash
+cd vit_translation/ROSCO
+git checkout e8010f0 -- rosco/controller/src/Functions.f90 rosco/controller/src/ControllerBlocks.f90 rosco/controller/src/Filters.f90 rosco/controller/CMakeLists.txt
+rm -f rosco/controller/src/*_cpp.cpp
+```
+Then rebuild clean Fortran before running `vit extract`.
 
 **When to re-extract:**
 - Changes to `vit/vit/extract.py`
@@ -259,7 +268,7 @@ After every feature implementation, run:
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify saturate translations/Functions/saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/saturate 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify wrap_180 translations/Functions/wrap_180.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_180 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify wrap_360 translations/Functions/wrap_360.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_360 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify interp1d translations/Functions/interp1d.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/interp1d 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify ratelimit translations/Functions/ratelimit.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ratelimit 2>&1 | tail -3"
    ```
    Must show: `40/40 passed` for each function.
 
@@ -287,12 +296,12 @@ The functions included in the clean build test expand as phases complete. Initia
 
 ```bash
 cd vit_translation/ROSCO
-git checkout .
+git checkout e8010f0 -- rosco/controller/src/Functions.f90 rosco/controller/src/ControllerBlocks.f90 rosco/controller/src/Filters.f90 rosco/controller/CMakeLists.txt
 rm -f rosco/controller/src/*_cpp.cpp
 rm -rf kernel/ state/ model.ini include.ini kgen.log baseline_output.txt integrated_output.txt
 ```
 
-This resets all tracked source files to their upstream state and removes all VIT work products. Untracked config files (`vit.yaml`) and the `translations/` directory are preserved.
+This restores source files to upstream (pre-integration) state using the last upstream commit `e8010f0`. The `translations/` directory and `vit.yaml` are preserved.
 
 **Step 2 — Build clean Fortran baseline and capture baseline output (in container):**
 
@@ -311,6 +320,10 @@ Each extraction instruments the source, rebuilds, runs the simulation, captures 
 vit extract saturate -f rosco/controller/src/Controllers.f90 -l 102
 vit extract wrap_180 -f rosco/controller/src/Filters.f90 -l 430
 vit extract wrap_360 -f rosco/controller/src/Controllers.f90 -l 517
+vit extract ratelimit -f rosco/controller/src/Controllers.f90 -l 103
+vit extract ColemanTransform -f rosco/controller/src/Controllers.f90 -l 510
+vit extract ColemanTransformInverse -f rosco/controller/src/Controllers.f90 -l 561
+vit extract identity -f rosco/controller/src/ControllerBlocks.f90 -l 454
 ```
 
 Each must show `Extraction successful` with `Cases: 20`.
@@ -321,6 +334,10 @@ Each must show `Extraction successful` with `Cases: 20`.
 vit verify saturate translations/Functions/saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/saturate
 vit verify wrap_180 translations/Functions/wrap_180.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_180
 vit verify wrap_360 translations/Functions/wrap_360.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_360
+vit verify ratelimit translations/Functions/ratelimit.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ratelimit
+vit verify ColemanTransform translations/Functions/colemantransform.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ColemanTransform
+vit verify ColemanTransformInverse translations/Functions/colemantransforminverse.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ColemanTransformInverse
+vit verify identity translations/Functions/identity.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/identity
 ```
 
 Each must show `40/40 passed`.
@@ -331,6 +348,10 @@ Each must show `40/40 passed`.
 vit integrate saturate translations/Functions/saturate.cpp -f rosco/controller/src/Functions.f90 --apply
 vit integrate wrap_180 translations/Functions/wrap_180.cpp -f rosco/controller/src/Functions.f90 --apply
 vit integrate wrap_360 translations/Functions/wrap_360.cpp -f rosco/controller/src/Functions.f90 --apply
+vit integrate ratelimit translations/Functions/ratelimit.cpp -f rosco/controller/src/Functions.f90 --apply
+vit integrate ColemanTransform translations/Functions/colemantransform.cpp -f rosco/controller/src/Functions.f90 --apply
+vit integrate ColemanTransformInverse translations/Functions/colemantransforminverse.cpp -f rosco/controller/src/Functions.f90 --apply
+vit integrate identity translations/Functions/identity.cpp -f rosco/controller/src/Functions.f90 --apply
 ```
 
 Each `--apply` reads the current file state and generates correct patches, skipping items already present (e.g., `enable_language(CXX)`, `stdc++` link, `USE ISO_C_BINDING`).
@@ -343,7 +364,7 @@ cd Examples && python3 vit_sim.py > /workspace/ROSCO/integrated_output.txt 2>&1 
 diff baseline_output.txt integrated_output.txt
 ```
 
-Empty diff = success. All three C++ translations produce byte-identical simulation output.
+Empty diff = success. All 7 C++ translations produce byte-identical simulation output.
 
 ### Development Workflow
 
@@ -375,6 +396,7 @@ Verified C++ translations live in `ROSCO/translations/Functions/`, organized by 
 | `translations/Functions/saturate.cpp` | `saturate` in Functions.f90 | Verified (Phase 1) |
 | `translations/Functions/wrap_180.cpp` | `wrap_180` in Functions.f90 | Verified (Phase 1) |
 | `translations/Functions/wrap_360.cpp` | `wrap_360` in Functions.f90 | Verified (Phase 1) |
+| `translations/Functions/ratelimit.cpp` | `ratelimit` in Functions.f90 | Verified (Phase 3) |
 | `translations/Functions/interp1d.cpp` | `interp1d` in Functions.f90 | Blocked by ErrorVariables (Phase 5) |
 
 Each translation file has a metadata header (source file, function name, MD5 hash, VIT version, verification status) generated by `vit translate`.
@@ -393,7 +415,7 @@ Note: `interp1d.cpp` uses VIT's per-array size parameter convention (`n_xData`, 
 
 All derived types (including ErrorVariables) will become BIND(C) structs passed by pointer — no passthrough, no decomposed args. Functions with ErrorVariables are delayed until Phase 4 (type system) and translated in Phase 5. The passthrough mechanism in the current code is legacy and not used for new translations.
 
-- **Derived type registry not wired into pipeline**: `get_type_mapping()` accepts an optional `derived_types` registry, but nothing in the CLI or pipeline populates it. All `TYPE(...)` args currently default to non-C-compatible. This will be wired in Phase 3 (ratelimit/rlParams) and completed in Phase 4 (full type system).
+- **Derived type registry is auto-discovered**: `build_derived_type_registry()` searches the source directory for TYPE definitions used in function args. C-compatible types (no ALLOCATABLE, POINTER, or nested types) are passed as struct pointers. Non-C-compatible types default to passthrough. Wired in Phase 3; Phase 4 will handle all remaining types including ErrorVariables.
 
 - **USE statement matching is string-based**: `_get_use_statements_for_derived_types()` checks if the derived type name appears in the USE line text. This works for `USE Module, ONLY: TypeName` but would miss bare `USE Module` (can't tell what it exports) or false-match on substring collisions.
 

@@ -72,6 +72,7 @@ def setup_kernel_cpp(
     cpp_impl_path: str,
     kind_aliases: Optional[dict] = None,
     field_log: bool = True,
+    derived_types: Optional[dict] = None,
 ) -> dict:
     """
     Wire a C++ translation into a KGen kernel directory for verification.
@@ -104,9 +105,23 @@ def setup_kernel_cpp(
     shutil.copy2(cpp_impl_path, impl_dest)
     result["files_modified"].append(str(impl_dest))
 
+    # --- Step 1b: Generate struct headers for C-compatible derived types ---
+    struct_headers = []
+    if derived_types:
+        from .derived_type_parser import generate_c_struct_header
+        for type_name, type_info in derived_types.items():
+            if type_info.is_c_compatible:
+                header_filename = f"{type_name.lower()}_t.h"
+                header_content = generate_c_struct_header(type_info, kind_aliases)
+                header_path = kernel / header_filename
+                header_path.write_text(header_content)
+                struct_headers.append(header_filename)
+                result["files_modified"].append(str(header_path))
+
     # --- Step 2: Generate C wrapper ---
     wrapper_filename = f"{sig.name.lower()}_cpp.cpp"
-    wrapper_source = generate_cpp_wrapper(sig, impl_filename, kind_aliases)
+    wrapper_source = generate_cpp_wrapper(sig, impl_filename, kind_aliases,
+                                           derived_types, struct_headers)
     wrapper_dest = kernel / wrapper_filename
     wrapper_dest.write_text(wrapper_source)
     result["files_modified"].append(str(wrapper_dest))
@@ -122,7 +137,8 @@ def setup_kernel_cpp(
     # --- Step 4: Modify Fortran sources ---
     try:
         modified = _patch_kernel_fortran(kernel, sig, kind_aliases,
-                                         field_log=field_log)
+                                         field_log=field_log,
+                                         derived_types=derived_types)
         result["files_modified"].extend(modified)
     except Exception as e:
         result["errors"].append(f"Fortran patch failed: {e}")
@@ -289,7 +305,8 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
 
 def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
                           kind_aliases: Optional[dict] = None,
-                          field_log: bool = True) -> list[str]:
+                          field_log: bool = True,
+                          derived_types: Optional[dict] = None) -> list[str]:
     """
     Patch kernel Fortran source files.
 
@@ -309,8 +326,8 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
        results. IEEE 754 NaN != NaN, so we add a guard clause.)
     """
     modified_files = []
-    interface_block = generate_fortran_interface_block(sig, kind_aliases)
-    wrapper_body = generate_fortran_wrapper(sig, kind_aliases)
+    interface_block = generate_fortran_interface_block(sig, kind_aliases, derived_types)
+    wrapper_body = generate_fortran_wrapper(sig, kind_aliases, derived_types)
 
     for f90_file in kernel.glob("*.f90"):
         content = f90_file.read_text()

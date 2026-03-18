@@ -24,6 +24,7 @@ def generate_translation_scaffold(
     kind_aliases: Optional[dict] = None,
     source_file: Optional[str] = None,
     vit_version: str = "0.1.0",
+    derived_types: Optional[dict] = None,
 ) -> str:
     """
     Generate a C++ translation scaffold with metadata header and correct signature.
@@ -48,8 +49,17 @@ def generate_translation_scaffold(
     lines.append(_generate_metadata_header(sig, kind_aliases, source_file, vit_version))
     lines.append("")
 
+    # Include struct typedefs for C-compatible derived types
+    if derived_types:
+        from .derived_type_parser import generate_c_struct_header
+        for type_name, type_info in derived_types.items():
+            if type_info.is_c_compatible:
+                header = generate_c_struct_header(type_info, kind_aliases)
+                lines.append(header.rstrip())
+                lines.append("")
+
     # Generate C++ signature
-    params = build_c_params(sig, kind_aliases)
+    params = build_c_params(sig, kind_aliases, derived_types)
     ret_type = _get_c_return_type(sig, kind_aliases)
     func_name = sig.name.lower()
 
@@ -72,6 +82,7 @@ def generate_translation_prompt(
     scaffold_text: Optional[str] = None,
     call_site_info: Optional[str] = None,
     tips_text: Optional[str] = None,
+    derived_types: Optional[dict] = None,
 ) -> str:
     """
     Generate a complete translation prompt for LLM-assisted translation.
@@ -116,6 +127,21 @@ def generate_translation_prompt(
     if call_site_info:
         sections.append(f"## Call Site\n")
         sections.append(f"Called from: `{call_site_info}`\n")
+
+    # C struct definitions for derived types
+    if derived_types:
+        from .derived_type_parser import generate_c_struct_header
+        struct_defs = []
+        for type_name, type_info in derived_types.items():
+            if type_info.is_c_compatible:
+                header = generate_c_struct_header(type_info, kind_aliases)
+                struct_defs.append(header)
+        if struct_defs:
+            sections.append("## C Struct Definitions\n")
+            sections.append("These struct types are passed by pointer to the C++ function:\n")
+            sections.append("```c")
+            sections.append("\n\n".join(d.strip() for d in struct_defs))
+            sections.append("```\n")
 
     # Translation tips
     if tips_text and tips_text.strip():

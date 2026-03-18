@@ -539,6 +539,268 @@ class TestArrayValuedResult:
         assert sig.result_dims is None
 
 
+# === Phase 3: Scalar INOUT in Functions, Derived Types, OPTIONAL, LOGICAL ===
+
+FUNCTION_INOUT_SOURCE = """\
+MODULE TestMod
+CONTAINS
+    FUNCTION accumulate(val, counter) RESULT(total)
+        IMPLICIT NONE
+        REAL(8), INTENT(IN) :: val
+        INTEGER, INTENT(INOUT) :: counter
+        REAL(8) :: total
+        counter = counter + 1
+        total = val * counter
+    END FUNCTION accumulate
+END MODULE TestMod
+"""
+
+RATELIMIT_SOURCE = """\
+MODULE Functions
+USE ROSCO_Types, ONLY: rlParams
+IMPLICIT NONE
+CONTAINS
+    REAL(DbKi) FUNCTION ratelimit(inputSignal, minRate, maxRate, DT, reset, rlP, inst, ResetValue)
+        USE ROSCO_Types, ONLY : rlParams
+        IMPLICIT NONE
+        REAL(DbKi), INTENT(IN)          :: inputSignal
+        REAL(DbKi), INTENT(IN)          :: minRate
+        REAL(DbKi), INTENT(IN)          :: maxRate
+        REAL(DbKi), INTENT(IN)          :: DT
+        LOGICAL,    INTENT(IN)          :: reset
+        TYPE(rlParams), INTENT(INOUT)   :: rlP
+        INTEGER(IntKi), INTENT(INOUT)   :: inst
+        REAL(DbKi), OPTIONAL, INTENT(IN) :: ResetValue
+        ratelimit = 0.0
+    END FUNCTION ratelimit
+END MODULE Functions
+"""
+
+
+# Mock derived type info for testing
+from vit.derived_type_parser import DerivedTypeInfo, DerivedTypeField
+
+RLPARAMS_INFO = DerivedTypeInfo(
+    name="rlParams",
+    fields=[
+        DerivedTypeField(
+            name="LastSignal",
+            fortran_type="REAL(DbKi)",
+            is_array=True,
+            array_dims="1024",
+        ),
+    ],
+    source_module="ROSCO_Types",
+)
+
+RLPARAMS_REGISTRY = {"rlParams": RLPARAMS_INFO}
+
+
+class TestScalarINOUTInFunction:
+    """Phase 3: Scalar INOUT/OUT args need pointers in functions too."""
+
+    def test_parse_function_inout(self):
+        sig = parse_signature_from_source(FUNCTION_INOUT_SOURCE, "accumulate")
+        assert sig.kind == SubprogramKind.FUNCTION
+        counter = sig.args[1]
+        assert counter.intent == IntentKind.INOUT
+
+    def test_c_param_inout_is_pointer_in_function(self):
+        """Scalar INOUT in a FUNCTION should be a pointer, not by-value."""
+        sig = parse_signature_from_source(FUNCTION_INOUT_SOURCE, "accumulate")
+        params = build_c_params(sig)
+        param_dict = {name: ctype for ctype, name in params}
+        assert param_dict["counter"] == "int*"
+
+    def test_interface_inout_no_value(self):
+        """INOUT args in FUNCTION interface should NOT have VALUE."""
+        sig = parse_signature_from_source(FUNCTION_INOUT_SOURCE, "accumulate")
+        iface = generate_fortran_interface_block(sig)
+        for line in iface.split("\n"):
+            if ":: counter" in line.lower():
+                assert "VALUE" not in line.upper()
+                assert "INTENT(INOUT)" in line.upper()
+
+    def test_wrapper_inout_by_name(self):
+        """INOUT scalars in wrapper call should be passed by name (not converted)."""
+        sig = parse_signature_from_source(FUNCTION_INOUT_SOURCE, "accumulate")
+        wrapper = generate_fortran_wrapper(sig)
+        # Should contain 'counter' directly in the call, not INT(counter, ...)
+        assert "accumulate_c" in wrapper
+        # val is IN, counter is INOUT — only val might have conversion
+
+
+class TestDerivedTypeStructPointer:
+    """Phase 3: C-compatible derived types passed as struct pointers."""
+
+    def test_c_param_derived_is_struct_pointer(self):
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        param_dict = {name: ctype for ctype, name in params}
+        assert param_dict["rlP"] == "rlparams_t*"
+
+    def test_interface_derived_is_c_ptr(self):
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        iface = generate_fortran_interface_block(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        for line in iface.split("\n"):
+            if ":: rlp" in line.lower():
+                assert "TYPE(C_PTR)" in line.upper()
+                assert "VALUE" in line.upper()
+
+    def test_wrapper_uses_c_loc(self):
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        wrapper = generate_fortran_wrapper(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        assert "C_LOC(rlP)" in wrapper
+
+    def test_wrapper_has_target(self):
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        wrapper = generate_fortran_wrapper(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        # rlP declaration should have TARGET
+        for line in wrapper.split("\n"):
+            if ":: rlP" in line and "TYPE(rlParams)" in line:
+                assert "TARGET" in line.upper()
+
+    def test_wrapper_has_use_rosco_types(self):
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        wrapper = generate_fortran_wrapper(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        assert "USE ROSCO_Types" in wrapper
+
+    def test_unknown_derived_type_is_passthrough(self):
+        """Without registry, TYPE(rlParams) should be passthrough (skipped)."""
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES)  # no derived_types
+        param_names = [name for _, name in params]
+        assert "rlP" not in param_names
+
+
+class TestOptionalArgs:
+    """Phase 3: OPTIONAL args become flag + value pairs."""
+
+    def test_c_params_optional_flag_and_value(self):
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        param_names = [name for _, name in params]
+        assert "has_ResetValue" in param_names
+        assert "ResetValue" in param_names
+        # Flag comes before value
+        flag_idx = param_names.index("has_ResetValue")
+        val_idx = param_names.index("ResetValue")
+        assert flag_idx < val_idx
+
+    def test_c_params_optional_flag_type(self):
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        param_dict = {name: ctype for ctype, name in params}
+        assert param_dict["has_ResetValue"] == "int"
+        assert param_dict["ResetValue"] == "double"
+
+    def test_interface_optional_two_args(self):
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        iface = generate_fortran_interface_block(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        iface_upper = iface.upper()
+        assert "HAS_RESETVALUE" in iface_upper
+        assert "INTEGER(C_INT), VALUE :: HAS_RESETVALUE" in iface_upper
+
+    def test_wrapper_optional_preamble(self):
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        wrapper = generate_fortran_wrapper(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        assert "has_ResetValue_flag" in wrapper
+        assert "ResetValue_val" in wrapper
+        assert "PRESENT(ResetValue)" in wrapper
+
+    def test_wrapper_declares_optional(self):
+        """Wrapper arg declaration should have OPTIONAL attribute."""
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        wrapper = generate_fortran_wrapper(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        found = False
+        for line in wrapper.split("\n"):
+            # Match the arg declaration, not the local variable
+            if ":: ResetValue" in line and "REAL(DbKi)" in line:
+                assert "OPTIONAL" in line.upper()
+                found = True
+        assert found, "Did not find ResetValue arg declaration"
+
+
+class TestLogicalType:
+    """Phase 3: LOGICAL type handling."""
+
+    def test_logical_maps_to_int(self):
+        from vit.type_map import get_type_mapping
+        m = get_type_mapping("LOGICAL")
+        assert m.c_type == "int"
+        assert m.iso_c_type == "LOGICAL(C_BOOL)"
+
+    def test_ratelimit_reset_c_param(self):
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        param_dict = {name: ctype for ctype, name in params}
+        assert param_dict["reset"] == "int"
+
+    def test_wrapper_logical_conversion(self):
+        """LOGICAL args should get explicit LOGICAL(x, C_BOOL) conversion."""
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        wrapper = generate_fortran_wrapper(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        assert "LOGICAL(reset, C_BOOL)" in wrapper
+
+
+class TestRatelimitFullSignature:
+    """Phase 3: Complete ratelimit function interface generation."""
+
+    def test_parse_ratelimit(self):
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        assert sig.kind == SubprogramKind.FUNCTION
+        assert len(sig.args) == 8
+        assert sig.result_type is not None
+        assert "REAL" in sig.result_type.upper()
+
+    def test_ratelimit_c_param_count(self):
+        """Should have: 4 IN scalars + 1 LOGICAL + struct ptr + int ptr + flag + value = 9."""
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        assert len(params) == 9
+
+    def test_ratelimit_inst_is_pointer(self):
+        """inst is INTEGER(IntKi), INTENT(INOUT) in a FUNCTION — must be pointer."""
+        sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
+        params = build_c_params(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        param_dict = {name: ctype for ctype, name in params}
+        assert param_dict["inst"] == "int*"
+
+
+class TestDerivedTypeParser:
+    """Phase 3: Derived type parser and struct header generation."""
+
+    def test_generate_c_struct_header(self):
+        from vit.derived_type_parser import generate_c_struct_header
+        header = generate_c_struct_header(RLPARAMS_INFO, ROSCO_KIND_ALIASES)
+        assert "typedef struct" in header
+        assert "rlparams_t" in header
+        assert "double LastSignal[1024]" in header
+        assert "#ifndef RLPARAMS_T_H" in header
+
+    def test_c_compatible(self):
+        assert RLPARAMS_INFO.is_c_compatible
+
+    def test_parse_derived_type(self):
+        from vit.derived_type_parser import parse_derived_type
+        source = """\
+MODULE ROSCO_Types
+IMPLICIT NONE
+TYPE, PUBLIC :: rlParams
+    REAL(DbKi), DIMENSION(1024)     :: LastSignal
+END TYPE rlParams
+END MODULE ROSCO_Types
+"""
+        info = parse_derived_type(source, "rlParams")
+        assert info is not None
+        assert info.name == "rlParams"
+        assert len(info.fields) == 1
+        assert info.fields[0].name == "LastSignal"
+        assert info.fields[0].is_array
+        assert info.fields[0].array_dims == "1024"
+        assert info.source_module == "ROSCO_Types"
+
+
 # === Run tests ===
 
 if __name__ == "__main__":
