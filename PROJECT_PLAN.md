@@ -372,6 +372,8 @@ Starting from a clean ROSCO fork with no integrations and no golden fixtures.
 
 Deep investigation (2026-03-17) found that **every ROSCO type can become a C struct** — no opaque pointers or accessor APIs needed. This phase solves the entire type system in one shot.
 
+**Design constraint:** These C structs become the permanent C++ types in the final all-C++ codebase. Design them as final types, not temporary interop scaffolding — use reasonable field names, logical grouping, and avoid Fortran-isms that would need unwinding later.
+
 **VIT `analyze-types` command — build the tool, then use it:**
 
 Rather than applying type fixes manually, this phase implements a new `vit analyze-types` command that performs the analysis deterministically and generates the artifacts. The manual investigation we did for ROSCO becomes the spec and golden test cases.
