@@ -1,0 +1,225 @@
+"""
+Translation scaffold and prompt generation.
+
+Generates C++ translation scaffolds (correct signature, metadata header,
+placeholder body) and translation prompts for LLM-assisted translation.
+
+The scaffold produces an implementation-only file matching the existing
+translation pattern. The extern "C" wrapper is added at integration time
+by _generate_standalone_cpp() in integrate.py.
+"""
+
+import hashlib
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+from .fortran_parser import FortranSignature
+from .interface_gen import build_c_params
+from .type_map import get_type_mapping
+
+
+def generate_translation_scaffold(
+    sig: FortranSignature,
+    kind_aliases: Optional[dict] = None,
+    source_file: Optional[str] = None,
+    vit_version: str = "0.1.0",
+) -> str:
+    """
+    Generate a C++ translation scaffold with metadata header and correct signature.
+
+    The scaffold has:
+    - A metadata comment block (source file, function name, hash, version, status)
+    - The correct C++ function signature (from build_c_params)
+    - A placeholder body with TODO comment
+
+    Args:
+        sig: Parsed Fortran function signature
+        kind_aliases: Project-specific kind aliases (e.g., ReKi → REAL(8))
+        source_file: Path to the Fortran source file containing the function
+        vit_version: VIT version string for metadata
+
+    Returns:
+        Complete C++ scaffold file as a string
+    """
+    lines = []
+
+    # Metadata header
+    lines.append(_generate_metadata_header(sig, kind_aliases, source_file, vit_version))
+    lines.append("")
+
+    # Generate C++ signature
+    params = build_c_params(sig, kind_aliases)
+    ret_type = _get_c_return_type(sig, kind_aliases)
+    func_name = sig.name.lower()
+
+    param_str = ", ".join(f"{p[0]} {p[1]}" for p in params)
+    lines.append(f"{ret_type} {func_name}({param_str}) {{")
+    lines.append(f"    // TODO: implement {sig.name}")
+    if ret_type != "void":
+        lines.append(f"    return 0;")
+    lines.append(f"}}")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def generate_translation_prompt(
+    sig: FortranSignature,
+    kind_aliases: Optional[dict] = None,
+    source_file: Optional[str] = None,
+    fortran_source_text: Optional[str] = None,
+    scaffold_text: Optional[str] = None,
+    call_site_info: Optional[str] = None,
+    tips_text: Optional[str] = None,
+) -> str:
+    """
+    Generate a complete translation prompt for LLM-assisted translation.
+
+    The prompt includes the original Fortran source, the generated scaffold,
+    call site information, and any accumulated translation tips.
+
+    Args:
+        sig: Parsed Fortran function signature
+        kind_aliases: Project-specific kind aliases
+        source_file: Path to the Fortran source file
+        fortran_source_text: The original Fortran function source (verbatim)
+        scaffold_text: The generated C++ scaffold (verbatim)
+        call_site_info: Call site file and line (e.g., "Controllers.f90:102")
+        tips_text: Contents of TRANSLATION_TIPS.md, if it exists
+
+    Returns:
+        Complete prompt string ready to be sent to an LLM
+    """
+    sections = []
+
+    sections.append(f"# Translate Fortran function `{sig.name}` to C++\n")
+
+    # Original Fortran source
+    if fortran_source_text:
+        sections.append("## Original Fortran Source\n")
+        sections.append(f"From `{source_file or 'unknown'}`:\n")
+        sections.append("```fortran")
+        sections.append(fortran_source_text.strip())
+        sections.append("```\n")
+
+    # Generated scaffold
+    if scaffold_text:
+        sections.append("## C++ Scaffold (correct signature — preserve exactly)\n")
+        sections.append("```cpp")
+        sections.append(scaffold_text.strip())
+        sections.append("```\n")
+        sections.append("Replace the `// TODO` placeholder with the algorithm. "
+                        "Do not change the function signature.\n")
+
+    # Call site info
+    if call_site_info:
+        sections.append(f"## Call Site\n")
+        sections.append(f"Called from: `{call_site_info}`\n")
+
+    # Translation tips
+    if tips_text and tips_text.strip():
+        sections.append("## Translation Tips (lessons from previous translations)\n")
+        sections.append(tips_text.strip())
+        sections.append("")
+
+    # General instruction
+    sections.append("## Instructions\n")
+    sections.append(
+        "Consider the Fortran code carefully and be intentional about every "
+        "translation choice. Pay attention to:\n"
+        "- Array indexing (Fortran is 1-based, C++ is 0-based)\n"
+        "- Fortran intrinsic functions and their C++ equivalents\n"
+        "- Integer vs. floating-point division\n"
+        "- Any implicit type conversions\n"
+        "\n"
+        "If anything is unclear or ambiguous, ask rather than assume."
+    )
+    sections.append("")
+
+    return "\n".join(sections)
+
+
+def _generate_metadata_header(
+    sig: FortranSignature,
+    kind_aliases: Optional[dict] = None,
+    source_file: Optional[str] = None,
+    vit_version: str = "0.1.0",
+) -> str:
+    """Generate the metadata comment block for a translation file."""
+    lines = []
+    lines.append(f"// VIT Translation Scaffold")
+    lines.append(f"// Function: {sig.name}")
+    if source_file:
+        lines.append(f"// Source: {Path(source_file).name}")
+    if sig.module_name:
+        lines.append(f"// Module: {sig.module_name}")
+
+    # Fortran signature summary
+    params = build_c_params(sig, kind_aliases)
+    ret_type = _get_c_return_type(sig, kind_aliases)
+    fortran_sig = _format_fortran_signature(sig)
+    lines.append(f"// Fortran: {fortran_sig}")
+
+    # Source hash (for detecting when the Fortran source changes)
+    if source_file:
+        try:
+            source_text = Path(source_file).read_text()
+            func_text = _extract_function_text(source_text, sig.name)
+            if func_text:
+                md5 = hashlib.md5(func_text.encode()).hexdigest()[:12]
+                lines.append(f"// Source MD5: {md5}")
+        except (OSError, IOError):
+            pass
+
+    lines.append(f"// VIT: {vit_version}")
+    lines.append(f"// Status: unverified")
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines.append(f"// Generated: {timestamp}")
+
+    return "\n".join(lines)
+
+
+def _get_c_return_type(sig: FortranSignature, kind_aliases: Optional[dict] = None) -> str:
+    """Get the C return type for a function signature."""
+    if sig.is_subroutine:
+        return "void"
+    if sig.result_type:
+        mapping = get_type_mapping(sig.result_type, kind_aliases)
+        return mapping.c_type
+    return "double"  # fallback for unresolved types
+
+
+def _format_fortran_signature(sig: FortranSignature) -> str:
+    """Format a one-line Fortran signature summary for the metadata header."""
+    kind_str = "FUNCTION" if sig.is_function else "SUBROUTINE"
+    args = ", ".join(a.name for a in sig.args)
+    result = ""
+    if sig.result_name and sig.is_function:
+        result = f" RESULT({sig.result_name})"
+    return f"{kind_str} {sig.name}({args}){result}"
+
+
+def _extract_function_text(source: str, function_name: str) -> Optional[str]:
+    """Extract the raw text of a function/subroutine from source code."""
+    import re
+    lines = source.split("\n")
+    name_upper = function_name.upper()
+    start_idx = None
+    end_idx = None
+
+    for i, line in enumerate(lines):
+        stripped = line.strip().upper()
+        if "!" in stripped:
+            stripped = stripped[:stripped.index("!")]
+        if start_idx is None:
+            if re.search(rf'\b(FUNCTION|SUBROUTINE)\s+{name_upper}\s*\(', stripped):
+                start_idx = i
+        else:
+            if re.search(rf'\bEND\s+(FUNCTION|SUBROUTINE)\b', stripped):
+                end_idx = i + 1
+                break
+
+    if start_idx is not None and end_idx is not None:
+        return "\n".join(lines[start_idx:end_idx])
+    return None

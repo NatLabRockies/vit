@@ -4,13 +4,11 @@ VIT CLI — Verified Incremental Translator
 Usage:
     vit init                        Initialize vit.yaml for a project
     vit extract <function_name>     Extract function with KGen
+    vit translate <function>        Generate C++ translation scaffold + prompt
     vit interface <function> <cpp>  Generate Fortran↔C interface
     vit verify <function>           Build and run KGen kernel verification
     vit integrate <function>        Generate codebase integration plan
     vit run <function> <cpp_file>   Full pipeline (interface → verify → integrate)
-
-The translation step is intentionally NOT part of this tool.
-Use CodeScribe, any LLM, or hand-write the C++ — then feed it to VIT.
 """
 
 import argparse
@@ -30,6 +28,7 @@ from .interface_gen import (
 from .extract import find_call_sites, insert_kgen_pragma, remove_kgen_pragma, run_kgen_extract
 from .kernel_verify import setup_kernel_cpp, run_kernel_verify
 from .integrate import generate_integration_plan, apply_integration_plan
+from .translate import generate_translation_scaffold, generate_translation_prompt
 
 
 def main():
@@ -66,6 +65,14 @@ def main():
     p_extract.add_argument("--file", "-f", help="Source file containing call site")
     p_extract.add_argument("--line", "-l", type=int, help="Line number of call site")
     p_extract.add_argument("--dry-run", action="store_true")
+
+    # --- translate ---
+    p_translate = subparsers.add_parser("translate", help="Generate C++ translation scaffold")
+    p_translate.add_argument("function_name", help="Function name to translate")
+    p_translate.add_argument("--file", "-f", required=True,
+                             help="Fortran source file with function definition")
+    p_translate.add_argument("--output", "-o", help="Output directory override")
+    p_translate.add_argument("--module", help="Module name for directory organization")
 
     # --- interface ---
     p_iface = subparsers.add_parser("interface", help="Generate Fortran↔C interface")
@@ -121,6 +128,8 @@ def main():
             return cmd_parse(args, config)
         elif args.command == "extract":
             return cmd_extract(args, config)
+        elif args.command == "translate":
+            return cmd_translate(args, config)
         elif args.command == "interface":
             return cmd_interface(args, config)
         elif args.command == "verify":
@@ -315,6 +324,73 @@ def cmd_extract(args, config):
             os.remove(backup_path)
 
     return 0 if result["success"] else 1
+
+
+def cmd_translate(args, config):
+    """Generate C++ translation scaffold and translation prompt."""
+    from . import __version__
+
+    # Parse function signature
+    sig = find_function_in_file(args.file, args.function_name)
+
+    # Determine module name
+    module_name = args.module or sig.module_name
+    if not module_name:
+        # Fall back to filename stem
+        module_name = Path(args.file).stem
+
+    # Determine output directory
+    if args.output:
+        out_dir = Path(args.output)
+    else:
+        out_dir = Path("translations") / module_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate scaffold
+    scaffold = generate_translation_scaffold(
+        sig=sig,
+        kind_aliases=config.kind_aliases,
+        source_file=args.file,
+        vit_version=__version__,
+    )
+
+    # Write scaffold
+    out_path = out_dir / f"{sig.name.lower()}.cpp"
+    out_path.write_text(scaffold)
+
+    # Extract Fortran function source for the prompt
+    source_text = Path(args.file).read_text()
+    from .translate import _extract_function_text
+    fortran_text = _extract_function_text(source_text, args.function_name)
+
+    # Load TRANSLATION_TIPS.md if it exists
+    tips_text = None
+    tips_path = Path("TRANSLATION_TIPS.md")
+    if tips_path.is_file():
+        tips_text = tips_path.read_text()
+
+    # Generate prompt
+    prompt = generate_translation_prompt(
+        sig=sig,
+        kind_aliases=config.kind_aliases,
+        source_file=args.file,
+        fortran_source_text=fortran_text,
+        scaffold_text=scaffold,
+        tips_text=tips_text,
+    )
+
+    # Print summary
+    _print_signature(sig)
+    print(f"\n✓ Scaffold written: {out_path}")
+    print(f"  Module: {module_name}")
+
+    # Print prompt
+    print(f"\n{'─' * 60}")
+    print(f"Translation prompt:")
+    print(f"{'─' * 60}\n")
+    print(prompt)
+
+    return 0
 
 
 def cmd_interface(args, config):
