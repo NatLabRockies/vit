@@ -374,85 +374,92 @@ Starting from a clean ROSCO fork with no integrations and no golden fixtures.
 ### Phase 4: Complete Type System C Structs
 **Target: C++ struct definitions for ALL types (including ErrorVariables), unblocking Phases 5–8**
 
-Deep investigation (2026-03-17) found that **every ROSCO type can become a C struct** — no opaque pointers or accessor APIs needed. This phase solves the entire type system in one shot.
+Deep investigation (2026-03-17) found that **every ROSCO type can become a C struct** — no opaque pointers or accessor APIs needed. Split into 4 sub-phases (4A–4D) that each deliver concrete value, build VIT's `analyze-types` tooling incrementally, and respect downstream dependencies.
 
-**Design constraint:** These C structs become the permanent C++ types in the final all-C++ codebase. Design them as final types, not temporary interop scaffolding — use reasonable field names, logical grouping, and avoid Fortran-isms that would need unwinding later.
+**Design constraint:** These C structs become the permanent C++ types in the final all-C++ codebase. Design them as final types, not temporary interop scaffolding.
 
-**VIT `analyze-types` command — build the tool, then use it:**
+**Key principle:** All Fortran source modifications are automated by VIT (`vit analyze-types --fix`), not done manually. The fix patterns (LOGICAL→INTEGER, COMPLEX→split, CHARACTER ALLOCATABLE→fixed) are general — they recur across scientific Fortran codebases and must be reproducible.
 
-Rather than applying type fixes manually, this phase implements a new `vit analyze-types` command that performs the analysis deterministically and generates the artifacts. The manual investigation we did for ROSCO becomes the spec and golden test cases.
+#### Phase 4A: ErrorVariables + `analyze-types` Foundation
 
-The command takes a source directory and produces:
-- [ ] **Per-type BIND(C) compatibility report** — field-by-field analysis with specific blockers (ALLOCATABLE, CHARACTER, COMPLEX, LOGICAL, nested non-BIND(C) types).
-- [ ] **Fix prescriptions** — deterministic for known patterns: ALLOCATABLE → fixed-size with max bound, `CHARACTER(:), ALLOCATABLE` → `CHARACTER(N)`, `COMPLEX` → split real/imag `REAL` pair, `LOGICAL` → `INTEGER(C_INT)`.
-- [ ] **Usage analysis** — scan source tree for `TypeName%FieldName` patterns, classify read vs. write, report which functions access which fields.
-- [ ] **C++ struct header generation** — produce the `.h` file with C struct definitions matching the (fixed) Fortran layout.
-- [ ] **Fortran BIND(C) type modifications** — generate patched TYPE definitions with `BIND(C)` attributes and incompatible fields replaced.
+- [ ] `vit analyze-types` CLI command — scans source dir, parses all TYPE definitions, reports per-type BIND(C) compatibility with field-level blockers (ALLOCATABLE, POINTER, COMPLEX, LOGICAL, nested non-compatible TYPE)
+- [ ] Extend `generate_c_struct_header()` to handle `CHARACTER(N)` fields → `char field[N]` in C struct
+- [ ] `vit analyze-types --fix character` — automated rewrite: `CHARACTER(:), ALLOCATABLE` → `CHARACTER(N)` in type definitions, removes associated ALLOCATE/DEALLOCATE calls across all source files. Configurable N (default 1024).
+- [ ] Apply to ErrorVariables: `CHARACTER(:), ALLOCATABLE :: ErrMsg` → `CHARACTER(1024) :: ErrMsg`. ALLOCATE already commented out in ReadSetParameters.f90. String assignment/TRIM/LEN works unchanged.
+- [ ] Generate ErrorVariables C struct header
+- [ ] Unit tests: parse modified ErrorVariables → is_c_compatible; C struct has `char ErrMsg[1024]`; analyze-types reports correct blockers for all ROSCO types
+- [ ] Verify simulation still produces identical output after ErrorVariables fix
 
-This makes the type system work reproducible and generalizable beyond ROSCO (Phase 12). The ROSCO analysis we already did serves as the validation target: the tool's output for ROSCO must match our manual findings.
+**Types usable after:** ErrorVariables
+**Unblocks:** Phase 5 first batch (interp1d, sigma, unwrap, interp2d — these need only ErrorVariables + primitives/arrays)
 
-**Already BIND(C)-compatible types (define C structs, no Fortran changes):**
-- [ ] `FilterParameters` — 27 arrays of `double[1024]` (~221 KB). Used by all filters.
-- [ ] `piParams` — 5 arrays of `double[1024]`. Used by PI/PID controllers.
-- [ ] `resParams` — 4 arrays of `double[1024]`. Used by resonance controller.
-- [ ] `rlParams` — 1 array of `double[1024]`. Already handled in Phase 3 for `ratelimit`.
-- [ ] `WE` — 7 fields: 4 scalars + `double[3][3]` + 2× `double[3]`. Note: Fortran column-major layout for multi-dimensional arrays.
-- [ ] `ObjectInstances` — 9 integers.
-- [ ] `DebugVariables` — 22 `REAL(DbKi)` scalars.
+#### Phase 4B: Already-Compatible Structs + Nested Type Recursion
 
-**LocalVariables — 4 surgical Fortran fixes, then define C struct:**
-- [ ] Replace `ACC_INFILE` (`CHARACTER(:), ALLOCATABLE`) — move to separate `char*` parameter or file-scope storage. Only used at init (ReadSetParameters), never in control loop.
-- [ ] Replace `AWC_complexangle(3)` (`COMPLEX(DbKi)`) — split into `AWC_complexangle_re(3)` + `AWC_complexangle_im(3)` as `REAL(DbKi)`. Only the REAL part is ever extracted downstream.
-- [ ] Replace `WriteThisStep` (`LOGICAL`) — change to `INTEGER(C_INT)` (0/1). Fortran `LOGICAL` size varies by compiler; `INTEGER(C_INT)` is guaranteed portable.
-- [ ] Replace `restart` (`LOGICAL`) — same fix. Heavily used (passed to all filters/controllers) but fix is just a type change.
-- [ ] Define C++ struct for `LocalVariables` with nested `WE`, `FilterParameters`, `piParams`, `resParams`, `rlParams`. 139 scalar fields + fixed-size arrays + 5 nested structs. ~305 KB total.
-- [ ] Add `BIND(C)` attributes to all Fortran TYPE definitions.
-- [ ] Update all Fortran code referencing changed fields (COMPLEX → split reals, LOGICAL → integer).
+- [ ] Extend `is_c_compatible` with recursive registry-based checking — `TYPE(WE)` field is compatible if WE itself is compatible in the registry
+- [ ] Extend `generate_c_struct_header()` for nested struct fields (`TYPE(WE) :: WE` → `we_t WE;` with `#include` dependency)
+- [ ] Extend `generate_c_struct_header()` for multi-dimensional fixed arrays (`DIMENSION(3,3)` → `double P[3][3]`, not `double P[3,3]`). Document column-major convention for C++ access.
+- [ ] Header dependency ordering in `analyze-types` — if type A contains type B, generate B's header first
+- [ ] `vit analyze-types --fix bind_c` — automated: adds `BIND(C)` attribute to compatible type definitions, removes default initializers, relocates initialization to allocation sites
+- [ ] Apply to 7 types: FilterParameters, piParams, resParams, rlParams, WE, ObjectInstances, DebugVariables
+- [ ] Decide WE `DIMENSION(3,1)` representation: flatten to `double[3]` or keep `double[3][1]`
+- [ ] Memory layout test: compare field offsets between Fortran BIND(C) type and C++ struct
+- [ ] Verify simulation still produces identical output after BIND(C) additions
 
-**ControlParameters — pointer+size view struct:**
-- [ ] Create C++ view struct with scalar fields copied and ALLOCATABLE arrays as `double*` + `int` size pairs. No ROSCO source modifications.
-- [ ] Write Fortran BIND(C) routine that populates the view struct once at init: copy scalars, take `C_LOC` of each ALLOCATABLE array, pass array sizes.
-- [ ] Replace 4 CHARACTER fields with `char[1024]` in the view struct.
-- [ ] Verify ControlParameters is truly read-only in algorithmic code (investigation confirmed: INTENT(INOUT) is legacy, all accesses are reads).
+**Types usable after:** FilterParameters, piParams, resParams, WE, ObjectInstances, DebugVariables
+**Unblocks:** Phase 6 Filters (FilterParameters + ObjectInstances + ErrorVariables all ready)
 
-**PerformanceData — same pointer+size view pattern:**
-- [ ] Create C++ view struct with ALLOCATABLE arrays as `double*` + size pairs.
-- [ ] Write Fortran BIND(C) routine to populate view.
+#### Phase 4C: LocalVariables Automated Fixes
 
-**Ownership tracking:**
-- [ ] Implement VIT ownership tracking for types — each type is tagged as "view" (Fortran-owned, C++ reads via pointers) or "owned" (C++ allocates and manages).
-- [ ] When all Fortran consumers of a type are translated, VIT flags that ownership can transfer to C++.
+- [ ] `vit analyze-types --fix logical` — automated rewrite of LOGICAL fields to INTEGER(C_INT): changes type definition AND updates all `%fieldname` references across source files. Handles all Fortran boolean idioms: `IF (x)` → `IF (x /= 0)`, `.NOT. x` → `(x == 0)`, `.TRUE.` → `1`, `.FALSE.` → `0`. Scope: `restart` (65 refs across 5 files), `WriteThisStep` (3 refs across 2 files).
+- [ ] `vit analyze-types --fix complex` — automated rewrite of COMPLEX fields to split re/im REAL fields, updates all references. `REAL(x)` → `x_re`, `AIMAG(x)` → `x_im`. Complex arithmetic (EXP, multiplication) flagged for review. Binary I/O updated to read/write both fields. Scope: `AWC_complexangle` (15 refs across 2 files).
+- [ ] `vit analyze-types --fix character_array` — handles `CHARACTER, DIMENSION(:), ALLOCATABLE :: ACC_INFILE` → `CHARACTER(1), DIMENSION(1024) :: ACC_INFILE`, updates ALLOCATE sites. Scope: `ACC_INFILE` (7 refs across 3 files).
+- [ ] Apply all fixes to LocalVariables, add `BIND(C)` attribute
+- [ ] Generate LocalVariables C struct header with 5 nested structs (WE, FilterParameters, piParams, resParams, rlParams) and ~160 scalar/array fields
+- [ ] Verify simulation still produces identical output after all LocalVariables fixes
 
-**Multi-dimensional array transposition:**
-- [ ] VIT auto-detects multi-dimensional arrays in BIND(C) interfaces (e.g., `WE%P(3,3)`, `Cp_mat(:,:)`).
-- [ ] Generates transposition code in the Fortran wrapper at the boundary, so C++ always receives row-major data.
-- [ ] When Fortran is removed and C++ owns the data natively, transposition disappears.
+**Types usable after:** LocalVariables (168 fields + 5 nested structs)
+**Unblocks:** Phase 7 Controllers, Phase 8 ControllerBlocks (partially — functions using scalar ControlParameters fields)
 
-**ErrorVariables — BIND(C) struct (one fix):**
-- [ ] Replace `CHARACTER(:), ALLOCATABLE :: ErrMsg` with `CHARACTER(1024)`. The DLL interface already uses a 1024-char buffer. No observed error message exceeds ~500 chars.
-- [ ] `aviFAIL`, `ErrStat`, and `size_avcMSG` are already C-compatible — no changes needed.
-- [ ] After this fix, ErrorVariables is a BIND(C) struct passed by pointer like all other types. C++ accesses fields directly: `errVar->aviFAIL`, `errVar->ErrMsg`, etc.
+#### Phase 4D: Pointer+Size View Pattern for ALLOCATABLE Types
 
-**Validation:**
-- [ ] Write memory layout test: compare field offsets between Fortran `BIND(C)` type and C++ struct to verify binary compatibility.
-- [ ] Verify mixed Fortran/C++ build produces byte-identical simulation output after type modifications.
-- [ ] Run full verification regression on all previously verified functions.
+- [ ] New type classification in analyze-types: "bind_c" (direct struct) vs "view" (pointer+size view into Fortran-owned memory)
+- [ ] `generate_view_struct_header()` — ALLOCATABLE 1D: `double* field; int n_field;`. ALLOCATABLE 2D: `double* field; int n_field_rows; int n_field_cols;`. Scalars and fixed fields copied directly. CHARACTER fields as `char field[N]`.
+- [ ] `generate_view_populator()` — Fortran BIND(C) subroutine that copies scalars, takes `C_LOC` of ALLOCATABLE arrays, fills size fields. One populator per ALLOCATABLE type.
+- [ ] Apply to ControlParameters (213 fields: ~135 scalars, ~76 ALLOCATABLE 1D, ~5 ALLOCATABLE 2D, 6 CHARACTER)
+- [ ] Apply to PerformanceData (5 fields: 2 ALLOCATABLE 1D, 3 ALLOCATABLE 2D)
+- [ ] Apply to ExtControlType (1 ALLOCATABLE 1D array — avrSWAP)
+- [ ] Integration plan generates view populator calls in Fortran wrappers (called once after ReadSetParameters allocates arrays)
+- [ ] Document 2D column-major access convention for C++: `mat[col * n_rows + row]`
+- [ ] Ownership tracking in `vit.yaml`: types tagged as "bind_c" or "view". When all Fortran consumers are translated, VIT flags ownership transfer eligibility.
+- [ ] Verify simulation still produces identical output
 
-**Why this must come before Phase 5:** All ErrVar functions are blocked until ErrorVariables is a BIND(C) struct. Filters access ~30 fields on FilterParameters, Controllers access ~70 fields on LocalVariables. With C structs, C++ accesses fields naturally (`state->lpf1_a1[inst]`) and the Fortran wrapper just passes the struct address.
+**Types usable after:** ControlParameters, PerformanceData, ExtControlType
+**Unblocks:** Phase 5 AeroDynTorque (all 4 type args ready), Phases 7-8 full ControlParameters field access
+
+#### Phase 4 Dependency Graph and Execution Order
+
+```
+4A (ErrorVariables) ──→ Phase 5 first batch (interp1d, sigma, unwrap, interp2d)
+4B (Simple structs)  ──→ Phase 6 Filters
+4C (LocalVariables)  ──→ Phase 7 Controllers, Phase 8 ControllerBlocks (partial)
+4D (View structs)    ──→ Phase 5 AeroDynTorque, Phases 7-8 full
+```
+
+4A and 4B are independent. 4C depends on 4B (needs nested type recursion). 4D is independent of 4C but naturally comes last. Recommended execution interleaves with translation phases: 4A → 5(batch1) → 4B → 6 → 4C → 4D → 5(AeroDynTorque) → 7 → 8.
 
 ### Phase 5: ErrorVariables Functions + 2D Assumed-Shape Arrays
 **Target: 13/14 Functions.f90 (CPfunction skipped — dead code)**
 
-With Phase 4 complete, ErrorVariables is a BIND(C) struct. All 5 ErrVar-blocked functions can now be translated. This phase also adds 2D assumed-shape array support needed by `interp2d`.
+With Phase 4A complete, ErrorVariables is a BIND(C) struct. The first 4 ErrVar-blocked functions can be translated immediately. AeroDynTorque requires Phase 4D (ControlParameters/PerformanceData view structs) and is deferred until after 4D completes. This phase also adds 2D assumed-shape array support needed by `interp2d`.
 
 - [ ] Multi-dimensional assumed-shape — `DIMENSION(:,:)` must generate two size params (`n_rows`, `n_cols`), not one. Current code silently generates broken interfaces for 2D. Add rank detection and per-dimension size params.
 - [ ] Guard against unsupported ranks — add explicit error for `DIMENSION(:,:,:)` and higher until supported.
 - [ ] Array-valued return where result size depends on input array — needed by `unwrap`
-- [ ] Translate + verify + integrate `interp1d`
-- [ ] Translate + verify + integrate `sigma`
-- [ ] Translate + verify + integrate `unwrap`
-- [ ] Translate + verify + integrate `interp2d`
-- [ ] Translate + verify + integrate `AeroDynTorque` — first function using the complete type system: ControlParameters (view struct), PerformanceData (view struct), LocalVariables (BIND(C) struct), ErrorVariables (BIND(C) struct)
+- [ ] Translate + verify + integrate `interp1d` (after 4A)
+- [ ] Translate + verify + integrate `sigma` (after 4A)
+- [ ] Translate + verify + integrate `unwrap` (after 4A)
+- [ ] Translate + verify + integrate `interp2d` (after 4A)
+- [ ] Translate + verify + integrate `AeroDynTorque` (after 4D) — first function using the complete type system: ControlParameters (view struct), PerformanceData (view struct), LocalVariables (BIND(C) struct), ErrorVariables (BIND(C) struct)
 - [ ] Run full verification regression (all 13 translated functions pass)
 
 **New functions unlocked**: `interp1d`, `sigma`, `unwrap`, `interp2d`, `AeroDynTorque`
