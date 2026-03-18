@@ -419,7 +419,7 @@ When the user says "add this to development notes", "make a dev note", or simila
 
 ## Project Plan
 
-`PROJECT_PLAN.md` is the master roadmap for translating all of ROSCO from Fortran to C++. It contains the function-by-function assessment, full module map, derived type strategy, and an 11-phase enhancement roadmap.
+`PROJECT_PLAN.md` is the master roadmap for translating all of ROSCO from Fortran to C++. It contains the function-by-function assessment, full module map, derived type strategy, an 11-phase enhancement roadmap, and the translation workflow (Section 4a: `vit translate` command, module-organized storage in `translations/`, and translation metadata).
 
 ### Execution Process
 
@@ -440,10 +440,4 @@ There is a scripted demo in `demo/demo_script.md`. When the user says "Start VIT
 
 ## Git
 
-The user manages git in a separate terminal. Do not run git commands except `git checkout .` on ROSCO as part of a clean build test (see "Clean Build Test" above). When asked for a commit message, provide a complete command that can be copied and pasted directly:
-
-```bash
-git add -A && git commit -m "subject line" -m "Body paragraph explaining what changed and why.
-
-Additional details if needed."
-```
+Run `git add` and `git commit` directly when the user asks to commit. Do not run `git push` unless explicitly asked. Do not run destructive git commands (`reset --hard`, `push --force`, etc.) without confirmation. The only exception for autonomous git usage is `git checkout .` on ROSCO as part of a clean build test (see "Clean Build Test" above).
