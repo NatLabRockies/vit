@@ -380,15 +380,17 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 
 **Key principle:** All Fortran source modifications are automated by VIT (`vit analyze-types --fix`), not done manually. The fix patterns (LOGICAL→INTEGER, COMPLEX→split, CHARACTER ALLOCATABLE→fixed) are general — they recur across scientific Fortran codebases and must be reproducible.
 
-#### Phase 4A: ErrorVariables + `analyze-types` Foundation
+#### Phase 4A: ErrorVariables + `analyze-types` Foundation ✓
 
-- [ ] `vit analyze-types` CLI command — scans source dir, parses all TYPE definitions, reports per-type BIND(C) compatibility with field-level blockers (ALLOCATABLE, POINTER, COMPLEX, LOGICAL, nested non-compatible TYPE)
-- [ ] Extend `generate_c_struct_header()` to handle `CHARACTER(N)` fields → `char field[N]` in C struct
-- [ ] `vit analyze-types --fix character` — automated rewrite: `CHARACTER(:), ALLOCATABLE` → `CHARACTER(N)` in type definitions, removes associated ALLOCATE/DEALLOCATE calls across all source files. Configurable N (default 1024).
-- [ ] Apply to ErrorVariables: `CHARACTER(:), ALLOCATABLE :: ErrMsg` → `CHARACTER(1024) :: ErrMsg`. ALLOCATE already commented out in ReadSetParameters.f90. String assignment/TRIM/LEN works unchanged.
-- [ ] Generate ErrorVariables C struct header
-- [ ] Unit tests: parse modified ErrorVariables → is_c_compatible; C struct has `char ErrMsg[1024]`; analyze-types reports correct blockers for all ROSCO types
-- [ ] Verify simulation still produces identical output after ErrorVariables fix
+- [x] `vit analyze-types` CLI command — scans source dir, parses all TYPE definitions, reports per-type BIND(C) compatibility with field-level blockers (ALLOCATABLE, POINTER, COMPLEX, LOGICAL, nested non-compatible TYPE). ROSCO: 13 types found, 7 compatible, 6 incompatible.
+- [x] Extend `generate_c_struct_header()` to handle `CHARACTER(N)` fields → `char field[N]` in C struct
+- [x] `vit analyze-types --fix character` — automated rewrite: `CHARACTER(:), ALLOCATABLE` → `CHARACTER(N)` in type definitions, removes associated ALLOCATE/DEALLOCATE calls across all source files. Configurable N (default 1024).
+- [x] Apply to ErrorVariables: `CHARACTER(:), ALLOCATABLE :: ErrMsg` → `CHARACTER(1024) :: ErrMsg`. ALLOCATE already commented out in ReadSetParameters.f90.
+- [x] Generate ErrorVariables C struct header — `char ErrMsg[1024]` confirmed
+- [x] Unit tests: 30 tests in test_analyze_types.py + 23 tests in test_build_fixer.py (333 total, zero regressions)
+- [x] Verify simulation still produces identical output after ErrorVariables fix
+- [x] **Build-fix loop** (`build_fixer.py`) — not in original plan, added after discovering that `TRANSFER(C_NULL_CHAR, avcMSG)` in ExtControl.f90 fails when `LEN(ErrVar%ErrMsg)` becomes compile-time constant. Uses compiler as oracle: build → parse gfortran errors → apply fixes from extensible registry → retry. First pattern: `transfer_shape_mismatch` (replaces `TRANSFER(C_NULL_CHAR, var)` with `var = C_NULL_CHAR` scalar broadcast).
+- [x] **Kind alias merging fix** — `kind_aliases or DEFAULT` → `{**DEFAULT, **kind_aliases}` so project aliases override but defaults (including C_INT, C_DOUBLE) remain as fallback.
 
 **Types usable after:** ErrorVariables
 **Unblocks:** Phase 5 first batch (interp1d, sigma, unwrap, interp2d — these need only ErrorVariables + primitives/arrays)
