@@ -258,9 +258,10 @@ Claude fills in the algorithm body. VIT then verifies the translation against ru
 
 ### Translation Storage
 
-Translations are organized by module:
+Translations live in the target project repo (`ROSCO/translations/`), organized by module. File extension distinguishes type (`.cpp` for function translations, `.h` for type/constant definitions).
+
 ```
-translations/
+ROSCO/translations/
   Functions/
     saturate.cpp
     wrap_180.cpp
@@ -278,7 +279,13 @@ translations/
   ControllerBlocks/
     WindSpeedEstimator.cpp
     ...
+  ROSCO_Types/
+    rosco_types.h
+  Constants/
+    rosco_constants.h
 ```
+
+Translations are ROSCO-specific artifacts — they belong with the target codebase, not with VIT (which is a general-purpose tool).
 
 ### Translation Metadata
 
@@ -289,7 +296,7 @@ Each translation file carries metadata (in a header comment block):
 - VIT version used for scaffolding
 - Verification status (verified/not yet verified)
 
-Canonical copies live in `translations/`. They are copied into the ROSCO working directory for verification and integration, matching the existing pattern.
+During verification and integration, VIT reads translations from `translations/<Module>/` and copies them into the build area as needed.
 
 ---
 
@@ -302,13 +309,13 @@ Each phase unlocks new translation targets. Phases are ordered by dependency —
 
 Build the translation workflow tooling described in Section 4a before any new translations are written. This ensures every translation from Phase 1 onward follows the correct convention from day one.
 
-- [ ] Create module-organized `translations/` directory structure (`translations/Functions/`, `translations/Filters/`, etc.)
-- [ ] Move existing translations into module directories: `saturate.cpp`, `wrap_180.cpp`, `wrap_360.cpp`, `interp1d.cpp` → `translations/Functions/`
+- [ ] Create module-organized `ROSCO/translations/` directory structure (`translations/Functions/`, `translations/Filters/`, etc.)
+- [ ] Move existing translations from `vit_translation/translations/` into `ROSCO/translations/Functions/`: `saturate.cpp`, `wrap_180.cpp`, `wrap_360.cpp`, `interp1d.cpp`
 - [ ] Implement `vit translate` command:
   - [ ] Parse Fortran function signature (reuse `fortran_parser.py`)
   - [ ] Generate C++ scaffold with correct `extern "C"` wrapper, parameter conventions, includes
   - [ ] Generate metadata header block (source file, function signature, Fortran source hash, VIT version, verification status)
-  - [ ] Write scaffold to `translations/<Module>/<function>.cpp`
+  - [ ] Write scaffold to `ROSCO/translations/<Module>/<function>.cpp` (or target project's translations directory)
 - [ ] Add `vit translate` to CLI (`cli.py`)
 - [ ] Update existing translations with metadata headers (retroactive)
 - [ ] Unit tests for `vit translate` scaffolding
