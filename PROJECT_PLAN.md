@@ -391,6 +391,8 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 - [x] Verify simulation still produces identical output after ErrorVariables fix
 - [x] **Build-fix loop** (`build_fixer.py`) — not in original plan, added after discovering that `TRANSFER(C_NULL_CHAR, avcMSG)` in ExtControl.f90 fails when `LEN(ErrVar%ErrMsg)` becomes compile-time constant. Uses compiler as oracle: build → parse gfortran errors → apply fixes from extensible registry → retry. First pattern: `transfer_shape_mismatch` (replaces `TRANSFER(C_NULL_CHAR, var)` with `var = C_NULL_CHAR` scalar broadcast).
 - [x] **Kind alias merging fix** — `kind_aliases or DEFAULT` → `{**DEFAULT, **kind_aliases}` so project aliases override but defaults (including C_INT, C_DOUBLE) remain as fallback.
+- [x] **Assumption confirmation protocol** (`confirm.py`) — general mechanism for VIT to signal inferred values that need human confirmation. Exit code 10 + `[VIT:CONFIRM]` blocks. Claude must never auto-confirm. CHARACTER length inference from ALLOCATE calls is the first use case. Also fixed silent type fallbacks in translate.py and interface_gen.py (now raise instead of defaulting to `double`/`REAL(8)`).
+- [x] **Prevent status downgrade** — `record_translation()` refuses to overwrite "integrated" with "verified".
 
 **Types usable after:** ErrorVariables
 **Unblocks:** Phase 5 first batch (interp1d, sigma, unwrap, interp2d — these need only ErrorVariables + primitives/arrays)
@@ -412,9 +414,9 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 
 #### Phase 4C: LocalVariables Automated Fixes
 
-- [ ] `vit analyze-types --fix logical` — automated rewrite of LOGICAL fields to INTEGER(C_INT): changes type definition AND updates all `%fieldname` references across source files. Handles all Fortran boolean idioms: `IF (x)` → `IF (x /= 0)`, `.NOT. x` → `(x == 0)`, `.TRUE.` → `1`, `.FALSE.` → `0`. Scope: `restart` (65 refs across 5 files), `WriteThisStep` (3 refs across 2 files).
+- [ ] `vit analyze-types --fix logical` — automated rewrite of LOGICAL fields to INTEGER(C_INT): changes type definition AND updates all `%fieldname` references across source files. Handles all Fortran boolean idioms: `IF (x)` → `IF (x /= 0)`, `.NOT. x` → `(x == 0)`, `.TRUE.` → `1`, `.FALSE.` → `0`. Scope: `restart` (65 refs across 5 files), `WriteThisStep` (3 refs across 2 files). Use build-fix loop for downstream compiler errors. Re-add LOGICAL to `classify_field_blockers` when this fix exists.
 - [ ] `vit analyze-types --fix complex` — automated rewrite of COMPLEX fields to split re/im REAL fields, updates all references. `REAL(x)` → `x_re`, `AIMAG(x)` → `x_im`. Complex arithmetic (EXP, multiplication) flagged for review. Binary I/O updated to read/write both fields. Scope: `AWC_complexangle` (15 refs across 2 files).
-- [ ] `vit analyze-types --fix character_array` — handles `CHARACTER, DIMENSION(:), ALLOCATABLE :: ACC_INFILE` → `CHARACTER(1), DIMENSION(1024) :: ACC_INFILE`, updates ALLOCATE sites. Scope: `ACC_INFILE` (7 refs across 3 files).
+- [ ] `vit analyze-types --fix character_array` — handles `CHARACTER, DIMENSION(:), ALLOCATABLE :: ACC_INFILE` → `CHARACTER(1), DIMENSION(1024) :: ACC_INFILE`, updates ALLOCATE sites. Scope: `ACC_INFILE` (7 refs across 3 files). Use confirmation protocol (EXIT_CONFIRM) for array size — infer from ALLOCATE if possible, require human confirmation.
 - [ ] Apply all fixes to LocalVariables, add `BIND(C)` attribute
 - [ ] Generate LocalVariables C struct header with 5 nested structs (WE, FilterParameters, piParams, resParams, rlParams) and ~160 scalar/array fields
 - [ ] Verify simulation still produces identical output after all LocalVariables fixes
@@ -425,7 +427,7 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 #### Phase 4D: Pointer+Size View Pattern for ALLOCATABLE Types
 
 - [ ] New type classification in analyze-types: "bind_c" (direct struct) vs "view" (pointer+size view into Fortran-owned memory)
-- [ ] `generate_view_struct_header()` — ALLOCATABLE 1D: `double* field; int n_field;`. ALLOCATABLE 2D: `double* field; int n_field_rows; int n_field_cols;`. Scalars and fixed fields copied directly. CHARACTER fields as `char field[N]`.
+- [ ] `generate_view_struct_header()` — ALLOCATABLE 1D: `double* field; int n_field;`. ALLOCATABLE 2D: `double* field; int n_field_rows; int n_field_cols;`. Scalars and fixed fields copied directly. CHARACTER fields as `char field[N]`. Use confirmation protocol (EXIT_CONFIRM) for any inferred array sizes or CHARACTER lengths.
 - [ ] `generate_view_populator()` — Fortran BIND(C) subroutine that copies scalars, takes `C_LOC` of ALLOCATABLE arrays, fills size fields. One populator per ALLOCATABLE type.
 - [ ] Apply to ControlParameters (213 fields: ~135 scalars, ~76 ALLOCATABLE 1D, ~5 ALLOCATABLE 2D, 6 CHARACTER)
 - [ ] Apply to PerformanceData (5 fields: 2 ALLOCATABLE 1D, 3 ALLOCATABLE 2D)
