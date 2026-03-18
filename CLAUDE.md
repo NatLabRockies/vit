@@ -217,7 +217,7 @@ docker exec -it vit-dev bash -c "cd /workspace/vit && python3 -m pytest tests/ -
 
 ### Golden Test Fixtures
 
-Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/interp1d/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
+Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
 
 **Extraction parameters (for regenerating golden fixtures):**
 
@@ -226,6 +226,9 @@ Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful ex
 | `saturate` | `Controllers.f90` | 102 | `vit extract saturate -f rosco/controller/src/Controllers.f90 -l 102` |
 | `wrap_180` | `Filters.f90` | 430 | `vit extract wrap_180 -f rosco/controller/src/Filters.f90 -l 430` |
 | `wrap_360` | `Controllers.f90` | 517 | `vit extract wrap_360 -f rosco/controller/src/Controllers.f90 -l 517` |
+| `ColemanTransform` | `Controllers.f90` | 510 | `vit extract ColemanTransform -f rosco/controller/src/Controllers.f90 -l 510` |
+| `ColemanTransformInverse` | `Controllers.f90` | 561 | `vit extract ColemanTransformInverse -f rosco/controller/src/Controllers.f90 -l 561` |
+| `identity` | `ControllerBlocks.f90` | 454 | `vit extract identity -f rosco/controller/src/ControllerBlocks.f90 -l 454` |
 | `interp1d` | `Controllers.f90` | 62 | `vit extract interp1d -f rosco/controller/src/Controllers.f90 -l 62` |
 
 Each extraction deposits into `kernel/<function_name>/` and restores the source file automatically.

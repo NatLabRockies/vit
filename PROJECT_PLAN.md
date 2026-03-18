@@ -339,20 +339,22 @@ Starting from a clean ROSCO fork with no integrations and no golden fixtures.
 
 **Completed 2026-03-18.** Created `Examples/vit_sim.py` — a VIT-specific multi-scenario simulation that exercises all controller code paths including Y_ControlMode=2 (for wrap_360, which is never called by the standard `04_simple_sim.py`). The `vit.yaml` run_cmd now uses `vit_sim.py`. Discovered that `translations/Functions/*.cpp` had been overwritten by scaffolds from `vit translate`; restored from canonical copies in `vit_translation/translations/`.
 
-### Phase 2: Fixed-Size Arrays + Subroutines
-**Target: 7/14 Functions.f90**
+### Phase 2: Fixed-Size Arrays + Subroutines ✓
+**Target: 6/14 Functions.f90** (matinv3 deferred — dead code)
 
-- [ ] Explicit-dimension array support — `A(3,3)` in Fortran → `double* A` with known size in C. Interface gen must recognize `DIMENSION(3,3)` vs `DIMENSION(:)` and handle accordingly. No synthetic size param needed — the size is compile-time known.
-- [ ] Subroutine pipeline validation — VIT's interface_gen.py has subroutine support (BIND(C) SUBROUTINE, INTENT(OUT) args) but it's never been tested end-to-end. Validate with ColemanTransform as the first real SUBROUTINE target.
-- [ ] Array-valued function results — `matinv3` returns `B(3,3)`, `identity` returns `A(n,n)`. In C, array returns become pointer args. VIT needs to transform the interface: Fortran FUNCTION returning array → C function with output pointer parameter.
-- [ ] Fix INTENT(OUT) array handling in subroutine interface generation
-- [ ] Translate + verify + integrate `matinv3`
-- [ ] Translate + verify + integrate `identity`
-- [ ] Translate + verify + integrate `ColemanTransform`
-- [ ] Translate + verify + integrate `ColemanTransformInverse`
-- [ ] Run full verification regression (all 7 functions pass)
+- [x] Explicit-dimension array support — fixed-size arrays (`rootMOOP(3)`, `PitComIPC(3)`) pass as pointers without spurious size params. Already worked correctly.
+- [x] Subroutine pipeline validation — fixed scalar INTENT(OUT) pointer bug in `build_c_params()`, fixed INTEGER kind conversion (`INT()` not `INTEGER()`). ColemanTransform was the first real SUBROUTINE through the full pipeline.
+- [x] Array-valued function results — parser extended with `result_is_array`/`result_dims`; interface gen transforms array-returning FUNCTION to void C SUBROUTINE with output pointer; Fortran wrapper remains FUNCTION but CALLs the C subroutine internally.
+- [x] Translate + verify + integrate `ColemanTransform` (40/40)
+- [x] Translate + verify + integrate `ColemanTransformInverse` (40/40)
+- [x] Translate + verify + integrate `identity` (40/40)
+- [x] Run full verification regression (all 6 functions pass 40/40)
 
-**New functions unlocked**: `matinv3`, `identity`, `ColemanTransform`, `ColemanTransformInverse`
+`matinv3` is dead code (zero call sites in ROSCO) — deferred like `CPfunction`.
+
+**Completed 2026-03-18.** Used `vit translate` to generate scaffolds with correct signatures. Fixed two bugs discovered during execution: (1) `build_c_params()` passed scalar INTENT(OUT) subroutine args by value instead of pointer, (2) Fortran wrapper generated `INTEGER(x, kind)` instead of `INT(x, kind)` for integer kind conversion. Both Coleman functions extracted from IPC subroutine (scenario 2), identity extracted from EKF (scenario 1).
+
+**New functions integrated**: `ColemanTransform`, `ColemanTransformInverse`, `identity`
 
 ### Phase 3: Load-Bearing Derived Types
 **Target: 8/14 Functions.f90**
