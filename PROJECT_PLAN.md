@@ -297,17 +297,34 @@ Canonical copies live in `translations/`. They are copied into the ROSCO working
 
 Each phase unlocks new translation targets. Phases are ordered by dependency — each builds on the capabilities added by previous phases.
 
-### Phase 1: Low-Hanging Fruit — No VIT Changes
+### Phase 0: Translation Infrastructure
+**Target: `vit translate` command and module-organized translation storage**
+
+Build the translation workflow tooling described in Section 4a before any new translations are written. This ensures every translation from Phase 1 onward follows the correct convention from day one.
+
+- [ ] Create module-organized `translations/` directory structure (`translations/Functions/`, `translations/Filters/`, etc.)
+- [ ] Move existing translations into module directories: `saturate.cpp`, `wrap_180.cpp`, `wrap_360.cpp`, `interp1d.cpp` → `translations/Functions/`
+- [ ] Implement `vit translate` command:
+  - [ ] Parse Fortran function signature (reuse `fortran_parser.py`)
+  - [ ] Generate C++ scaffold with correct `extern "C"` wrapper, parameter conventions, includes
+  - [ ] Generate metadata header block (source file, function signature, Fortran source hash, VIT version, verification status)
+  - [ ] Write scaffold to `translations/<Module>/<function>.cpp`
+- [ ] Add `vit translate` to CLI (`cli.py`)
+- [ ] Update existing translations with metadata headers (retroactive)
+- [ ] Unit tests for `vit translate` scaffolding
+- [ ] Verify existing pipeline still works with translations in new locations (update CLAUDE.md paths if needed)
+
+### Phase 1: Low-Hanging Fruit
 **Target: 7/14 Functions.f90**
 
 - [ ] Integrate `wrap_360` — already verified, run `vit integrate wrap_360 ...`
-- [ ] Translate + verify + integrate `sigma` — all scalar + ErrorVariables passthrough, same pattern as existing verified functions
-- [ ] Translate + verify + integrate `CPfunction` — fixed `CP(4)` array + scalar, calls `saturate` internally but translation just implements the exponential-polynomial formula
+- [ ] `vit translate sigma` → scaffold, fill in algorithm body, extract, verify, integrate
+- [ ] `vit translate CPfunction` → scaffold, fill in algorithm body, extract, verify, integrate
 - [ ] Run full verification regression (all 7 functions pass)
 - [ ] Update `vit.yaml` translations section
 
-**VIT changes**: None.
-**Effort estimate**: Small — writing 3 C++ translations and running the pipeline.
+**VIT changes**: None (translation infrastructure built in Phase 0).
+**Effort estimate**: Small — fill in 2 algorithm bodies and run the pipeline.
 
 ### Phase 2: Fixed-Size Arrays + Subroutines
 **Target: 11/14 Functions.f90**
