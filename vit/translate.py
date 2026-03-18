@@ -184,6 +184,8 @@ def _get_c_return_type(sig: FortranSignature, kind_aliases: Optional[dict] = Non
     """Get the C return type for a function signature."""
     if sig.is_subroutine:
         return "void"
+    if sig.result_is_array:
+        return "void"
     if sig.result_type:
         mapping = get_type_mapping(sig.result_type, kind_aliases)
         return mapping.c_type
