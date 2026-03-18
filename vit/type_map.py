@@ -20,6 +20,7 @@ class TypeMapping:
     byte_size: int             # e.g., 8
     is_derived: bool = False   # True for TYPE(...) args
     is_c_compatible: bool = True  # False → passthrough (not included in C interface)
+    character_length: Optional[int] = None  # For CHARACTER(N), the fixed length N
 
 
 # Standard Fortran kind → C mappings
@@ -57,6 +58,11 @@ DEFAULT_KIND_ALIASES = {
     "IntKi": "INTEGER(4)",   # Integer kind
     "B1Ki": "INTEGER(1)",    # Byte kind
 
+    # ISO_C_BINDING kind names
+    "C_INT": "INTEGER(4)",
+    "C_FLOAT": "REAL(4)",
+    "C_DOUBLE": "REAL(8)",
+
     # Common Fortran kinds
     "dp": "REAL(8)",
     "sp": "REAL(4)",
@@ -82,7 +88,7 @@ def normalize_fortran_type(type_str: str, kind_aliases: Optional[dict] = None) -
         "DOUBLE PRECISION" → "DOUBLE PRECISION"
         "INTEGER(IntKi)" → "INTEGER(4)"
     """
-    aliases = kind_aliases or DEFAULT_KIND_ALIASES
+    aliases = {**DEFAULT_KIND_ALIASES, **(kind_aliases or {})}
     t = type_str.strip().upper()
 
     # Derived types pass through unchanged (no kind resolution needed)
@@ -128,7 +134,29 @@ def get_type_mapping(fortran_type: str, kind_aliases: Optional[dict] = None,
     Raises:
         ValueError if the type cannot be mapped (primitive types only)
     """
-    normalized = normalize_fortran_type(fortran_type, kind_aliases)
+    aliases = {**DEFAULT_KIND_ALIASES, **(kind_aliases or {})}
+    normalized = normalize_fortran_type(fortran_type, aliases)
+
+    # Handle CHARACTER(N) where N is numeric — fixed-length character string
+    if normalized.startswith("CHARACTER("):
+        inner = normalized[10:-1].strip()
+        if inner.isdigit():
+            length = int(inner)
+            return TypeMapping(
+                fortran_type=fortran_type.strip(),
+                fortran_kind=str(length),
+                c_kind="C_CHAR",
+                c_type="char",
+                iso_c_type=f"CHARACTER(LEN={length})",
+                byte_size=length,
+                character_length=length,
+            )
+        # CHARACTER(:) or CHARACTER(*) — cannot map directly
+        raise ValueError(
+            f"Cannot map Fortran type '{fortran_type}' (normalized: '{normalized}'). "
+            f"Deferred-length CHARACTER(:) is not C-compatible. "
+            f"Use 'vit analyze-types --fix character' to convert to fixed-length."
+        )
 
     # Handle derived types: TYPE(...)
     if normalized.startswith("TYPE("):

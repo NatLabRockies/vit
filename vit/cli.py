@@ -9,6 +9,7 @@ Usage:
     vit verify <function>           Build and run KGen kernel verification
     vit integrate <function>        Generate codebase integration plan
     vit run <function> <cpp_file>   Full pipeline (interface → verify → integrate)
+    vit analyze-types               Analyze derived types for C compatibility
 """
 
 import argparse
@@ -30,6 +31,7 @@ from .extract import find_call_sites, insert_kgen_pragma, remove_kgen_pragma, ru
 from .kernel_verify import setup_kernel_cpp, run_kernel_verify
 from .integrate import generate_integration_plan, apply_integration_plan
 from .translate import generate_translation_scaffold, generate_translation_prompt
+from .analyze_types import analyze_all_types, format_analysis_report, fix_character_allocatable
 
 
 def main():
@@ -112,6 +114,23 @@ def main():
     # --- status ---
     p_status = subparsers.add_parser("status", help="Show translation status")
 
+    # --- analyze-types ---
+    p_analyze = subparsers.add_parser("analyze-types",
+                                       help="Analyze derived types for C compatibility")
+    p_analyze.add_argument("--source-dir", help="Override source directory")
+    p_analyze.add_argument("--verbose", "-V", action="store_true",
+                           help="Show all types including compatible ones")
+    p_analyze.add_argument("--fix", choices=["character"],
+                           help="Apply automated fix (character: fix CHARACTER(:), ALLOCATABLE)")
+    p_analyze.add_argument("--type", dest="type_name",
+                           help="Type name to fix (required with --fix)")
+    p_analyze.add_argument("--field", dest="field_name",
+                           help="Field name to fix (required with --fix)")
+    p_analyze.add_argument("--length", type=int, default=1024,
+                           help="Fixed length for CHARACTER fix (default: 1024)")
+    p_analyze.add_argument("--apply", action="store_true",
+                           help="Apply changes (default is dry-run)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -141,6 +160,8 @@ def main():
             return cmd_run(args, config)
         elif args.command == "status":
             return cmd_status(args, config)
+        elif args.command == "analyze-types":
+            return cmd_analyze_types(args, config)
         else:
             parser.print_help()
             return 1
@@ -683,6 +704,79 @@ def cmd_status(args, config):
             print(f"  ? {name}: {status}")
 
     return 0
+
+
+def cmd_analyze_types(args, config):
+    """Analyze derived types for C compatibility."""
+    source_dir = getattr(args, 'source_dir', None) or config.abs_source_dir
+
+    if not os.path.isdir(source_dir):
+        print(f"ERROR: Source directory not found: {source_dir}")
+        return 1
+
+    if args.fix:
+        # Fix mode
+        if not args.type_name or not args.field_name:
+            print("ERROR: --type and --field are required with --fix")
+            return 1
+
+        dry_run = not args.apply
+        if dry_run:
+            print(f"Dry run — changes will NOT be written (use --apply to write)")
+        print(f"Fixing {args.fix}: {args.type_name}.{args.field_name}")
+
+        if args.fix == "character":
+            result = fix_character_allocatable(
+                source_dir=source_dir,
+                type_name=args.type_name,
+                field_name=args.field_name,
+                fixed_length=args.length,
+                dry_run=dry_run,
+            )
+
+            for change in result.changes:
+                print(f"  {change}")
+            for error in result.errors:
+                print(f"  ERROR: {error}")
+
+            if result.success:
+                if dry_run:
+                    print(f"\n{len(result.changes)} change(s) would be applied. Run with --apply to write.")
+                else:
+                    print(f"\n✓ Fixed {len(result.files_modified)} file(s)")
+
+                    # Build-verify-fix: use the compiler to catch downstream consequences
+                    if config.build_cmd:
+                        from .build_fixer import build_and_fix
+                        print(f"\nVerifying build...")
+                        build_result = build_and_fix(
+                            build_cmd=config.build_cmd,
+                            source_dir=source_dir,
+                        )
+                        for fix in build_result.fixes_applied:
+                            print(f"  Auto-fixed: {fix.description}")
+                            print(f"    {fix.file}:{fix.line}")
+                        if build_result.success:
+                            total = len(build_result.fixes_applied)
+                            if total > 0:
+                                print(f"\n✓ Build succeeded after {total} auto-fix(es)")
+                            else:
+                                print(f"✓ Build succeeded")
+                        else:
+                            print(f"\n✗ Build failed with unfixable errors:")
+                            for err in build_result.remaining_errors:
+                                print(f"  {err.file}:{err.line}: {err.message}")
+                            return 1
+            else:
+                print(f"\n✗ Fix failed")
+            return 0 if result.success else 1
+    else:
+        # Analysis mode
+        analyses = analyze_all_types(source_dir, config.kind_aliases)
+        verbose = getattr(args, 'verbose', False)
+        report = format_analysis_report(analyses, verbose=verbose)
+        print(report)
+        return 0
 
 
 # --- Helpers ---

@@ -34,6 +34,7 @@ class DerivedTypeInfo:
     fields: list[DerivedTypeField] = field(default_factory=list)
     is_bind_c: bool = False           # TYPE, BIND(C) :: Name
     source_module: Optional[str] = None  # Which module defines it
+    source_file: Optional[str] = None    # Absolute path to file containing this type
 
     @property
     def is_c_compatible(self) -> bool:
@@ -277,6 +278,7 @@ def find_and_parse_derived_type(type_name: str, source_dir: str) -> Optional[Der
             source = f90_file.read_text()
             info = parse_derived_type(source, type_name)
             if info:
+                info.source_file = str(f90_file.resolve())
                 return info
     return None
 
@@ -335,7 +337,9 @@ def generate_c_struct_header(type_info: DerivedTypeInfo,
 
     for f in type_info.fields:
         mapping = get_type_mapping(f.fortran_type, kind_aliases)
-        if f.is_array and f.array_dims:
+        if mapping.character_length:
+            lines.append(f"    {mapping.c_type} {f.name}[{mapping.character_length}];")
+        elif f.is_array and f.array_dims:
             lines.append(f"    {mapping.c_type} {f.name}[{f.array_dims}];")
         else:
             lines.append(f"    {mapping.c_type} {f.name};")
@@ -346,3 +350,134 @@ def generate_c_struct_header(type_info: DerivedTypeInfo,
     lines.append("")
 
     return "\n".join(lines)
+
+
+def scan_all_derived_types(source_dir: str) -> list[DerivedTypeInfo]:
+    """
+    Scan a source directory and find every TYPE definition.
+
+    Globs all .f90/.F90 files, finds TYPE definition start lines,
+    parses each type, and returns a list of all discovered types.
+
+    Args:
+        source_dir: Root directory to search
+
+    Returns:
+        List of DerivedTypeInfo for every TYPE found
+    """
+    source_path = Path(source_dir)
+    results = []
+    seen_names = set()
+
+    # Regex to find TYPE definition start lines
+    type_start_re = re.compile(
+        r'^\s*TYPE\b'
+        r'(?:\s*,\s*(?:BIND\s*\(\s*C\s*\)|PUBLIC|PRIVATE|ABSTRACT|EXTENDS\s*\([^)]*\)))*'
+        r'\s*(?:::)?\s*'
+        r'(\w+)\s*$',
+        re.IGNORECASE,
+    )
+
+    for pattern in ("**/*.f90", "**/*.F90"):
+        for f90_file in sorted(source_path.glob(pattern)):
+            source = f90_file.read_text()
+            for line in source.split("\n"):
+                # Strip comments
+                stripped = line.strip()
+                if "!" in stripped:
+                    stripped = stripped[:stripped.index("!")]
+                stripped = stripped.strip()
+
+                m = type_start_re.match(stripped)
+                if m:
+                    type_name = m.group(1)
+                    # Skip false positives (TYPE used as function keyword)
+                    if type_name.upper() in ("IS", "GUARD"):
+                        continue
+                    name_upper = type_name.upper()
+                    if name_upper not in seen_names:
+                        info = parse_derived_type(source, type_name)
+                        if info:
+                            info.source_file = str(f90_file.resolve())
+                            results.append(info)
+                            seen_names.add(name_upper)
+
+    return results
+
+
+@dataclass
+class FieldBlocker:
+    """A field that prevents a derived type from being C-compatible."""
+    field_name: str
+    fortran_type: str
+    reason: str          # e.g., "character_allocatable", "allocatable", "pointer"
+    fix_suggestion: str  # Human-readable fix suggestion
+
+
+def classify_field_blockers(type_info: DerivedTypeInfo,
+                            kind_aliases: Optional[dict] = None) -> list[FieldBlocker]:
+    """
+    Identify which fields prevent a derived type from being C-compatible.
+
+    Args:
+        type_info: Parsed derived type definition
+        kind_aliases: Project-specific kind aliases for type resolution
+
+    Returns:
+        List of FieldBlocker for each incompatible field
+    """
+    from .type_map import normalize_fortran_type
+
+    blockers = []
+    for f in type_info.fields:
+        normalized = normalize_fortran_type(f.fortran_type, kind_aliases).upper()
+
+        # CHARACTER(:), ALLOCATABLE — special case
+        if normalized.startswith("CHARACTER") and f.is_allocatable:
+            blockers.append(FieldBlocker(
+                field_name=f.name,
+                fortran_type=f.fortran_type,
+                reason="character_allocatable",
+                fix_suggestion=(
+                    f"Convert to fixed-length: CHARACTER(1024) :: {f.name}\n"
+                    f"  Run: vit analyze-types --fix character "
+                    f"--type {type_info.name} --field {f.name} --apply"
+                ),
+            ))
+        elif f.is_allocatable:
+            blockers.append(FieldBlocker(
+                field_name=f.name,
+                fortran_type=f.fortran_type,
+                reason="allocatable",
+                fix_suggestion=f"Remove ALLOCATABLE from {f.name} or use fixed-size array",
+            ))
+        elif f.is_pointer:
+            blockers.append(FieldBlocker(
+                field_name=f.name,
+                fortran_type=f.fortran_type,
+                reason="pointer",
+                fix_suggestion=f"Replace POINTER with fixed-size array or scalar for {f.name}",
+            ))
+        elif normalized.startswith("TYPE("):
+            blockers.append(FieldBlocker(
+                field_name=f.name,
+                fortran_type=f.fortran_type,
+                reason="nested_type",
+                fix_suggestion=f"Nested derived type {f.fortran_type} must also be C-compatible",
+            ))
+        elif normalized.startswith("LOGICAL"):
+            blockers.append(FieldBlocker(
+                field_name=f.name,
+                fortran_type=f.fortran_type,
+                reason="logical",
+                fix_suggestion=f"LOGICAL fields may need BIND(C) or INTEGER replacement",
+            ))
+        elif normalized.startswith("COMPLEX"):
+            blockers.append(FieldBlocker(
+                field_name=f.name,
+                fortran_type=f.fortran_type,
+                reason="complex",
+                fix_suggestion=f"COMPLEX fields require manual struct layout",
+            ))
+
+    return blockers
