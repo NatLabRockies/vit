@@ -218,13 +218,15 @@ def cmd_extract(args, config):
         print(f"ERROR: File not found: {file_path}")
         return 1
 
-    # Back up the source file before modifying
+    # Clean any leftover pragmas from previous attempts before backing up,
+    # so the backup is always a clean copy of the source file.
+    remove_kgen_pragma(file_path)
+
+    # Back up the (now clean) source file
     backup_path = file_path + ".vit_backup"
     shutil.copy2(file_path, backup_path)
 
     try:
-        # Clean any leftover pragmas from previous attempts
-        remove_kgen_pragma(file_path)
 
         # Re-read line number after pragma removal (may have shifted)
         # Search for the function call near the original line
