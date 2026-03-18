@@ -6,12 +6,13 @@
 
 Fully translate the ROSCO wind turbine controller from Fortran to C++, producing a drop-in replacement `libdiscon.so` that is pure C++ and produces byte-identical simulation output to the Fortran original. VIT orchestrates the verification and integration. Claude (AI) writes the C++ translations, scaffolded by the `vit translate` command (see Section 4a).
 
-### Current State (2026-03-17)
+### Current State (2026-03-18)
 
-- **Verified translations**: 4 of 14 Functions.f90 functions (`saturate`, `wrap_180`, `wrap_360`, `interp1d`)
-- **Integrated**: 3 of those 4 (`wrap_360` verified but not yet integrated)
-- **Pipeline**: End-to-end extract → verify → integrate → rebuild → diff confirmed working today
-- **VIT codebase**: ~4,100 lines of core code, 207 unit tests, 10 modules
+- **Verified translations**: 3 of 14 Functions.f90 functions (`saturate`, `wrap_180`, `wrap_360`) — all ErrVar-free
+- **Integrated**: None yet (clean slate — integration happens in phase order)
+- **Pipeline**: End-to-end extract → verify → integrate → rebuild → diff confirmed working
+- **VIT codebase**: ~4,600 lines of core code, 231 unit tests, 11 modules
+- **Translation infrastructure**: `vit translate` command, module-organized storage in `ROSCO/translations/`, metadata headers (Phase 0 complete)
 
 ### Total Scope
 
@@ -23,20 +24,20 @@ ROSCO contains ~65 functions and subroutines across 11 modules (~8,600 lines of 
 
 Functions.f90 is the primary target module: 14 utility functions used throughout the controller. This is where VIT has proven itself and where the next wave of translations will come from.
 
-### Already Done
+### Already Verified (no ErrVar — clean translations)
 
 | Function | Lines | Description | Status |
 |----------|-------|-------------|--------|
-| `saturate` | 11 | Min/max clamp (3 scalars → scalar) | Verified + integrated |
-| `wrap_180` | 12 | Angle wrap to ±180° (scalar → scalar) | Verified + integrated |
-| `wrap_360` | 12 | Angle wrap to 0–360° (scalar → scalar) | Verified, needs integration |
-| `interp1d` | 58 | 1D linear interpolation (2 arrays + scalar + ErrVar passthrough → scalar) | Verified + integrated |
+| `saturate` | 11 | Min/max clamp (3 scalars → scalar) | Verified |
+| `wrap_180` | 12 | Angle wrap to ±180° (scalar → scalar) | Verified |
+| `wrap_360` | 12 | Angle wrap to 0–360° (scalar → scalar) | Verified |
+
+All translations start from a clean ROSCO (nothing integrated). Integration happens in phase order.
 
 ### Ready Now — No VIT Changes Needed
 
 | Function | Lines | Description | Why It Works Today |
 |----------|-------|-------------|-------------------|
-| `sigma` | 34 | Sigmoid/cubic ramp (5 scalars + ErrVar passthrough → scalar) | Same pattern as interp1d minus arrays: all scalar args, ErrorVariables is passthrough |
 | `CPfunction` | 13 | Parameterized Cp(λ) (fixed `CP(4)` array + scalar → scalar) | Fixed-size 1D array `CP(4)` has explicit dimensions — no assumed-shape complexity. Calls `saturate` internally but translation only implements the math |
 
 ### Minor VIT Work Required
@@ -47,15 +48,17 @@ Functions.f90 is the primary target module: 14 utility functions used throughout
 | `identity` | 16 | n×n identity matrix (scalar `n` → `A(n,n)`) | Runtime-dimensioned array return. VIT needs support for result arrays sized by input args |
 | `ColemanTransform` | 18 | Coleman d-q transform (SUBROUTINE: fixed `rootMOOP(3)` + scalars → INTENT(OUT) scalars) | First SUBROUTINE target. VIT has subroutine codepath in interface_gen.py but it's untested in the full pipeline. Fixed-size array input is straightforward |
 | `ColemanTransformInverse` | 19 | Inverse Coleman (SUBROUTINE: scalars → INTENT(OUT) fixed `PitComIPC(3)`) | SUBROUTINE with INTENT(OUT) fixed-size array. Same requirements as ColemanTransform plus output array handling |
-| `unwrap` | 40 | Phase unwrapping (assumed-shape `x(:)` + ErrVar → array `DIMENSION(SIZE(x))`) | Array-valued return where result size depends on input array. VIT needs to support array return type in interface gen |
 
 ### Major VIT Work Required
 
 | Function | Lines | Description | What VIT Needs |
 |----------|-------|-------------|---------------|
-| `ratelimit` | 37 | Rate limiter with state (8 args including `rlP` TYPE(rlParams) INOUT + OPTIONAL arg → scalar) | Load-bearing derived type: writes `rlP%LastSignal(inst)`. The derived type is not passthrough — the C++ code must access its fields. Also has OPTIONAL argument. Requires derived type struct mapping and OPTIONAL support |
-| `interp2d` | 172 | 2D bilinear interpolation (3 arrays including `zData(:,:)` + 2 scalars + ErrVar → scalar) | 2D assumed-shape array `DIMENSION(:,:)` — VIT currently generates a single `n_` size param which is wrong for 2D. Also calls `interp1d` internally, uses `ieee_arithmetic` module |
-| `AeroDynTorque` | 39 | Aerodynamic torque (2 scalars + 4 derived types → scalar) | Four derived type args: `LocalVariables` (reads `WE_Vw`), `ControlParameters` (reads `WE_BladeRadius`, `WE_RhoAir`), `PerformanceData` (reads `Beta_vec`, `TSR_vec`, `Cp_mat`), `ErrorVariables` (passthrough). The first three are NOT passthrough — C++ needs their field values. Calls `interp2d`. Requires derived type field extraction or struct mapping |
+| `ratelimit` | 37 | Rate limiter with state (8 args including `rlP` TYPE(rlParams) INOUT + OPTIONAL arg → scalar) | Load-bearing derived type: writes `rlP%LastSignal(inst)`. C++ must access fields. Also has OPTIONAL argument. Requires derived type struct mapping and OPTIONAL support |
+| `interp1d` | 58 | 1D linear interpolation (2 arrays + scalar + ErrVar → scalar) | Blocked by ErrorVariables — requires BIND(C) struct (Phase 4). Validates inputs, writes `ErrVar%aviFAIL` and `ErrVar%ErrMsg` on error |
+| `sigma` | 34 | Sigmoid/cubic ramp (5 scalars + ErrVar → scalar) | Blocked by ErrorVariables — requires BIND(C) struct (Phase 4). Only checks `ErrVar%aviFAIL` status |
+| `unwrap` | 40 | Phase unwrapping (assumed-shape `x(:)` + ErrVar → array `DIMENSION(SIZE(x))`) | Blocked by ErrorVariables (Phase 4) + array-valued return where result size depends on input array |
+| `interp2d` | 172 | 2D bilinear interpolation (3 arrays including `zData(:,:)` + 2 scalars + ErrVar → scalar) | Blocked by ErrorVariables (Phase 4) + 2D assumed-shape `DIMENSION(:,:)` (Phase 5). Calls `interp1d`, uses `ieee_arithmetic` |
+| `AeroDynTorque` | 39 | Aerodynamic torque (2 scalars + 4 derived types → scalar) | Four derived type args: `LocalVariables`, `ControlParameters`, `PerformanceData` (all become C structs in Phase 4), `ErrorVariables` (BIND(C) struct in Phase 4). Calls `interp2d` |
 
 ---
 
@@ -155,7 +158,7 @@ Translation must proceed bottom-up through this graph. A function can only be tr
 
 ## 4. Derived Type Translation Strategy
 
-Every ROSCO module depends on ROSCO_Types. The types are the keystone of the entire translation effort. Deep investigation (2026-03-17) determined that **all 12 types can become C structs** — no opaque pointers, no accessor APIs, no deferred work. Phase 4.5 solves the entire type system in one shot.
+Every ROSCO module depends on ROSCO_Types. The types are the keystone of the entire translation effort. Deep investigation (2026-03-17) determined that **all 12 types can become C structs** — no opaque pointers, no accessor APIs, no deferred work. Phase 4 solves the entire type system in one shot.
 
 ### Key Finding: Field Extraction Does Not Scale
 
@@ -212,20 +215,18 @@ All fields are ALLOCATABLE lookup tables allocated once from `Cp_Ct_Cq.NREL5MW.t
 
 Never modified after init. Same pointer+size view during transition, `std::vector` in final state.
 
-**ErrorVariables — passthrough + simple C error args (3 fields + 1 ALLOCATABLE):**
+**ErrorVariables — BIND(C) struct passed by pointer (same as all other types):**
 
-Critical finding: **ErrVar is purely for error reporting. It never affects computed control outputs.** The pattern everywhere:
-1. Function sets `aviFAIL = -1` and writes `ErrMsg`
-2. Caller checks `aviFAIL < 0` and propagates
-3. Error data flows *out* to the simulator, never *into* the algorithm
+`ErrVar` is used for error reporting: functions set `aviFAIL = -1` and write `ErrMsg` on validation failures, callers check `aviFAIL < 0` and propagate. It never affects computed control outputs.
 
-Strategy for complete translation:
-- `aviFAIL` and `ErrStat` are already `INTEGER(C_INT)` — directly C-compatible.
+Strategy: make ErrorVariables a BIND(C) struct, same treatment as every other type. One fix needed:
 - `ErrMsg`: Replace `CHARACTER(:), ALLOCATABLE` with `CHARACTER(1024)`. The DLL interface already uses a 1024-char buffer. No observed error message exceeds ~500 chars.
-- For C++ functions that need error reporting: pass `int* aviFAIL` and `char* ErrMsg` as separate C args. The Fortran wrapper maps these to/from the ErrVar struct.
-- For functions that don't touch errors: continue passthrough pattern.
+- `aviFAIL` and `ErrStat` are already `INTEGER(C_INT)` — no changes needed.
+- `size_avcMSG` is `INTEGER(IntKi)` — no changes needed.
 
-**Remaining types (handled in Phase 9):**
+After this fix, the entire type is BIND(C)-compatible. C++ receives `ErrorVariables*` and reads/writes fields directly — `errVar->aviFAIL`, `errVar->ErrMsg`, etc. No passthrough, no decomposed args, no special cases.
+
+**Remaining types (handled in Phase 10):**
 
 | Type | Fields | Strategy |
 |------|--------|----------|
@@ -238,9 +239,9 @@ KGen workarounds are handled case-by-case. Every new Fortran pattern (subroutine
 
 ### Timeline
 
-- **Phase 4.5**: All type changes applied. C++ struct headers generated. BIND(C) attributes added to Fortran types. Memory layout validated. Pointer+size view structs for ALLOCATABLE types.
-- **Phases 5–7**: All functions receive full structs by pointer. C++ accesses fields naturally.
-- **Phase 8**: Ownership transfer — types move from Fortran-owned (view) to C++ owned (`std::vector`). C++ becomes source of truth for type definitions.
+- **Phase 4**: All type changes applied (including ErrorVariables). C++ struct headers generated. BIND(C) attributes added to Fortran types. Memory layout validated. Pointer+size view structs for ALLOCATABLE types.
+- **Phases 5–8**: All functions receive full structs by pointer. C++ accesses fields naturally.
+- **Phase 9**: Ownership transfer — types move from Fortran-owned (view) to C++ owned (`std::vector`). C++ becomes source of truth for type definitions.
 
 ---
 
@@ -248,11 +249,12 @@ KGen workarounds are handled case-by-case. Every new Fortran pattern (subroutine
 
 ### `vit translate` Command
 
-VIT provides a `vit translate` command that scaffolds a C++ translation file from a parsed Fortran function signature. The command generates:
-- The correct `extern "C"` wrapper with BIND(C)-compatible parameter types
-- `#include` directives for relevant C++ struct headers
-- Parameter conventions matching VIT's interface generation (size params for arrays, pointer params for structs, passthrough exclusions for ErrorVariables)
-- A placeholder body for the algorithm implementation
+VIT provides a `vit translate` command that scaffolds a C++ translation file from a parsed Fortran function signature. The command produces two outputs:
+
+1. **C++ scaffold file** (written to disk): metadata header comment block + correct C++ function signature + placeholder body. This is an **implementation-only** file — the `extern "C"` wrapper is added at integration time by `_generate_standalone_cpp()` in `integrate.py`. This matches the format of existing hand-written translations.
+2. **Translation prompt** (printed to stdout): the original Fortran source (verbatim), the generated scaffold, and the contents of `TRANSLATION_TIPS.md` if it exists.
+
+The scaffold signature is generated by `build_c_params()` in `interface_gen.py`, which produces the correct C++ parameter types (size params for assumed-shape arrays, pointer params for structs, derived type handling per the type registry).
 
 Claude fills in the algorithm body. VIT then verifies the translation against runtime state (extract → verify) and integrates it (integrate → rebuild → diff).
 
@@ -291,10 +293,12 @@ Translations are ROSCO-specific artifacts — they belong with the target codeba
 
 Each translation file carries metadata (in a header comment block):
 - Source Fortran file and function name
+- Enclosing module name (if any)
 - Fortran function signature at time of translation
-- Hash of original Fortran source (to detect upstream changes)
+- MD5 hash of original Fortran source (to detect upstream changes)
 - VIT version used for scaffolding
-- Verification status (verified/not yet verified)
+- Verification status (unverified/verified)
+- Generation timestamp (UTC)
 
 During verification and integration, VIT reads translations from `translations/<Module>/` and copies them into the build area as needed.
 
@@ -304,37 +308,34 @@ During verification and integration, VIT reads translations from `translations/<
 
 Each phase unlocks new translation targets. Phases are ordered by dependency — each builds on the capabilities added by previous phases.
 
-### Phase 0: Translation Infrastructure
+### Phase 0: Translation Infrastructure ✓
 **Target: `vit translate` command and module-organized translation storage**
 
 Build the translation workflow tooling described in Section 4a before any new translations are written. This ensures every translation from Phase 1 onward follows the correct convention from day one.
 
-- [ ] Create module-organized `ROSCO/translations/` directory structure (`translations/Functions/`, `translations/Filters/`, etc.)
-- [ ] Move existing translations from `vit_translation/translations/` into `ROSCO/translations/Functions/`: `saturate.cpp`, `wrap_180.cpp`, `wrap_360.cpp`, `interp1d.cpp`
-- [ ] Implement `vit translate` command:
-  - [ ] Parse Fortran function signature (reuse `fortran_parser.py`)
-  - [ ] Generate C++ scaffold with correct `extern "C"` wrapper, parameter conventions, includes
-  - [ ] Generate metadata header block (source file, function signature, Fortran source hash, VIT version, verification status)
-  - [ ] Write scaffold to `ROSCO/translations/<Module>/<function>.cpp` (or target project's translations directory)
-- [ ] Add `vit translate` to CLI (`cli.py`)
-- [ ] Update existing translations with metadata headers (retroactive)
-- [ ] Unit tests for `vit translate` scaffolding
-- [ ] Verify existing pipeline still works with translations in new locations (update CLAUDE.md paths if needed)
+- [x] Create module-organized `ROSCO/translations/` directory structure
+- [x] Move existing translations into `ROSCO/translations/Functions/`
+- [x] Implement `vit translate` command (scaffold + prompt generation)
+- [x] Add `vit translate` to CLI (`cli.py`)
+- [x] Update existing translations with metadata headers (retroactive)
+- [x] Unit tests for `vit translate` scaffolding
+- [x] Verify existing pipeline still works with translations in new locations
 
 ### Phase 1: Low-Hanging Fruit
-**Target: 7/14 Functions.f90**
+**Target: 4/14 Functions.f90**
 
-- [ ] Integrate `wrap_360` — already verified, run `vit integrate wrap_360 ...`
-- [ ] `vit translate sigma` → scaffold, fill in algorithm body, extract, verify, integrate
+- [ ] Integrate `saturate` — already verified
+- [ ] Integrate `wrap_180` — already verified
+- [ ] Integrate `wrap_360` — already verified
 - [ ] `vit translate CPfunction` → scaffold, fill in algorithm body, extract, verify, integrate
-- [ ] Run full verification regression (all 7 functions pass)
+- [ ] Run full verification regression (all 4 functions pass)
 - [ ] Update `vit.yaml` translations section
 
 **VIT changes**: None (translation infrastructure built in Phase 0).
-**Effort estimate**: Small — fill in 2 algorithm bodies and run the pipeline.
+**Effort estimate**: Small — fill in 1 algorithm body and run the pipeline.
 
 ### Phase 2: Fixed-Size Arrays + Subroutines
-**Target: 11/14 Functions.f90**
+**Target: 8/14 Functions.f90**
 
 - [ ] Explicit-dimension array support — `A(3,3)` in Fortran → `double* A` with known size in C. Interface gen must recognize `DIMENSION(3,3)` vs `DIMENSION(:)` and handle accordingly. No synthetic size param needed — the size is compile-time known.
 - [ ] Subroutine pipeline validation — VIT's interface_gen.py has subroutine support (BIND(C) SUBROUTINE, INTENT(OUT) args) but it's never been tested end-to-end. Validate with ColemanTransform as the first real SUBROUTINE target.
@@ -344,36 +345,23 @@ Build the translation workflow tooling described in Section 4a before any new tr
 - [ ] Translate + verify + integrate `identity`
 - [ ] Translate + verify + integrate `ColemanTransform`
 - [ ] Translate + verify + integrate `ColemanTransformInverse`
-- [ ] Translate + verify + integrate `unwrap`
-- [ ] Run full verification regression (all 11 functions pass)
+- [ ] Run full verification regression (all 8 functions pass)
 
-**New functions unlocked**: `matinv3`, `identity`, `ColemanTransform`, `ColemanTransformInverse`, `unwrap`
+**New functions unlocked**: `matinv3`, `identity`, `ColemanTransform`, `ColemanTransformInverse`
 
-### Phase 3: 2D Assumed-Shape Arrays
-**Target: 12/14 Functions.f90**
+### Phase 3: Load-Bearing Derived Types
+**Target: 9/14 Functions.f90**
 
-- [ ] Multi-dimensional assumed-shape — `DIMENSION(:,:)` must generate two size params (`n_rows`, `n_cols`), not one. Current code silently generates broken interfaces for 2D. Add rank detection and per-dimension size params.
-- [ ] Guard against unsupported ranks — add explicit error for `DIMENSION(:,:,:)` and higher until supported.
-- [ ] Translate + verify + integrate `interp2d`
-- [ ] Run full verification regression (all 12 functions pass)
-
-**New function unlocked**: `interp2d`
-
-### Phase 4: Load-Bearing Derived Types
-**Target: 13/14 Functions.f90**
-
-- [ ] Derived type registry in CLI — wire the `derived_types` parameter from `get_type_mapping()` through the CLI pipeline. Currently hardcoded to None, defaulting all TYPE(...) to passthrough.
+- [ ] Derived type registry in CLI — wire the `derived_types` parameter from `get_type_mapping()` through the CLI pipeline. Currently hardcoded to None. All TYPE(...) args will become BIND(C) structs passed by pointer.
 - [ ] BIND(C) struct generation for `rlParams` — auto-generate C struct from parsed TYPE block. `rlParams` is the simplest load-bearing type (1 fixed-size array), used by `ratelimit`.
 - [ ] OPTIONAL argument support — `ratelimit` has `OPTIONAL :: ResetValue`. Interface gen must handle PRESENT() checks in the Fortran wrapper and default values in C.
 - [ ] Translate + verify + integrate `ratelimit`
-- [ ] Run full verification regression (all 13 functions pass)
-
-`AeroDynTorque` requires ControlParameters, PerformanceData, and LocalVariables — it moves to after Phase 4.5 where it gets the real struct solution, not a bridge workaround.
+- [ ] Run full verification regression (all 9 functions pass)
 
 **New function unlocked**: `ratelimit`
 
-### Phase 4.5: Complete Type System C Structs
-**Target: C++ struct definitions for ALL types, unblocking Phases 5–7**
+### Phase 4: Complete Type System C Structs
+**Target: C++ struct definitions for ALL types (including ErrorVariables), unblocking Phases 5–8**
 
 Deep investigation (2026-03-17) found that **every ROSCO type can become a C struct** — no opaque pointers or accessor APIs needed. This phase solves the entire type system in one shot.
 
@@ -388,13 +376,13 @@ The command takes a source directory and produces:
 - [ ] **C++ struct header generation** — produce the `.h` file with C struct definitions matching the (fixed) Fortran layout.
 - [ ] **Fortran BIND(C) type modifications** — generate patched TYPE definitions with `BIND(C)` attributes and incompatible fields replaced.
 
-This makes the type system work reproducible and generalizable beyond ROSCO (Phase 11). The ROSCO analysis we already did serves as the validation target: the tool's output for ROSCO must match our manual findings.
+This makes the type system work reproducible and generalizable beyond ROSCO (Phase 12). The ROSCO analysis we already did serves as the validation target: the tool's output for ROSCO must match our manual findings.
 
 **Already BIND(C)-compatible types (define C structs, no Fortran changes):**
 - [ ] `FilterParameters` — 27 arrays of `double[1024]` (~221 KB). Used by all filters.
 - [ ] `piParams` — 5 arrays of `double[1024]`. Used by PI/PID controllers.
 - [ ] `resParams` — 4 arrays of `double[1024]`. Used by resonance controller.
-- [ ] `rlParams` — 1 array of `double[1024]`. Already handled in Phase 4 for `ratelimit`.
+- [ ] `rlParams` — 1 array of `double[1024]`. Already handled in Phase 3 for `ratelimit`.
 - [ ] `WE` — 7 fields: 4 scalars + `double[3][3]` + 2× `double[3]`. Note: Fortran column-major layout for multi-dimensional arrays.
 - [ ] `ObjectInstances` — 9 integers.
 - [ ] `DebugVariables` — 22 `REAL(DbKi)` scalars.
@@ -427,30 +415,42 @@ This makes the type system work reproducible and generalizable beyond ROSCO (Pha
 - [ ] Generates transposition code in the Fortran wrapper at the boundary, so C++ always receives row-major data.
 - [ ] When Fortran is removed and C++ owns the data natively, transposition disappears.
 
-**AeroDynTorque — first function using the complete type system:**
-- [ ] Translate + verify + integrate `AeroDynTorque` — uses ControlParameters (view struct), PerformanceData (view struct), LocalVariables (BIND(C) struct), ErrorVariables (passthrough). This validates that the full type system works end-to-end.
-- [ ] Run full verification regression (all 14 functions pass — Functions.f90 complete)
-
-**ErrorVariables — replace ALLOCATABLE ErrMsg, keep passthrough pattern:**
+**ErrorVariables — BIND(C) struct (one fix):**
 - [ ] Replace `CHARACTER(:), ALLOCATABLE :: ErrMsg` with `CHARACTER(1024)`. The DLL interface already uses a 1024-char buffer. No observed error message exceeds ~500 chars.
-- [ ] `aviFAIL` and `ErrStat` are already `INTEGER(C_INT)` — no changes needed.
-- [ ] For C++ functions that need error reporting: pass `int* aviFAIL` and `char* ErrMsg` as separate C args. Fortran wrapper maps to/from ErrVar struct.
-- [ ] For functions that don't touch errors: continue passthrough.
+- [ ] `aviFAIL`, `ErrStat`, and `size_avcMSG` are already C-compatible — no changes needed.
+- [ ] After this fix, ErrorVariables is a BIND(C) struct passed by pointer like all other types. C++ accesses fields directly: `errVar->aviFAIL`, `errVar->ErrMsg`, etc.
 
 **Validation:**
 - [ ] Write memory layout test: compare field offsets between Fortran `BIND(C)` type and C++ struct to verify binary compatibility.
 - [ ] Verify mixed Fortran/C++ build produces byte-identical simulation output after type modifications.
 - [ ] Run full verification regression on all previously verified functions.
 
-**Why this must come before Phase 5:** Filters access ~30 fields on FilterParameters, Controllers access ~70 fields on LocalVariables. With C structs, C++ accesses fields naturally (`state->lpf1_a1[inst]`) and the Fortran wrapper just passes the struct address.
+**Why this must come before Phase 5:** All ErrVar functions are blocked until ErrorVariables is a BIND(C) struct. Filters access ~30 fields on FilterParameters, Controllers access ~70 fields on LocalVariables. With C structs, C++ accesses fields naturally (`state->lpf1_a1[inst]`) and the Fortran wrapper just passes the struct address.
 
-### Phase 5: Filters Module
+### Phase 5: ErrorVariables Functions + 2D Assumed-Shape Arrays
+**Target: 14/14 Functions.f90 complete**
+
+With Phase 4 complete, ErrorVariables is a BIND(C) struct. All 5 ErrVar-blocked functions can now be translated. This phase also adds 2D assumed-shape array support needed by `interp2d`.
+
+- [ ] Multi-dimensional assumed-shape — `DIMENSION(:,:)` must generate two size params (`n_rows`, `n_cols`), not one. Current code silently generates broken interfaces for 2D. Add rank detection and per-dimension size params.
+- [ ] Guard against unsupported ranks — add explicit error for `DIMENSION(:,:,:)` and higher until supported.
+- [ ] Array-valued return where result size depends on input array — needed by `unwrap`
+- [ ] Translate + verify + integrate `interp1d`
+- [ ] Translate + verify + integrate `sigma`
+- [ ] Translate + verify + integrate `unwrap`
+- [ ] Translate + verify + integrate `interp2d`
+- [ ] Translate + verify + integrate `AeroDynTorque` — first function using the complete type system: ControlParameters (view struct), PerformanceData (view struct), LocalVariables (BIND(C) struct), ErrorVariables (BIND(C) struct)
+- [ ] Run full verification regression (all 14 functions pass — Functions.f90 complete)
+
+**New functions unlocked**: `interp1d`, `sigma`, `unwrap`, `interp2d`, `AeroDynTorque`
+
+### Phase 6: Filters Module
 **Target: All of Filters.f90**
 
-With Phase 4.5 complete, `FilterParameters` is a C struct passed by pointer. All filters receive it directly.
+With Phase 4 complete, `FilterParameters` is a C struct passed by pointer. All filters receive it directly. ErrorVariables is also a BIND(C) struct — no special handling needed.
 
 - [ ] Instance-based state access in C++ — filters use `FP%fieldname(inst)` pattern, which becomes `fp->fieldname[inst]` in C++. Validate this pattern works correctly across the BIND(C) boundary.
-- [ ] Multi-state-type functions — `PreFilterMeasuredSignals` takes 5 derived type args (CntrPar, LocalVar, DebugVar, objInst, ErrVar). All are C structs (Phase 4.5) except ErrVar which continues as passthrough with `int* aviFAIL` + `char* ErrMsg` when C++ needs error reporting.
+- [ ] Multi-state-type functions — `PreFilterMeasuredSignals` takes 5 derived type args (CntrPar, LocalVar, DebugVar, objInst, ErrVar). All are C structs passed by pointer.
 - [ ] Translate + verify + integrate `LPFilter`
 - [ ] Translate + verify + integrate `SecLPFilter`
 - [ ] Translate + verify + integrate `SecLPFilter_Vel`
@@ -461,10 +461,10 @@ With Phase 4.5 complete, `FilterParameters` is a C struct passed by pointer. All
 
 **New functions unlocked**: `LPFilter`, `SecLPFilter`, `SecLPFilter_Vel`, `HPFilter`, `NotchFilter`, `NotchFilterSlopes`, `PreFilterMeasuredSignals`
 
-### Phase 6: Controllers Module
+### Phase 7: Controllers Module
 **Target: All of Controllers.f90**
 
-With Phase 4.5 complete, all types are C structs passed by pointer — `LocalVariables`, `ControlParameters`, `FilterParameters`, and all nested state types. Controllers read and write struct fields directly.
+With Phase 4 complete, all types are C structs passed by pointer — `LocalVariables`, `ControlParameters`, `FilterParameters`, `ErrorVariables`, and all nested state types. Controllers read and write struct fields directly.
 
 - [ ] Large subroutine support — controller subroutines are 100-200 lines with complex control flow. VIT's extraction and verification should handle these mechanically, but testing at scale is needed.
 - [ ] Read+write derived type access — controllers read AND write fields on LocalVariables. C++ code modifies the struct in place; changes are visible to Fortran since the struct is passed by pointer.
@@ -486,10 +486,10 @@ With Phase 4.5 complete, all types are C structs passed by pointer — `LocalVar
 
 **New functions unlocked**: All 14 Controllers.f90 subroutines/functions
 
-### Phase 7: ControllerBlocks Module
+### Phase 8: ControllerBlocks Module
 **Target: All of ControllerBlocks.f90**
 
-With Phase 4.5 complete, `WE` nested struct is accessible through `LocalVariables`. WindSpeedEstimator can read/write `LocalVar.WE.P[3][3]`, `LocalVar.WE.xh[3]`, etc.
+With Phase 4 complete, `WE` nested struct is accessible through `LocalVariables`. WindSpeedEstimator can read/write `LocalVar.WE.P[3][3]`, `LocalVar.WE.xh[3]`, etc.
 
 - [ ] Kalman filter support — `WindSpeedEstimator` uses 3×3 matrix operations via the WE derived type. By this phase, matinv3 and identity are already translated. C++ accesses `WE` fields through the LocalVariables struct pointer.
 - [ ] State machine support — `StateMachine`, `Startup`, `Shutdown` have multi-stage sequential logic with persistent state stored in LocalVariables fields.
@@ -504,18 +504,18 @@ With Phase 4.5 complete, `WE` nested struct is accessible through `LocalVariable
 
 **New functions unlocked**: All 8 ControllerBlocks.f90 subroutines
 
-### Phase 8: Type Ownership Transfer
+### Phase 9: Type Ownership Transfer
 **Target: C++ becomes source of truth for all types**
 
-Phase 4.5 created BIND(C) structs and pointer+size views. Phase 8 transfers ownership: C++ allocates and manages all data, Fortran wrappers become thin shims.
+Phase 4 created BIND(C) structs and pointer+size views. Phase 9 transfers ownership: C++ allocates and manages all data, Fortran wrappers become thin shims.
 
-- [ ] Transfer ALLOCATABLE types to C++ ownership — ControlParameters and PerformanceData pointer+size views become C++ structs with `std::vector<double>`. C++ ReadSetParameters (translated in Phase 9) allocates directly.
+- [ ] Transfer ALLOCATABLE types to C++ ownership — ControlParameters and PerformanceData pointer+size views become C++ structs with `std::vector<double>`. C++ ReadSetParameters (translated in Phase 10) allocates directly.
 - [ ] Move struct definitions from Fortran to C++ headers — C++ structs become the canonical definitions. Fortran types become thin `BIND(C)` wrappers that mirror the C++ layout.
 - [ ] C++ constants header — `constexpr double PI = ...`, `using DbKi = double`, etc. Replace Constants.f90 as the source of truth.
 - [ ] VIT ownership tracker confirms all types are now "owned" by C++.
 - [ ] Verify mixed Fortran/C++ build still produces byte-identical simulation output.
 
-### Phase 9: I/O and Platform Modules
+### Phase 10: I/O and Platform Modules
 **Target: ReadSetParameters, ROSCO_Helpers, ROSCO_IO, SysSubs, ExtControl, ZeroMQInterface**
 
 Investigation (2026-03-17) classified every I/O function into four categories, each with a distinct VIT verification strategy. The verification capabilities are built at the start of this phase, then used to verify each translation.
@@ -570,7 +570,7 @@ Functions with side effects only, stateful (SAVE variables), non-deterministic e
 - [ ] Translate `ZeroMQInterface` (platform — simulation regression)
 - [ ] Full simulation regression after each module
 
-### Phase 10: Entry Point and Final Assembly
+### Phase 11: Entry Point and Final Assembly
 **Target: DISCON.F90 → pure C++ libdiscon.so**
 
 - [ ] Translate `DISCON` — 162-line orchestrator: initialization, parameter reading, controller dispatch. By this phase, everything it calls is already C++.
@@ -578,7 +578,7 @@ Functions with side effects only, stateful (SAVE variables), non-deterministic e
 - [ ] Full simulation regression — run the complete wind turbine simulation and confirm byte-identical output to the original pure-Fortran baseline.
 - [ ] Binary compatibility — verify the C++ `libdiscon.so` works as a drop-in replacement: same symbol names, same calling convention (Bladed DLL interface).
 
-### Phase 11: Generalization Beyond ROSCO
+### Phase 12: Generalization Beyond ROSCO
 **Target: VIT as a general-purpose tool**
 
 - [ ] Abstract kind aliases — support arbitrary `kind_aliases` configuration, not just ROSCO's ReKi/DbKi/IntKi
@@ -597,29 +597,29 @@ Issues that should be addressed during the enhancement roadmap. These are not bl
 
 | Issue | Impact | Fix Phase |
 |-------|--------|-----------|
-| 2D assumed-shape arrays generate single `n_` size param | Wrong C interface for DIMENSION(:,:) | Phase 3 |
-| ALLOCATABLE args parsed as regular arrays | Wrong size semantics | Phase 4.5 |
-| CHARACTER function results assume numeric kind conversion | Would generate broken wrapper | Phase 4.5 |
-| ELEMENTAL/PURE/RECURSIVE prefixes not recognized | Function declaration not matched by parser | Phase 6 |
-| Fortran/C struct memory layout mismatch | Fields at wrong offsets if compiler pads differently | Phase 4.5 |
-| Column-major arrays passed to C++ without transposition | C++ computes wrong results with Fortran-layout matrices | Phase 4.5 |
-| No I/O verification capability | File readers/writers/diagnostics cannot be verified through existing pipeline | Phase 9 |
+| 2D assumed-shape arrays generate single `n_` size param | Wrong C interface for DIMENSION(:,:) | Phase 5 |
+| ALLOCATABLE args parsed as regular arrays | Wrong size semantics | Phase 4 |
+| CHARACTER function results assume numeric kind conversion | Would generate broken wrapper | Phase 4 |
+| ELEMENTAL/PURE/RECURSIVE prefixes not recognized | Function declaration not matched by parser | Phase 7 |
+| Fortran/C struct memory layout mismatch | Fields at wrong offsets if compiler pads differently | Phase 4 |
+| Column-major arrays passed to C++ without transposition | C++ computes wrong results with Fortran-layout matrices | Phase 4 |
+| No I/O verification capability | File readers/writers/diagnostics cannot be verified through existing pipeline | Phase 10 |
 
 ### Correctness Issues
 
 | Issue | Impact | Fix Phase |
 |-------|--------|-----------|
 | INTENT(OUT) arrays in subroutines may get wrong intent in interface | Could generate read-only when write is needed | Phase 2 |
-| Derived type registry not wired into CLI | All TYPE(...) defaults to passthrough — wrong for BIND(C) types | Phase 4/4.5 |
+| Derived type registry not wired into CLI | All TYPE(...) defaults to passthrough — wrong for BIND(C) types. Passthrough is not the intended pattern; all types become BIND(C) structs | Phase 3/4 |
 | Subroutine codepath untested end-to-end | Latent bugs in subroutine interface/verify/integrate | Phase 2 |
 
 ### Missing Guards
 
 | Issue | Impact | Fix Phase |
 |-------|--------|-----------|
-| No error on unsupported array ranks | Silent wrong code generation | Phase 3 |
-| No warning for ALLOCATABLE/POINTER args | User doesn't know VIT is generating wrong code | Phase 4 |
-| No detection of inter-function dependencies | Translated function calling untranslated function | Phase 6 |
+| No error on unsupported array ranks | Silent wrong code generation | Phase 5 |
+| No warning for ALLOCATABLE/POINTER args | User doesn't know VIT is generating wrong code | Phase 3 |
+| No detection of inter-function dependencies | Translated function calling untranslated function | Phase 7 |
 
 ---
 
@@ -638,8 +638,8 @@ The existing interp1d demo (validated 2026-03-17) shows the complete VIT pipelin
 ### Key Talking Points
 
 - **VIT verifies, it doesn't translate.** Humans or LLMs write the C++; VIT proves it's correct against real runtime data and integrates it into the build.
-- **Current coverage**: 4/14 Functions.f90 functions verified. 3 more achievable immediately with no tool changes.
-- **Clear phased roadmap**: 7 → 11 → 12 → 14 Functions.f90 functions, then Filters, Controllers, ControllerBlocks, I/O, and finally the entry point.
+- **Current coverage**: 3/14 Functions.f90 functions verified (ErrVar-free). 1 more achievable immediately with no tool changes.
+- **Clear phased roadmap**: 4 → 8 → 9 → 14 Functions.f90 functions, then Filters, Controllers, ControllerBlocks, I/O, and finally the entry point.
 - **Verification against reality**: Not synthetic test cases — actual runtime data from the NREL 5MW reference turbine simulation.
 - **Incremental and reversible**: Each function is verified and integrated independently. The mixed Fortran/C++ codebase works at every step.
 - **Full ROSCO is the goal**: Every module, every function, culminating in a pure C++ `libdiscon.so`.
@@ -650,5 +650,5 @@ The existing interp1d demo (validated 2026-03-17) shows the complete VIT pipelin
 |----------|--------|
 | "How long to translate all of ROSCO?" | Functions.f90 (14 functions) could be complete in weeks. Full ROSCO depends on type system work — months, not years. |
 | "What about numerical precision?" | VIT verifies to 1e-14 tolerance (effectively bit-identical for double precision). Every translated function is proven against real simulation data. |
-| "Can it handle our other Fortran codes?" | VIT is designed to generalize. ROSCO is the first target; Phase 11 addresses other codebases. The core pipeline (extract → verify → integrate) is codebase-agnostic. |
+| "Can it handle our other Fortran codes?" | VIT is designed to generalize. ROSCO is the first target; Phase 12 addresses other codebases. The core pipeline (extract → verify → integrate) is codebase-agnostic. |
 | "Why not just use an AI to auto-translate?" | LLMs can write the C++ (and often do). VIT's value is *proving* the translation is correct — which no LLM can guarantee — and automating the integration into the build. |
