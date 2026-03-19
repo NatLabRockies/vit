@@ -445,12 +445,16 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 
 ```
 4A (ErrorVariables) ──→ Phase 5A (sigma, interp1d) ✅ ──→ Phase 5B (unwrap, interp2d)
-4B (Simple structs)  ──→ Phase 6 Filters
+4B (Simple structs)  ──→ Phase 6A (LPFilter, HPFilter, SecLPFilter) ✅
+                     ──→ Phase 6B (NotchFilter, NotchFilterSlopes, SecLPFilter_Vel) — needs sim coverage
 4C (LocalVariables)  ──→ Phase 7 Controllers, Phase 8 ControllerBlocks (partial)
 4D (View structs)    ──→ Phase 5B AeroDynTorque, Phases 7-8 full
+                     ──→ PreFilterMeasuredSignals (also needs 4C)
 ```
 
-4A and 4B are independent. 4C depends on 4B (needs nested type recursion). 4D is independent of 4C but naturally comes last. Recommended execution interleaves with translation phases: 4A → 5A ✅ → 4B → 6 → 4C → 4D → 5B(remaining) → 7 → 8.
+4A and 4B are independent. 4C depends on 4B (needs nested type recursion). 4D is independent of 4C but naturally comes last. 6B is independent of 4C/4D — only needs simulation coverage for extraction.
+
+Recommended execution: 4A → 5A ✅ → 4B ✅ → 6A ✅ → 6B → 4C → 4D → 5B(remaining) → 7 → 8.
 
 ### Phase 5A: ErrorVariables Validation (sigma + interp1d) ✅
 **Status: Complete**
@@ -474,26 +478,30 @@ Requires VIT enhancements for array-valued returns and 2D assumed-shape arrays. 
 - [ ] Translate + verify + integrate `AeroDynTorque` (after 4D) — first function using the complete type system: ControlParameters (view struct), PerformanceData (view struct), LocalVariables (BIND(C) struct), ErrorVariables (BIND(C) struct)
 - [ ] Run full verification regression (all 13 translated functions pass)
 
-### Phase 6: Filters Module
-**Target: All of Filters.f90**
+### Phase 6A: Filters Module — Active Filters ✅
+**Status: Complete**
 
-With Phase 4B complete, `FilterParameters` is a C struct passed by pointer (46 fields, all `REAL(DbKi) DIMENSION(1024)`). All individual filters receive only FilterParameters + scalars. No VIT code changes were needed — all patterns (struct pointer, OPTIONAL, LOGICAL, inst INOUT) proven in Phase 3 ratelimit.
+Translated the 3 filter functions that are active in the standard NREL-5MW test simulation. FilterParameters is a C struct (46 fields, all `REAL(DbKi) DIMENSION(1024)`). No VIT code changes needed — all patterns (struct pointer, OPTIONAL, LOGICAL, inst INOUT) proven in Phase 3 ratelimit.
 
-- [x] Instance-based state access in C++ — `FP%fieldname(inst)` → `FP->fieldname[idx]` where `idx = *inst - 1` (1-based to 0-based). Validated across all 3 translated filters.
-- [x] Translate + verify + integrate `LPFilter` — 40/40 passed. Extracted from Filters.f90 line 347 (inside PreFilterMeasuredSignals).
+- [x] Instance-based state access in C++ — `FP%fieldname(inst)` → `FP->fieldname[idx]` where `idx = *inst - 1` (1-based to 0-based). Validated across all 3 filters.
+- [x] Translate + verify + integrate `LPFilter` — 40/40 passed. Extracted from Filters.f90 line 347.
 - [x] Translate + verify + integrate `HPFilter` — 40/40 passed. Extracted from Filters.f90 line 375.
-- [x] Translate + verify + integrate `SecLPFilter` — 40/40 passed. Extracted from Filters.f90 line 371 (unconditional acceleration filtering path).
-- [ ] Translate + verify + integrate `SecLPFilter_Vel` — deferred: only call site (Controllers.f90 line 941) is in cable control loop (CC_Group_N=0 in test simulation). Structurally identical to SecLPFilter.
-- [ ] Translate + verify + integrate `NotchFilter` — deferred: only called in gen speed notch loop (F_GenSpdNotch_N=0 in test simulation config).
-- [ ] Translate + verify + integrate `NotchFilterSlopes` — deferred: only called in IPC mode (IPC_ControlMode=0 in test simulation config). First function with two OPTIONAL args.
-- [ ] Multi-state-type functions — `PreFilterMeasuredSignals` takes 5 derived type args (CntrPar, LocalVar, DebugVar, objInst, ErrVar). Deferred until ControlParameters (Phase 4D) and LocalVariables (Phase 4C) are C-compatible.
+- [x] Translate + verify + integrate `SecLPFilter` — 40/40 passed. Extracted from Filters.f90 line 371.
 - [x] Full clean build test: 12 C++ translations (9 Functions.f90 + 3 Filters.f90) produce byte-identical simulation output.
 
-**Extraction note:** LPFilter/HPFilter/SecLPFilter extracted from call sites inside PreFilterMeasuredSignals (Filters.f90). Controllers.f90 call sites at lines 167/169 were in conditional branches (PA_Mode/F_LPFType) not active in the test simulation. SecLPFilter extraction from line 350 also failed (F_LPFType==2 branch); line 371 (unconditional path) succeeded.
+**Extraction lesson:** Many Controllers.f90 call sites (lines 167, 169, 350) are in conditional branches (`PA_Mode`, `F_LPFType`) not active in the test simulation. Successful extraction used unconditional call sites inside PreFilterMeasuredSignals (Filters.f90 lines 347, 371, 375).
 
-**Deferred functions need a simulation config that activates IPC, notch filters, and cable control.** The `vit_sim.py` `patches` mechanism could enable these, but modifying tuned controller parameters risks simulation instability.
+#### Phase 6B: Filters Module — Remaining Filters + Simulation Coverage
 
-**New functions translated**: `LPFilter`, `SecLPFilter`, `HPFilter`
+Three filter functions could not be extracted because they are never called in the standard NREL-5MW test simulation. This phase adds a simulation scenario that exercises them, then translates them.
+
+- [ ] Add a `vit_sim.py` scenario (or patch the existing one) that activates IPC, notch filters, and cable control. Key DISCON.IN parameters: `IPC_ControlMode > 0`, `F_GenSpdNotch_N > 0`, `CC_Group_N > 0` with appropriate `CC_ActTau`. The `patches` mechanism in `vit_sim.py` supports this. Must still produce a stable simulation (no divergence/crash). Validate by running patched sim standalone before extraction.
+- [ ] Translate + verify + integrate `SecLPFilter_Vel` — structurally identical to SecLPFilter (same args, lpfV_ prefix). Needs cable control active (CC_Group_N > 0).
+- [ ] Translate + verify + integrate `NotchFilter` — different scalar args (omega, betaNum, betaDen). Needs gen speed notch active (F_GenSpdNotch_N > 0).
+- [ ] Translate + verify + integrate `NotchFilterSlopes` — first function with two OPTIONAL args (Moving LOGICAL + InitialValue REAL). Needs IPC active (IPC_ControlMode > 0).
+- [ ] Full clean build test with all 15 filter+function translations producing byte-identical output.
+
+**Unblocks:** Full Filters module coverage. PreFilterMeasuredSignals remains blocked on Phase 4C (LocalVariables) + Phase 4D (ControlParameters).
 
 ### Phase 7: Controllers Module
 **Target: All of Controllers.f90**
