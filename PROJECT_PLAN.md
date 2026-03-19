@@ -477,19 +477,23 @@ Requires VIT enhancements for array-valued returns and 2D assumed-shape arrays. 
 ### Phase 6: Filters Module
 **Target: All of Filters.f90**
 
-With Phase 4 complete, `FilterParameters` is a C struct passed by pointer. All filters receive it directly. ErrorVariables is also a BIND(C) struct — no special handling needed.
+With Phase 4B complete, `FilterParameters` is a C struct passed by pointer (46 fields, all `REAL(DbKi) DIMENSION(1024)`). All individual filters receive only FilterParameters + scalars. No VIT code changes were needed — all patterns (struct pointer, OPTIONAL, LOGICAL, inst INOUT) proven in Phase 3 ratelimit.
 
-- [ ] Instance-based state access in C++ — filters use `FP%fieldname(inst)` pattern, which becomes `fp->fieldname[inst]` in C++. Validate this pattern works correctly across the BIND(C) boundary.
-- [ ] Multi-state-type functions — `PreFilterMeasuredSignals` takes 5 derived type args (CntrPar, LocalVar, DebugVar, objInst, ErrVar). All are C structs passed by pointer.
-- [ ] Translate + verify + integrate `LPFilter`
-- [ ] Translate + verify + integrate `SecLPFilter`
-- [ ] Translate + verify + integrate `SecLPFilter_Vel`
-- [ ] Translate + verify + integrate `HPFilter`
-- [ ] Translate + verify + integrate `NotchFilterSlopes`
-- [ ] Translate + verify + integrate `NotchFilter`
-- [ ] Translate + verify + integrate `PreFilterMeasuredSignals`
+- [x] Instance-based state access in C++ — `FP%fieldname(inst)` → `FP->fieldname[idx]` where `idx = *inst - 1` (1-based to 0-based). Validated across all 3 translated filters.
+- [x] Translate + verify + integrate `LPFilter` — 40/40 passed. Extracted from Filters.f90 line 347 (inside PreFilterMeasuredSignals).
+- [x] Translate + verify + integrate `HPFilter` — 40/40 passed. Extracted from Filters.f90 line 375.
+- [x] Translate + verify + integrate `SecLPFilter` — 40/40 passed. Extracted from Filters.f90 line 371 (unconditional acceleration filtering path).
+- [ ] Translate + verify + integrate `SecLPFilter_Vel` — deferred: only call site (Controllers.f90 line 941) is in cable control loop (CC_Group_N=0 in test simulation). Structurally identical to SecLPFilter.
+- [ ] Translate + verify + integrate `NotchFilter` — deferred: only called in gen speed notch loop (F_GenSpdNotch_N=0 in test simulation config).
+- [ ] Translate + verify + integrate `NotchFilterSlopes` — deferred: only called in IPC mode (IPC_ControlMode=0 in test simulation config). First function with two OPTIONAL args.
+- [ ] Multi-state-type functions — `PreFilterMeasuredSignals` takes 5 derived type args (CntrPar, LocalVar, DebugVar, objInst, ErrVar). Deferred until ControlParameters (Phase 4D) and LocalVariables (Phase 4C) are C-compatible.
+- [x] Full clean build test: 12 C++ translations (9 Functions.f90 + 3 Filters.f90) produce byte-identical simulation output.
 
-**New functions unlocked**: `LPFilter`, `SecLPFilter`, `SecLPFilter_Vel`, `HPFilter`, `NotchFilter`, `NotchFilterSlopes`, `PreFilterMeasuredSignals`
+**Extraction note:** LPFilter/HPFilter/SecLPFilter extracted from call sites inside PreFilterMeasuredSignals (Filters.f90). Controllers.f90 call sites at lines 167/169 were in conditional branches (PA_Mode/F_LPFType) not active in the test simulation. SecLPFilter extraction from line 350 also failed (F_LPFType==2 branch); line 371 (unconditional path) succeeded.
+
+**Deferred functions need a simulation config that activates IPC, notch filters, and cable control.** The `vit_sim.py` `patches` mechanism could enable these, but modifying tuned controller parameters risks simulation instability.
+
+**New functions translated**: `LPFilter`, `SecLPFilter`, `HPFilter`
 
 ### Phase 7: Controllers Module
 **Target: All of Controllers.f90**
