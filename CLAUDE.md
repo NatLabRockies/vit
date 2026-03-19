@@ -255,7 +255,7 @@ docker exec -it vit-dev bash -c "cd /workspace/vit && python3 -m pytest tests/ -
 
 ### Golden Test Fixtures
 
-Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
+Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/sigma/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
 
 **Extraction parameters (for regenerating golden fixtures):**
 
@@ -269,6 +269,7 @@ Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful ex
 | `identity` | `ControllerBlocks.f90` | 454 | `vit extract identity -f rosco/controller/src/ControllerBlocks.f90 -l 454` |
 | `ratelimit` | `Controllers.f90` | 103 | `vit extract ratelimit -f rosco/controller/src/Controllers.f90 -l 103` |
 | `interp1d` | `Controllers.f90` | 62 | `vit extract interp1d -f rosco/controller/src/Controllers.f90 -l 62` |
+| `sigma` | `Controllers.f90` | 528 | `vit extract sigma -f rosco/controller/src/Controllers.f90 -l 528` |
 
 Each extraction deposits into `kernel/<function_name>/` and restores the source file automatically.
 
@@ -307,6 +308,8 @@ After every feature implementation, run:
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify wrap_180 translations/Functions/wrap_180.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_180 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify wrap_360 translations/Functions/wrap_360.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_360 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify ratelimit translations/Functions/ratelimit.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ratelimit 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify sigma translations/Functions/sigma.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/sigma 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify interp1d translations/Functions/interp1d.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/interp1d 2>&1 | tail -3"
    ```
    Must show: `40/40 passed` for each function.
 
@@ -362,6 +365,8 @@ vit extract ratelimit -f rosco/controller/src/Controllers.f90 -l 103
 vit extract ColemanTransform -f rosco/controller/src/Controllers.f90 -l 510
 vit extract ColemanTransformInverse -f rosco/controller/src/Controllers.f90 -l 561
 vit extract identity -f rosco/controller/src/ControllerBlocks.f90 -l 454
+vit extract sigma -f rosco/controller/src/Controllers.f90 -l 528
+vit extract interp1d -f rosco/controller/src/Controllers.f90 -l 62
 ```
 
 Each must show `Extraction successful` with `Cases: 20`.
@@ -376,6 +381,8 @@ vit verify ratelimit translations/Functions/ratelimit.cpp -f rosco/controller/sr
 vit verify ColemanTransform translations/Functions/colemantransform.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ColemanTransform
 vit verify ColemanTransformInverse translations/Functions/colemantransforminverse.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ColemanTransformInverse
 vit verify identity translations/Functions/identity.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/identity
+vit verify sigma translations/Functions/sigma.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/sigma
+vit verify interp1d translations/Functions/interp1d.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/interp1d
 ```
 
 Each must show `40/40 passed`.
@@ -390,6 +397,8 @@ vit integrate ratelimit translations/Functions/ratelimit.cpp -f rosco/controller
 vit integrate ColemanTransform translations/Functions/colemantransform.cpp -f rosco/controller/src/Functions.f90 --apply
 vit integrate ColemanTransformInverse translations/Functions/colemantransforminverse.cpp -f rosco/controller/src/Functions.f90 --apply
 vit integrate identity translations/Functions/identity.cpp -f rosco/controller/src/Functions.f90 --apply
+vit integrate sigma translations/Functions/sigma.cpp -f rosco/controller/src/Functions.f90 --apply
+vit integrate interp1d translations/Functions/interp1d.cpp -f rosco/controller/src/Functions.f90 --apply
 ```
 
 Each `--apply` reads the current file state and generates correct patches, skipping items already present (e.g., `enable_language(CXX)`, `stdc++` link, `USE ISO_C_BINDING`).
@@ -402,7 +411,7 @@ cd Examples && python3 vit_sim.py > /workspace/ROSCO/integrated_output.txt 2>&1 
 diff baseline_output.txt integrated_output.txt
 ```
 
-Empty diff = success. All 7 C++ translations produce byte-identical simulation output.
+Empty diff = success. All 9 C++ translations produce byte-identical simulation output.
 
 After confirming the diff is empty, delete the test output file:
 ```bash
@@ -441,7 +450,8 @@ Verified C++ translations live in `ROSCO/translations/Functions/`, organized by 
 | `translations/Functions/wrap_180.cpp` | `wrap_180` in Functions.f90 | Verified (Phase 1) |
 | `translations/Functions/wrap_360.cpp` | `wrap_360` in Functions.f90 | Verified (Phase 1) |
 | `translations/Functions/ratelimit.cpp` | `ratelimit` in Functions.f90 | Verified (Phase 3) |
-| `translations/Functions/interp1d.cpp` | `interp1d` in Functions.f90 | Unblocked (Phase 4A fixed ErrorVariables), translate in Phase 5 |
+| `translations/Functions/sigma.cpp` | `sigma` in Functions.f90 | Verified (Phase 5A) — first ErrorVariables function |
+| `translations/Functions/interp1d.cpp` | `interp1d` in Functions.f90 | Verified (Phase 5A) — arrays + ErrorVariables |
 
 Each translation file has a metadata header (source file, function name, MD5 hash, VIT version, verification status) generated by `vit translate`.
 

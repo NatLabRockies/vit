@@ -54,8 +54,8 @@ All translations start from a clean ROSCO (nothing integrated). Integration happ
 | Function | Lines | Description | What VIT Needs |
 |----------|-------|-------------|---------------|
 | `ratelimit` | 37 | Rate limiter with state (8 args including `rlP` TYPE(rlParams) INOUT + OPTIONAL arg → scalar) | Load-bearing derived type: writes `rlP%LastSignal(inst)`. C++ must access fields. Also has OPTIONAL argument. Requires derived type struct mapping and OPTIONAL support |
-| `interp1d` | 58 | 1D linear interpolation (2 arrays + scalar + ErrVar → scalar) | Blocked by ErrorVariables — requires BIND(C) struct (Phase 4). Validates inputs, writes `ErrVar%aviFAIL` and `ErrVar%ErrMsg` on error |
-| `sigma` | 34 | Sigmoid/cubic ramp (5 scalars + ErrVar → scalar) | Blocked by ErrorVariables — requires BIND(C) struct (Phase 4). Only checks `ErrVar%aviFAIL` status |
+| `interp1d` | 58 | 1D linear interpolation (2 arrays + scalar + ErrVar → scalar) | **Verified (Phase 5A)**: arrays + ErrorVariables struct pointer. Error checks + interpolation + error message chaining |
+| `sigma` | 34 | Sigmoid/cubic ramp (5 scalars + ErrVar → scalar) | **Verified (Phase 5A)**: first ErrorVariables function. Scalars + struct pointer, error message chaining |
 | `unwrap` | 40 | Phase unwrapping (assumed-shape `x(:)` + ErrVar → array `DIMENSION(SIZE(x))`) | Blocked by ErrorVariables (Phase 4) + array-valued return where result size depends on input array |
 | `interp2d` | 172 | 2D bilinear interpolation (3 arrays including `zData(:,:)` + 2 scalars + ErrVar → scalar) | Blocked by ErrorVariables (Phase 4) + 2D assumed-shape `DIMENSION(:,:)` (Phase 5). Calls `interp1d`, uses `ieee_arithmetic` |
 | `AeroDynTorque` | 39 | Aerodynamic torque (2 scalars + 4 derived types → scalar) | Four derived type args: `LocalVariables`, `ControlParameters`, `PerformanceData` (all become C structs in Phase 4), `ErrorVariables` (BIND(C) struct in Phase 4). Calls `interp2d` |
@@ -459,8 +459,8 @@ With Phase 4A complete, ErrorVariables is a BIND(C) struct. The first 4 ErrVar-b
 - [ ] Multi-dimensional assumed-shape — `DIMENSION(:,:)` must generate two size params (`n_rows`, `n_cols`), not one. Current code silently generates broken interfaces for 2D. Add rank detection and per-dimension size params.
 - [ ] Guard against unsupported ranks — add explicit error for `DIMENSION(:,:,:)` and higher until supported.
 - [ ] Array-valued return where result size depends on input array — needed by `unwrap`
-- [ ] Translate + verify + integrate `interp1d` (after 4A)
-- [ ] Translate + verify + integrate `sigma` (after 4A)
+- [x] Translate + verify + integrate `interp1d` (after 4A) — Phase 5A complete: 40/40 verified, arrays + ErrorVariables struct pointer
+- [x] Translate + verify + integrate `sigma` (after 4A) — Phase 5A complete: 40/40 verified, scalars + ErrorVariables struct pointer
 - [ ] Translate + verify + integrate `unwrap` (after 4A)
 - [ ] Translate + verify + integrate `interp2d` (after 4A)
 - [ ] Translate + verify + integrate `AeroDynTorque` (after 4D) — first function using the complete type system: ControlParameters (view struct), PerformanceData (view struct), LocalVariables (BIND(C) struct), ErrorVariables (BIND(C) struct)

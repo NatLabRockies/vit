@@ -119,6 +119,46 @@ ROSCO_KIND_ALIASES = {
     "IntKi": "INTEGER(4)",
 }
 
+# ErrorVariables AFTER Phase 4A fix — all primitives, C-compatible
+ERRVAR_FIXED_SOURCE = """\
+MODULE ROSCO_Types
+
+USE ISO_C_BINDING
+
+IMPLICIT NONE
+
+TYPE, PUBLIC :: ErrorVariables
+    INTEGER(4)       :: size_avcMSG
+    INTEGER(C_INT)   :: aviFAIL
+    INTEGER(C_INT)   :: ErrStat
+    CHARACTER(1024)  :: ErrMsg
+END TYPE ErrorVariables
+
+END MODULE ROSCO_Types
+"""
+
+# sigma function — scalars + ErrorVariables
+SIGMA_SOURCE = """\
+MODULE Functions
+
+USE ROSCO_Types, ONLY: ErrorVariables
+
+IMPLICIT NONE
+
+CONTAINS
+
+    REAL(8) FUNCTION sigma(x, x0, x1, y0, y1, ErrVar)
+        USE ROSCO_Types, ONLY : ErrorVariables
+        IMPLICIT NONE
+        REAL(8), INTENT(IN)  :: x, x0, x1
+        REAL(8), INTENT(IN)  :: y0, y1
+        TYPE(ErrorVariables), INTENT(INOUT) :: ErrVar
+        sigma = 0.0
+    END FUNCTION sigma
+
+END MODULE Functions
+"""
+
 
 # === Parser: TYPE(...) declaration tests ===
 
@@ -474,6 +514,108 @@ class TestScalarRegression:
         wrapper = generate_fortran_wrapper(sig)
         assert "saturate_c" in wrapper
         assert "IMPLICIT NONE" in wrapper
+
+
+# === Phase 5A: ErrorVariables struct pointer pattern ===
+
+from vit.derived_type_parser import generate_c_struct_header
+
+
+class TestErrorVariablesFixed:
+    """ErrorVariables after Phase 4A fix is C-compatible and generates correct interfaces."""
+
+    def test_errvar_fixed_is_c_compatible(self):
+        """Phase 4A fix makes ErrorVariables C-compatible (no ALLOCATABLE/POINTER)."""
+        info = parse_derived_type(ERRVAR_FIXED_SOURCE, "ErrorVariables")
+        assert info is not None
+        assert info.is_c_compatible is True
+
+    def test_errvar_fixed_has_four_fields(self):
+        info = parse_derived_type(ERRVAR_FIXED_SOURCE, "ErrorVariables")
+        assert len(info.fields) == 4
+
+    def test_errvar_fixed_errmsg_is_character_1024(self):
+        info = parse_derived_type(ERRVAR_FIXED_SOURCE, "ErrorVariables")
+        errmsg = [f for f in info.fields if f.name.upper() == "ERRMSG"]
+        assert len(errmsg) == 1
+        assert "1024" in errmsg[0].fortran_type
+
+    def test_errvar_struct_header_has_char_1024(self):
+        """C struct header maps CHARACTER(1024) to char[1024]."""
+        info = parse_derived_type(ERRVAR_FIXED_SOURCE, "ErrorVariables")
+        header = generate_c_struct_header(info, ROSCO_KIND_ALIASES)
+        assert "char ErrMsg[1024]" in header
+        assert "errorvariables_t" in header
+
+    def test_errvar_struct_header_has_int_fields(self):
+        info = parse_derived_type(ERRVAR_FIXED_SOURCE, "ErrorVariables")
+        header = generate_c_struct_header(info, ROSCO_KIND_ALIASES)
+        assert "int aviFAIL" in header
+        assert "int ErrStat" in header
+
+
+class TestStructPointerInterface:
+    """C-compatible ErrorVariables generates struct pointer in interfaces."""
+
+    def _errvar_registry(self):
+        info = parse_derived_type(ERRVAR_FIXED_SOURCE, "ErrorVariables")
+        return {"ErrorVariables": info}
+
+    def test_sigma_c_params_include_errvar(self):
+        """sigma with C-compatible ErrVar includes errorvariables_t* in C params."""
+        sig = parse_signature_from_source(SIGMA_SOURCE, "sigma")
+        registry = self._errvar_registry()
+        params = build_c_params(sig, derived_types=registry)
+        param_names = [p[1] for p in params]
+        assert "ErrVar" in param_names
+        errvar_param = [(t, n) for t, n in params if n == "ErrVar"]
+        assert errvar_param[0][0] == "errorvariables_t*"
+
+    def test_sigma_interface_has_c_ptr(self):
+        """sigma interface uses TYPE(C_PTR), VALUE for C-compatible ErrVar."""
+        sig = parse_signature_from_source(SIGMA_SOURCE, "sigma")
+        registry = self._errvar_registry()
+        iface = generate_fortran_interface_block(sig, derived_types=registry)
+        assert "TYPE(C_PTR), VALUE :: ErrVar" in iface
+
+    def test_sigma_wrapper_has_target(self):
+        """Wrapper declares ErrVar with TARGET attribute for C_LOC."""
+        sig = parse_signature_from_source(SIGMA_SOURCE, "sigma")
+        registry = self._errvar_registry()
+        wrapper = generate_fortran_wrapper(sig, derived_types=registry)
+        assert "TARGET" in wrapper
+
+    def test_sigma_wrapper_has_c_loc(self):
+        """Wrapper passes C_LOC(ErrVar) to the C function."""
+        sig = parse_signature_from_source(SIGMA_SOURCE, "sigma")
+        registry = self._errvar_registry()
+        wrapper = generate_fortran_wrapper(sig, derived_types=registry)
+        assert "C_LOC(ErrVar)" in wrapper
+
+    def test_interp1d_with_errvar_registry_includes_errvar(self):
+        """interp1d with C-compatible ErrVar includes it in C params (not passthrough)."""
+        sig = parse_signature_from_source(INTERP1D_SOURCE, "interp1d")
+        registry = self._errvar_registry()
+        params = build_c_params(sig, derived_types=registry)
+        param_names = [p[1] for p in params]
+        assert "ErrVar" in param_names
+        assert "xData" in param_names
+        assert "n_xData" in param_names
+
+    def test_interp1d_without_registry_excludes_errvar(self):
+        """interp1d without registry treats ErrVar as passthrough (backward compat)."""
+        sig = parse_signature_from_source(INTERP1D_SOURCE, "interp1d")
+        params = build_c_params(sig)
+        param_names = [p[1] for p in params]
+        assert "ErrVar" not in param_names
+
+    def test_sigma_cpp_wrapper_has_errvar(self):
+        """C++ wrapper for sigma includes errorvariables_t* ErrVar."""
+        sig = parse_signature_from_source(SIGMA_SOURCE, "sigma")
+        registry = self._errvar_registry()
+        cpp = generate_cpp_wrapper(sig, "sigma.cpp", derived_types=registry)
+        assert "errorvariables_t*" in cpp
+        assert "ErrVar" in cpp
 
 
 if __name__ == "__main__":
