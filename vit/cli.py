@@ -138,6 +138,8 @@ def main():
                            help="Field name to fix (required with --fix)")
     p_analyze.add_argument("--length", type=int, default=None,
                            help="Fixed length for CHARACTER fix (inferred if omitted)")
+    p_analyze.add_argument("--rewrite", action="append", default=[],
+                           help="Manual rewrite: 'file:line=replacement' (repeatable)")
     p_analyze.add_argument("--apply", action="store_true",
                            help="Apply changes (default is dry-run)")
 
@@ -797,11 +799,21 @@ def cmd_analyze_types(args, config):
             )
 
         elif args.fix == "complex":
+            # Parse --rewrite args: "file:line=replacement"
+            rewrites = {}
+            for r in getattr(args, 'rewrite', []):
+                if '=' not in r:
+                    print(f"ERROR: --rewrite must be 'file:line=replacement', got: {r}")
+                    return 1
+                loc, replacement = r.split('=', 1)
+                rewrites[loc] = replacement
+
             result = fix_complex_field(
                 source_dir=source_dir,
                 type_name=args.type_name,
                 field_name=args.field_name,
                 dry_run=dry_run,
+                rewrites=rewrites if rewrites else None,
             )
 
         elif args.fix == "bind_c":
@@ -811,6 +823,20 @@ def cmd_analyze_types(args, config):
                 dry_run=dry_run,
             )
 
+        # Manual edits needed — nothing was written, exit 11
+        if result.manual_edits:
+            review = ManualReview(
+                fix_type=args.fix,
+                summary=(
+                    f"{len(result.manual_edits)} reference(s) need "
+                    f"manual rewriting"
+                ),
+                edits=result.manual_edits,
+                changes_applied=0,
+            )
+            print_manual_review(review)
+            return EXIT_MANUAL
+
         for change in result.changes:
             print(f"  {change}")
         for error in result.errors:
@@ -818,10 +844,7 @@ def cmd_analyze_types(args, config):
 
         if result.success:
             if dry_run:
-                total = len(result.changes) + len(result.manual_edits)
-                print(f"\n{total} item(s) found. Run with --apply to write.")
-                if result.manual_edits:
-                    print(f"  ({len(result.manual_edits)} will need manual rewriting)")
+                print(f"\n{len(result.changes)} change(s) would be applied. Run with --apply to write.")
             else:
                 print(f"\n✓ Fixed {len(result.files_modified)} file(s)")
 
@@ -848,20 +871,6 @@ def cmd_analyze_types(args, config):
                         for err in build_result.remaining_errors:
                             print(f"  {err.file}:{err.line}: {err.message}")
                         return 1
-
-                # Report manual edits needed
-                if result.manual_edits:
-                    review = ManualReview(
-                        fix_type=args.fix,
-                        summary=(
-                            f"{len(result.manual_edits)} reference(s) need "
-                            f"manual rewriting after --fix {args.fix}"
-                        ),
-                        edits=result.manual_edits,
-                        changes_applied=len(result.changes),
-                    )
-                    print_manual_review(review)
-                    return EXIT_MANUAL
         else:
             print(f"\n✗ Fix failed")
         return 0 if result.success else 1

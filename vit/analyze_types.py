@@ -545,44 +545,44 @@ def _rewrite_logical_field(content: str, type_name: str,
 
 
 def fix_complex_field(source_dir: str, type_name: str,
-                      field_name: str, dry_run: bool = True) -> FixResult:
+                      field_name: str, dry_run: bool = True,
+                      rewrites: Optional[dict[str, str]] = None) -> FixResult:
     """
     Fix COMPLEX fields by splitting into REAL re/im pairs.
 
-    Pass 1: In the TYPE definition, replace COMPLEX :: field(dims)
-            with REAL :: field_re(dims) + REAL :: field_im(dims)
-    Pass 2: Rewrite all %field references using general patterns:
-        - REAL(field) → field_re  (real-part extraction)
-        - AIMAG(field) → field_im  (imaginary-part extraction)
-        - Zero/constant init → set both _re and _im
-        - Assignment from non-complex expr → _re only
-        - Binary I/O → split into _re and _im per element
-        - Anything involving COMPLEX intrinsics (EXP, CMPLX, etc.)
-          → flag as manual with file:line for human review
+    Scan-first approach:
+      1. Scan all %field references and classify as auto or manual
+      2. If manual lines exist and no --rewrite covers them → populate
+         result.manual_edits and return (caller exits 11)
+      3. If all manual lines are covered by rewrites (or none exist) →
+         apply everything (type def + auto-rewrites + provided rewrites)
 
-    References that can't be automatically rewritten are reported as
-    warnings in result.changes with [MANUAL] prefix. The fix still
-    succeeds — it rewrites what it can and tells you what's left.
+    Auto-rewrite patterns:
+        - REAL(field) → field_re
+        - AIMAG(field) → field_im
+        - Zero/constant init → set both _re and _im
+        - Binary I/O → split into _re and _im per element
+        - Simple reference → _re
+    Manual (needs --rewrite):
+        - Lines with complex intrinsics (EXP, CMPLX, CONJG, etc.)
+
+    Args:
+        rewrites: Dict mapping "filename:line" → replacement line(s).
+                  Multiple replacement lines are separated by \\n.
     """
     result = FixResult()
     source_path = Path(source_dir)
+    rewrites = rewrites or {}
 
-    # Pass 1: Find and rewrite the TYPE definition
+    # Verify the TYPE definition exists before scanning
     type_file = _find_type_definition_file(source_path, type_name)
     if not type_file:
         result.errors.append(f"Could not find TYPE {type_name} in {source_dir}")
         return result
 
     content = type_file.read_text()
-    new_content, changed = _rewrite_complex_field(content, type_name, field_name)
-    if changed:
-        result.changes.append(
-            f"{type_file}: COMPLEX :: {field_name} → REAL :: {field_name}_re + {field_name}_im"
-        )
-        if not dry_run:
-            type_file.write_text(new_content)
-            result.files_modified.append(str(type_file))
-    else:
+    _, can_rewrite = _rewrite_complex_field(content, type_name, field_name)
+    if not can_rewrite:
         result.errors.append(
             f"Could not find COMPLEX :: {field_name} in TYPE {type_name} ({type_file})"
         )
@@ -590,13 +590,52 @@ def fix_complex_field(source_dir: str, type_name: str,
 
     # Intrinsics that signal expressions VIT can't auto-rewrite
     _complex_intrinsics_re = re.compile(
-        r'\b(EXP|CMPLX|CONJG|ABS|SQRT|LOG|SIN|COS|TAN|ATAN)\s*\(',
+        r'\b(EXP|CMPLX|CONJG|ABS|SQRT|LOG)\s*\(',
         re.IGNORECASE,
     )
 
-    # Pass 2: Rewrite all %field_name references
+    # --- Phase 1: Scan all references and classify ---
     field_re = re.compile(r'%' + re.escape(field_name) + r'\b', re.IGNORECASE)
+    unresolved_manual: list[ManualEdit] = []
 
+    for pattern in ("**/*.f90", "**/*.F90"):
+        for f90_file in sorted(source_path.glob(pattern)):
+            file_content = f90_file.read_text()
+            if not field_re.search(file_content):
+                continue
+            for i, line in enumerate(file_content.split("\n")):
+                if not field_re.search(line):
+                    continue
+                stripped = line.lstrip()
+                if stripped.startswith("!"):
+                    continue
+                if _complex_intrinsics_re.search(line):
+                    key = f"{f90_file.name}:{i+1}"
+                    if key not in rewrites:
+                        unresolved_manual.append(ManualEdit(
+                            file=str(f90_file),
+                            line=i + 1,
+                            reason=f"complex intrinsic: {_complex_intrinsics_re.search(line).group(1)}",
+                            source_text=line.strip(),
+                        ))
+
+    # If unresolved manual lines exist, return them — caller exits 11
+    if unresolved_manual:
+        result.manual_edits = unresolved_manual
+        return result
+
+    # --- Phase 2: All references resolved — apply changes ---
+
+    # Rewrite the TYPE definition
+    new_content, _ = _rewrite_complex_field(content, type_name, field_name)
+    result.changes.append(
+        f"{type_file}: COMPLEX :: {field_name} → REAL :: {field_name}_re + {field_name}_im"
+    )
+    if not dry_run:
+        type_file.write_text(new_content)
+        result.files_modified.append(str(type_file))
+
+    # Rewrite all %field_name references
     for pattern in ("**/*.f90", "**/*.F90"):
         for f90_file in sorted(source_path.glob(pattern)):
             file_content = f90_file.read_text()
@@ -605,7 +644,7 @@ def fix_complex_field(source_dir: str, type_name: str,
 
             file_lines = file_content.split("\n")
             modified = False
-            insertions = []  # (line_index, new_line_text) to insert AFTER
+            insertions = []
 
             for i, line in enumerate(file_lines):
                 if not field_re.search(line):
@@ -616,9 +655,21 @@ def fix_complex_field(source_dir: str, type_name: str,
                     continue
 
                 original_line = line
-                indent = line[:len(line) - len(stripped)]
 
-                # --- Safe auto-rewrites (general patterns) ---
+                # Check if this line has a user-provided rewrite
+                key = f"{f90_file.name}:{i+1}"
+                if key in rewrites:
+                    rewrite_lines = rewrites[key].split("\\n")
+                    file_lines[i] = rewrite_lines[0]
+                    for extra in rewrite_lines[1:]:
+                        insertions.append((i, extra))
+                    result.changes.append(
+                        f"{f90_file}: Manual rewrite applied: {original_line.strip()}"
+                    )
+                    modified = True
+                    continue
+
+                # --- Safe auto-rewrites ---
 
                 # REAL() extraction: REAL(var%field...) → var%field_re...
                 real_extract_re = re.compile(
@@ -690,7 +741,6 @@ def fix_complex_field(source_dir: str, type_name: str,
                     continue
 
                 # Zero/constant initialization: var%field = 0.0D0
-                # (only when no complex intrinsics on the line)
                 zero_init_re = re.compile(
                     r'(\w+%' + re.escape(field_name) + r'(?:\([^)]*\))?)'
                     r'\s*=\s*([0-9]+\.?[0-9]*\w*)',
@@ -698,7 +748,6 @@ def fix_complex_field(source_dir: str, type_name: str,
                 )
                 m_zero = zero_init_re.search(line)
                 if m_zero and not _complex_intrinsics_re.search(line):
-                    var_expr = m_zero.group(1)
                     re_line = re.sub(
                         re.escape(field_name), field_name + '_re',
                         line, count=1, flags=re.IGNORECASE,
@@ -716,20 +765,7 @@ def fix_complex_field(source_dir: str, type_name: str,
                     modified = True
                     continue
 
-                # --- Lines with complex intrinsics → flag for manual review ---
-                intrinsic_match = _complex_intrinsics_re.search(line)
-                if intrinsic_match:
-                    result.manual_edits.append(ManualEdit(
-                        file=str(f90_file),
-                        line=i + 1,
-                        reason=f"complex intrinsic: {intrinsic_match.group(1)}",
-                        source_text=original_line.strip(),
-                    ))
-                    continue
-
-                # --- Fallback: simple substitution → _re ---
-                # For lines where %field appears in a real-valued context
-                # (e.g., output data assignment), replace with _re.
+                # Fallback: simple substitution → _re
                 ref_re = re.compile(
                     r'(\w+%' + re.escape(field_name) + r'(?:\([^)]*\))?)',
                     re.IGNORECASE,
@@ -748,7 +784,7 @@ def fix_complex_field(source_dir: str, type_name: str,
                     )
                     modified = True
 
-            # Apply insertions in reverse order to preserve line numbers
+            # Apply insertions in reverse order
             for insert_after, new_line_text in reversed(insertions):
                 file_lines.insert(insert_after + 1, new_line_text)
 

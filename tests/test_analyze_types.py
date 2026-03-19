@@ -714,6 +714,17 @@ COMPLEX_IO_SOURCE = textwrap.dedent("""\
 class TestFixComplex:
     """Test fix_complex_field() for COMPLEX → REAL re/im split."""
 
+    # The EXP line in COMPLEX_EULER_SOURCE is at line 8 of the fixture.
+    # Provide a rewrite that decomposes the Euler formula into COS/SIN.
+    _EULER_REWRITE = {
+        "awc.f90:8": (
+            "LocalVar%AWC_complexangle_re(K) = "
+            "LocalVar%AWC_complexangle_re(K) + amp * COS(AWC_angle(K))\\n"
+            "LocalVar%AWC_complexangle_im(K) = "
+            "LocalVar%AWC_complexangle_im(K) + amp * SIN(AWC_angle(K))"
+        ),
+    }
+
     def test_fix_complex_splits_type_definition(self, tmp_path):
         (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
         result = fix_complex_field(
@@ -725,36 +736,38 @@ class TestFixComplex:
         assert "AWC_complexangle_im(3)" in content
         assert "COMPLEX" not in content.split("END TYPE")[0]
 
-    def test_fix_complex_rewrites_zero_init(self, tmp_path):
-        (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
-        (tmp_path / "awc.f90").write_text(COMPLEX_EULER_SOURCE)
-        result = fix_complex_field(
-            str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
-        )
-        content = (tmp_path / "awc.f90").read_text()
-        assert "AWC_complexangle_re = 0.0D0" in content
-        assert "AWC_complexangle_im = 0.0D0" in content
-
     def test_fix_complex_flags_euler_for_manual_review(self, tmp_path):
-        """EXP(complexI * expr) is flagged for manual rewrite, not auto-rewritten."""
+        """EXP(complexI * expr) is flagged — nothing written until rewrite provided."""
         (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
         (tmp_path / "awc.f90").write_text(COMPLEX_EULER_SOURCE)
         result = fix_complex_field(
             str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
         )
-        # The EXP line should produce a ManualEdit
+        # Nothing written — manual edits block the fix
+        assert result.files_modified == []
         assert len(result.manual_edits) >= 1
         assert "EXP" in result.manual_edits[0].reason
 
-    def test_fix_complex_rewrites_real_extraction(self, tmp_path):
+    def test_fix_complex_with_rewrite_applies_all(self, tmp_path):
+        """With --rewrite for the EXP line, the full fix applies."""
         (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
         (tmp_path / "awc.f90").write_text(COMPLEX_EULER_SOURCE)
         result = fix_complex_field(
-            str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
+            str(tmp_path), "LocalVariables", "AWC_complexangle",
+            dry_run=False, rewrites=self._EULER_REWRITE,
         )
+        assert result.success
+        assert result.manual_edits == []
         content = (tmp_path / "awc.f90").read_text()
+        # Zero init split
+        assert "AWC_complexangle_re = 0.0D0" in content
+        assert "AWC_complexangle_im = 0.0D0" in content
+        # Euler rewrite applied
+        assert "COS(AWC_angle(K))" in content
+        assert "SIN(AWC_angle(K))" in content
+        assert "EXP" not in content
+        # REAL() → _re
         assert "AWC_complexangle_re(K)" in content
-        # Should not have REAL(...) wrapper anymore
         assert "REAL(LocalVar%AWC_complexangle" not in content
 
     def test_fix_complex_splits_binary_io(self, tmp_path):
@@ -763,6 +776,7 @@ class TestFixComplex:
         result = fix_complex_field(
             str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
         )
+        assert result.success
         content = (tmp_path / "io.f90").read_text()
         assert "AWC_complexangle_re(1)" in content
         assert "AWC_complexangle_im(1)" in content
@@ -773,7 +787,8 @@ class TestFixComplex:
         (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
         (tmp_path / "awc.f90").write_text(COMPLEX_EULER_SOURCE)
         result = fix_complex_field(
-            str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
+            str(tmp_path), "LocalVariables", "AWC_complexangle",
+            dry_run=False, rewrites=self._EULER_REWRITE,
         )
         content = (tmp_path / "awc.f90").read_text()
         # complexI declaration (with ::) should be commented out
