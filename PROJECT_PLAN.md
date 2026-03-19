@@ -499,9 +499,10 @@ Three filter functions could not be extracted because they are never called in t
 - [x] Translate + verify + integrate `NotchFilter` — 40/40 passed. Different scalar args (omega, betaNum, betaDen). Extracted from Filters.f90 line 356.
 - [x] Translate + verify + integrate `NotchFilterSlopes` — 40/40 passed. First function with two OPTIONAL args (Moving LOGICAL + InitialValue REAL). Extracted from Filters.f90 line 405.
 - [x] Translate + integrate `SecLPFilter_Vel` — KGen could not capture state (call inside DO loop with derived-type iteration bound). Translated by pattern from SecLPFilter (structurally identical, lpfV_ prefix). Integrated and passes full simulation.
-- [x] Full clean build test: 15 C++ translations. Scenarios 1+2 produce byte-identical output. Scenario 3 has expected sub-ULP drift (0.1 kW / ~0.007%) from NotchFilter in closed-loop feedback — each individual call verified within 1e-14, but tiny differences accumulate over 400s.
+- [x] Full clean build test: 15 C++ translations, all 3 scenarios, **byte-identical output** (after FMA fix).
+- [x] **FMA contraction fix**: Discovered that gfortran and g++ schedule fused multiply-add differently for equivalent expressions, causing 1-ULP differences that accumulate in closed-loop feedback (NotchFilter on GenSpeed). Fixed by adding `-ffp-contract=off` to both Fortran and C++ in ROSCO's CMakeLists.txt. VIT kernel Makefile also updated. See dev note `202603191041-fma-contraction-fix.md`.
 
-**KGen limitation discovered:** KGen cannot capture state for calls inside `DO I_GROUP = 1, CntrPar%CC_Group_N` where the loop bound comes from a derived type field. The kernel is generated but no state files are written. This affected SecLPFilter_Vel only.
+**KGen limitation discovered:** KGen cannot capture state for calls inside `DO I_GROUP = 1, CntrPar%CC_Group_N` where the loop bound comes from a derived type field. The kernel is generated but no state files are written. This affected SecLPFilter_Vel only. Workaround: add a temporary standalone call site outside the loop for extraction. SecLPFilter_Vel was translated by pattern as an interim measure.
 
 **Unblocks:** Full Filters module coverage (6/6 individual filters translated). PreFilterMeasuredSignals remains blocked on Phase 4C (LocalVariables) + Phase 4D (ControlParameters).
 

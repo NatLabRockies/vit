@@ -78,6 +78,14 @@ pip3 install -e /workspace/ROSCO --break-system-packages
 - **Clock skew warnings** during `make` are harmless (filesystem timestamp differences between Mac and container).
 - **No network access** from inside the container due to corporate TLS inspection. All packages were pre-installed.
 
+### FMA Contraction and Bit-Identical Results
+
+ROSCO's `CMakeLists.txt` sets `-ffp-contract=off` on both Fortran and C++ compilers. This disables FMA (fused multiply-add) contraction, ensuring gfortran and g++ produce bit-identical results for equivalent floating-point expressions. Without this, the compilers schedule FMA differently, causing 1-ULP differences that accumulate in closed-loop feedback and produce visible simulation drift.
+
+**This flag is required.** Do not remove it. If a translation shows `IN_TOL` (instead of `IDENTICAL`) in KGen field data, it indicates a real translation bug, not an FMA artifact — investigate the expression structure.
+
+VIT's kernel verification Makefile also uses `-ffp-contract=off` in CXXFLAGS to match.
+
 ## VIT Assumption Confirmation Protocol
 
 When VIT encounters a value it has inferred from source evidence but cannot be certain is correct, it signals the caller via **exit code 10** and a `[VIT:CONFIRM]` block on stdout.
@@ -514,6 +522,12 @@ All derived types (including ErrorVariables) will become BIND(C) structs passed 
 - **Per-array size params**: VIT generates a separate `n_<name>` size parameter for every assumed-shape array arg, even when arrays are semantically the same length (e.g., `xData` and `yData`). The user's C++ must accept per-array sizes. A future improvement could coalesce size params when arrays share the same rank, but that requires inference VIT currently avoids.
 
 - **No multi-dimensional assumed-shape handling**: `DIMENSION(:,:)` arrays would get a single `n_` size param via the same `:` detection, which is wrong for 2-D. There is no guard or warning — it would silently generate broken code. Add an error or proper handling when a multi-dimensional assumed-shape is encountered. Fixed in Phase 5.
+
+### KGen extraction limitations
+
+- **DO loops with derived-type iteration bounds**: KGen cannot capture state for function calls inside `DO I = 1, derived_type%field`. The kernel is generated but zero state files are produced. Discovered with SecLPFilter_Vel inside `DO I_GROUP = 1, CntrPar%CC_Group_N`. Workaround: add a temporary standalone call site outside the loop for extraction, then remove it. SecLPFilter_Vel was translated by pattern from SecLPFilter (structurally identical) as an interim measure.
+
+- **Invocation ordering across scenarios**: KGen counts invocations per enclosing subroutine. When `vit_sim.py` runs multiple scenarios, Scenario 1's invocations consume the `0:0:1-20` capture range. Code paths only active in later scenarios (e.g., Scenario 3's IPC/notch/cable control) are never captured. Fix: Scenario 3 runs first in `vit_sim.py` so its invocations fall within the capture range.
 
 ## Development Notes Convention
 
