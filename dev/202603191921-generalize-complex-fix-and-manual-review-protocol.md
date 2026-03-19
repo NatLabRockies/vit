@@ -131,5 +131,36 @@ Final rebuild: **byte-identical simulation output**. Only 2 lines differ from or
 
 The key principle: **VIT never writes incorrect code.** It either writes correct code (exit 0), asks for confirmation of an inference (exit 10), or asks for help with code it can't transform (exit 11). In all cases, the human is in the loop before anything semantically significant happens.
 
+## Post-Implementation Review: Aligning the Two Protocols
+
+After the initial implementation, a comparison of EXIT_CONFIRM and EXIT_MANUAL revealed two inconsistencies:
+
+### 1. Missing `cli_override` on ManualEdit
+
+The `Assumption` dataclass (EXIT_CONFIRM) includes `cli_override: --length 1024` — telling the caller exactly what flag to use on re-run. The `ManualEdit` dataclass (EXIT_MANUAL) didn't have this. The caller had to figure out that `--rewrite 'Controllers.f90:759=...'` was the right incantation.
+
+**Fix:** Added `cli_override` field to `ManualEdit`. Now the `[VIT:MANUAL]` block output includes:
+```
+edit_1_cli_override: --rewrite 'Controllers.f90:759=<replacement>'
+```
+
+Both protocols now tell the caller exactly how to re-run.
+
+### 2. Missing CLAUDE.md instructions for EXIT_MANUAL
+
+CLAUDE.md had a detailed section on EXIT_CONFIRM behavior (parse block, present, never auto-confirm, wait, re-run). EXIT_MANUAL had nothing. A future conversation hitting exit 11 would have no instructions.
+
+**Fix:** Added a parallel "VIT Manual Review Protocol" section to CLAUDE.md covering:
+- How the scan-first + `--rewrite` pattern works
+- Claude's responsibilities: parse the block, **propose a rewrite** (not just report it), present to user, wait for approval, re-run
+- Example interaction showing the full Euler formula decomposition flow
+- Exit code summary table covering all four codes (0, 1, 10, 11)
+
+The key difference from EXIT_CONFIRM: with exit 10, Claude presents an *inferred value* for the user to confirm. With exit 11, Claude *proposes new code* for the user to approve. Claude is expected to use domain knowledge — understanding Euler's formula, recognizing COS/SIN decomposition — the same way it writes translations.
+
+### 3. Not extracted as a utility (deliberate)
+
+We considered whether the shared interaction pattern (run → non-zero exit → structured block → human input → re-run with flag) should be a utility function. Decided against it: we only have two fix types using these protocols. If a third fix needs it, the common shape will be clearer then. Premature abstraction would add indirection without reducing code, since the *content* of each protocol (what to scan for, what to present, what flag to use) is fix-specific.
+
 ## Related Notes
 - [202603191827-phase4c-localvariables-c-compatible.md](202603191827-phase4c-localvariables-c-compatible.md) — Phase 4C initial implementation
