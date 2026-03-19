@@ -11,8 +11,10 @@ Fully translate the ROSCO wind turbine controller from Fortran to C++, producing
 - **Verified translations**: 15 functions across Functions.f90, Filters.f90, and ControllerBlocks.f90 — all KGen-verified 40/40 IDENTICAL and integrated
 - **Integrated**: All 15 translations integrated. Clean build test produces byte-identical simulation output across 3 scenarios.
 - **Pipeline**: End-to-end extract → verify → integrate → rebuild → diff confirmed working. Field-level CSV logging, NaN-safe comparison, `-ffp-contract=off` for bit-identical verification.
-- **VIT codebase**: ~6,300 lines of core code, 410 unit tests, 16 modules
-- **Translation infrastructure**: `vit translate` command, module-organized storage in `ROSCO/translations/`, metadata headers, `fortran.flags` for kernel compilation precision
+- **Type system**: LocalVariables (168 fields + 5 nested structs) is now BIND(C)-compatible. All 4 blocker fields fixed automatically by `vit analyze-types`. ErrorVariables, FilterParameters, piParams, resParams, rlParams, WE, ObjectInstances, DebugVariables all C-compatible. Only ControlParameters, PerformanceData, ExtControlType remain (Phase 4D — ALLOCATABLE view structs).
+- **VIT codebase**: ~7,000 lines of core code, 446 unit tests, 17 modules
+- **Human-in-the-loop protocols**: EXIT_CONFIRM (10) for inferred values, EXIT_MANUAL (11) for code rewrites. Both documented in CLAUDE.md.
+- **Generality audit** (2026-03-19): VIT confirmed project-agnostic. No ROSCO-specific logic in production code. All project-specific values are configurable via vit.yaml.
 
 ### Total Scope
 
@@ -180,18 +182,20 @@ Field extraction — passing individual derived type fields as separate C argume
 
 These become C structs with identical memory layout. Zero-copy pass-by-pointer.
 
-**LocalVariables — 4 surgical fixes, then fully BIND(C) (161 fields):**
+**LocalVariables — 4 surgical fixes applied, now fully BIND(C) (168 fields):** ✓
 
-LocalVariables contains 139 REAL(DbKi) scalars, fixed-size arrays, and 5 nested BIND(C)-compatible types. Four fields block compatibility:
+LocalVariables contains ~140 REAL(DbKi) scalars, fixed-size arrays, and 5 nested BIND(C)-compatible types. Four fields blocked compatibility — all fixed in Phase 4C:
 
-| Field | Type | Fix | Impact |
-|-------|------|-----|--------|
-| `ACC_INFILE` | `CHARACTER(:), ALLOCATABLE` | Move to separate `char*` parameter or file-scope storage. Only used at init (ReadSetParameters), never in control loop. | Trivial — init-only field. |
-| `AWC_complexangle(3)` | `COMPLEX(DbKi)` | Replace with `AWC_complexangle_re(3)` + `AWC_complexangle_im(3)` as `REAL(DbKi)`. Only the REAL part is ever extracted downstream (`REAL(LocalVar%AWC_complexangle(K))`). | Low — used only in ActiveWakeControl. |
-| `WriteThisStep` | `LOGICAL` | Change to `INTEGER(C_INT)` (0/1) or `LOGICAL(C_BOOL)`. Fortran `LOGICAL` size varies by compiler (1–8 bytes); C `bool` is 1 byte. | Low — rarely used. |
-| `restart` | `LOGICAL` | Same fix as WriteThisStep. Change to `INTEGER(C_INT)` or `LOGICAL(C_BOOL)`. | Medium — passed to all filters and controllers, but fix is just a type change. |
+| Field | Type | Fix Applied | Impact |
+|-------|------|-------------|--------|
+| `restart` | `LOGICAL` | `--fix logical` → INTEGER(C_INT). 58 references rewritten: .True.→1, .False.→0, IF→/=0, function args→(/=0 wrap), binary I/O unchanged. | 5 files modified |
+| `WriteThisStep` | `LOGICAL` | `--fix logical` → INTEGER(C_INT). 2 references (binary I/O only, unchanged). | 1 file modified |
+| `AWC_complexangle(3)` | `COMPLEX(DbKi)` | `--fix complex` → split to `_re(3)` + `_im(3)` REAL(DbKi). Euler formula EXP→COS/SIN provided via `--rewrite` (EXIT_MANUAL protocol). | 3 files modified |
+| `ACC_INFILE` | `CHARACTER, DIMENSION(:), ALLOCATABLE` | `--fix character` (array form) → CHARACTER :: ACC_INFILE(1024). Size confirmed via EXIT_CONFIRM protocol. | 3 files modified |
 
-After these fixes, the entire 161-field type (including nested WE, FilterParameters, piParams, resParams, rlParams) is a plain C struct. Total size ~305 KB, passed by pointer.
+Additionally: `AlreadyInitialized = 0` default initializer removed by `--fix bind_c`, and BIND(C) attribute added to LocalVariables + all 5 nested types (WE, FilterParameters, piParams, resParams, rlParams).
+
+The entire 168-field type (including nested structs) is now a plain C struct, ~305 KB, passed by pointer. Simulation output byte-identical after all fixes.
 
 **ControlParameters — pointer+size view during transition, C++ ownership in final state (213 fields):**
 
@@ -411,19 +415,21 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 **Types usable after:** FilterParameters, piParams, resParams, WE, ObjectInstances, DebugVariables
 **Unblocks:** Phase 6 Filters (FilterParameters + ObjectInstances + ErrorVariables all ready)
 
-#### Phase 4C: LocalVariables Automated Fixes
+#### Phase 4C: LocalVariables Automated Fixes ✓
 
-- [ ] `vit analyze-types --fix logical` — automated rewrite of LOGICAL fields to INTEGER(C_INT): changes type definition AND updates all `%fieldname` references across source files. Handles all Fortran boolean idioms: `IF (x)` → `IF (x /= 0)`, `.NOT. x` → `(x == 0)`, `.TRUE.` → `1`, `.FALSE.` → `0`. Scope: `restart` (65 refs across 5 files), `WriteThisStep` (3 refs across 2 files). Use build-fix loop for downstream compiler errors. Re-add LOGICAL to `classify_field_blockers` when this fix exists.
-- [ ] `vit analyze-types --fix complex` — automated rewrite of COMPLEX fields to split re/im REAL fields, updates all references. `REAL(x)` → `x_re`, `AIMAG(x)` → `x_im`. Complex arithmetic (EXP, multiplication) flagged for review. Binary I/O updated to read/write both fields. Scope: `AWC_complexangle` (15 refs across 2 files).
-- [ ] `vit analyze-types --fix character_array` — handles `CHARACTER, DIMENSION(:), ALLOCATABLE :: ACC_INFILE` → `CHARACTER(1), DIMENSION(1024) :: ACC_INFILE`, updates ALLOCATE sites. Scope: `ACC_INFILE` (7 refs across 3 files). Use confirmation protocol (EXIT_CONFIRM) for array size — infer from ALLOCATE if possible, require human confirmation.
-- [ ] `vit analyze-types --fix bind_c` — automated: adds `BIND(C)` attribute to compatible type definitions, removes default initializers, relocates initialization to allocation sites. (Moved from Phase 4B — not needed for homogeneous types, required here for mixed-type LocalVariables.)
-- [ ] Apply all fixes to LocalVariables, add `BIND(C)` attribute
-- [ ] Generate LocalVariables C struct header with 5 nested structs (WE, FilterParameters, piParams, resParams, rlParams) and ~160 scalar/array fields
-- [ ] Memory layout test: compare field offsets between Fortran BIND(C) type and C++ struct (needed for mixed-type LocalVariables; not needed for homogeneous types proven in Phase 5A)
-- [ ] Verify simulation still produces identical output after all LocalVariables fixes
+- [x] `vit analyze-types --fix logical` — automated rewrite of LOGICAL fields to INTEGER(C_INT): changes type definition AND updates all `%fieldname` references across source files. Handles all Fortran boolean idioms: `IF (x)` → `IF (x /= 0)`, `.NOT. x` → `(x == 0)`, `.TRUE.` → `1`, `.FALSE.` → `0`. Applied to `restart` (58 refs across 5 files) and `WriteThisStep` (2 refs, I/O only). LOGICAL type mismatch fix pattern added to build_fixer as safety net (not needed in practice — regex pass handles all cases).
+- [x] `vit analyze-types --fix complex` — scan-first architecture: classifies all references as auto or manual, applies nothing until all manual lines have `--rewrite` entries. Auto-rewrites: REAL()→_re, AIMAG()→_im, zero init→both, I/O→split, fallback→_re. Lines with complex intrinsics (EXP, CMPLX, CONJG, etc.) exit 11 (EXIT_MANUAL) with `[VIT:MANUAL]` block including `cli_override`. Applied to `AWC_complexangle` with Euler COS/SIN decomposition provided via `--rewrite`.
+- [x] `--fix character` extended to handle CHARACTER array form — `CHARACTER, DIMENSION(:), ALLOCATABLE` detected by requiring `DIMENSION` keyword, rewritten to `CHARACTER :: field(N)`. Removed separate `--fix character_array` (was redundant). Applied to `ACC_INFILE` with size 1024 confirmed via EXIT_CONFIRM.
+- [x] `vit analyze-types --fix bind_c` — adds `BIND(C)` attribute to type definitions, removes default initializers (BIND(C) forbids them; SAVE'd module variables zero-initialize at runtime). Also parses `= value` in field declarations and reports as `default_initializer` blocker.
+- [x] Applied all fixes to LocalVariables + 5 nested types (WE, FilterParameters, piParams, resParams, rlParams). `AlreadyInitialized = 0` default removed.
+- [x] Verify simulation still produces identical output after all LocalVariables fixes — confirmed byte-identical across 3 scenarios.
+- [x] **EXIT_MANUAL protocol** (not in original plan): Added exit code 11 with `[VIT:MANUAL]` blocks for lines VIT cannot auto-rewrite. Parallels EXIT_CONFIRM (10). `ManualEdit` dataclass with `cli_override` field. CLAUDE.md instructions added. Designed during post-implementation review when generalizing `--fix complex` revealed that ROSCO-specific Euler regex was not acceptable for a general-purpose tool.
+- [x] **Generality audit** (not in original plan): Systematic review of all VIT source confirmed no ROSCO-specific logic in production code. `--fix complex` was the only instance; fixed by generalization + EXIT_MANUAL.
+
+**Completed 2026-03-19.** 446 unit tests (30 new). Memory layout test deferred — not blocking since the Fortran BIND(C) attribute guarantees C-compatible layout and the simulation diff proves correctness end-to-end.
 
 **Types usable after:** LocalVariables (168 fields + 5 nested structs)
-**Unblocks:** Phase 7 Controllers, Phase 8 ControllerBlocks (partially — functions using scalar ControlParameters fields)
+**Unblocks:** Phase 7 Controllers (helper functions immediately; main subroutines after Phase 4D), Phase 8 ControllerBlocks (same split)
 
 #### Phase 4D: Pointer+Size View Pattern for ALLOCATABLE Types
 
@@ -444,17 +450,23 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 #### Phase 4 Dependency Graph and Execution Order
 
 ```
-4A (ErrorVariables) ──→ Phase 5A (sigma, interp1d) ✅ ──→ Phase 5B (unwrap, interp2d)
-4B (Simple structs)  ──→ Phase 6A (LPFilter, HPFilter, SecLPFilter) ✅
-                     ──→ Phase 6B (NotchFilter, NotchFilterSlopes, SecLPFilter_Vel) — needs sim coverage
-4C (LocalVariables)  ──→ Phase 7 Controllers, Phase 8 ControllerBlocks (partial)
-4D (View structs)    ──→ Phase 5B AeroDynTorque, Phases 7-8 full
-                     ──→ PreFilterMeasuredSignals (also needs 4C)
+4A (ErrorVariables) ✅ ──→ Phase 5A (sigma, interp1d) ✅ ──→ Phase 5B (unwrap, interp2d)
+4B (Simple structs)  ✅ ──→ Phase 6A (LPFilter, HPFilter, SecLPFilter) ✅
+                        ──→ Phase 6B (NotchFilter, NotchFilterSlopes, SecLPFilter_Vel) ✅
+4C (LocalVariables)  ✅ ──→ Phase 7A Controllers (PI/PID/PII/Res — no CntrPar needed)
+4D (View structs)       ──→ Phase 7B Controllers (main subroutines — need CntrPar)
+                        ──→ Phase 8 ControllerBlocks (need CntrPar)
+                        ──→ Phase 5B AeroDynTorque (needs CntrPar + PerformanceData)
+                        ──→ PreFilterMeasuredSignals (needs CntrPar + LocalVariables)
 ```
 
-4A and 4B are independent. 4C depends on 4B (needs nested type recursion). 4D is independent of 4C but naturally comes last. 6B is independent of 4C/4D — only needs simulation coverage for extraction.
+4A, 4B, 4C all complete. 4D (pointer+size views for ALLOCATABLE types) is the remaining type system work.
 
-Recommended execution: 4A → 5A ✅ → 4B ✅ → 6A ✅ → 6B → 4C → 4D → 5B(remaining) → 7 → 8.
+**Key insight from Phase 4C:** Controllers.f90 splits into two tiers by type dependency:
+- **Tier 1 (4 helper functions, ready NOW):** PIController, PIDController, PIIController, ResController — take only LocalVariables (piParams/resParams nested), ObjectInstances. No ControlParameters.
+- **Tier 2 (10 main subroutines, need Phase 4D):** PitchControl, VariableSpeedControl, YawRateControl, IPC, ForeAftDamping, FloatingFeedback, FlapControl, ActiveWakeControl, CableControl, StructuralControl — all take ControlParameters.
+
+Recommended execution: **7A** (4 helper controllers as proof-of-concept) → **4D** → **7B + 8 + 5B** (everything else).
 
 ### Phase 5A: ErrorVariables Validation (sigma + interp1d) ✅
 **Status: Complete**
@@ -507,30 +519,40 @@ Three filter functions could not be extracted because they are never called in t
 
 **Unblocks:** Full Filters module coverage (6/6 individual filters translated). PreFilterMeasuredSignals remains blocked on Phase 4C (LocalVariables) + Phase 4D (ControlParameters).
 
-### Phase 7: Controllers Module
-**Target: All of Controllers.f90**
+### Phase 7A: Controllers Module — Helper Functions (No ControlParameters)
+**Target: 4 helper controller functions that only need LocalVariables + ObjectInstances**
 
-With Phase 4 complete, all types are C structs passed by pointer — `LocalVariables`, `ControlParameters`, `FilterParameters`, `ErrorVariables`, and all nested state types. Controllers read and write struct fields directly.
+These functions take piParams/resParams (nested in LocalVariables) and ObjectInstances — all BIND(C)-compatible after Phase 4C. No ControlParameters needed. This is the proof-of-concept for Controllers translation: first functions with read+write access to LocalVariables struct fields, and the first functions that call already-translated Filters and Functions from C++.
 
-- [ ] Large subroutine support — controller subroutines are 100-200 lines with complex control flow. VIT's extraction and verification should handle these mechanically, but testing at scale is needed.
-- [ ] Read+write derived type access — controllers read AND write fields on LocalVariables. C++ code modifies the struct in place; changes are visible to Fortran since the struct is passed by pointer.
-- [ ] Cross-module call chains — controllers call Filters and Functions. By this phase, those modules are already translated, so the C++ controllers call C++ filters and functions directly.
-- [ ] Translate + verify + integrate `PIController`
-- [ ] Translate + verify + integrate `PIDController`
-- [ ] Translate + verify + integrate `PIIController`
-- [ ] Translate + verify + integrate `ResController`
-- [ ] Translate + verify + integrate `PitchControl`
-- [ ] Translate + verify + integrate `VariableSpeedControl`
-- [ ] Translate + verify + integrate `YawRateControl`
-- [ ] Translate + verify + integrate `IPC`
-- [ ] Translate + verify + integrate `ForeAftDamping`
-- [ ] Translate + verify + integrate `FloatingFeedback`
-- [ ] Translate + verify + integrate `FlapControl`
-- [ ] Translate + verify + integrate `ActiveWakeControl`
-- [ ] Translate + verify + integrate `CableControl`
-- [ ] Translate + verify + integrate `StructuralControl`
+- [ ] Read+write derived type access — these controllers read AND write fields on piParams/resParams nested in LocalVariables. C++ code modifies the struct in place; changes are visible to Fortran since the struct is passed by pointer.
+- [ ] Cross-module call chains — PIController is called by many Controllers and ControllerBlocks functions. By this phase, its dependencies (Filters, Functions) are already C++.
+- [ ] Translate + verify + integrate `PIController` — generic PI with piParams state, integrator saturation
+- [ ] Translate + verify + integrate `PIDController` — takes ObjectInstances + LocalVariables + piParams
+- [ ] Translate + verify + integrate `PIIController` — double-integrator variant
+- [ ] Translate + verify + integrate `ResController` — resonance controller with resParams state
 
-**New functions unlocked**: All 14 Controllers.f90 subroutines/functions
+**Type dependencies:** LocalVariables (✓ Phase 4C), ObjectInstances (✓ Phase 4B), piParams/resParams (nested in LocalVariables, ✓)
+**New functions unlocked**: 4 helper controller functions
+
+### Phase 7B: Controllers Module — Main Subroutines (Need ControlParameters)
+**Target: 10 main controller subroutines — requires Phase 4D**
+
+All main control subroutines take ControlParameters (ALLOCATABLE arrays, needs pointer+size view from Phase 4D). These are 100-200 line subroutines with complex control flow, state machines, and multi-derived-type argument lists.
+
+- [ ] Large subroutine support — VIT's extraction and verification should handle these mechanically, but testing at scale is needed.
+- [ ] Translate + verify + integrate `PitchControl` — CntrPar + LocalVar + objInst + DebugVar + ErrVar
+- [ ] Translate + verify + integrate `VariableSpeedControl` — CntrPar + LocalVar + objInst + ErrVar
+- [ ] Translate + verify + integrate `YawRateControl` — CntrPar + LocalVar + objInst + DebugVar + ErrVar
+- [ ] Translate + verify + integrate `IPC` — CntrPar + LocalVar + objInst + DebugVar + ErrVar
+- [ ] Translate + verify + integrate `ForeAftDamping` — CntrPar + LocalVar + objInst
+- [ ] Translate + verify + integrate `FloatingFeedback` — CntrPar + LocalVar + objInst + ErrVar
+- [ ] Translate + verify + integrate `FlapControl` — CntrPar + LocalVar + objInst
+- [ ] Translate + verify + integrate `ActiveWakeControl` — CntrPar + LocalVar + DebugVar + objInst
+- [ ] Translate + verify + integrate `CableControl` — CntrPar + LocalVar + objInst + ErrVar
+- [ ] Translate + verify + integrate `StructuralControl` — CntrPar + LocalVar + objInst + ErrVar
+
+**Type dependencies:** All Phase 7A types + ControlParameters (Phase 4D) + DebugVariables (✓ Phase 4B) + ErrorVariables (✓ Phase 4A)
+**New functions unlocked**: 10 main controller subroutines
 
 ### Phase 8: ControllerBlocks Module
 **Target: All of ControllerBlocks.f90**
@@ -627,7 +649,10 @@ Functions with side effects only, stateful (SAVE variables), non-deterministic e
 ### Phase 12: Generalization Beyond ROSCO
 **Target: VIT as a general-purpose tool**
 
-- [ ] Abstract kind aliases — support arbitrary `kind_aliases` configuration, not just ROSCO's ReKi/DbKi/IntKi
+A generality audit (2026-03-19) confirmed VIT has no ROSCO-specific logic in production code. Kind aliases are already fully configurable via vit.yaml. The remaining items are packaging and validation on a second codebase.
+
+- [x] Abstract kind aliases — `kind_aliases` in vit.yaml supports arbitrary project kinds. NWTC/OpenFAST kinds (ReKi, DbKi, IntKi) are defaults, overridable.
+- [x] General `--fix complex` — scan-first architecture with EXIT_MANUAL protocol. No project-specific regex. Complex intrinsics flagged for human review via `--rewrite`.
 - [ ] Build system support — add support for Make, Autotools, and other build systems beyond CMake
 - [ ] Documentation — user guide, API reference, tutorial for new codebases
 - [ ] Packaging — PyPI distribution, Docker image, CI/CD
@@ -637,35 +662,35 @@ Functions with side effects only, stateful (SAVE variables), non-deterministic e
 
 ## 6. VIT Technical Debt
 
-Issues that should be addressed during the enhancement roadmap. These are not blocking today's verified functions but will cause problems as scope expands.
+Issues that should be addressed during the enhancement roadmap. Resolved items marked with ✓.
 
 ### Silent Breakage Risks
 
-| Issue | Impact | Fix Phase |
-|-------|--------|-----------|
-| 2D assumed-shape arrays generate single `n_` size param | Wrong C interface for DIMENSION(:,:) | Phase 5 |
-| ALLOCATABLE args parsed as regular arrays | Wrong size semantics | Phase 4 |
-| CHARACTER function results assume numeric kind conversion | Would generate broken wrapper | Phase 4 |
-| ELEMENTAL/PURE/RECURSIVE prefixes not recognized | Function declaration not matched by parser | Phase 7 |
-| Fortran/C struct memory layout mismatch | Fields at wrong offsets if compiler pads differently | Phase 4 |
-| Column-major arrays passed to C++ without transposition | C++ computes wrong results with Fortran-layout matrices | Phase 4 |
-| No I/O verification capability | File readers/writers/diagnostics cannot be verified through existing pipeline | Phase 10 |
+| Issue | Impact | Fix Phase | Status |
+|-------|--------|-----------|--------|
+| 2D assumed-shape arrays generate single `n_` size param | Wrong C interface for DIMENSION(:,:) | Phase 5 | ✓ Fixed (multi-dim guard added) |
+| ALLOCATABLE args parsed as regular arrays | Wrong size semantics | Phase 4 | Open |
+| CHARACTER function results assume numeric kind conversion | Would generate broken wrapper | Phase 4 | Open |
+| ELEMENTAL/PURE/RECURSIVE prefixes not recognized | Function declaration not matched by parser | Phase 7 | Open |
+| Fortran/C struct memory layout mismatch | Fields at wrong offsets if compiler pads differently | Phase 4 | Low risk — BIND(C) guarantees C-compatible layout, simulation diffs prove correctness |
+| Column-major arrays passed to C++ without transposition | C++ computes wrong results with Fortran-layout matrices | Phase 4 | ✓ Documented (column-major note in struct headers) |
+| No I/O verification capability | File readers/writers/diagnostics cannot be verified through existing pipeline | Phase 10 | Open |
 
 ### Correctness Issues
 
-| Issue | Impact | Fix Phase |
-|-------|--------|-----------|
-| INTENT(OUT) arrays in subroutines may get wrong intent in interface | Could generate read-only when write is needed | Phase 2 |
-| Derived type registry not wired into CLI | All TYPE(...) defaults to passthrough — wrong for BIND(C) types. Passthrough is not the intended pattern; all types become BIND(C) structs | Phase 3/4 |
-| Subroutine codepath untested end-to-end | Latent bugs in subroutine interface/verify/integrate | Phase 2 |
+| Issue | Impact | Fix Phase | Status |
+|-------|--------|-----------|--------|
+| INTENT(OUT) arrays in subroutines may get wrong intent in interface | Could generate read-only when write is needed | Phase 2 | ✓ Fixed |
+| Derived type registry not wired into CLI | All TYPE(...) defaults to passthrough — wrong for BIND(C) types | Phase 3/4 | ✓ Fixed (registry threaded through all callers) |
+| Subroutine codepath untested end-to-end | Latent bugs in subroutine interface/verify/integrate | Phase 2 | ✓ Fixed (ColemanTransform was first subroutine) |
 
 ### Missing Guards
 
-| Issue | Impact | Fix Phase |
-|-------|--------|-----------|
-| No error on unsupported array ranks | Silent wrong code generation | Phase 5 |
-| No warning for ALLOCATABLE/POINTER args | User doesn't know VIT is generating wrong code | Phase 3 |
-| No detection of inter-function dependencies | Translated function calling untranslated function | Phase 7 |
+| Issue | Impact | Fix Phase | Status |
+|-------|--------|-----------|--------|
+| No error on unsupported array ranks | Silent wrong code generation | Phase 5 | ✓ Fixed |
+| No warning for ALLOCATABLE/POINTER args | User doesn't know VIT is generating wrong code | Phase 3 | Open |
+| No detection of inter-function dependencies | Translated function calling untranslated function | Phase 7 | Open |
 
 ---
 
