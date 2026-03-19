@@ -34,7 +34,6 @@ from .translate import generate_translation_scaffold, generate_translation_promp
 from .analyze_types import (
     analyze_all_types, format_analysis_report, fix_character_allocatable,
     infer_character_length, fix_logical_field, fix_complex_field,
-    fix_character_array_allocatable, infer_character_array_length,
     fix_bind_c,
 )
 from .confirm import Assumption, EXIT_CONFIRM, print_assumption
@@ -128,7 +127,7 @@ def main():
                            help="Show all types including compatible ones")
     p_analyze.add_argument("--fix",
                            choices=["character", "logical", "complex",
-                                    "character_array", "bind_c"],
+                                    "bind_c"],
                            help="Apply automated fix")
     p_analyze.add_argument("--type", dest="type_name",
                            help="Type name to fix (required with --fix)")
@@ -799,48 +798,6 @@ def cmd_analyze_types(args, config):
                 source_dir=source_dir,
                 type_name=args.type_name,
                 field_name=args.field_name,
-                dry_run=dry_run,
-            )
-
-        elif args.fix == "character_array":
-            fixed_length = args.length
-            if fixed_length is None:
-                inference = infer_character_array_length(
-                    source_dir, args.type_name, args.field_name
-                )
-                if inference is not None:
-                    inferred_length, evidence = inference
-                    if inferred_length is not None:
-                        assumed = inferred_length
-                        source_info = evidence
-                    else:
-                        assumed = 1024
-                        source_info = f"{evidence} (expression not evaluable; using default 1024)"
-                else:
-                    assumed = 1024
-                    source_info = "no ALLOCATE found; using default 1024"
-
-                assumption = Assumption(
-                    id="character_array_length",
-                    summary=f"CHARACTER array size for {args.type_name}.{args.field_name}",
-                    assumed_value=str(assumed),
-                    inferred_from=source_info,
-                    context=(
-                        f"The field {args.type_name}.{args.field_name} is "
-                        f"CHARACTER, DIMENSION(:), ALLOCATABLE.\n"
-                        f"VIT will convert it to CHARACTER :: {args.field_name}({assumed}).\n"
-                        f"Confirm this size is correct for your project."
-                    ),
-                    cli_override=f"--length {assumed}",
-                )
-                print_assumption(assumption)
-                return EXIT_CONFIRM
-
-            result = fix_character_array_allocatable(
-                source_dir=source_dir,
-                type_name=args.type_name,
-                field_name=args.field_name,
-                fixed_length=fixed_length,
                 dry_run=dry_run,
             )
 

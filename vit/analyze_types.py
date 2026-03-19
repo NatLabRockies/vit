@@ -214,7 +214,11 @@ def fix_character_allocatable(source_dir: str, type_name: str,
                               field_name: str, fixed_length: int = 1024,
                               dry_run: bool = True) -> FixResult:
     """
-    Fix CHARACTER(:), ALLOCATABLE fields by converting to CHARACTER(N).
+    Fix CHARACTER ALLOCATABLE fields by converting to fixed-length.
+
+    Handles both forms:
+      - CHARACTER(:), ALLOCATABLE :: field  (deferred-length scalar)
+      - CHARACTER, DIMENSION(:), ALLOCATABLE :: field  (array of single chars)
 
     Two-pass fix:
       Pass 1: In the TYPE definition, rewrite the field declaration.
@@ -240,19 +244,36 @@ def fix_character_allocatable(source_dir: str, type_name: str,
         return result
 
     content = type_file.read_text()
-    new_content, changed = _rewrite_character_field(
+
+    # Try character array first (more specific pattern):
+    # CHARACTER, DIMENSION(:), ALLOCATABLE :: field
+    new_content, changed = _rewrite_character_array_field(
         content, type_name, field_name, fixed_length
     )
     if changed:
         action = f"Rewrite {field_name} in TYPE {type_name}: "
-        action += f"CHARACTER(:), ALLOCATABLE → CHARACTER({fixed_length})"
+        action += (
+            f"CHARACTER, DIMENSION(:), ALLOCATABLE "
+            f"→ CHARACTER :: {field_name}({fixed_length})"
+        )
         result.changes.append(f"{type_file}: {action}")
+    else:
+        # Try deferred-length scalar: CHARACTER(:), ALLOCATABLE :: field
+        new_content, changed = _rewrite_character_field(
+            content, type_name, field_name, fixed_length
+        )
+        if changed:
+            action = f"Rewrite {field_name} in TYPE {type_name}: "
+            action += f"CHARACTER(:), ALLOCATABLE → CHARACTER({fixed_length})"
+            result.changes.append(f"{type_file}: {action}")
+
+    if changed:
         if not dry_run:
             type_file.write_text(new_content)
             result.files_modified.append(str(type_file))
     else:
         result.errors.append(
-            f"Could not find CHARACTER(:), ALLOCATABLE :: {field_name} "
+            f"Could not find CHARACTER ALLOCATABLE :: {field_name} "
             f"in TYPE {type_name} ({type_file})"
         )
         return result
@@ -264,8 +285,8 @@ def fix_character_allocatable(source_dir: str, type_name: str,
         re.IGNORECASE,
     )
 
-    for pattern in ("**/*.f90", "**/*.F90"):
-        for f90_file in sorted(source_path.glob(pattern)):
+    for pat in ("**/*.f90", "**/*.F90"):
+        for f90_file in sorted(source_path.glob(pat)):
             file_content = f90_file.read_text()
             file_lines = file_content.split("\n")
             modified = False
@@ -277,8 +298,11 @@ def fix_character_allocatable(source_dir: str, type_name: str,
                     continue
                 if alloc_re.match(stripped):
                     # Comment out the line, preserving indentation
-                    indent = line[:len(line) - len(stripped)]
-                    file_lines[i] = f"{indent}! {stripped}  ! VIT: removed (fixed-length CHARACTER)"
+                    indent_str = line[:len(line) - len(stripped)]
+                    file_lines[i] = (
+                        f"{indent_str}! {stripped}  "
+                        f"! VIT: removed (fixed-length CHARACTER)"
+                    )
                     result.changes.append(
                         f"{f90_file}: Commented out: {stripped.strip()}"
                     )
@@ -525,12 +549,18 @@ def fix_complex_field(source_dir: str, type_name: str,
 
     Pass 1: In the TYPE definition, replace COMPLEX :: field(dims)
             with REAL :: field_re(dims) + REAL :: field_im(dims)
-    Pass 2: Rewrite all %field references:
-        - Zero init → set both _re and _im
-        - EXP(complexI * expr) → COS/SIN decomposition
-        - REAL(field) → field_re
+    Pass 2: Rewrite all %field references using general patterns:
+        - REAL(field) → field_re  (real-part extraction)
+        - AIMAG(field) → field_im  (imaginary-part extraction)
+        - Zero/constant init → set both _re and _im
+        - Assignment from non-complex expr → _re only
         - Binary I/O → split into _re and _im per element
-        - Output data → use _re
+        - Anything involving COMPLEX intrinsics (EXP, CMPLX, etc.)
+          → flag as manual with file:line for human review
+
+    References that can't be automatically rewritten are reported as
+    warnings in result.changes with [MANUAL] prefix. The fix still
+    succeeds — it rewrites what it can and tells you what's left.
     """
     result = FixResult()
     source_path = Path(source_dir)
@@ -556,6 +586,12 @@ def fix_complex_field(source_dir: str, type_name: str,
         )
         return result
 
+    # Intrinsics that signal expressions VIT can't auto-rewrite
+    _complex_intrinsics_re = re.compile(
+        r'\b(EXP|CMPLX|CONJG|ABS|SQRT|LOG|SIN|COS|TAN|ATAN)\s*\(',
+        re.IGNORECASE,
+    )
+
     # Pass 2: Rewrite all %field_name references
     field_re = re.compile(r'%' + re.escape(field_name) + r'\b', re.IGNORECASE)
 
@@ -580,82 +616,46 @@ def fix_complex_field(source_dir: str, type_name: str,
                 original_line = line
                 indent = line[:len(line) - len(stripped)]
 
-                # REAL() extraction: REAL(var%field(K)) → var%field_re(K)
-                real_re = re.compile(
-                    r'REAL\s*\((\w+%' + re.escape(field_name) + r'(?:\([^)]*\))?)\)',
+                # --- Safe auto-rewrites (general patterns) ---
+
+                # REAL() extraction: REAL(var%field...) → var%field_re...
+                real_extract_re = re.compile(
+                    r'REAL\s*\((\w+%' + re.escape(field_name)
+                    + r'(?:\([^)]*\))?)\)',
                     re.IGNORECASE,
                 )
-                if real_re.search(line):
-                    line = real_re.sub(
-                        lambda m: m.group(1).replace(
-                            field_name, field_name + '_re'
-                        ) if field_name in m.group(1) else m.group(0),
-                        line,
-                    )
-                    # Case-preserving replacement
-                    line = re.sub(
-                        r'REAL\s*\((\w+)%' + re.escape(field_name) + r'(_re)(\([^)]*\))?\)',
-                        r'\1%' + field_name + r'_re\3',
-                        line, flags=re.IGNORECASE,
-                    )
+                if real_extract_re.search(line):
+                    def _real_to_re(m):
+                        inner = m.group(1)
+                        return re.sub(
+                            re.escape(field_name), field_name + '_re',
+                            inner, count=1, flags=re.IGNORECASE,
+                        )
+                    line = real_extract_re.sub(_real_to_re, line)
                     file_lines[i] = line
-                    result.changes.append(f"{f90_file}: REAL() → _re: {original_line.strip()}")
-                    modified = True
-                    continue
-
-                # Euler formula: var%field(K) = var%field(K) + amp * EXP(complexI * (expr))
-                # The inner expr may contain nested parens like AWC_angle(K)
-                euler_re = re.compile(
-                    r'(\w+%' + re.escape(field_name) + r'\((\w+)\))\s*=\s*'
-                    r'(\w+%' + re.escape(field_name) + r'\(\2\))\s*\+\s*'
-                    r'(\w+)\s*\*\s*EXP\s*\(\s*\w+\s*\*\s*'
-                    r'\(([^()]*(?:\([^()]*\))[^()]*)\)\s*\)',
-                    re.IGNORECASE,
-                )
-                m_euler = euler_re.search(line)
-                if m_euler:
-                    var_idx = m_euler.group(2)      # K
-                    amp = m_euler.group(4)           # amp
-                    angle_expr = m_euler.group(5)    # AWC_angle(K)
-                    # Get the variable prefix (e.g., LocalVar)
-                    prefix_match = re.match(r'(\w+)%', m_euler.group(1))
-                    var_prefix = prefix_match.group(1) if prefix_match else ""
-
-                    re_line = (
-                        f"{indent}{var_prefix}%{field_name}_re({var_idx}) = "
-                        f"{var_prefix}%{field_name}_re({var_idx}) + "
-                        f"{amp} * COS({angle_expr})"
-                    )
-                    im_line = (
-                        f"{indent}{var_prefix}%{field_name}_im({var_idx}) = "
-                        f"{var_prefix}%{field_name}_im({var_idx}) + "
-                        f"{amp} * SIN({angle_expr})"
-                    )
-                    file_lines[i] = re_line
-                    insertions.append((i, im_line))
-                    result.changes.append(f"{f90_file}: Euler → COS/SIN: {original_line.strip()}")
-                    modified = True
-                    continue
-
-                # Zero initialization: var%field = 0.0D0
-                zero_init_re = re.compile(
-                    r'(\w+%' + re.escape(field_name) + r')\s*=\s*(0\.0\w*)',
-                    re.IGNORECASE,
-                )
-                m_zero = zero_init_re.search(line)
-                if m_zero and 'EXP' not in line.upper():
-                    var_expr = m_zero.group(1)
-                    zero_val = m_zero.group(2)
-                    re_line = line.replace(var_expr, var_expr.replace(
-                        field_name, field_name + '_re'
-                    ))
-                    im_line = line.replace(var_expr, var_expr.replace(
-                        field_name, field_name + '_im'
-                    ))
-                    file_lines[i] = re_line
-                    insertions.append((i, im_line))
                     result.changes.append(
-                        f"{f90_file}: Zero init → _re + _im: {original_line.strip()}"
+                        f"{f90_file}: REAL() → _re: {original_line.strip()}"
+                    )
+                    modified = True
+                    continue
+
+                # AIMAG() extraction: AIMAG(var%field...) → var%field_im...
+                aimag_re = re.compile(
+                    r'AIMAG\s*\((\w+%' + re.escape(field_name)
+                    + r'(?:\([^)]*\))?)\)',
+                    re.IGNORECASE,
+                )
+                if aimag_re.search(line):
+                    def _aimag_to_im(m):
+                        inner = m.group(1)
+                        return re.sub(
+                            re.escape(field_name), field_name + '_im',
+                            inner, count=1, flags=re.IGNORECASE,
+                        )
+                    line = aimag_re.sub(_aimag_to_im, line)
+                    file_lines[i] = line
+                    result.changes.append(
+                        f"{f90_file}: AIMAG() → _im: {original_line.strip()}"
                     )
                     modified = True
                     continue
@@ -670,25 +670,70 @@ def fix_complex_field(source_dir: str, type_name: str,
                 if m_io:
                     io_prefix = m_io.group(1)
                     var_expr = m_io.group(2)
-                    re_line = f"{io_prefix} {var_expr.replace(field_name, field_name + '_re')}"
-                    im_line = f"{io_prefix} {var_expr.replace(field_name, field_name + '_im')}"
+                    re_line = (
+                        f"{io_prefix} "
+                        f"{var_expr.replace(field_name, field_name + '_re')}"
+                    )
+                    im_line = (
+                        f"{io_prefix} "
+                        f"{var_expr.replace(field_name, field_name + '_im')}"
+                    )
                     file_lines[i] = re_line
                     insertions.append((i, im_line))
                     result.changes.append(
-                        f"{f90_file}: I/O split → _re + _im: {original_line.strip()}"
+                        f"{f90_file}: I/O split → _re + _im: "
+                        f"{original_line.strip()}"
                     )
                     modified = True
                     continue
 
-                # Output data assignment: LocalVarOutData(N) = var%field(K)
-                # Just use _re
-                outdata_re = re.compile(
+                # Zero/constant initialization: var%field = 0.0D0
+                # (only when no complex intrinsics on the line)
+                zero_init_re = re.compile(
+                    r'(\w+%' + re.escape(field_name) + r'(?:\([^)]*\))?)'
+                    r'\s*=\s*([0-9]+\.?[0-9]*\w*)',
+                    re.IGNORECASE,
+                )
+                m_zero = zero_init_re.search(line)
+                if m_zero and not _complex_intrinsics_re.search(line):
+                    var_expr = m_zero.group(1)
+                    re_line = re.sub(
+                        re.escape(field_name), field_name + '_re',
+                        line, count=1, flags=re.IGNORECASE,
+                    )
+                    im_line = re.sub(
+                        re.escape(field_name), field_name + '_im',
+                        line, count=1, flags=re.IGNORECASE,
+                    )
+                    file_lines[i] = re_line
+                    insertions.append((i, im_line))
+                    result.changes.append(
+                        f"{f90_file}: Constant init → _re + _im: "
+                        f"{original_line.strip()}"
+                    )
+                    modified = True
+                    continue
+
+                # --- Lines with complex intrinsics → flag for manual review ---
+                if _complex_intrinsics_re.search(line):
+                    result.changes.append(
+                        f"[MANUAL] {f90_file}:{i+1}: Complex expression "
+                        f"needs manual rewrite: {original_line.strip()}"
+                    )
+                    continue
+
+                # --- Fallback: simple substitution → _re ---
+                # For lines where %field appears in a real-valued context
+                # (e.g., output data assignment), replace with _re.
+                ref_re = re.compile(
                     r'(\w+%' + re.escape(field_name) + r'(?:\([^)]*\))?)',
                     re.IGNORECASE,
                 )
-                new_line = outdata_re.sub(
-                    lambda m: m.group(0).replace(field_name, field_name + '_re')
-                    if field_name.lower() in m.group(0).lower() else m.group(0),
+                new_line = ref_re.sub(
+                    lambda m: re.sub(
+                        re.escape(field_name), field_name + '_re',
+                        m.group(0), count=1, flags=re.IGNORECASE,
+                    ),
                     line,
                 )
                 if new_line != line:
@@ -816,80 +861,6 @@ def _rewrite_complex_field(content: str, type_name: str,
     return "\n".join(lines), changed
 
 
-def fix_character_array_allocatable(source_dir: str, type_name: str,
-                                    field_name: str, fixed_length: int = 1024,
-                                    dry_run: bool = True) -> FixResult:
-    """
-    Fix CHARACTER, DIMENSION(:), ALLOCATABLE fields by converting to CHARACTER :: field(N).
-
-    Two-pass fix:
-      Pass 1: In the TYPE definition, rewrite the field declaration.
-      Pass 2: In all source files, comment out ALLOCATE/DEALLOCATE of the field.
-    """
-    result = FixResult()
-    source_path = Path(source_dir)
-
-    # Pass 1: Find and rewrite the TYPE definition
-    type_file = _find_type_definition_file(source_path, type_name)
-    if not type_file:
-        result.errors.append(f"Could not find TYPE {type_name} in {source_dir}")
-        return result
-
-    content = type_file.read_text()
-    new_content, changed = _rewrite_character_array_field(
-        content, type_name, field_name, fixed_length,
-    )
-    if changed:
-        result.changes.append(
-            f"{type_file}: CHARACTER, DIMENSION(:), ALLOCATABLE :: {field_name} "
-            f"→ CHARACTER :: {field_name}({fixed_length})"
-        )
-        if not dry_run:
-            type_file.write_text(new_content)
-            result.files_modified.append(str(type_file))
-    else:
-        result.errors.append(
-            f"Could not find CHARACTER, DIMENSION(:), ALLOCATABLE :: {field_name} "
-            f"in TYPE {type_name} ({type_file})"
-        )
-        return result
-
-    # Pass 2: Comment out ALLOCATE/DEALLOCATE of field
-    alloc_re = re.compile(
-        rf'^\s*(ALLOCATE|DEALLOCATE)\s*\([^)]*%{re.escape(field_name)}\b[^)]*\)',
-        re.IGNORECASE,
-    )
-
-    for pat in ("**/*.f90", "**/*.F90"):
-        for f90_file in sorted(source_path.glob(pat)):
-            file_content = f90_file.read_text()
-            file_lines = file_content.split("\n")
-            modified = False
-
-            for i, line in enumerate(file_lines):
-                stripped = line.lstrip()
-                if stripped.startswith("!"):
-                    continue
-                if alloc_re.match(stripped):
-                    indent_str = line[:len(line) - len(stripped)]
-                    file_lines[i] = (
-                        f"{indent_str}! {stripped}  "
-                        f"! VIT: removed (fixed-length CHARACTER array)"
-                    )
-                    result.changes.append(
-                        f"{f90_file}: Commented out: {stripped.strip()}"
-                    )
-                    modified = True
-
-            if modified:
-                if not dry_run:
-                    f90_file.write_text("\n".join(file_lines))
-                    if str(f90_file) not in result.files_modified:
-                        result.files_modified.append(str(f90_file))
-
-    return result
-
-
 def _rewrite_character_array_field(content: str, type_name: str,
                                    field_name: str,
                                    fixed_length: int) -> tuple[str, bool]:
@@ -931,9 +902,11 @@ def _rewrite_character_array_field(content: str, type_name: str,
             break
 
         # Look for CHARACTER, DIMENSION(:), ALLOCATABLE :: field_name
+        # Must have DIMENSION to distinguish from CHARACTER(:), ALLOCATABLE
         line_upper = line.upper()
         if (field_upper in line_upper
                 and "CHARACTER" in line_upper
+                and "DIMENSION" in line_upper
                 and "ALLOCATABLE" in line_upper):
             indent = line[:len(line) - len(line.lstrip())]
             comment = ""
@@ -1060,40 +1033,6 @@ def fix_bind_c(source_dir: str, type_name: str,
 
     return result
 
-
-def infer_character_array_length(source_dir: str, type_name: str,
-                                 field_name: str) -> Optional[tuple[int, str]]:
-    """
-    Try to infer the intended size of a CHARACTER DIMENSION(:) ALLOCATABLE field
-    by searching for ALLOCATE calls.
-
-    Similar to infer_character_length() but for CHARACTER array fields.
-    """
-    source_path = Path(source_dir)
-
-    # Match: ALLOCATE(Var%field_name(size_expr))
-    # Also match commented-out versions
-    alloc_re = re.compile(
-        rf'^\s*!?\s*ALLOCATE\s*\(\s*\w+%{re.escape(field_name)}\s*\(([^)]+)\)\s*\)',
-        re.IGNORECASE,
-    )
-
-    for pattern in ("**/*.f90", "**/*.F90"):
-        for f90_file in sorted(source_path.glob(pattern)):
-            content = f90_file.read_text()
-            for line_num, line in enumerate(content.split("\n"), 1):
-                m = alloc_re.match(line.strip())
-                if m:
-                    size_expr = m.group(1).strip()
-                    rel_path = f90_file.name
-                    evidence = (
-                        f"ALLOCATE(%{field_name}({size_expr})) "
-                        f"in {rel_path}:{line_num}"
-                    )
-                    length = _evaluate_size_expression(size_expr, content)
-                    return (length, evidence)
-
-    return None
 
 
 def _rewrite_character_field(content: str, type_name: str,

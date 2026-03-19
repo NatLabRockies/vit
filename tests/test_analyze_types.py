@@ -24,8 +24,6 @@ from vit.analyze_types import (
     infer_character_length,
     fix_logical_field,
     fix_complex_field,
-    fix_character_array_allocatable,
-    infer_character_array_length,
     fix_bind_c,
 )
 
@@ -737,16 +735,17 @@ class TestFixComplex:
         assert "AWC_complexangle_re = 0.0D0" in content
         assert "AWC_complexangle_im = 0.0D0" in content
 
-    def test_fix_complex_rewrites_euler_formula(self, tmp_path):
+    def test_fix_complex_flags_euler_for_manual_review(self, tmp_path):
+        """EXP(complexI * expr) is flagged for manual rewrite, not auto-rewritten."""
         (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
         (tmp_path / "awc.f90").write_text(COMPLEX_EULER_SOURCE)
         result = fix_complex_field(
             str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
         )
-        content = (tmp_path / "awc.f90").read_text()
-        assert "COS(AWC_angle(K))" in content
-        assert "SIN(AWC_angle(K))" in content
-        assert "EXP" not in content
+        # The EXP line should be flagged as [MANUAL]
+        manual_changes = [c for c in result.changes if c.startswith("[MANUAL]")]
+        assert len(manual_changes) >= 1
+        assert "EXP" in manual_changes[0]
 
     def test_fix_complex_rewrites_real_extraction(self, tmp_path):
         (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
@@ -778,9 +777,9 @@ class TestFixComplex:
             str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
         )
         content = (tmp_path / "awc.f90").read_text()
-        # complexI declaration should be commented out
+        # complexI declaration (with ::) should be commented out
         for line in content.split("\n"):
-            if "complexI" in line and "=" in line and "COMPLEX" in line.upper():
+            if "complexI" in line and "::" in line and "COMPLEX" in line.upper():
                 assert line.strip().startswith("!")
 
 
@@ -812,11 +811,12 @@ CHAR_ARRAY_ALLOC_SOURCE = textwrap.dedent("""\
 
 
 class TestFixCharacterArray:
-    """Test fix_character_array_allocatable() for CHARACTER array fields."""
+    """Test fix_character_allocatable() handles CHARACTER array fields too."""
 
     def test_fix_character_array_rewrites_type(self, tmp_path):
+        """--fix character handles CHARACTER, DIMENSION(:), ALLOCATABLE."""
         (tmp_path / "types.f90").write_text(CHAR_ARRAY_TYPE_SOURCE)
-        result = fix_character_array_allocatable(
+        result = fix_character_allocatable(
             str(tmp_path), "LocalVariables", "ACC_INFILE", 1024, dry_run=False
         )
         assert result.success
@@ -827,7 +827,7 @@ class TestFixCharacterArray:
     def test_fix_character_array_comments_allocate(self, tmp_path):
         (tmp_path / "types.f90").write_text(CHAR_ARRAY_TYPE_SOURCE)
         (tmp_path / "init.f90").write_text(CHAR_ARRAY_ALLOC_SOURCE)
-        result = fix_character_array_allocatable(
+        result = fix_character_allocatable(
             str(tmp_path), "LocalVariables", "ACC_INFILE", 1024, dry_run=False
         )
         content = (tmp_path / "init.f90").read_text()
@@ -837,7 +837,7 @@ class TestFixCharacterArray:
 
     def test_fix_character_array_dry_run(self, tmp_path):
         (tmp_path / "types.f90").write_text(CHAR_ARRAY_TYPE_SOURCE)
-        result = fix_character_array_allocatable(
+        result = fix_character_allocatable(
             str(tmp_path), "LocalVariables", "ACC_INFILE", 1024, dry_run=True
         )
         assert result.success
@@ -845,9 +845,10 @@ class TestFixCharacterArray:
         content = (tmp_path / "types.f90").read_text()
         assert "ALLOCATABLE" in content
 
-    def test_infer_character_array_length(self, tmp_path):
+    def test_infer_length_works_for_array_allocate(self, tmp_path):
+        """infer_character_length finds ALLOCATE for array CHARACTER fields too."""
         (tmp_path / "init.f90").write_text(CHAR_ARRAY_ALLOC_SOURCE)
-        result = infer_character_array_length(
+        result = infer_character_length(
             str(tmp_path), "LocalVariables", "ACC_INFILE"
         )
         assert result is not None
