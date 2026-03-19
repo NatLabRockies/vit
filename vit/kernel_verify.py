@@ -280,7 +280,7 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
         cxx_lines = [
             "# VIT: C++ compilation support",
             "CXX ?= g++",
-            "CXXFLAGS ?= -O2 -fPIC",
+            "CXXFLAGS ?= -O2 -fPIC -ffp-contract=off",
             "",
             f"{obj_name}: {cpp_source}",
             f"\t$(CXX) $(CXXFLAGS) -c $< -o $@",
