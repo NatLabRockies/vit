@@ -22,6 +22,11 @@ from vit.analyze_types import (
     format_analysis_report,
     fix_character_allocatable,
     infer_character_length,
+    fix_logical_field,
+    fix_complex_field,
+    fix_character_array_allocatable,
+    infer_character_array_length,
+    fix_bind_c,
 )
 
 
@@ -491,3 +496,416 @@ class TestInferCharacterLength:
         length, evidence = result
         assert length is None
         assert "compute_size" in evidence
+
+
+# ============================================================
+# Phase 4C: LOGICAL, COMPLEX, CHARACTER array, BIND(C) fixes
+# ============================================================
+
+LOGICAL_TYPE_SOURCE = textwrap.dedent("""\
+    MODULE ROSCO_Types
+    IMPLICIT NONE
+
+    TYPE, PUBLIC :: LocalVariables
+        INTEGER(IntKi)                :: iStatus                     ! Init status
+        LOGICAL                       :: restart                     ! Restart flag
+        REAL(DbKi)                    :: Time                        ! Time [s]
+    END TYPE LocalVariables
+
+    END MODULE ROSCO_Types
+""")
+
+LOGICAL_ASSIGN_SOURCE = textwrap.dedent("""\
+    SUBROUTINE Init(LocalVar)
+    TYPE(LocalVariables), INTENT(INOUT) :: LocalVar
+
+    IF (LocalVar%iStatus == 0) THEN
+        LocalVar%restart = .True.
+    ELSE
+        LocalVar%restart = .False.
+    ENDIF
+
+    END SUBROUTINE Init
+""")
+
+LOGICAL_IF_SOURCE = textwrap.dedent("""\
+    SUBROUTINE Check(LocalVar)
+    TYPE(LocalVariables), INTENT(INOUT) :: LocalVar
+
+    IF (LocalVar%restart) THEN
+        LocalVar%Time = 0.0
+    ENDIF
+
+    END SUBROUTINE Check
+""")
+
+LOGICAL_FUNC_ARG_SOURCE = textwrap.dedent("""\
+    SUBROUTINE Control(LocalVar, objInst)
+    TYPE(LocalVariables), INTENT(INOUT) :: LocalVar
+
+    LocalVar%Time = LPFilter(1.0, 0.01, 1.0, LocalVar%FP, 0, LocalVar%restart, objInst%instLPF)
+
+    END SUBROUTINE Control
+""")
+
+LOGICAL_IO_SOURCE = textwrap.dedent("""\
+    SUBROUTINE WriteState(LocalVar, Un)
+    TYPE(LocalVariables), INTENT(IN) :: LocalVar
+    INTEGER, INTENT(IN) :: Un
+
+    WRITE( Un, IOSTAT=ErrStat) LocalVar%restart
+    READ( Un, IOSTAT=ErrStat) LocalVar%restart
+
+    END SUBROUTINE WriteState
+""")
+
+LOGICAL_NOT_SOURCE = textwrap.dedent("""\
+    SUBROUTINE Test(LocalVar)
+    TYPE(LocalVariables), INTENT(INOUT) :: LocalVar
+
+    IF (.NOT. LocalVar%restart) THEN
+        LocalVar%Time = 0.0
+    ENDIF
+
+    END SUBROUTINE Test
+""")
+
+
+class TestFixLogical:
+    """Test fix_logical_field() for LOGICAL → INTEGER(C_INT) conversion."""
+
+    def test_logical_field_is_blocker(self):
+        info = parse_derived_type(LOGICAL_TYPE_SOURCE, "LocalVariables")
+        assert info is not None
+        aliases = {"IntKi": "INTEGER(4)", "DbKi": "REAL(8)"}
+        blockers = classify_field_blockers(info, aliases)
+        reasons = [b.reason for b in blockers]
+        assert "logical" in reasons
+
+    def test_fix_logical_rewrites_type_definition(self, tmp_path):
+        (tmp_path / "types.f90").write_text(LOGICAL_TYPE_SOURCE)
+        result = fix_logical_field(
+            str(tmp_path), "LocalVariables", "restart", dry_run=False
+        )
+        assert result.success
+        content = (tmp_path / "types.f90").read_text()
+        assert "INTEGER(C_INT)" in content
+        assert "LOGICAL" not in content
+
+    def test_fix_logical_rewrites_true_assignment(self, tmp_path):
+        (tmp_path / "types.f90").write_text(LOGICAL_TYPE_SOURCE)
+        (tmp_path / "init.f90").write_text(LOGICAL_ASSIGN_SOURCE)
+        result = fix_logical_field(
+            str(tmp_path), "LocalVariables", "restart", dry_run=False
+        )
+        assert result.success
+        content = (tmp_path / "init.f90").read_text()
+        assert "%restart = 1" in content
+        assert ".True." not in content
+
+    def test_fix_logical_rewrites_false_assignment(self, tmp_path):
+        (tmp_path / "types.f90").write_text(LOGICAL_TYPE_SOURCE)
+        (tmp_path / "init.f90").write_text(LOGICAL_ASSIGN_SOURCE)
+        result = fix_logical_field(
+            str(tmp_path), "LocalVariables", "restart", dry_run=False
+        )
+        content = (tmp_path / "init.f90").read_text()
+        assert "%restart = 0" in content
+        assert ".False." not in content
+
+    def test_fix_logical_rewrites_if_condition(self, tmp_path):
+        (tmp_path / "types.f90").write_text(LOGICAL_TYPE_SOURCE)
+        (tmp_path / "check.f90").write_text(LOGICAL_IF_SOURCE)
+        result = fix_logical_field(
+            str(tmp_path), "LocalVariables", "restart", dry_run=False
+        )
+        content = (tmp_path / "check.f90").read_text()
+        assert "LocalVar%restart /= 0" in content
+
+    def test_fix_logical_wraps_function_argument(self, tmp_path):
+        (tmp_path / "types.f90").write_text(LOGICAL_TYPE_SOURCE)
+        (tmp_path / "ctrl.f90").write_text(LOGICAL_FUNC_ARG_SOURCE)
+        result = fix_logical_field(
+            str(tmp_path), "LocalVariables", "restart", dry_run=False
+        )
+        content = (tmp_path / "ctrl.f90").read_text()
+        assert "(LocalVar%restart /= 0)" in content
+
+    def test_fix_logical_preserves_binary_io(self, tmp_path):
+        (tmp_path / "types.f90").write_text(LOGICAL_TYPE_SOURCE)
+        (tmp_path / "io.f90").write_text(LOGICAL_IO_SOURCE)
+        result = fix_logical_field(
+            str(tmp_path), "LocalVariables", "restart", dry_run=False
+        )
+        content = (tmp_path / "io.f90").read_text()
+        # I/O lines should be unchanged — no (/= 0) wrapping
+        assert "WRITE( Un, IOSTAT=ErrStat) LocalVar%restart" in content
+        assert "READ( Un, IOSTAT=ErrStat) LocalVar%restart" in content
+        assert "/= 0" not in content
+
+    def test_fix_logical_rewrites_not(self, tmp_path):
+        (tmp_path / "types.f90").write_text(LOGICAL_TYPE_SOURCE)
+        (tmp_path / "test.f90").write_text(LOGICAL_NOT_SOURCE)
+        result = fix_logical_field(
+            str(tmp_path), "LocalVariables", "restart", dry_run=False
+        )
+        content = (tmp_path / "test.f90").read_text()
+        assert "(LocalVar%restart == 0)" in content
+        assert ".NOT." not in content
+
+    def test_fix_logical_dry_run(self, tmp_path):
+        (tmp_path / "types.f90").write_text(LOGICAL_TYPE_SOURCE)
+        (tmp_path / "init.f90").write_text(LOGICAL_ASSIGN_SOURCE)
+        result = fix_logical_field(
+            str(tmp_path), "LocalVariables", "restart", dry_run=True
+        )
+        assert result.success
+        assert len(result.changes) >= 1
+        assert result.files_modified == []
+        # Files should be unchanged
+        content = (tmp_path / "types.f90").read_text()
+        assert "LOGICAL" in content
+
+    def test_fix_logical_field_not_found(self, tmp_path):
+        (tmp_path / "types.f90").write_text(LOGICAL_TYPE_SOURCE)
+        result = fix_logical_field(
+            str(tmp_path), "LocalVariables", "nonexistent", dry_run=False
+        )
+        assert not result.success
+
+
+# --- COMPLEX fix test fixtures ---
+
+COMPLEX_TYPE_SOURCE = textwrap.dedent("""\
+    MODULE ROSCO_Types
+    IMPLICIT NONE
+
+    TYPE, PUBLIC :: LocalVariables
+        INTEGER(IntKi)                :: iStatus
+        COMPLEX(DbKi)                :: AWC_complexangle(3)         ! Complex angle
+        REAL(DbKi)                    :: Time
+    END TYPE LocalVariables
+
+    END MODULE ROSCO_Types
+""")
+
+COMPLEX_EULER_SOURCE = textwrap.dedent("""\
+    SUBROUTINE AWC(LocalVar, AWC_angle, K)
+    TYPE(LocalVariables), INTENT(INOUT) :: LocalVar
+    REAL(DbKi) :: AWC_angle(3), amp
+    COMPLEX(DbKi)              :: complexI = (0.0, 1.0)
+    INTEGER :: K
+
+    LocalVar%AWC_complexangle = 0.0D0
+    LocalVar%AWC_complexangle(K) = LocalVar%AWC_complexangle(K) + amp * EXP(complexI * (AWC_angle(K)))
+    LocalVar%PitCom(K) = LocalVar%PitCom(K) + REAL(LocalVar%AWC_complexangle(K))
+
+    END SUBROUTINE AWC
+""")
+
+COMPLEX_IO_SOURCE = textwrap.dedent("""\
+    SUBROUTINE WriteState(LocalVar, Un)
+    INTEGER :: Un, ErrStat
+    WRITE( Un, IOSTAT=ErrStat) LocalVar%AWC_complexangle(1)
+    WRITE( Un, IOSTAT=ErrStat) LocalVar%AWC_complexangle(2)
+    READ( Un, IOSTAT=ErrStat) LocalVar%AWC_complexangle(1)
+    END SUBROUTINE WriteState
+""")
+
+
+class TestFixComplex:
+    """Test fix_complex_field() for COMPLEX → REAL re/im split."""
+
+    def test_fix_complex_splits_type_definition(self, tmp_path):
+        (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
+        result = fix_complex_field(
+            str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
+        )
+        assert result.success
+        content = (tmp_path / "types.f90").read_text()
+        assert "AWC_complexangle_re(3)" in content
+        assert "AWC_complexangle_im(3)" in content
+        assert "COMPLEX" not in content.split("END TYPE")[0]
+
+    def test_fix_complex_rewrites_zero_init(self, tmp_path):
+        (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
+        (tmp_path / "awc.f90").write_text(COMPLEX_EULER_SOURCE)
+        result = fix_complex_field(
+            str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
+        )
+        content = (tmp_path / "awc.f90").read_text()
+        assert "AWC_complexangle_re = 0.0D0" in content
+        assert "AWC_complexangle_im = 0.0D0" in content
+
+    def test_fix_complex_rewrites_euler_formula(self, tmp_path):
+        (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
+        (tmp_path / "awc.f90").write_text(COMPLEX_EULER_SOURCE)
+        result = fix_complex_field(
+            str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
+        )
+        content = (tmp_path / "awc.f90").read_text()
+        assert "COS(AWC_angle(K))" in content
+        assert "SIN(AWC_angle(K))" in content
+        assert "EXP" not in content
+
+    def test_fix_complex_rewrites_real_extraction(self, tmp_path):
+        (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
+        (tmp_path / "awc.f90").write_text(COMPLEX_EULER_SOURCE)
+        result = fix_complex_field(
+            str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
+        )
+        content = (tmp_path / "awc.f90").read_text()
+        assert "AWC_complexangle_re(K)" in content
+        # Should not have REAL(...) wrapper anymore
+        assert "REAL(LocalVar%AWC_complexangle" not in content
+
+    def test_fix_complex_splits_binary_io(self, tmp_path):
+        (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
+        (tmp_path / "io.f90").write_text(COMPLEX_IO_SOURCE)
+        result = fix_complex_field(
+            str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
+        )
+        content = (tmp_path / "io.f90").read_text()
+        assert "AWC_complexangle_re(1)" in content
+        assert "AWC_complexangle_im(1)" in content
+        assert "AWC_complexangle_re(2)" in content
+        assert "AWC_complexangle_im(2)" in content
+
+    def test_fix_complex_removes_complexi_decl(self, tmp_path):
+        (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
+        (tmp_path / "awc.f90").write_text(COMPLEX_EULER_SOURCE)
+        result = fix_complex_field(
+            str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
+        )
+        content = (tmp_path / "awc.f90").read_text()
+        # complexI declaration should be commented out
+        for line in content.split("\n"):
+            if "complexI" in line and "=" in line and "COMPLEX" in line.upper():
+                assert line.strip().startswith("!")
+
+
+# --- CHARACTER array fix test fixtures ---
+
+CHAR_ARRAY_TYPE_SOURCE = textwrap.dedent("""\
+    MODULE ROSCO_Types
+    IMPLICIT NONE
+
+    TYPE, PUBLIC :: LocalVariables
+        INTEGER(IntKi)                :: ACC_INFILE_SIZE
+        CHARACTER, DIMENSION(:), ALLOCATABLE     :: ACC_INFILE        ! Parameter input filename
+        REAL(DbKi)                    :: Time
+    END TYPE LocalVariables
+
+    END MODULE ROSCO_Types
+""")
+
+CHAR_ARRAY_ALLOC_SOURCE = textwrap.dedent("""\
+    SUBROUTINE Init(LocalVar)
+    TYPE(LocalVariables), INTENT(INOUT) :: LocalVar
+
+    LocalVar%ACC_INFILE_SIZE = 256
+    Allocate(LocalVar%ACC_INFILE(LocalVar%ACC_INFILE_SIZE))
+    LocalVar%ACC_INFILE = accINFILE
+
+    END SUBROUTINE Init
+""")
+
+
+class TestFixCharacterArray:
+    """Test fix_character_array_allocatable() for CHARACTER array fields."""
+
+    def test_fix_character_array_rewrites_type(self, tmp_path):
+        (tmp_path / "types.f90").write_text(CHAR_ARRAY_TYPE_SOURCE)
+        result = fix_character_array_allocatable(
+            str(tmp_path), "LocalVariables", "ACC_INFILE", 1024, dry_run=False
+        )
+        assert result.success
+        content = (tmp_path / "types.f90").read_text()
+        assert "ACC_INFILE(1024)" in content
+        assert "ALLOCATABLE" not in content.split("ACC_INFILE")[0].split("LocalVariables")[1]
+
+    def test_fix_character_array_comments_allocate(self, tmp_path):
+        (tmp_path / "types.f90").write_text(CHAR_ARRAY_TYPE_SOURCE)
+        (tmp_path / "init.f90").write_text(CHAR_ARRAY_ALLOC_SOURCE)
+        result = fix_character_array_allocatable(
+            str(tmp_path), "LocalVariables", "ACC_INFILE", 1024, dry_run=False
+        )
+        content = (tmp_path / "init.f90").read_text()
+        for line in content.split("\n"):
+            if "ALLOCATE" in line.upper() and "ACC_INFILE" in line:
+                assert line.strip().startswith("!")
+
+    def test_fix_character_array_dry_run(self, tmp_path):
+        (tmp_path / "types.f90").write_text(CHAR_ARRAY_TYPE_SOURCE)
+        result = fix_character_array_allocatable(
+            str(tmp_path), "LocalVariables", "ACC_INFILE", 1024, dry_run=True
+        )
+        assert result.success
+        assert result.files_modified == []
+        content = (tmp_path / "types.f90").read_text()
+        assert "ALLOCATABLE" in content
+
+    def test_infer_character_array_length(self, tmp_path):
+        (tmp_path / "init.f90").write_text(CHAR_ARRAY_ALLOC_SOURCE)
+        result = infer_character_array_length(
+            str(tmp_path), "LocalVariables", "ACC_INFILE"
+        )
+        assert result is not None
+        length, evidence = result
+        # Expression is LocalVar%ACC_INFILE_SIZE which is not evaluable
+        assert "ACC_INFILE" in evidence
+
+
+# --- BIND(C) fix test fixtures ---
+
+BIND_C_TYPE_SOURCE = textwrap.dedent("""\
+    MODULE ROSCO_Types
+    IMPLICIT NONE
+
+    TYPE, PUBLIC :: LocalVariables
+        INTEGER(IntKi)                :: iStatus                     ! Init status
+        INTEGER(IntKi)                :: AlreadyInitialized = 0      ! Has ROSCO been initialized
+        REAL(DbKi)                    :: Time                        ! Time [s]
+    END TYPE LocalVariables
+
+    END MODULE ROSCO_Types
+""")
+
+
+class TestFixBindC:
+    """Test fix_bind_c() for adding BIND(C) and removing default initializers."""
+
+    def test_fix_bind_c_adds_attribute(self, tmp_path):
+        (tmp_path / "types.f90").write_text(BIND_C_TYPE_SOURCE)
+        result = fix_bind_c(str(tmp_path), "LocalVariables", dry_run=False)
+        assert result.success
+        content = (tmp_path / "types.f90").read_text()
+        assert "BIND(C)" in content
+
+    def test_fix_bind_c_removes_default_init(self, tmp_path):
+        (tmp_path / "types.f90").write_text(BIND_C_TYPE_SOURCE)
+        result = fix_bind_c(str(tmp_path), "LocalVariables", dry_run=False)
+        content = (tmp_path / "types.f90").read_text()
+        # AlreadyInitialized should no longer have = 0
+        for line in content.split("\n"):
+            if "AlreadyInitialized" in line and "::" in line:
+                assert "= 0" not in line
+
+    def test_fix_bind_c_dry_run(self, tmp_path):
+        (tmp_path / "types.f90").write_text(BIND_C_TYPE_SOURCE)
+        result = fix_bind_c(str(tmp_path), "LocalVariables", dry_run=True)
+        assert result.success
+        assert result.files_modified == []
+        content = (tmp_path / "types.f90").read_text()
+        assert "BIND(C)" not in content
+
+    def test_default_initializer_is_blocker(self):
+        info = parse_derived_type(BIND_C_TYPE_SOURCE, "LocalVariables")
+        assert info is not None
+        aliases = {"IntKi": "INTEGER(4)", "DbKi": "REAL(8)"}
+        blockers = classify_field_blockers(info, aliases)
+        reasons = [b.reason for b in blockers]
+        assert "default_initializer" in reasons
+        # Check it points to AlreadyInitialized
+        init_blockers = [b for b in blockers if b.reason == "default_initializer"]
+        assert init_blockers[0].field_name == "AlreadyInitialized"

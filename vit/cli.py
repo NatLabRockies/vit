@@ -33,7 +33,9 @@ from .integrate import generate_integration_plan, apply_integration_plan
 from .translate import generate_translation_scaffold, generate_translation_prompt
 from .analyze_types import (
     analyze_all_types, format_analysis_report, fix_character_allocatable,
-    infer_character_length,
+    infer_character_length, fix_logical_field, fix_complex_field,
+    fix_character_array_allocatable, infer_character_array_length,
+    fix_bind_c,
 )
 from .confirm import Assumption, EXIT_CONFIRM, print_assumption
 
@@ -124,8 +126,10 @@ def main():
     p_analyze.add_argument("--source-dir", help="Override source directory")
     p_analyze.add_argument("--verbose", "-V", action="store_true",
                            help="Show all types including compatible ones")
-    p_analyze.add_argument("--fix", choices=["character"],
-                           help="Apply automated fix (character: fix CHARACTER(:), ALLOCATABLE)")
+    p_analyze.add_argument("--fix",
+                           choices=["character", "logical", "complex",
+                                    "character_array", "bind_c"],
+                           help="Apply automated fix")
     p_analyze.add_argument("--type", dest="type_name",
                            help="Type name to fix (required with --fix)")
     p_analyze.add_argument("--field", dest="field_name",
@@ -721,15 +725,23 @@ def cmd_analyze_types(args, config):
         return 1
 
     if args.fix:
-        # Fix mode
-        if not args.type_name or not args.field_name:
-            print("ERROR: --type and --field are required with --fix")
-            return 1
+        # Fix mode — bind_c doesn't need --field
+        if args.fix == "bind_c":
+            if not args.type_name:
+                print("ERROR: --type is required with --fix bind_c")
+                return 1
+        else:
+            if not args.type_name or not args.field_name:
+                print("ERROR: --type and --field are required with --fix")
+                return 1
 
         dry_run = not args.apply
         if dry_run:
             print(f"Dry run — changes will NOT be written (use --apply to write)")
-        print(f"Fixing {args.fix}: {args.type_name}.{args.field_name}")
+        if args.fix == "bind_c":
+            print(f"Fixing {args.fix}: {args.type_name}")
+        else:
+            print(f"Fixing {args.fix}: {args.type_name}.{args.field_name}")
 
         if args.fix == "character":
             # If --length not provided, infer and require confirmation
@@ -774,43 +786,108 @@ def cmd_analyze_types(args, config):
                 dry_run=dry_run,
             )
 
-            for change in result.changes:
-                print(f"  {change}")
-            for error in result.errors:
-                print(f"  ERROR: {error}")
+        elif args.fix == "logical":
+            result = fix_logical_field(
+                source_dir=source_dir,
+                type_name=args.type_name,
+                field_name=args.field_name,
+                dry_run=dry_run,
+            )
 
-            if result.success:
-                if dry_run:
-                    print(f"\n{len(result.changes)} change(s) would be applied. Run with --apply to write.")
+        elif args.fix == "complex":
+            result = fix_complex_field(
+                source_dir=source_dir,
+                type_name=args.type_name,
+                field_name=args.field_name,
+                dry_run=dry_run,
+            )
+
+        elif args.fix == "character_array":
+            fixed_length = args.length
+            if fixed_length is None:
+                inference = infer_character_array_length(
+                    source_dir, args.type_name, args.field_name
+                )
+                if inference is not None:
+                    inferred_length, evidence = inference
+                    if inferred_length is not None:
+                        assumed = inferred_length
+                        source_info = evidence
+                    else:
+                        assumed = 1024
+                        source_info = f"{evidence} (expression not evaluable; using default 1024)"
                 else:
-                    print(f"\n✓ Fixed {len(result.files_modified)} file(s)")
+                    assumed = 1024
+                    source_info = "no ALLOCATE found; using default 1024"
 
-                    # Build-verify-fix: use the compiler to catch downstream consequences
-                    if config.build_cmd:
-                        from .build_fixer import build_and_fix
-                        print(f"\nVerifying build...")
-                        build_result = build_and_fix(
-                            build_cmd=config.build_cmd,
-                            source_dir=source_dir,
-                            compiler=config.fortran_compiler,
-                        )
-                        for fix in build_result.fixes_applied:
-                            print(f"  Auto-fixed: {fix.description}")
-                            print(f"    {fix.file}:{fix.line}")
-                        if build_result.success:
-                            total = len(build_result.fixes_applied)
-                            if total > 0:
-                                print(f"\n✓ Build succeeded after {total} auto-fix(es)")
-                            else:
-                                print(f"✓ Build succeeded")
-                        else:
-                            print(f"\n✗ Build failed with unfixable errors:")
-                            for err in build_result.remaining_errors:
-                                print(f"  {err.file}:{err.line}: {err.message}")
-                            return 1
+                assumption = Assumption(
+                    id="character_array_length",
+                    summary=f"CHARACTER array size for {args.type_name}.{args.field_name}",
+                    assumed_value=str(assumed),
+                    inferred_from=source_info,
+                    context=(
+                        f"The field {args.type_name}.{args.field_name} is "
+                        f"CHARACTER, DIMENSION(:), ALLOCATABLE.\n"
+                        f"VIT will convert it to CHARACTER :: {args.field_name}({assumed}).\n"
+                        f"Confirm this size is correct for your project."
+                    ),
+                    cli_override=f"--length {assumed}",
+                )
+                print_assumption(assumption)
+                return EXIT_CONFIRM
+
+            result = fix_character_array_allocatable(
+                source_dir=source_dir,
+                type_name=args.type_name,
+                field_name=args.field_name,
+                fixed_length=fixed_length,
+                dry_run=dry_run,
+            )
+
+        elif args.fix == "bind_c":
+            result = fix_bind_c(
+                source_dir=source_dir,
+                type_name=args.type_name,
+                dry_run=dry_run,
+            )
+
+        for change in result.changes:
+            print(f"  {change}")
+        for error in result.errors:
+            print(f"  ERROR: {error}")
+
+        if result.success:
+            if dry_run:
+                print(f"\n{len(result.changes)} change(s) would be applied. Run with --apply to write.")
             else:
-                print(f"\n✗ Fix failed")
-            return 0 if result.success else 1
+                print(f"\n✓ Fixed {len(result.files_modified)} file(s)")
+
+                # Build-verify-fix: use the compiler to catch downstream consequences
+                if config.build_cmd:
+                    from .build_fixer import build_and_fix
+                    print(f"\nVerifying build...")
+                    build_result = build_and_fix(
+                        build_cmd=config.build_cmd,
+                        source_dir=source_dir,
+                        compiler=config.fortran_compiler,
+                    )
+                    for fix in build_result.fixes_applied:
+                        print(f"  Auto-fixed: {fix.description}")
+                        print(f"    {fix.file}:{fix.line}")
+                    if build_result.success:
+                        total = len(build_result.fixes_applied)
+                        if total > 0:
+                            print(f"\n✓ Build succeeded after {total} auto-fix(es)")
+                        else:
+                            print(f"✓ Build succeeded")
+                    else:
+                        print(f"\n✗ Build failed with unfixable errors:")
+                        for err in build_result.remaining_errors:
+                            print(f"  {err.file}:{err.line}: {err.message}")
+                        return 1
+        else:
+            print(f"\n✗ Fix failed")
+        return 0 if result.success else 1
     else:
         # Analysis mode
         analyses = analyze_all_types(source_dir, config.kind_aliases)

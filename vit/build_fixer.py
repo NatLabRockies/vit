@@ -316,6 +316,73 @@ def _fix_transfer_shape_mismatch(
 
 
 # ---------------------------------------------------------------------------
+# Fix pattern: LOGICAL/INTEGER type mismatch
+# ---------------------------------------------------------------------------
+
+def _match_logical_type_mismatch(error: CompilerError) -> bool:
+    """Match gfortran 'Type mismatch' errors involving LOGICAL/INTEGER."""
+    return (
+        error.severity.lower() in ("error", "fatal error")
+        and "type mismatch" in error.message.lower()
+        and "logical" in error.message.lower()
+    )
+
+
+def _fix_logical_type_mismatch(
+    error: CompilerError, file_content: str
+) -> Optional[ErrorFix]:
+    """
+    Fix LOGICAL/INTEGER type mismatch by wrapping the argument with (/= 0).
+
+    When a LOGICAL field is converted to INTEGER(C_INT), call sites that
+    pass it to functions expecting LOGICAL need the expression wrapped
+    with (/= 0) to produce a LOGICAL from the integer comparison.
+    """
+    file_lines = file_content.split("\n")
+    idx = error.line - 1
+    if idx < 0 or idx >= len(file_lines):
+        return None
+
+    line = file_lines[idx]
+    col = error.column - 1  # 0-indexed
+
+    # Search for word%word pattern near the error column
+    best_match = None
+    best_start = None
+    for start in range(max(0, col - 20), min(len(line), col + 20)):
+        m = re.match(r'(\w+%\w+)', line[start:])
+        if m:
+            if best_match is None or abs(start - col) < abs(best_start - col):
+                best_match = m.group(1)
+                best_start = start
+
+    if best_match is None:
+        return None
+
+    expr = best_match
+    start = best_start
+
+    # Don't wrap if already wrapped
+    after = line[start + len(expr):].lstrip()
+    if after.startswith('/= 0') or after.startswith('== 0'):
+        return None
+
+    new_line = line[:start] + '(' + expr + ' /= 0)' + line[start + len(expr):]
+
+    return ErrorFix(
+        error=error,
+        file=error.file,
+        line=error.line,
+        original_line=line,
+        fixed_line=new_line,
+        pattern_name="logical_type_mismatch",
+        description=(
+            f"Wrap {expr} with (/= 0) for LOGICAL/INTEGER type mismatch"
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Default fix registry
 # ---------------------------------------------------------------------------
 
@@ -328,5 +395,14 @@ DEFAULT_FIX_REGISTRY = [
         ),
         matcher=_match_transfer_shape_mismatch,
         fixer=_fix_transfer_shape_mismatch,
+    ),
+    FixPattern(
+        name="logical_type_mismatch",
+        description=(
+            "Fix LOGICAL/INTEGER type mismatch by wrapping with (/= 0) "
+            "after LOGICAL → INTEGER(C_INT)"
+        ),
+        matcher=_match_logical_type_mismatch,
+        fixer=_fix_logical_type_mismatch,
     ),
 ]

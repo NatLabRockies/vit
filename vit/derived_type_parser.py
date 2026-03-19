@@ -25,6 +25,8 @@ class DerivedTypeField:
     is_pointer: bool = False
     is_array: bool = False
     array_dims: Optional[str] = None
+    has_default_init: bool = False
+    default_init_value: Optional[str] = None
 
 
 @dataclass
@@ -242,15 +244,28 @@ def _parse_field_declaration(line: str, line_upper: str) -> Optional[list[Derive
         local_dims = dim_spec
         local_is_array = has_dimension
 
+        has_default_init = False
+        default_init_value = None
+
         paren_match = re.match(r'(\w+)\s*\(([^)]*)\)', var_decl)
         if paren_match:
             var_name = paren_match.group(1)
             local_dims = paren_match.group(2)
             local_is_array = True
+            # Check for default init after array spec: name(dims) = value
+            remaining = var_decl[paren_match.end():].strip()
+            if remaining.startswith('='):
+                has_default_init = True
+                default_init_value = remaining[1:].strip()
         else:
             name_match = re.match(r'(\w+)', var_decl)
             if name_match:
                 var_name = name_match.group(1)
+                # Check for default init: name = value
+                remaining = var_decl[name_match.end():].strip()
+                if remaining.startswith('='):
+                    has_default_init = True
+                    default_init_value = remaining[1:].strip()
             else:
                 continue
 
@@ -261,6 +276,8 @@ def _parse_field_declaration(line: str, line_upper: str) -> Optional[list[Derive
             is_pointer=is_pointer,
             is_array=local_is_array,
             array_dims=local_dims,
+            has_default_init=has_default_init,
+            default_init_value=default_init_value,
         ))
 
     return results if results else None
@@ -559,12 +576,37 @@ def classify_field_blockers(type_info: DerivedTypeInfo,
                 reason="nested_type",
                 fix_suggestion=f"Nested derived type {f.fortran_type} must also be C-compatible",
             ))
+        elif normalized.startswith("LOGICAL"):
+            blockers.append(FieldBlocker(
+                field_name=f.name,
+                fortran_type=f.fortran_type,
+                reason="logical",
+                fix_suggestion=(
+                    f"Convert to INTEGER(C_INT) with: vit analyze-types --fix logical "
+                    f"--type {type_info.name} --field {f.name} --apply"
+                ),
+            ))
         elif normalized.startswith("COMPLEX"):
             blockers.append(FieldBlocker(
                 field_name=f.name,
                 fortran_type=f.fortran_type,
                 reason="complex",
-                fix_suggestion=f"COMPLEX fields require manual struct layout",
+                fix_suggestion=(
+                    f"Split into REAL re/im pair with: vit analyze-types --fix complex "
+                    f"--type {type_info.name} --field {f.name} --apply"
+                ),
+            ))
+
+        # Default initializer blocks BIND(C) — check regardless of type
+        if f.has_default_init:
+            blockers.append(FieldBlocker(
+                field_name=f.name,
+                fortran_type=f.fortran_type,
+                reason="default_initializer",
+                fix_suggestion=(
+                    f"Remove default initializer '= {f.default_init_value}' with: "
+                    f"vit analyze-types --fix bind_c --type {type_info.name} --apply"
+                ),
             ))
 
     return blockers

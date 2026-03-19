@@ -12,6 +12,8 @@ from vit.build_fixer import (
     FixPattern,
     _fix_transfer_shape_mismatch,
     _match_transfer_shape_mismatch,
+    _fix_logical_type_mismatch,
+    _match_logical_type_mismatch,
     build_and_fix,
     parse_gfortran_errors,
 )
@@ -345,3 +347,54 @@ class TestBuildAndFix:
         assert not result.success
         assert result.fixes_applied == []
         assert len(result.remaining_errors) == 1
+
+
+# --- LOGICAL/INTEGER type mismatch fix pattern ---
+
+LOGICAL_TYPE_MISMATCH_ERROR = CompilerError(
+    file="/workspace/src/Controllers.f90",
+    line=68,
+    column=90,
+    severity="Error",
+    message="Type mismatch in argument 'reset' at (1); passed INTEGER(4) to LOGICAL(4)",
+    source_line="LocalVar%PC_PitComT = PIController(LocalVar%PC_SpdErr, LocalVar%PC_KP, LocalVar%restart, objInst%instPI)",
+    raw_text="...",
+)
+
+LOGICAL_MISMATCH_SOURCE = textwrap.dedent("""\
+    SUBROUTINE Control(LocalVar, objInst)
+    INTEGER :: x
+    x = 1
+    LocalVar%PC_PitComT = PIController(LocalVar%PC_SpdErr, LocalVar%PC_KP, LocalVar%restart, objInst%instPI)
+    END SUBROUTINE Control
+""")
+
+
+class TestLogicalTypeMismatchFix:
+    """Test the LOGICAL/INTEGER type mismatch fix pattern."""
+
+    def test_matcher_matches_logical_error(self):
+        assert _match_logical_type_mismatch(LOGICAL_TYPE_MISMATCH_ERROR)
+
+    def test_matcher_rejects_non_logical(self):
+        other = CompilerError(
+            file="test.f90", line=1, column=1,
+            severity="Error",
+            message="Syntax error at (1)",
+            source_line="", raw_text="",
+        )
+        assert not _match_logical_type_mismatch(other)
+
+    def test_fixer_wraps_expression(self):
+        """Fixer should find word%word near the error column and wrap it."""
+        # Error at column 90 — near LocalVar%restart in the source line
+        error = CompilerError(
+            file="test.f90", line=4, column=90,
+            severity="Error",
+            message="Type mismatch in argument 'reset' at (1); passed INTEGER(4) to LOGICAL(4)",
+            source_line="", raw_text="",
+        )
+        fix = _fix_logical_type_mismatch(error, LOGICAL_MISMATCH_SOURCE)
+        assert fix is not None
+        assert "/= 0)" in fix.fixed_line
+        assert fix.pattern_name == "logical_type_mismatch"
