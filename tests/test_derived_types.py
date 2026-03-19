@@ -618,5 +618,378 @@ class TestStructPointerInterface:
         assert "ErrVar" in cpp
 
 
+# === Phase 4B: Multi-dimensional arrays, recursive compatibility, nested structs ===
+
+from vit.derived_type_parser import (
+    classify_field_blockers,
+    order_types_by_dependency,
+    _fortran_dims_to_c,
+    DerivedTypeField,
+)
+
+
+# --- Synthetic sources for the 7 simple target types ---
+
+WE_SOURCE = """\
+MODULE ROSCO_Types
+TYPE :: WE
+    REAL(8) :: om_r
+    REAL(8) :: v_t
+    REAL(8) :: v_m
+    REAL(8) :: v_0
+    REAL(8), DIMENSION(3,3) :: P
+    REAL(8), DIMENSION(3,1) :: xh
+    REAL(8), DIMENSION(3,1) :: K
+END TYPE WE
+END MODULE ROSCO_Types
+"""
+
+FILTER_PARAMETERS_SOURCE = """\
+MODULE ROSCO_Types
+TYPE :: FilterParameters
+    REAL(8) :: lpf1(1024)
+    REAL(8) :: lpf2(1024)
+    REAL(8) :: hpf1(1024)
+    REAL(8) :: nf1(1024)
+    REAL(8) :: nf2(1024)
+END TYPE FilterParameters
+END MODULE ROSCO_Types
+"""
+
+OBJECT_INSTANCES_SOURCE = """\
+MODULE ROSCO_Types
+TYPE :: ObjectInstances
+    INTEGER(4) :: instLPF
+    INTEGER(4) :: instSecLPF
+    INTEGER(4) :: instHPF
+    INTEGER(4) :: instNotchSlopes
+    INTEGER(4) :: instNotch
+    INTEGER(4) :: instPI
+    INTEGER(4) :: instRL
+    INTEGER(4) :: instSec
+    INTEGER(4) :: instSQ
+END TYPE ObjectInstances
+END MODULE ROSCO_Types
+"""
+
+CONTROLLER_PARAMETERS_SOURCE = """\
+MODULE ROSCO_Types
+TYPE :: ControlParameters
+    REAL(8) :: LogGains(1024)
+    REAL(8) :: F_FlCornerFreq(1024)
+    INTEGER(4) :: IPC_ControlMode
+    REAL(8) :: PC_GS_angles(1024)
+    REAL(8) :: PC_GS_KP(1024)
+    REAL(8) :: PC_GS_KI(1024)
+END TYPE ControlParameters
+END MODULE ROSCO_Types
+"""
+
+PERFORMANCE_DATA_SOURCE = """\
+MODULE ROSCO_Types
+TYPE :: PerformanceData
+    REAL(8) :: Beta_opt(1024)
+    REAL(8) :: TSR_opt(1024)
+    REAL(8) :: Cp_table(1024)
+END TYPE PerformanceData
+END MODULE ROSCO_Types
+"""
+
+PITCHMAN_SOURCE = """\
+MODULE ROSCO_Types
+TYPE :: PitManVar
+    REAL(8) :: PitComT
+    REAL(8) :: PitComT_Last
+    INTEGER(4) :: IPC_KP(1024)
+END TYPE PitManVar
+END MODULE ROSCO_Types
+"""
+
+DEBUG_VARIABLES_SOURCE = """\
+MODULE ROSCO_Types
+TYPE :: DebugVariables
+    REAL(8) :: axisTilt_1P
+    REAL(8) :: axisYaw_1P
+    REAL(8) :: GenSpeedF
+    REAL(8) :: RotSpeedF
+    REAL(8) :: NacIMU_FA_AccF
+END TYPE DebugVariables
+END MODULE ROSCO_Types
+"""
+
+# Type with a compatible nested type
+PARENT_WITH_NESTED_SOURCE = """\
+MODULE TestTypes
+TYPE :: Inner
+    REAL(8) :: x
+    REAL(8) :: y
+END TYPE Inner
+TYPE :: Outer
+    REAL(8) :: scale
+    TYPE(Inner) :: pos
+END TYPE Outer
+END MODULE TestTypes
+"""
+
+# Type with an incompatible nested type
+PARENT_WITH_BAD_NESTED_SOURCE = """\
+MODULE TestTypes
+TYPE :: BadInner
+    REAL(8), ALLOCATABLE :: data(:)
+END TYPE BadInner
+TYPE :: BadOuter
+    REAL(8) :: scale
+    TYPE(BadInner) :: buf
+END TYPE BadOuter
+END MODULE TestTypes
+"""
+
+
+class TestMultiDimArrays:
+    """Test 2D array syntax in C struct generation."""
+
+    def test_fortran_dims_to_c_1d(self):
+        assert _fortran_dims_to_c("1024") == "[1024]"
+
+    def test_fortran_dims_to_c_2d_square(self):
+        assert _fortran_dims_to_c("3,3") == "[3][3]"
+
+    def test_fortran_dims_to_c_2d_rect(self):
+        assert _fortran_dims_to_c("3,1") == "[3][1]"
+
+    def test_we_struct_has_2d_arrays(self):
+        """WE type with DIMENSION(3,3) → double P[3][3]."""
+        info = parse_derived_type(WE_SOURCE, "WE")
+        header = generate_c_struct_header(info)
+        assert "double P[3][3];" in header
+        assert "double xh[3][1];" in header
+        assert "double K[3][1];" in header
+
+    def test_1d_array_regression(self):
+        """1D DIMENSION(1024) still works correctly."""
+        info = parse_derived_type(FILTER_PARAMETERS_SOURCE, "FilterParameters")
+        header = generate_c_struct_header(info)
+        assert "double lpf1[1024];" in header
+
+    def test_column_major_comment_present(self):
+        """Multi-dim arrays trigger column-major note."""
+        info = parse_derived_type(WE_SOURCE, "WE")
+        header = generate_c_struct_header(info)
+        assert "column-major" in header
+
+    def test_no_column_major_comment_for_1d(self):
+        """1D-only types don't get column-major note."""
+        info = parse_derived_type(FILTER_PARAMETERS_SOURCE, "FilterParameters")
+        header = generate_c_struct_header(info)
+        assert "column-major" not in header
+
+    def test_we_scalars(self):
+        """WE scalar fields are correct."""
+        info = parse_derived_type(WE_SOURCE, "WE")
+        header = generate_c_struct_header(info)
+        assert "double om_r;" in header
+        assert "double v_t;" in header
+        assert "double v_m;" in header
+        assert "double v_0;" in header
+
+
+class TestRecursiveCCompatible:
+    """Test is_c_compatible_recursive and registry-aware classify_field_blockers."""
+
+    def test_simple_type_with_registry(self):
+        """Simple type (no nested) is compatible with registry."""
+        info = parse_derived_type(SIMPLE_TYPE_SOURCE, "Point3D")
+        registry = {"Point3D": info}
+        assert info.is_c_compatible_recursive(registry) is True
+
+    def test_compatible_nested_type(self):
+        """Type with compatible nested type is recursively compatible."""
+        inner = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Inner")
+        outer = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Outer")
+        registry = {"Inner": inner, "Outer": outer}
+        assert outer.is_c_compatible_recursive(registry) is True
+
+    def test_incompatible_nested_type(self):
+        """Type with incompatible nested type is not recursively compatible."""
+        bad_inner = parse_derived_type(PARENT_WITH_BAD_NESTED_SOURCE, "BadInner")
+        bad_outer = parse_derived_type(PARENT_WITH_BAD_NESTED_SOURCE, "BadOuter")
+        registry = {"BadInner": bad_inner, "BadOuter": bad_outer}
+        assert bad_outer.is_c_compatible_recursive(registry) is False
+
+    def test_unknown_nested_type_without_registry(self):
+        """Unknown nested type (not in registry) → not compatible."""
+        outer = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Outer")
+        registry = {"Outer": outer}  # Inner not in registry
+        assert outer.is_c_compatible_recursive(registry) is False
+
+    def test_blockers_with_registry_no_false_positive(self):
+        """classify_field_blockers with registry doesn't flag compatible nested types."""
+        inner = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Inner")
+        outer = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Outer")
+        registry = {"Inner": inner, "Outer": outer}
+        blockers = classify_field_blockers(outer, registry=registry)
+        assert len(blockers) == 0
+
+    def test_blockers_without_registry_flags_nested(self):
+        """Without registry, all nested types are reported as blockers."""
+        outer = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Outer")
+        blockers = classify_field_blockers(outer)
+        reasons = [b.reason for b in blockers]
+        assert "nested_type" in reasons
+
+    def test_blockers_with_registry_flags_incompatible(self):
+        """With registry, incompatible nested types ARE still flagged."""
+        bad_inner = parse_derived_type(PARENT_WITH_BAD_NESTED_SOURCE, "BadInner")
+        bad_outer = parse_derived_type(PARENT_WITH_BAD_NESTED_SOURCE, "BadOuter")
+        registry = {"BadInner": bad_inner, "BadOuter": bad_outer}
+        blockers = classify_field_blockers(bad_outer, registry=registry)
+        reasons = [b.reason for b in blockers]
+        assert "nested_type" in reasons
+
+
+class TestNestedStructHeader:
+    """Test C struct header generation with nested types."""
+
+    def test_nested_type_field_in_header(self):
+        """TYPE(Inner) field → inner_t pos; in output."""
+        inner = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Inner")
+        outer = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Outer")
+        registry = {"Inner": inner, "Outer": outer}
+        header = generate_c_struct_header(outer, registry=registry)
+        assert "inner_t pos;" in header
+
+    def test_includes_when_emit_includes_true(self):
+        """Header contains #include when emit_includes=True."""
+        inner = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Inner")
+        outer = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Outer")
+        registry = {"Inner": inner, "Outer": outer}
+        header = generate_c_struct_header(outer, registry=registry, emit_includes=True)
+        assert '#include "inner_t.h"' in header
+
+    def test_no_includes_when_emit_includes_false(self):
+        """No #include when emit_includes=False."""
+        inner = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Inner")
+        outer = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Outer")
+        registry = {"Inner": inner, "Outer": outer}
+        header = generate_c_struct_header(outer, registry=registry, emit_includes=False)
+        assert "#include" not in header
+
+    def test_nested_struct_has_correct_typedef(self):
+        """Nested struct header has correct typedef name."""
+        inner = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Inner")
+        outer = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Outer")
+        registry = {"Inner": inner, "Outer": outer}
+        header = generate_c_struct_header(outer, registry=registry)
+        assert "outer_t;" in header
+
+
+class TestDependencyOrdering:
+    """Test topological sort of types by dependency."""
+
+    def test_parent_child_ordering(self):
+        """[Parent, Child] → ordered as [Child, Parent]."""
+        inner = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Inner")
+        outer = parse_derived_type(PARENT_WITH_NESTED_SOURCE, "Outer")
+        ordered = order_types_by_dependency([outer, inner])
+        names = [t.name for t in ordered]
+        assert names.index("Inner") < names.index("Outer")
+
+    def test_no_nested_types_order_preserved(self):
+        """Types without nested deps maintain stable order."""
+        p3d = parse_derived_type(SIMPLE_TYPE_SOURCE, "Point3D")
+        we = parse_derived_type(WE_SOURCE, "WE")
+        ordered = order_types_by_dependency([p3d, we])
+        assert len(ordered) == 2
+
+    def test_single_type(self):
+        """Single type works."""
+        p3d = parse_derived_type(SIMPLE_TYPE_SOURCE, "Point3D")
+        ordered = order_types_by_dependency([p3d])
+        assert len(ordered) == 1
+        assert ordered[0].name == "Point3D"
+
+    def test_empty_list(self):
+        """Empty list works."""
+        ordered = order_types_by_dependency([])
+        assert ordered == []
+
+    def test_cycle_detection(self):
+        """Cycle detection raises ValueError."""
+        # Manually create types with circular dependency
+        a = DerivedTypeInfo(
+            name="TypeA",
+            fields=[DerivedTypeField(name="b", fortran_type="TYPE(TypeB)")],
+        )
+        b = DerivedTypeInfo(
+            name="TypeB",
+            fields=[DerivedTypeField(name="a", fortran_type="TYPE(TypeA)")],
+        )
+        with pytest.raises(ValueError, match="cycle"):
+            order_types_by_dependency([a, b])
+
+
+class TestAllSevenTypes:
+    """Parse each of the 7 target types and verify struct header correctness."""
+
+    def test_we_is_compatible(self):
+        info = parse_derived_type(WE_SOURCE, "WE")
+        assert info.is_c_compatible is True
+        assert len(info.fields) == 7
+
+    def test_we_header_correct(self):
+        info = parse_derived_type(WE_SOURCE, "WE")
+        header = generate_c_struct_header(info)
+        assert "we_t" in header
+        assert "double P[3][3];" in header
+        assert "double xh[3][1];" in header
+        assert "double K[3][1];" in header
+        assert "double om_r;" in header
+
+    def test_filter_parameters_is_compatible(self):
+        info = parse_derived_type(FILTER_PARAMETERS_SOURCE, "FilterParameters")
+        assert info.is_c_compatible is True
+
+    def test_filter_parameters_header_correct(self):
+        info = parse_derived_type(FILTER_PARAMETERS_SOURCE, "FilterParameters")
+        header = generate_c_struct_header(info)
+        assert "filterparameters_t" in header
+        assert "double lpf1[1024];" in header
+        assert "double hpf1[1024];" in header
+
+    def test_object_instances_is_compatible(self):
+        info = parse_derived_type(OBJECT_INSTANCES_SOURCE, "ObjectInstances")
+        assert info.is_c_compatible is True
+        assert len(info.fields) == 9
+
+    def test_object_instances_header_correct(self):
+        info = parse_derived_type(OBJECT_INSTANCES_SOURCE, "ObjectInstances")
+        header = generate_c_struct_header(info, ROSCO_KIND_ALIASES)
+        assert "objectinstances_t" in header
+        assert "int instLPF;" in header
+        assert "int instPI;" in header
+
+    def test_controller_parameters_is_compatible(self):
+        info = parse_derived_type(CONTROLLER_PARAMETERS_SOURCE, "ControlParameters")
+        assert info.is_c_compatible is True
+
+    def test_performance_data_is_compatible(self):
+        info = parse_derived_type(PERFORMANCE_DATA_SOURCE, "PerformanceData")
+        assert info.is_c_compatible is True
+
+    def test_pitmanvar_is_compatible(self):
+        info = parse_derived_type(PITCHMAN_SOURCE, "PitManVar")
+        assert info.is_c_compatible is True
+
+    def test_debug_variables_is_compatible(self):
+        info = parse_derived_type(DEBUG_VARIABLES_SOURCE, "DebugVariables")
+        assert info.is_c_compatible is True
+
+    def test_debug_variables_header_correct(self):
+        info = parse_derived_type(DEBUG_VARIABLES_SOURCE, "DebugVariables")
+        header = generate_c_struct_header(info)
+        assert "debugvariables_t" in header
+        assert "double axisTilt_1P;" in header
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

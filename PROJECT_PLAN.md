@@ -399,15 +399,14 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 
 #### Phase 4B: Already-Compatible Structs + Nested Type Recursion
 
-- [ ] Extend `is_c_compatible` with recursive registry-based checking — `TYPE(WE)` field is compatible if WE itself is compatible in the registry
-- [ ] Extend `generate_c_struct_header()` for nested struct fields (`TYPE(WE) :: WE` → `we_t WE;` with `#include` dependency)
-- [ ] Extend `generate_c_struct_header()` for multi-dimensional fixed arrays (`DIMENSION(3,3)` → `double P[3][3]`, not `double P[3,3]`). Document column-major convention for C++ access.
-- [ ] Header dependency ordering in `analyze-types` — if type A contains type B, generate B's header first
-- [ ] `vit analyze-types --fix bind_c` — automated: adds `BIND(C)` attribute to compatible type definitions, removes default initializers, relocates initialization to allocation sites
-- [ ] Apply to 7 types: FilterParameters, piParams, resParams, rlParams, WE, ObjectInstances, DebugVariables
-- [ ] Decide WE `DIMENSION(3,1)` representation: flatten to `double[3]` or keep `double[3][1]`
-- [ ] Memory layout test: compare field offsets between Fortran BIND(C) type and C++ struct
-- [ ] Verify simulation still produces identical output after BIND(C) additions
+- [x] Extend `is_c_compatible` with recursive registry-based checking — `is_c_compatible_recursive(registry)` method on DerivedTypeInfo; `TYPE(WE)` field is compatible if WE itself is compatible in the registry
+- [x] Extend `generate_c_struct_header()` for nested struct fields (`TYPE(WE) :: WE` → `we_t WE;` with `#include` dependency). Supports `registry` param for nested type lookup, `emit_includes` for separate-file vs inline mode.
+- [x] Extend `generate_c_struct_header()` for multi-dimensional fixed arrays (`DIMENSION(3,3)` → `double P[3][3]`, not `double P[3,3]`). Added `_fortran_dims_to_c()` helper. Column-major note emitted for multi-dim arrays.
+- [x] Header dependency ordering — `order_types_by_dependency()` topological sort; threaded through integrate.py and translate.py
+- [x] All 7 types verified structurally C-compatible by parser auto-discovery (WE, FilterParameters, ObjectInstances, ControlParameters, PerformanceData, PitManVar, DebugVariables). No ROSCO source changes needed.
+- [x] WE `DIMENSION(3,1)` kept as `double[3][1]` — exact layout match, documents 3×1 column vector semantics
+- [x] Registry threaded through all callers: `classify_field_blockers()`, `analyze_all_types()`, `kernel_verify.py`, `integrate.py`, `translate.py`
+- [x] 35 new tests (399 total): 2D arrays, recursive compat, nested struct headers, dependency ordering, all 7 type headers
 
 **Types usable after:** FilterParameters, piParams, resParams, WE, ObjectInstances, DebugVariables
 **Unblocks:** Phase 6 Filters (FilterParameters + ObjectInstances + ErrorVariables all ready)
@@ -417,8 +416,10 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 - [ ] `vit analyze-types --fix logical` — automated rewrite of LOGICAL fields to INTEGER(C_INT): changes type definition AND updates all `%fieldname` references across source files. Handles all Fortran boolean idioms: `IF (x)` → `IF (x /= 0)`, `.NOT. x` → `(x == 0)`, `.TRUE.` → `1`, `.FALSE.` → `0`. Scope: `restart` (65 refs across 5 files), `WriteThisStep` (3 refs across 2 files). Use build-fix loop for downstream compiler errors. Re-add LOGICAL to `classify_field_blockers` when this fix exists.
 - [ ] `vit analyze-types --fix complex` — automated rewrite of COMPLEX fields to split re/im REAL fields, updates all references. `REAL(x)` → `x_re`, `AIMAG(x)` → `x_im`. Complex arithmetic (EXP, multiplication) flagged for review. Binary I/O updated to read/write both fields. Scope: `AWC_complexangle` (15 refs across 2 files).
 - [ ] `vit analyze-types --fix character_array` — handles `CHARACTER, DIMENSION(:), ALLOCATABLE :: ACC_INFILE` → `CHARACTER(1), DIMENSION(1024) :: ACC_INFILE`, updates ALLOCATE sites. Scope: `ACC_INFILE` (7 refs across 3 files). Use confirmation protocol (EXIT_CONFIRM) for array size — infer from ALLOCATE if possible, require human confirmation.
+- [ ] `vit analyze-types --fix bind_c` — automated: adds `BIND(C)` attribute to compatible type definitions, removes default initializers, relocates initialization to allocation sites. (Moved from Phase 4B — not needed for homogeneous types, required here for mixed-type LocalVariables.)
 - [ ] Apply all fixes to LocalVariables, add `BIND(C)` attribute
 - [ ] Generate LocalVariables C struct header with 5 nested structs (WE, FilterParameters, piParams, resParams, rlParams) and ~160 scalar/array fields
+- [ ] Memory layout test: compare field offsets between Fortran BIND(C) type and C++ struct (needed for mixed-type LocalVariables; not needed for homogeneous types proven in Phase 5A)
 - [ ] Verify simulation still produces identical output after all LocalVariables fixes
 
 **Types usable after:** LocalVariables (168 fields + 5 nested structs)

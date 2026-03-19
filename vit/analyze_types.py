@@ -44,9 +44,11 @@ def analyze_all_types(source_dir: str,
         List of TypeAnalysis, one per discovered type
     """
     all_types = scan_all_derived_types(source_dir)
+    # Build a registry so classify_field_blockers can resolve nested types
+    registry = {ti.name: ti for ti in all_types}
     analyses = []
     for ti in all_types:
-        blockers = classify_field_blockers(ti, kind_aliases)
+        blockers = classify_field_blockers(ti, kind_aliases, registry=registry)
         analyses.append(TypeAnalysis(
             type_info=ti,
             blockers=blockers,

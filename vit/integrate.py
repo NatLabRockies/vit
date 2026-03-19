@@ -236,14 +236,16 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
     lines.append("#include <cmath>")
     lines.append("")
 
-    # Embed struct typedefs for C-compatible derived types
+    # Embed struct typedefs for C-compatible derived types (in dependency order)
     if derived_types:
-        from .derived_type_parser import generate_c_struct_header
-        for type_name, type_info in derived_types.items():
-            if type_info.is_c_compatible:
-                header = generate_c_struct_header(type_info, kind_aliases)
-                lines.append(header.rstrip())
-                lines.append("")
+        from .derived_type_parser import generate_c_struct_header, order_types_by_dependency
+        compatible = [info for info in derived_types.values() if info.is_c_compatible]
+        for type_info in order_types_by_dependency(compatible):
+            header = generate_c_struct_header(type_info, kind_aliases,
+                                               registry=derived_types,
+                                               emit_includes=False)
+            lines.append(header.rstrip())
+            lines.append("")
 
     # Include the user's implementation
     lines.append("// --- User-provided C++ implementation ---")

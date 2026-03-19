@@ -112,7 +112,8 @@ def setup_kernel_cpp(
         for type_name, type_info in derived_types.items():
             if type_info.is_c_compatible:
                 header_filename = f"{type_name.lower()}_t.h"
-                header_content = generate_c_struct_header(type_info, kind_aliases)
+                header_content = generate_c_struct_header(type_info, kind_aliases,
+                                                          registry=derived_types)
                 header_path = kernel / header_filename
                 header_path.write_text(header_content)
                 struct_headers.append(header_filename)

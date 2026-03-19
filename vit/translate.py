@@ -49,14 +49,16 @@ def generate_translation_scaffold(
     lines.append(_generate_metadata_header(sig, kind_aliases, source_file, vit_version))
     lines.append("")
 
-    # Include struct typedefs for C-compatible derived types
+    # Include struct typedefs for C-compatible derived types (in dependency order)
     if derived_types:
-        from .derived_type_parser import generate_c_struct_header
-        for type_name, type_info in derived_types.items():
-            if type_info.is_c_compatible:
-                header = generate_c_struct_header(type_info, kind_aliases)
-                lines.append(header.rstrip())
-                lines.append("")
+        from .derived_type_parser import generate_c_struct_header, order_types_by_dependency
+        compatible = [info for info in derived_types.values() if info.is_c_compatible]
+        for type_info in order_types_by_dependency(compatible):
+            header = generate_c_struct_header(type_info, kind_aliases,
+                                               registry=derived_types,
+                                               emit_includes=False)
+            lines.append(header.rstrip())
+            lines.append("")
 
     # Generate C++ signature
     params = build_c_params(sig, kind_aliases, derived_types)
@@ -128,14 +130,16 @@ def generate_translation_prompt(
         sections.append(f"## Call Site\n")
         sections.append(f"Called from: `{call_site_info}`\n")
 
-    # C struct definitions for derived types
+    # C struct definitions for derived types (in dependency order)
     if derived_types:
-        from .derived_type_parser import generate_c_struct_header
+        from .derived_type_parser import generate_c_struct_header, order_types_by_dependency
         struct_defs = []
-        for type_name, type_info in derived_types.items():
-            if type_info.is_c_compatible:
-                header = generate_c_struct_header(type_info, kind_aliases)
-                struct_defs.append(header)
+        compatible = [info for info in derived_types.values() if info.is_c_compatible]
+        for type_info in order_types_by_dependency(compatible):
+            header = generate_c_struct_header(type_info, kind_aliases,
+                                               registry=derived_types,
+                                               emit_includes=False)
+            struct_defs.append(header)
         if struct_defs:
             sections.append("## C Struct Definitions\n")
             sections.append("These struct types are passed by pointer to the C++ function:\n")
