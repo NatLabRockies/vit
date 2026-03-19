@@ -155,6 +155,7 @@ SAMPLE_EDIT = ManualEdit(
     line=759,
     reason="complex intrinsic: EXP",
     source_text="LocalVar%AWC_complexangle(K) = LocalVar%AWC_complexangle(K) + amp * EXP(complexI * (AWC_angle(K)))",
+    cli_override="--rewrite 'Controllers.f90:759=<replacement>'",
 )
 
 SAMPLE_REVIEW = ManualReview(
@@ -190,6 +191,7 @@ class TestManualReview:
         assert "edit_1_file: /workspace/src/Controllers.f90" in output
         assert "edit_1_line: 759" in output
         assert "edit_1_reason: complex intrinsic: EXP" in output
+        assert "edit_1_cli_override: --rewrite" in output
         assert "EXP(complexI" in output
 
     def test_print_multiple_edits(self):
@@ -228,6 +230,8 @@ class TestParseManualReviews:
         assert r.edits[0].file == "/workspace/src/Controllers.f90"
         assert r.edits[0].line == 759
         assert "EXP" in r.edits[0].reason
+        assert "--rewrite" in r.edits[0].cli_override
+        assert "Controllers.f90:759" in r.edits[0].cli_override
 
     def test_parse_empty(self):
         assert parse_manual_reviews("") == []

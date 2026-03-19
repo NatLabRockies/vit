@@ -57,6 +57,7 @@ class ManualEdit:
     line: int               # 1-indexed line number
     reason: str             # why VIT can't auto-rewrite (e.g., "complex intrinsic: EXP")
     source_text: str        # the source line that needs manual rewriting
+    cli_override: str = ""  # CLI flag to provide the rewrite, e.g., "--rewrite 'file:line=<replacement>'"
     context: str = ""       # optional guidance for the human
 
 
@@ -100,6 +101,7 @@ def print_manual_review(review: ManualReview) -> None:
         print(f"edit_{i}_line: {edit.line}")
         print(f"edit_{i}_reason: {edit.reason}")
         print(f"edit_{i}_source: {edit.source_text}")
+        print(f"edit_{i}_cli_override: {edit.cli_override}")
         if edit.context:
             print(f"edit_{i}_context: {edit.context}")
     print(f"{_MANUAL_END}")
@@ -184,6 +186,7 @@ def parse_manual_reviews(output: str) -> list[ManualReview]:
                 line=int(fields.get(f"edit_{i}_line", "0")),
                 reason=fields.get(f"edit_{i}_reason", ""),
                 source_text=fields.get(f"edit_{i}_source", ""),
+                cli_override=fields.get(f"edit_{i}_cli_override", ""),
                 context=fields.get(f"edit_{i}_context", ""),
             ))
         results.append(ManualReview(

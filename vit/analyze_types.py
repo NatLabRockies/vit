@@ -617,6 +617,7 @@ def fix_complex_field(source_dir: str, type_name: str,
                             line=i + 1,
                             reason=f"complex intrinsic: {_complex_intrinsics_re.search(line).group(1)}",
                             source_text=line.strip(),
+                            cli_override=f"--rewrite '{key}=<replacement>'",
                         ))
 
     # If unresolved manual lines exist, return them — caller exits 11
