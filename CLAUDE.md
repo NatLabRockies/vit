@@ -126,6 +126,66 @@ Claude runs: vit analyze-types --fix character --type ErrorVariables --field Err
 VIT proceeds with the confirmed value.
 ```
 
+## VIT Manual Review Protocol
+
+When VIT can automatically rewrite most references to a field but encounters code it cannot safely transform (e.g., complex arithmetic with `EXP`, `CMPLX`), it applies nothing, signals the caller via **exit code 11** and a `[VIT:MANUAL]` block on stdout.
+
+### How it works
+
+1. VIT scans all references to the field and classifies each as auto-rewritable or manual
+2. If any manual lines exist without a `--rewrite` covering them, VIT exits 11 — **nothing is written to disk**
+3. When all manual lines have `--rewrite` entries (or there are none), VIT applies everything atomically
+
+### Claude's responsibilities when exit code is 11
+
+1. Parse the `[VIT:MANUAL]` block(s) from VIT's output
+2. Read the flagged source line(s) and understand the context — what the code does, why VIT can't auto-rewrite it
+3. **Propose a rewrite** to the user — Claude should use domain knowledge to suggest what the replacement code should be, just as it would when writing a translation
+4. Present the proposal clearly: the original line, the proposed replacement, and why
+5. Wait for the user to approve or adjust
+6. Re-run VIT with the approved rewrite as a `--rewrite` argument (the `cli_override` field shows the exact flag format)
+
+**Claude must NEVER auto-approve a manual rewrite.** The user must see and approve the proposed code before VIT applies it.
+
+### Example interaction
+
+```
+Claude runs: vit analyze-types --fix complex --type LocalVariables --field AWC_complexangle --apply
+VIT outputs: [VIT:MANUAL] block with:
+  edit_1_line: 759
+  edit_1_reason: complex intrinsic: EXP
+  edit_1_source: LocalVar%AWC_complexangle(K) = LocalVar%AWC_complexangle(K) + amp * EXP(complexI * (AWC_angle(K)))
+  edit_1_cli_override: --rewrite 'Controllers.f90:759=<replacement>'
+
+Claude: VIT can automatically rewrite 10 of 11 references to AWC_complexangle,
+        but found one line with complex arithmetic it can't transform:
+
+        Controllers.f90:759:
+          LocalVar%AWC_complexangle(K) = ... + amp * EXP(complexI * (AWC_angle(K)))
+
+        This is Euler's formula: amp * e^(iθ) = amp*(cos θ + i·sin θ).
+        I propose decomposing it as:
+          _re(K) = _re(K) + amp * COS(AWC_angle(K))
+          _im(K) = _im(K) + amp * SIN(AWC_angle(K))
+
+        Does this look correct?
+
+User: Yes.
+
+Claude runs: vit analyze-types --fix complex --type LocalVariables --field AWC_complexangle --apply \
+  --rewrite 'Controllers.f90:759=<COS/SIN lines>'
+VIT applies all changes (type definition + 10 auto-rewrites + 1 manual rewrite), exits 0.
+```
+
+### Exit code summary
+
+| Code | Meaning | Nothing written | Claude action |
+|------|---------|-----------------|---------------|
+| 0 | Success | (changes applied) | Done |
+| 1 | Error | Yes | Fix the error |
+| 10 | Confirmation needed | Yes | Present inferred value, wait for confirmation, re-run with override |
+| 11 | Manual rewrite needed | Yes | Propose rewrite, wait for approval, re-run with `--rewrite` |
+
 ## Full Workflow: Start to Finish
 
 All commands run inside the container from `/workspace/ROSCO`.
