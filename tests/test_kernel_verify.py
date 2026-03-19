@@ -711,5 +711,142 @@ class TestParseFieldData:
         assert entry["diff"] == "1.11E-16"
 
 
+# === Bare variable NaN patching tests ===
+
+class TestPatchNanComparisonsBare:
+    """Test NaN patching for bare variable comparisons (kv_ipc_* subroutines)."""
+
+    def test_bare_scalar_comparison(self):
+        """Transforms bare var == kgenref_var comparison."""
+        content = "        IF (var == kgenref_var) THEN\n"
+        result = _patch_nan_comparisons(content)
+        assert "var /= var" in result
+        assert "kgenref_var /= kgenref_var" in result
+        assert ".OR." in result
+        assert "both NaN" in result
+
+    def test_bare_does_not_affect_struct_fields(self):
+        """Struct field patterns still work alongside bare patterns."""
+        content = (
+            "        IF (var%field1 == kgenref_var%field1) THEN\n"
+            "        END IF\n"
+            "        IF (var == kgenref_var) THEN\n"
+            "        END IF\n"
+        )
+        result = _patch_nan_comparisons(content)
+        assert "var%field1 /= var%field1" in result
+        assert result.count(".OR.") == 2
+
+    def test_bare_uses_varname_in_diagnostic(self):
+        """Bare NaN diagnostic uses trim(adjustl(varname)), not a hardcoded name."""
+        content = "        IF (var == kgenref_var) THEN\n"
+        result = _patch_nan_comparisons(content)
+        assert "varname" in result
+
+
+# === Bare variable field logging tests ===
+
+class TestPatchFieldValueLoggingBare:
+    """Test field logging for bare variable comparisons (kv_ipc_* subroutines)."""
+
+    # Bare scalar block (after NaN patching) — matches kv_ipc_real__dbki
+    BARE_SCALAR_BLOCK = (
+        "    RECURSIVE SUBROUTINE kv_ipc_real__dbki(varname, check_status, var, kgenref_var)\n"
+        "        CHARACTER(LEN=*), INTENT(IN) :: varname\n"
+        "        real(KIND=dbki) :: diff\n"
+        "        IF ((var == kgenref_var) .OR. "
+        "((var /= var) .AND. (kgenref_var /= kgenref_var))) THEN\n"
+        "            check_result = CHECK_IDENTICAL\n"
+        "        ELSE\n"
+        "            diff = ABS(var - kgenref_var)\n"
+        "            IF (diff <= kgen_tolerance) THEN\n"
+        "                check_result = CHECK_IN_TOL\n"
+        "            ELSE\n"
+        "                check_result = CHECK_OUT_TOL\n"
+        "            END IF\n"
+        "        END IF\n"
+        "    END SUBROUTINE\n"
+    )
+
+    # Bare array block — matches kv_ipc_real__dbki_dim1
+    BARE_ARRAY_BLOCK = (
+        "    RECURSIVE SUBROUTINE kv_ipc_real__dbki_dim1(varname, check_status, var, kgenref_var)\n"
+        "        CHARACTER(LEN=*), INTENT(IN) :: varname\n"
+        "        INTEGER :: n\n"
+        "        real(KIND=dbki) :: rmsdiff\n"
+        "        IF (ALL(var == kgenref_var)) THEN\n"
+        "            check_result = CHECK_IDENTICAL\n"
+        "        ELSE\n"
+        "            rmsdiff = SQRT(SUM(buf2)/DBLE(n))\n"
+        "            IF (rmsdiff > kgen_tolerance) THEN\n"
+        "                check_result = CHECK_OUT_TOL\n"
+        "            ELSE\n"
+        "                check_result = CHECK_IN_TOL\n"
+        "            END IF\n"
+        "        END IF\n"
+        "    END SUBROUTINE\n"
+    )
+
+    def test_bare_scalar_identical_write(self):
+        """Injects [VIT_FIELD] WRITE after bare scalar CHECK_IDENTICAL."""
+        result = _patch_field_value_logging(self.BARE_SCALAR_BLOCK)
+        assert '[VIT_FIELD]' in result
+        lines = [l for l in result.split("\n") if '[VIT_FIELD]' in l and 'IDENTICAL' in l]
+        assert len(lines) == 1
+        assert 'varname' in lines[0]
+
+    def test_bare_scalar_in_tol_write(self):
+        """Injects [VIT_FIELD] WRITE after bare scalar CHECK_IN_TOL."""
+        result = _patch_field_value_logging(self.BARE_SCALAR_BLOCK)
+        lines = [l for l in result.split("\n") if '[VIT_FIELD]' in l and 'IN_TOL' in l]
+        assert len(lines) == 1
+        assert 'diff' in lines[0]
+
+    def test_bare_scalar_out_tol_write(self):
+        """Injects [VIT_FIELD] WRITE after bare scalar CHECK_OUT_TOL."""
+        result = _patch_field_value_logging(self.BARE_SCALAR_BLOCK)
+        lines = [l for l in result.split("\n") if '[VIT_FIELD]' in l and 'OUT_TOL' in l]
+        assert len(lines) == 1
+        assert 'diff' in lines[0]
+
+    def test_bare_array_identical_write(self):
+        """Injects [VIT_ARRAY] WRITE after bare array CHECK_IDENTICAL."""
+        result = _patch_field_value_logging(self.BARE_ARRAY_BLOCK)
+        lines = [l for l in result.split("\n") if '[VIT_ARRAY]' in l and 'IDENTICAL' in l]
+        assert len(lines) == 1
+        assert 'varname' in lines[0]
+        assert 'SIZE(var)' in lines[0]
+
+    def test_bare_array_out_tol_write(self):
+        """Injects [VIT_ARRAY] WRITE after bare array CHECK_OUT_TOL."""
+        result = _patch_field_value_logging(self.BARE_ARRAY_BLOCK)
+        lines = [l for l in result.split("\n") if '[VIT_ARRAY]' in l and 'OUT_TOL' in l]
+        assert len(lines) == 1
+        assert 'rmsdiff' in lines[0]
+
+    def test_bare_does_not_use_percent(self):
+        """Bare variable logging uses var/kgenref_var, not var%field."""
+        result = _patch_field_value_logging(self.BARE_SCALAR_BLOCK)
+        vit_lines = [l for l in result.split("\n") if '[VIT_FIELD]' in l]
+        for line in vit_lines:
+            assert 'var%' not in line
+
+    def test_mixed_struct_and_bare(self):
+        """Struct field patterns and bare patterns coexist."""
+        struct_block = TestPatchFieldValueLogging.SCALAR_BLOCK
+        content = struct_block + self.BARE_SCALAR_BLOCK
+        result = _patch_field_value_logging(content)
+        assert '[VIT_FIELD] dt_out' in result  # struct field
+        vit_lines = [l for l in result.split("\n") if '[VIT_FIELD]' in l]
+        # 3 from struct (IDENTICAL, IN_TOL, OUT_TOL) + 3 from bare
+        assert len(vit_lines) == 6
+
+    def test_idempotent(self):
+        """Patching already-patched bare content is a no-op."""
+        result1 = _patch_field_value_logging(self.BARE_SCALAR_BLOCK)
+        result2 = _patch_field_value_logging(result1)
+        assert result1 == result2
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

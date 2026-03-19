@@ -441,6 +441,24 @@ def _patch_nan_comparisons(content: str) -> str:
         _nan_guard,
         content,
     )
+
+    # Bare variable comparisons in kv_ipc_* subroutines (no % field access).
+    # These appear for functions whose verified output is a scalar or array
+    # return value rather than a struct field modification.
+    def _nan_guard_bare(m):
+        return (
+            f'IF ((var == kgenref_var) .OR. '
+            f'((var /= var) .AND. (kgenref_var /= kgenref_var))) THEN\n'
+            f'        IF (var /= var) '
+            f'WRITE(*, *) trim(adjustl(varname)),'
+            f'" is IDENTICAL (both NaN, uninitialized)."'
+        )
+
+    content = re.sub(
+        r'IF\s*\(\s*var\s*==\s*kgenref_var\s*\)\s*THEN',
+        _nan_guard_bare,
+        content,
+    )
     return content
 
 
@@ -485,6 +503,17 @@ def _patch_field_value_logging(content: str) -> str:
         r'\s*IF\s*\(ALL\(var%(\w+)\s*==\s*kgenref_var%',
         re.IGNORECASE,
     )
+    # Bare scalar: NaN-patched form: IF ((var == kgenref_var) .OR. ...
+    # (no % — appears in kv_ipc_* subroutines for return-value verification)
+    bare_scalar_re = re.compile(
+        r'\s*IF\s*\(\(var\s*==\s*kgenref_var\)\s*\.OR\.',
+        re.IGNORECASE,
+    )
+    # Bare array: IF (ALL(var == kgenref_var)) THEN
+    bare_array_re = re.compile(
+        r'\s*IF\s*\(ALL\(var\s*==\s*kgenref_var\)',
+        re.IGNORECASE,
+    )
     # check_result assignment
     check_re = re.compile(
         r'(\s*)check_result\s*=\s*(CHECK_IDENTICAL|CHECK_IN_TOL|CHECK_OUT_TOL)\s*$',
@@ -503,6 +532,16 @@ def _patch_field_value_logging(content: str) -> str:
         if m:
             current_field = m.group(1)
             current_type = "array"
+
+        # Detect bare scalar comparison (kv_ipc_* subroutines)
+        if bare_scalar_re.match(line):
+            current_field = "__bare__"
+            current_type = "bare_scalar"
+
+        # Detect bare array comparison (kv_ipc_*_dim1 subroutines)
+        if bare_array_re.match(line):
+            current_field = "__bare__"
+            current_type = "bare_array"
 
         result.append(line)
 
@@ -563,6 +602,49 @@ def _patch_field_value_logging(content: str) -> str:
                                 f'{indent}WRITE(*, *) "[VIT_ARRAY] {f} | OUT_TOL | n_diff=", '
                                 f'n_{f}'
                             )
+
+                # Bare variable comparisons (kv_ipc_* subroutines).
+                # Uses subroutine-local variables: var, kgenref_var, diff,
+                # rmsdiff, n, varname (the string name parameter).
+                elif current_type == "bare_scalar":
+                    if check_type == "CHECK_IDENTICAL":
+                        result.append(
+                            f'{indent}WRITE(*, *) "[VIT_FIELD] ", '
+                            f'trim(adjustl(varname)), '
+                            f'" | IDENTICAL | ", var, " | ", kgenref_var'
+                        )
+                    elif check_type == "CHECK_IN_TOL":
+                        result.append(
+                            f'{indent}WRITE(*, *) "[VIT_FIELD] ", '
+                            f'trim(adjustl(varname)), '
+                            f'" | IN_TOL | ", var, " | ", kgenref_var, " | ", diff'
+                        )
+                    elif check_type == "CHECK_OUT_TOL":
+                        result.append(
+                            f'{indent}WRITE(*, *) "[VIT_FIELD] ", '
+                            f'trim(adjustl(varname)), '
+                            f'" | OUT_TOL | ", var, " | ", kgenref_var, " | ", diff'
+                        )
+
+                elif current_type == "bare_array":
+                    if check_type == "CHECK_IDENTICAL":
+                        result.append(
+                            f'{indent}WRITE(*, *) "[VIT_ARRAY] ", '
+                            f'trim(adjustl(varname)), '
+                            f'" | IDENTICAL | size=", SIZE(var)'
+                        )
+                    elif check_type == "CHECK_IN_TOL":
+                        result.append(
+                            f'{indent}WRITE(*, *) "[VIT_ARRAY] ", '
+                            f'trim(adjustl(varname)), '
+                            f'" | IN_TOL | n_diff=", n, " | rms=", rmsdiff'
+                        )
+                    elif check_type == "CHECK_OUT_TOL":
+                        result.append(
+                            f'{indent}WRITE(*, *) "[VIT_ARRAY] ", '
+                            f'trim(adjustl(varname)), '
+                            f'" | OUT_TOL | n_diff=", n, " | rms=", rmsdiff'
+                        )
 
     return "\n".join(result)
 
