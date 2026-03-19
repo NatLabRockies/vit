@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from vit.kernel_verify import (
     _patch_nan_comparisons,
     _patch_field_value_logging,
+    _patch_kernel_makefile,
     _fix_kgen_utils_mod_only,
     _fix_use_ordering,
     _add_use_iso_c_binding,
@@ -846,6 +847,87 @@ class TestPatchFieldValueLoggingBare:
         result1 = _patch_field_value_logging(self.BARE_SCALAR_BLOCK)
         result2 = _patch_field_value_logging(result1)
         assert result1 == result2
+
+
+class TestPatchKernelMakefileFortranFlags:
+    """Tests for fortran_flags propagation to kernel Makefile."""
+
+    KGEN_MAKEFILE = """\
+# Makefile for KGEN-generated kernel
+
+ALL_OBJS := Controllers.o ROSCO_Types.o Constants.o kernel_driver.o kgen_utils.o
+
+build: ${ALL_OBJS}
+\t${FC_0} ${FC_FLAGS_SET_0} -o kernel.exe $^
+
+Controllers.o: Controllers.f90 ROSCO_Types.o
+\t${FC_0} ${FC_FLAGS_SET_0} -c -o $@ $<
+"""
+
+    def _make_kernel(self, tmp_path):
+        """Create a minimal kernel directory with a KGen-style Makefile."""
+        kernel = tmp_path / "kernel"
+        kernel.mkdir()
+        (kernel / "Makefile").write_text(self.KGEN_MAKEFILE)
+        return kernel
+
+    def test_fortran_flags_added_to_fc_flags_set_0(self, tmp_path):
+        """fortran_flags appear in FC_FLAGS_SET_0 when provided."""
+        kernel = self._make_kernel(tmp_path)
+        sig = FortranSignature(
+            name="test_func", kind=SubprogramKind.FUNCTION,
+            args=[], result_name="test_func_result",
+            result_type="REAL(8)", source_file="test.f90", line_number=1,
+        )
+        _patch_kernel_makefile(kernel, sig, "test_cpp.cpp",
+                               fortran_flags="-fdefault-real-8 -fdefault-double-8")
+        content = (kernel / "Makefile").read_text()
+        assert "-fdefault-real-8" in content
+        assert "-fdefault-double-8" in content
+        # Should be in the FC_FLAGS_SET_0 line
+        for line in content.split("\n"):
+            if line.startswith("FC_FLAGS_SET_0"):
+                assert "-fdefault-real-8" in line
+                assert "-fdefault-double-8" in line
+                break
+        else:
+            pytest.fail("FC_FLAGS_SET_0 line not found")
+
+    def test_no_fortran_flags_uses_defaults(self, tmp_path):
+        """Without fortran_flags, FC_FLAGS_SET_0 uses only base flags."""
+        kernel = self._make_kernel(tmp_path)
+        sig = FortranSignature(
+            name="test_func", kind=SubprogramKind.FUNCTION,
+            args=[], result_name="test_func_result",
+            result_type="REAL(8)", source_file="test.f90", line_number=1,
+        )
+        _patch_kernel_makefile(kernel, sig, "test_cpp.cpp")
+        content = (kernel / "Makefile").read_text()
+        assert "-fdefault-real-8" not in content
+        for line in content.split("\n"):
+            if line.startswith("FC_FLAGS_SET_0"):
+                assert "-O2" in line
+                assert "-ffree-form" in line
+                break
+
+    def test_fortran_flags_updated_on_rerun(self, tmp_path):
+        """Re-running with different fortran_flags updates FC_FLAGS_SET_0."""
+        kernel = self._make_kernel(tmp_path)
+        sig = FortranSignature(
+            name="test_func", kind=SubprogramKind.FUNCTION,
+            args=[], result_name="test_func_result",
+            result_type="REAL(8)", source_file="test.f90", line_number=1,
+        )
+        # First run without flags
+        _patch_kernel_makefile(kernel, sig, "test_cpp.cpp")
+        # Second run with flags
+        _patch_kernel_makefile(kernel, sig, "test_cpp.cpp",
+                               fortran_flags="-fdefault-real-8")
+        content = (kernel / "Makefile").read_text()
+        for line in content.split("\n"):
+            if line.startswith("FC_FLAGS_SET_0"):
+                assert "-fdefault-real-8" in line
+                break
 
 
 if __name__ == "__main__":

@@ -6,13 +6,13 @@
 
 Fully translate the ROSCO wind turbine controller from Fortran to C++, producing a drop-in replacement `libdiscon.so` that is pure C++ and produces byte-identical simulation output to the Fortran original. VIT orchestrates the verification and integration. Claude (AI) writes the C++ translations, scaffolded by the `vit translate` command (see Section 4a).
 
-### Current State (2026-03-18)
+### Current State (2026-03-19)
 
-- **Verified translations**: 3 of 14 Functions.f90 functions (`saturate`, `wrap_180`, `wrap_360`) — all ErrVar-free
-- **Integrated**: None yet (clean slate — integration happens in phase order)
-- **Pipeline**: End-to-end extract → verify → integrate → rebuild → diff confirmed working
-- **VIT codebase**: ~4,600 lines of core code, 231 unit tests, 11 modules
-- **Translation infrastructure**: `vit translate` command, module-organized storage in `ROSCO/translations/`, metadata headers (Phase 0 complete)
+- **Verified translations**: 15 functions across Functions.f90, Filters.f90, and ControllerBlocks.f90 — all KGen-verified 40/40 IDENTICAL and integrated
+- **Integrated**: All 15 translations integrated. Clean build test produces byte-identical simulation output across 3 scenarios.
+- **Pipeline**: End-to-end extract → verify → integrate → rebuild → diff confirmed working. Field-level CSV logging, NaN-safe comparison, `-ffp-contract=off` for bit-identical verification.
+- **VIT codebase**: ~6,300 lines of core code, 410 unit tests, 16 modules
+- **Translation infrastructure**: `vit translate` command, module-organized storage in `ROSCO/translations/`, metadata headers, `fortran.flags` for kernel compilation precision
 
 ### Total Scope
 
@@ -495,14 +495,15 @@ Translated the 3 filter functions that are active in the standard NREL-5MW test 
 
 Three filter functions could not be extracted because they are never called in the standard NREL-5MW test simulation. This phase adds a simulation scenario that exercises them, then translates them.
 
-- [x] Added `vit_sim.py` Scenario 3: enables IPC (IPC_ControlMode=1), notch filters (F_GenSpdNotch_N=1 at 1.0 rad/s), and cable control loop (CC_Group_N=1, CC_GroupIndex=2601, CC_Mode stays at 0 to avoid OOB bug). Scenario 3 runs first so KGen captures early invocations. Scenarios 1+2 untouched.
+- [x] Added `vit_sim.py` Scenario 3: enables IPC (IPC_ControlMode=1), notch filters (F_GenSpdNotch_N=1 at 1.0 rad/s), and cable control loop (CC_Mode=1, CC_Group_N=1, CC_GroupIndex=2601). Scenario 3 runs first so KGen captures early invocations. Scenarios 1+2 untouched.
 - [x] Translate + verify + integrate `NotchFilter` — 40/40 passed. Different scalar args (omega, betaNum, betaDen). Extracted from Filters.f90 line 356.
 - [x] Translate + verify + integrate `NotchFilterSlopes` — 40/40 passed. First function with two OPTIONAL args (Moving LOGICAL + InitialValue REAL). Extracted from Filters.f90 line 405.
-- [x] Translate + integrate `SecLPFilter_Vel` — KGen could not capture state (call inside DO loop with derived-type iteration bound). Translated by pattern from SecLPFilter (structurally identical, lpfV_ prefix). Integrated and passes full simulation.
+- [x] Translate + verify + integrate `SecLPFilter_Vel` — initially pattern-translated from SecLPFilter (structurally identical, lpfV_ prefix). Later KGen-verified 40/40 IDENTICAL after fixing two issues: (1) CC_Mode=1 required so DISCON calls CableControl (gated by `CC_Mode > 0`), (2) kernel Makefile needed `-fdefault-real-8` to prevent PI literal truncation to single precision. See dev note `202603191607-seclpfilter-vel-extraction-fix.md`.
 - [x] Full clean build test: 15 C++ translations, all 3 scenarios, **byte-identical output** (after FMA fix).
 - [x] **FMA contraction fix**: Discovered that gfortran and g++ schedule fused multiply-add differently for equivalent expressions, causing 1-ULP differences that accumulate in closed-loop feedback (NotchFilter on GenSpeed). Fixed by adding `-ffp-contract=off` to both Fortran and C++ in ROSCO's CMakeLists.txt. This is a verification-phase tool — once all of ROSCO is C++, FMA can be re-enabled. Clean build test now includes an FMA sanity check (default flags) to confirm diffs are small and bounded. See dev note `202603191041-fma-contraction-fix.md`.
+- [x] **`fortran.flags` config**: Added to VIT so project-specific Fortran compiler flags propagate to the kernel Makefile. Without this, literals like `PI = 3.14159265359` lose precision when compiled without `-fdefault-real-8`.
 
-**KGen limitation discovered:** KGen cannot capture state for calls inside `DO I_GROUP = 1, CntrPar%CC_Group_N` where the loop bound comes from a derived type field. The kernel is generated but no state files are written. This affected SecLPFilter_Vel only. Workaround: add a temporary standalone call site outside the loop for extraction. SecLPFilter_Vel was translated by pattern as an interim measure.
+**KGen DO loop handling note:** KGen correctly instruments call sites inside DO loops with derived-type iteration bounds. The original SecLPFilter_Vel "zero state files" issue was not a KGen bug — it was caused by CableControl being gated by `CC_Mode > 0` (simulation never entered the code path) and the kernel Makefile lacking `-fdefault-real-8` (literal constant precision loss).
 
 **Unblocks:** Full Filters module coverage (6/6 individual filters translated). PreFilterMeasuredSignals remains blocked on Phase 4C (LocalVariables) + Phase 4D (ControlParameters).
 

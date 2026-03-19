@@ -125,7 +125,7 @@ project:
 kgen:
   path: /workspace/KGen/bin/kgen      # Absolute path to KGen entry point (requires Python 2.7)
   build_cmd: "cd /workspace/ROSCO/rosco/controller/build && cmake --build ."
-  run_cmd: "cd /workspace/ROSCO/Examples && python3 04_simple_sim.py"
+  run_cmd: "cd /workspace/ROSCO/Examples && python3 vit_sim.py"
   clean_cmd: "cd /workspace/ROSCO/rosco/controller/build && make clean"
   install_cmd: "cp /workspace/ROSCO/rosco/controller/build/libdiscon.so /workspace/ROSCO/rosco/lib/libdiscon.so"
   invocation: "0:0:1-20"             # rank:thread:start-end — selects which KGen invocations to capture
@@ -142,6 +142,7 @@ fortran:
     SiKi: "REAL(4)"
     IntKi: "INTEGER(4)"
   compiler: gfortran
+  flags: "-fdefault-real-8 -fdefault-double-8"  # Propagated to kernel Makefile
 
 verification:
   tolerance: 1.0e-14                  # Maximum acceptable floating-point difference
@@ -178,7 +179,9 @@ translations:                         # Auto-populated by VIT after verify/integ
 | `interface` | `vit interface <function> [-f FILE] [-o DIR]` | Generate Fortran↔C interface files (extern "C" + ISO_C_BINDING) |
 | `verify` | `vit verify <function> <cpp_file> [-f FILE] [--kernel-dir DIR]` | Wire C++ into KGen kernel, build, and verify against captured state |
 | `integrate` | `vit integrate <function> <cpp_file> [-f FILE] [--apply] [--dry-run]` | Generate (and optionally apply) codebase integration patches |
+| `translate` | `vit translate <function> [-f FILE] [-o DIR]` | Generate C++ translation scaffold and LLM prompt |
 | `run` | `vit run <function> <cpp_file> [-f FILE] [--kernel-dir DIR] [--apply] [--skip-verify]` | Full pipeline: parse → verify → integrate in one command |
+| `analyze-types` | `vit analyze-types [--fix character] [--type TYPE] [--field FIELD] [--apply]` | Analyze derived type C-compatibility; fix CHARACTER(:) ALLOCATABLE fields |
 | `status` | `vit status` | Show translation status for all functions tracked in vit.yaml |
 
 **Flag details:**
@@ -202,7 +205,7 @@ translations:                         # Auto-populated by VIT after verify/integ
 
 ```
 vit/
-  cli.py              # Click-style CLI with subcommands
+  cli.py              # CLI with subcommands
   config.py           # YAML project configuration
   type_map.py         # Deterministic Fortran↔C type mapping
   fortran_parser.py   # Parse function signatures from source
@@ -210,6 +213,11 @@ vit/
   extract.py          # KGen extraction orchestration
   kernel_verify.py    # Wire C++ into kernel, build, verify
   integrate.py        # Generate codebase integration patches
+  translate.py        # Generate translation scaffolds + prompts
+  confirm.py          # Assumption confirmation protocol (exit code 10)
+  analyze_types.py    # Derived type C-compatibility analysis + fixes
+  derived_type_parser.py  # Parse TYPE definitions, generate C struct headers
+  build_fixer.py      # Auto-fix compiler errors during type fixes
 ```
 
 ## Requirements

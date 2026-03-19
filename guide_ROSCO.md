@@ -150,7 +150,7 @@ Now run the simulation and save the output as a baseline:
 
 ```bash
 cd Examples
-python3 04_simple_sim.py > ../baseline_output.txt 2>&1
+python3 vit_sim.py > ../baseline_output.txt 2>&1
 cd ..
 ```
 
@@ -167,7 +167,7 @@ wc -l baseline_output.txt
 vit init --name ROSCO \
          --source-dir rosco/controller/src \
          --build-cmd "cd rosco/controller/build && cmake --build ." \
-         --run-cmd "cd Examples && python3 04_simple_sim.py"
+         --run-cmd "cd Examples && python3 vit_sim.py"
 ```
 
 Then **edit `vit.yaml`** to use absolute paths and add all required fields. KGen runs build/run commands from unpredictable working directories, so relative paths will break.
@@ -181,7 +181,7 @@ project:
 kgen:
   path: /absolute/path/to/KGen/bin/kgen
   build_cmd: "cd /absolute/path/to/ROSCO/rosco/controller/build && cmake --build ."
-  run_cmd: "cd /absolute/path/to/ROSCO/Examples && python3 04_simple_sim.py"
+  run_cmd: "cd /absolute/path/to/ROSCO/Examples && python3 vit_sim.py"
   clean_cmd: "cd /absolute/path/to/ROSCO/rosco/controller/build && make clean"
   install_cmd: "cp /absolute/path/to/ROSCO/rosco/controller/build/libdiscon.so /absolute/path/to/ROSCO/rosco/lib/libdiscon.so"
   invocation: "0:0:1-20"
@@ -198,12 +198,15 @@ fortran:
     SiKi: "REAL(4)"
     IntKi: "INTEGER(4)"
   compiler: gfortran
+  flags: "-fdefault-real-8 -fdefault-double-8"  # Must match project's Fortran flags
 
 verification:
   tolerance: 1.0e-14
 
 translations: {}
 ```
+
+> **Note on `fortran.flags`:** These flags are propagated to the kernel Makefile during `vit verify`. Without them, Fortran literal constants (e.g., `PI = 3.14159265359`) may be evaluated as single-precision, causing coefficient mismatches. Match whatever flags your project's CMakeLists.txt sets for Fortran compilation.
 
 **Important:** Replace every `/absolute/path/to/` with your actual absolute paths.
 
@@ -326,7 +329,7 @@ vit integrate saturate saturate.cpp \
     -f rosco/controller/src/Functions.f90
 ```
 
-This prints 7 patches. Review them, then apply:
+This prints the integration plan. Review the patches, then apply:
 
 ```bash
 vit integrate saturate saturate.cpp \
@@ -334,31 +337,7 @@ vit integrate saturate saturate.cpp \
     --apply
 ```
 
-VIT auto-applies 5 patches and flags 2 as "manual review needed" (CMakeLists.txt insertions). Apply those manually:
-
-**Edit `rosco/controller/CMakeLists.txt`:**
-
-1. Add `src/saturate_cpp.cpp` to the `set(SOURCES ...)` list:
-
-```cmake
-set(SOURCES
-    src/Constants.f90
-    src/ControllerBlocks.f90
-    src/Controllers.f90
-    src/DISCON.F90
-    src/ROSCO_Types.f90
-    src/Functions.f90
-    src/Filters.f90
-    src/saturate_cpp.cpp       # <-- ADD THIS
-    ...
-```
-
-2. Add `target_link_libraries` after `add_library(discon SHARED ${SOURCES})`:
-
-```cmake
-add_library(discon SHARED ${SOURCES})
-target_link_libraries(discon PRIVATE stdc++)    # <-- ADD THIS
-```
+All patches are applied automatically — Fortran source modifications (interface block, wrapper function), CMakeLists.txt updates (`enable_language(CXX)`, C++ source file, `stdc++` link), and the C++ wrapper file. No manual edits needed. Multiple functions can be integrated sequentially; each `--apply` reads the current file state and skips items already present.
 
 ### Step 11: Rebuild and Verify Simulation Output
 
@@ -372,7 +351,7 @@ cd ../../..
 
 # Run simulation and capture output
 cd Examples
-python3 04_simple_sim.py > ../integrated_output.txt 2>&1
+python3 vit_sim.py > ../integrated_output.txt 2>&1
 cd ..
 ```
 

@@ -506,7 +506,7 @@ Match existing VIT conventions. Look at the existing code for patterns on docstr
 
 ## C++ Translations
 
-Verified C++ translations live in `ROSCO/translations/Functions/`, organized by Fortran source module. Canonical copies also exist in `vit_translation/translations/` (flat layout, for backwards compatibility).
+Verified C++ translations live in `ROSCO/translations/Functions/` and `ROSCO/translations/Filters/`, organized by Fortran source module.
 
 | File | Fortran function | Status |
 |------|-----------------|--------|
@@ -514,6 +514,9 @@ Verified C++ translations live in `ROSCO/translations/Functions/`, organized by 
 | `translations/Functions/wrap_180.cpp` | `wrap_180` in Functions.f90 | Verified (Phase 1) |
 | `translations/Functions/wrap_360.cpp` | `wrap_360` in Functions.f90 | Verified (Phase 1) |
 | `translations/Functions/ratelimit.cpp` | `ratelimit` in Functions.f90 | Verified (Phase 3) |
+| `translations/Functions/colemantransform.cpp` | `ColemanTransform` in Functions.f90 | Verified (Phase 2) |
+| `translations/Functions/colemantransforminverse.cpp` | `ColemanTransformInverse` in Functions.f90 | Verified (Phase 2) |
+| `translations/Functions/identity.cpp` | `identity` in ControllerBlocks.f90 | Verified (Phase 2) |
 | `translations/Functions/sigma.cpp` | `sigma` in Functions.f90 | Verified (Phase 5A) — first ErrorVariables function |
 | `translations/Functions/interp1d.cpp` | `interp1d` in Functions.f90 | Verified (Phase 5A) — arrays + ErrorVariables |
 | `translations/Filters/lpfilter.cpp` | `LPFilter` in Filters.f90 | Verified (Phase 6) — first Filters module, FilterParameters struct pointer |
