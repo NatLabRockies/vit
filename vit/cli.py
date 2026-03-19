@@ -36,7 +36,10 @@ from .analyze_types import (
     infer_character_length, fix_logical_field, fix_complex_field,
     fix_bind_c,
 )
-from .confirm import Assumption, EXIT_CONFIRM, print_assumption
+from .confirm import (
+    Assumption, ManualReview, EXIT_CONFIRM, EXIT_MANUAL,
+    print_assumption, print_manual_review,
+)
 
 
 def main():
@@ -815,7 +818,10 @@ def cmd_analyze_types(args, config):
 
         if result.success:
             if dry_run:
-                print(f"\n{len(result.changes)} change(s) would be applied. Run with --apply to write.")
+                total = len(result.changes) + len(result.manual_edits)
+                print(f"\n{total} item(s) found. Run with --apply to write.")
+                if result.manual_edits:
+                    print(f"  ({len(result.manual_edits)} will need manual rewriting)")
             else:
                 print(f"\n✓ Fixed {len(result.files_modified)} file(s)")
 
@@ -842,6 +848,20 @@ def cmd_analyze_types(args, config):
                         for err in build_result.remaining_errors:
                             print(f"  {err.file}:{err.line}: {err.message}")
                         return 1
+
+                # Report manual edits needed
+                if result.manual_edits:
+                    review = ManualReview(
+                        fix_type=args.fix,
+                        summary=(
+                            f"{len(result.manual_edits)} reference(s) need "
+                            f"manual rewriting after --fix {args.fix}"
+                        ),
+                        edits=result.manual_edits,
+                        changes_applied=len(result.changes),
+                    )
+                    print_manual_review(review)
+                    return EXIT_MANUAL
         else:
             print(f"\n✗ Fix failed")
         return 0 if result.success else 1

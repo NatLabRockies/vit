@@ -1,38 +1,42 @@
 """
-VIT Assumption Confirmation Protocol.
+VIT Signaling Protocol: Confirmation and Manual Review.
 
-When VIT infers a value from source evidence that could be wrong, it signals
-the caller (Claude Code) via exit code 10 and a structured [VIT:CONFIRM] block.
-Claude presents the assumption to the user, gets confirmation, and re-runs VIT
-with the confirmed value as an explicit CLI argument.
+VIT uses structured output blocks and exit codes to signal the caller
+(Claude Code) when human intervention is needed.
 
-## When to use this protocol
+## Exit codes
 
-- **Has evidence, inferred a value** → EXIT_CONFIRM (10). VIT found source
-  evidence and derived a value, but the inference could be wrong. Human must
-  validate. Example: inferred CHARACTER buffer size from ALLOCATE call.
+- **0** — Success. All changes applied, no intervention needed.
+- **1** — Error. VIT cannot proceed.
+- **10 (EXIT_CONFIRM)** — Confirmation needed. VIT inferred a value from
+  source evidence but the inference could be wrong. Emits [VIT:CONFIRM]
+  blocks. Claude presents the assumption, gets confirmation, and re-runs
+  VIT with the confirmed value as an explicit CLI argument.
+- **11 (EXIT_MANUAL)** — Manual edits needed. VIT applied all safe
+  automated changes but found code it cannot rewrite. Emits [VIT:MANUAL]
+  blocks listing file:line locations. Claude presents these to the user
+  for manual editing. No VIT re-run needed — the user edits source directly.
 
-- **No evidence, arbitrary fallback** → hard error (exit 1). VIT doesn't have
-  enough information to proceed. Guessing would silently produce wrong code.
-  Example: unknown function return type.
+## When to use which
 
-- **Technical/performance default** → safe to hardcode. Wrong value = slower
-  or noisier, not semantically incorrect. Example: max_iterations=5.
-
-The test: if a wrong default would produce code that compiles but behaves
-incorrectly, it needs either EXIT_CONFIRM (if inference exists) or a hard
-error (if no evidence).
+- **Has evidence, inferred a value** → EXIT_CONFIRM (10).
+- **Applied safe changes, but some lines need human rewriting** → EXIT_MANUAL (11).
+- **No evidence, arbitrary fallback** → hard error (exit 1).
+- **Technical/performance default** → safe to hardcode (exit 0).
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
 EXIT_CONFIRM = 10
+EXIT_MANUAL = 11
 
 _BLOCK_START = "[VIT:CONFIRM]"
 _BLOCK_END = "[/VIT:CONFIRM]"
+_MANUAL_START = "[VIT:MANUAL]"
+_MANUAL_END = "[/VIT:MANUAL]"
 
 
 @dataclass
@@ -44,6 +48,25 @@ class Assumption:
     inferred_from: str      # evidence source (file:line, expression)
     context: str            # multi-line explanation
     cli_override: str       # CLI flag to confirm, e.g., "--length 1024"
+
+
+@dataclass
+class ManualEdit:
+    """A source line that VIT cannot automatically rewrite."""
+    file: str               # absolute path to source file
+    line: int               # 1-indexed line number
+    reason: str             # why VIT can't auto-rewrite (e.g., "complex intrinsic: EXP")
+    source_text: str        # the source line that needs manual rewriting
+    context: str = ""       # optional guidance for the human
+
+
+@dataclass
+class ManualReview:
+    """A set of manual edits needed after VIT's automated changes."""
+    fix_type: str           # which --fix produced this (e.g., "complex")
+    summary: str            # one-line description
+    edits: list[ManualEdit] = field(default_factory=list)
+    changes_applied: int = 0  # how many references VIT did auto-rewrite
 
 
 def print_assumption(assumption: Assumption) -> None:
@@ -63,6 +86,23 @@ def print_assumption(assumption: Assumption) -> None:
             print(f"  {line}")
     print(f"cli_override: {assumption.cli_override}")
     print(f"{_BLOCK_END}")
+
+
+def print_manual_review(review: ManualReview) -> None:
+    """Print a [VIT:MANUAL] block to stdout."""
+    print(f"\n{_MANUAL_START}")
+    print(f"fix_type: {review.fix_type}")
+    print(f"summary: {review.summary}")
+    print(f"changes_applied: {review.changes_applied}")
+    print(f"edits_needed: {len(review.edits)}")
+    for i, edit in enumerate(review.edits, 1):
+        print(f"edit_{i}_file: {edit.file}")
+        print(f"edit_{i}_line: {edit.line}")
+        print(f"edit_{i}_reason: {edit.reason}")
+        print(f"edit_{i}_source: {edit.source_text}")
+        if edit.context:
+            print(f"edit_{i}_context: {edit.context}")
+    print(f"{_MANUAL_END}")
 
 
 def parse_assumptions(output: str) -> list[Assumption]:
@@ -117,3 +157,68 @@ def parse_assumptions(output: str) -> list[Assumption]:
             ))
 
     return results
+
+
+def parse_manual_reviews(output: str) -> list[ManualReview]:
+    """
+    Parse [VIT:MANUAL] blocks from VIT output.
+
+    Used in tests to verify the manual review protocol output format.
+    """
+    results = []
+    start_escaped = re.escape(_MANUAL_START)
+    end_escaped = re.escape(_MANUAL_END)
+    blocks = re.findall(
+        rf'{start_escaped}\n(.*?)\n{end_escaped}',
+        output,
+        re.DOTALL,
+    )
+
+    for block_text in blocks:
+        fields = _parse_block_fields(block_text)
+        n_edits = int(fields.get("edits_needed", "0"))
+        edits = []
+        for i in range(1, n_edits + 1):
+            edits.append(ManualEdit(
+                file=fields.get(f"edit_{i}_file", ""),
+                line=int(fields.get(f"edit_{i}_line", "0")),
+                reason=fields.get(f"edit_{i}_reason", ""),
+                source_text=fields.get(f"edit_{i}_source", ""),
+                context=fields.get(f"edit_{i}_context", ""),
+            ))
+        results.append(ManualReview(
+            fix_type=fields.get("fix_type", ""),
+            summary=fields.get("summary", ""),
+            edits=edits,
+            changes_applied=int(fields.get("changes_applied", "0")),
+        ))
+
+    return results
+
+
+def _parse_block_fields(block_text: str) -> dict[str, str]:
+    """Parse key: value pairs from a block, handling multi-line values."""
+    fields: dict[str, str] = {}
+    lines = block_text.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = re.match(r'^(\w+):\s*(.*)', line)
+        if m:
+            key = m.group(1)
+            value = m.group(2)
+            if value == "|":
+                multi_lines = []
+                i += 1
+                while i < len(lines):
+                    if lines[i].startswith("  "):
+                        multi_lines.append(lines[i][2:])
+                    else:
+                        break
+                    i += 1
+                fields[key] = "\n".join(multi_lines)
+                continue
+            else:
+                fields[key] = value
+        i += 1
+    return fields

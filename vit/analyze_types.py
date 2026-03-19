@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from .confirm import ManualEdit
 from .derived_type_parser import (
     DerivedTypeInfo,
     FieldBlocker,
@@ -109,6 +110,7 @@ class FixResult:
     files_modified: list[str] = field(default_factory=list)
     changes: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    manual_edits: list[ManualEdit] = field(default_factory=list)
 
     @property
     def success(self) -> bool:
@@ -715,11 +717,14 @@ def fix_complex_field(source_dir: str, type_name: str,
                     continue
 
                 # --- Lines with complex intrinsics → flag for manual review ---
-                if _complex_intrinsics_re.search(line):
-                    result.changes.append(
-                        f"[MANUAL] {f90_file}:{i+1}: Complex expression "
-                        f"needs manual rewrite: {original_line.strip()}"
-                    )
+                intrinsic_match = _complex_intrinsics_re.search(line)
+                if intrinsic_match:
+                    result.manual_edits.append(ManualEdit(
+                        file=str(f90_file),
+                        line=i + 1,
+                        reason=f"complex intrinsic: {intrinsic_match.group(1)}",
+                        source_text=original_line.strip(),
+                    ))
                     continue
 
                 # --- Fallback: simple substitution → _re ---

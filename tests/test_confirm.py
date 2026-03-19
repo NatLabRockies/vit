@@ -8,9 +8,14 @@ from contextlib import redirect_stdout
 
 from vit.confirm import (
     EXIT_CONFIRM,
+    EXIT_MANUAL,
     Assumption,
+    ManualEdit,
+    ManualReview,
     parse_assumptions,
+    parse_manual_reviews,
     print_assumption,
+    print_manual_review,
 )
 
 
@@ -141,3 +146,98 @@ class TestParseAssumptions:
 
     def test_parse_no_blocks(self):
         assert parse_assumptions("just normal output\nno blocks here\n") == []
+
+
+# --- Manual review protocol tests ---
+
+SAMPLE_EDIT = ManualEdit(
+    file="/workspace/src/Controllers.f90",
+    line=759,
+    reason="complex intrinsic: EXP",
+    source_text="LocalVar%AWC_complexangle(K) = LocalVar%AWC_complexangle(K) + amp * EXP(complexI * (AWC_angle(K)))",
+)
+
+SAMPLE_REVIEW = ManualReview(
+    fix_type="complex",
+    summary="1 reference(s) need manual rewriting after --fix complex",
+    edits=[SAMPLE_EDIT],
+    changes_applied=7,
+)
+
+
+class TestManualReview:
+    """Test ManualReview and ManualEdit formatting."""
+
+    def test_exit_manual_is_11(self):
+        assert EXIT_MANUAL == 11
+
+    def test_print_contains_delimiters(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_manual_review(SAMPLE_REVIEW)
+        output = buf.getvalue()
+        assert "[VIT:MANUAL]" in output
+        assert "[/VIT:MANUAL]" in output
+
+    def test_print_contains_all_fields(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_manual_review(SAMPLE_REVIEW)
+        output = buf.getvalue()
+        assert "fix_type: complex" in output
+        assert "changes_applied: 7" in output
+        assert "edits_needed: 1" in output
+        assert "edit_1_file: /workspace/src/Controllers.f90" in output
+        assert "edit_1_line: 759" in output
+        assert "edit_1_reason: complex intrinsic: EXP" in output
+        assert "EXP(complexI" in output
+
+    def test_print_multiple_edits(self):
+        edit2 = ManualEdit(
+            file="/workspace/src/Other.f90", line=42,
+            reason="complex intrinsic: CMPLX",
+            source_text="x = CMPLX(a, b)",
+        )
+        review = ManualReview(
+            fix_type="complex", summary="2 edits",
+            edits=[SAMPLE_EDIT, edit2], changes_applied=5,
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_manual_review(review)
+        output = buf.getvalue()
+        assert "edits_needed: 2" in output
+        assert "edit_1_file:" in output
+        assert "edit_2_file:" in output
+
+
+class TestParseManualReviews:
+    """Test parsing [VIT:MANUAL] blocks from output."""
+
+    def test_parse_roundtrip(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_manual_review(SAMPLE_REVIEW)
+        output = buf.getvalue()
+        parsed = parse_manual_reviews(output)
+        assert len(parsed) == 1
+        r = parsed[0]
+        assert r.fix_type == "complex"
+        assert r.changes_applied == 7
+        assert len(r.edits) == 1
+        assert r.edits[0].file == "/workspace/src/Controllers.f90"
+        assert r.edits[0].line == 759
+        assert "EXP" in r.edits[0].reason
+
+    def test_parse_empty(self):
+        assert parse_manual_reviews("") == []
+
+    def test_parse_with_surrounding_text(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print(f"Some output before")
+            print_manual_review(SAMPLE_REVIEW)
+            print(f"Some output after")
+        output = buf.getvalue()
+        parsed = parse_manual_reviews(output)
+        assert len(parsed) == 1

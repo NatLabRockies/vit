@@ -742,10 +742,9 @@ class TestFixComplex:
         result = fix_complex_field(
             str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
         )
-        # The EXP line should be flagged as [MANUAL]
-        manual_changes = [c for c in result.changes if c.startswith("[MANUAL]")]
-        assert len(manual_changes) >= 1
-        assert "EXP" in manual_changes[0]
+        # The EXP line should produce a ManualEdit
+        assert len(result.manual_edits) >= 1
+        assert "EXP" in result.manual_edits[0].reason
 
     def test_fix_complex_rewrites_real_extraction(self, tmp_path):
         (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
