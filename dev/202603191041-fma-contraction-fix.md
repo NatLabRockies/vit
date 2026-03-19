@@ -82,7 +82,11 @@ Negligible. The ROSCO controller runs at dt=0.025s (40 Hz). At this rate, the fi
 
 ## Implications for Future Phases
 
-**This fix is permanent and applies to all future translations.** Any C++ translation compiled with `-ffp-contract=off` will produce bit-identical results to the Fortran original (also compiled with `-ffp-contract=off`), provided the C++ expression structure matches the Fortran expression structure.
+**`-ffp-contract=off` is a verification-phase tool, not a permanent production setting.** During translation, we need bit-identical results to prove each function's correctness against KGen-captured Fortran state. Once all of ROSCO is translated to C++ and there's no mixed Fortran/C++ binary, FMA can be re-enabled freely — the C++ code will stand on its own with full compiler optimizations.
+
+**Two-check clean build test:** The clean build test now has two steps:
+1. **Verification check** (`-ffp-contract=off` on both): diff must be empty. Proves translation correctness.
+2. **FMA sanity check** (default flags, FMA on both): diff should be small and bounded (a few lines in Scenario 3 with sub-0.01% differences). Confirms no structural translation bugs hiding behind the FMA mask.
 
 **KGen verification tolerance (1e-14) is still necessary** as a safety net, but with `-ffp-contract=off` on both sides, all translations should show `IDENTICAL` (not `IN_TOL`) for all fields. If a future translation shows `IN_TOL`, it indicates a real translation bug (expression structure mismatch), not an FMA artifact.
 

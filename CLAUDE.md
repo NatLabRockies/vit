@@ -78,11 +78,13 @@ pip3 install -e /workspace/ROSCO --break-system-packages
 - **Clock skew warnings** during `make` are harmless (filesystem timestamp differences between Mac and container).
 - **No network access** from inside the container due to corporate TLS inspection. All packages were pre-installed.
 
-### FMA Contraction and Bit-Identical Results
+### FMA Contraction and Bit-Identical Verification
 
-ROSCO's `CMakeLists.txt` sets `-ffp-contract=off` on both Fortran and C++ compilers. This disables FMA (fused multiply-add) contraction, ensuring gfortran and g++ produce bit-identical results for equivalent floating-point expressions. Without this, the compilers schedule FMA differently, causing 1-ULP differences that accumulate in closed-loop feedback and produce visible simulation drift.
+ROSCO's `CMakeLists.txt` sets `-ffp-contract=off` on both Fortran and C++ compilers. This disables FMA (fused multiply-add) contraction during the translation/verification phase, ensuring gfortran and g++ produce bit-identical results for equivalent floating-point expressions. Without this, the compilers schedule FMA differently (each independently choosing which multiply-adds to fuse), causing 1-ULP differences that accumulate in closed-loop feedback.
 
-**This flag is required.** Do not remove it. If a translation shows `IN_TOL` (instead of `IDENTICAL`) in KGen field data, it indicates a real translation bug, not an FMA artifact — investigate the expression structure.
+**This flag is for verification, not permanent.** Once all of ROSCO is translated to C++ and there's no mixed Fortran/C++ binary, FMA can be re-enabled freely — the C++ code will stand on its own with full compiler optimizations. During the translation phase, `-ffp-contract=off` is required so that each function's correctness can be proven bit-exactly against the Fortran original.
+
+**If a translation shows `IN_TOL` (instead of `IDENTICAL`) in KGen field data with `-ffp-contract=off`**, it indicates a real translation bug — investigate the expression structure.
 
 VIT's kernel verification Makefile also uses `-ffp-contract=off` in CXXFLAGS to match.
 
@@ -445,9 +447,29 @@ cd Examples && python3 vit_sim.py > /workspace/ROSCO/integrated_output.txt 2>&1 
 diff baseline_output.txt integrated_output.txt
 ```
 
-Scenarios 1+2 produce byte-identical output. Scenario 3 may show sub-ULP drift (~0.1 kW) from NotchFilter in closed-loop feedback — each individual call is verified within 1e-14, but tiny differences accumulate over 400s. All 15 C++ translations integrated.
+With `-ffp-contract=off` (the default in CMakeLists.txt), the diff must be empty — all scenarios byte-identical.
 
-After confirming the diff is empty, delete the test output file:
+After confirming the diff is empty, run the **FMA sanity check** — rebuild both baseline and integrated with FMA enabled (the production default) and verify the diff is small and bounded:
+
+```bash
+# FMA sanity check: rebuild baseline with FMA enabled
+cd /workspace/ROSCO
+git checkout e8010f0 -- rosco/controller/src/Functions.f90 rosco/controller/src/ControllerBlocks.f90 rosco/controller/src/Filters.f90
+rm -f rosco/controller/src/*_cpp.cpp
+cd rosco/controller/build && rm -rf * && cmake .. -DCMAKE_INSTALL_PREFIX=install -DCMAKE_Fortran_FLAGS_OVERRIDE='-ffp-contract=fast' -DCMAKE_CXX_FLAGS_OVERRIDE='-ffp-contract=fast' && cmake --build . && cp libdiscon.so ../../lib/libdiscon.so && cd /workspace/ROSCO
+cd Examples && python3 vit_sim.py > /workspace/ROSCO/baseline_fma.txt 2>&1 && cd /workspace/ROSCO
+
+# Re-integrate and rebuild with FMA enabled
+# (run all vit integrate --apply commands, then:)
+cd rosco/controller/build && rm -rf * && cmake .. -DCMAKE_INSTALL_PREFIX=install -DCMAKE_Fortran_FLAGS_OVERRIDE='-ffp-contract=fast' -DCMAKE_CXX_FLAGS_OVERRIDE='-ffp-contract=fast' && cmake --build . && cp libdiscon.so ../../lib/libdiscon.so && cd /workspace/ROSCO
+cd Examples && python3 vit_sim.py > /workspace/ROSCO/integrated_fma.txt 2>&1 && cd /workspace/ROSCO
+diff baseline_fma.txt integrated_fma.txt
+rm -f baseline_fma.txt integrated_fma.txt
+```
+
+The FMA diff should be small: at most a few lines in Scenario 3 with sub-0.01% Power differences (1-ULP FMA scheduling drift in closed-loop feedback). Scenarios 1+2 should remain byte-identical. Large or widespread differences indicate a translation bug, not FMA rounding.
+
+After both checks pass, delete the test output file:
 ```bash
 rm -f integrated_output.txt
 ```
