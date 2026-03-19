@@ -443,30 +443,35 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 #### Phase 4 Dependency Graph and Execution Order
 
 ```
-4A (ErrorVariables) ──→ Phase 5 first batch (interp1d, sigma, unwrap, interp2d)
+4A (ErrorVariables) ──→ Phase 5A (sigma, interp1d) ✅ ──→ Phase 5B (unwrap, interp2d)
 4B (Simple structs)  ──→ Phase 6 Filters
 4C (LocalVariables)  ──→ Phase 7 Controllers, Phase 8 ControllerBlocks (partial)
-4D (View structs)    ──→ Phase 5 AeroDynTorque, Phases 7-8 full
+4D (View structs)    ──→ Phase 5B AeroDynTorque, Phases 7-8 full
 ```
 
-4A and 4B are independent. 4C depends on 4B (needs nested type recursion). 4D is independent of 4C but naturally comes last. Recommended execution interleaves with translation phases: 4A → 5(batch1) → 4B → 6 → 4C → 4D → 5(AeroDynTorque) → 7 → 8.
+4A and 4B are independent. 4C depends on 4B (needs nested type recursion). 4D is independent of 4C but naturally comes last. Recommended execution interleaves with translation phases: 4A → 5A ✅ → 4B → 6 → 4C → 4D → 5B(remaining) → 7 → 8.
 
-### Phase 5: ErrorVariables Functions + 2D Assumed-Shape Arrays
+### Phase 5A: ErrorVariables Validation (sigma + interp1d) ✅
+**Status: Complete**
+
+Validates the ErrorVariables struct pointer pipeline end-to-end with the two simplest ErrVar functions. No VIT code changes needed — the pipeline already handles C-compatible derived types as struct pointers.
+
+- [x] Translate + verify + integrate `sigma` — 40/40 verified, scalars + ErrorVariables struct pointer
+- [x] Translate + verify + integrate `interp1d` — 40/40 verified, arrays + ErrorVariables struct pointer
+- [x] Full integration test: 9 C++ translations produce byte-identical simulation output
+
+### Phase 5B: Remaining Functions.f90 (unwrap, interp2d, AeroDynTorque)
 **Target: 13/14 Functions.f90 (CPfunction skipped — dead code)**
 
-With Phase 4A complete, ErrorVariables is a BIND(C) struct. The first 4 ErrVar-blocked functions can be translated immediately. AeroDynTorque requires Phase 4D (ControlParameters/PerformanceData view structs) and is deferred until after 4D completes. This phase also adds 2D assumed-shape array support needed by `interp2d`.
+Requires VIT enhancements for array-valued returns and 2D assumed-shape arrays. AeroDynTorque additionally requires Phase 4D (ControlParameters/PerformanceData view structs).
 
 - [ ] Multi-dimensional assumed-shape — `DIMENSION(:,:)` must generate two size params (`n_rows`, `n_cols`), not one. Current code silently generates broken interfaces for 2D. Add rank detection and per-dimension size params.
 - [ ] Guard against unsupported ranks — add explicit error for `DIMENSION(:,:,:)` and higher until supported.
 - [ ] Array-valued return where result size depends on input array — needed by `unwrap`
-- [x] Translate + verify + integrate `interp1d` (after 4A) — Phase 5A complete: 40/40 verified, arrays + ErrorVariables struct pointer
-- [x] Translate + verify + integrate `sigma` (after 4A) — Phase 5A complete: 40/40 verified, scalars + ErrorVariables struct pointer
-- [ ] Translate + verify + integrate `unwrap` (after 4A)
-- [ ] Translate + verify + integrate `interp2d` (after 4A)
+- [ ] Translate + verify + integrate `unwrap` (after array-valued return enhancement)
+- [ ] Translate + verify + integrate `interp2d` (after 2D assumed-shape enhancement)
 - [ ] Translate + verify + integrate `AeroDynTorque` (after 4D) — first function using the complete type system: ControlParameters (view struct), PerformanceData (view struct), LocalVariables (BIND(C) struct), ErrorVariables (BIND(C) struct)
 - [ ] Run full verification regression (all 13 translated functions pass)
-
-**New functions unlocked**: `interp1d`, `sigma`, `unwrap`, `interp2d`, `AeroDynTorque`
 
 ### Phase 6: Filters Module
 **Target: All of Filters.f90**
