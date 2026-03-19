@@ -73,6 +73,7 @@ def setup_kernel_cpp(
     kind_aliases: Optional[dict] = None,
     field_log: bool = True,
     derived_types: Optional[dict] = None,
+    fortran_flags: str = "",
 ) -> dict:
     """
     Wire a C++ translation into a KGen kernel directory for verification.
@@ -129,7 +130,7 @@ def setup_kernel_cpp(
 
     # --- Step 3: Modify Makefile ---
     try:
-        _patch_kernel_makefile(kernel, sig, wrapper_filename)
+        _patch_kernel_makefile(kernel, sig, wrapper_filename, fortran_flags=fortran_flags)
         result["files_modified"].append(str(kernel / "Makefile"))
     except Exception as e:
         result["errors"].append(f"Makefile patch failed: {e}")
@@ -232,7 +233,7 @@ def run_kernel_verify(kernel_dir: str, env: Optional[dict] = None,
 
 
 def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
-                           cpp_source: str) -> None:
+                           cpp_source: str, fortran_flags: str = "") -> None:
     """
     Patch the kernel Makefile to:
     1. Define FC_0 and FC_FLAGS_SET_0 (KGen bug: uses but never defines these)
@@ -251,6 +252,11 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
 
     Note: FC_0 and FC_FLAGS_SET_0 are USED but NEVER DEFINED.
     There is no FC variable either. We must prepend definitions.
+
+    The fortran_flags parameter propagates project-specific compiler flags
+    (e.g., -fdefault-real-8) that affect literal constant precision.
+    Without these, Fortran literals like 3.14159265359 may be truncated
+    to single precision in the kernel, causing coefficient mismatches.
     """
     makefile = kernel / "Makefile"
     content = makefile.read_text()
@@ -259,8 +265,20 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
 
     # 1. Prepend FC_0/FC_FLAGS_SET_0 definitions if not present
     # KGen Makefiles use FC_0 but never define it or FC
-    if not re.search(r'^FC_0\s*[?:]?=', content, re.MULTILINE):
-        lines.insert(0, "FC_FLAGS_SET_0 ?= -O2 -ffree-form -ffree-line-length-none")
+    # Include project-specific fortran_flags (e.g., -fdefault-real-8)
+    # Without these, Fortran literals like 3.14159265359 may be truncated
+    # to single precision in the kernel, causing coefficient mismatches.
+    base_flags = "-O2 -ffree-form -ffree-line-length-none"
+    if fortran_flags:
+        base_flags = f"{base_flags} {fortran_flags}"
+    fc_flags_line = f"FC_FLAGS_SET_0 ?= {base_flags}"
+    existing = re.search(r'^FC_FLAGS_SET_0\s*[?:]?=.*$', content, re.MULTILINE)
+    if existing:
+        # Update existing FC_FLAGS_SET_0 with correct flags
+        lines = [fc_flags_line if re.match(r'^FC_FLAGS_SET_0\s*[?:]?=', l) else l
+                 for l in lines]
+    elif not re.search(r'^FC_0\s*[?:]?=', content, re.MULTILINE):
+        lines.insert(0, fc_flags_line)
         lines.insert(0, "FC_0 ?= gfortran")
 
     # 2. Add C++ object to ALL_OBJS FIRST (before checking obj_name in content)

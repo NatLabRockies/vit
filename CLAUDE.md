@@ -237,6 +237,7 @@ fortran:
     SiKi: REAL(4)
     IntKi: INTEGER(4)
   compiler: gfortran
+  flags: -fdefault-real-8 -fdefault-double-8
 verification:
   tolerance: 1.0e-14
 translations:
@@ -250,6 +251,7 @@ Key fields:
 - `kgen.build_cmd`, `run_cmd`, `clean_cmd`, `install_cmd`: commands KGen runs to build/run/clean the Fortran project
 - `kgen.invocation`: selects which KGen invocations to capture state for (`0:0:1-20` means process 0, thread 0, invocations 1 through 20)
 - `fortran.kind_aliases`: maps ROSCO's custom kinds to standard types (`DbKi → REAL(8)`, etc.)
+- `fortran.flags`: extra Fortran compiler flags propagated to kernel Makefile (e.g., `-fdefault-real-8`). Without these, Fortran literals in the kernel may lose precision.
 - `verification.tolerance`: maximum acceptable floating-point difference (`1.0e-14`)
 - `translations`: tracks which functions have been verified/integrated
 
@@ -265,7 +267,7 @@ docker exec -it vit-dev bash -c "cd /workspace/vit && python3 -m pytest tests/ -
 
 ### Golden Test Fixtures
 
-Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/sigma/`, `kernel/LPFilter/`, `kernel/HPFilter/`, `kernel/SecLPFilter/`, `kernel/NotchFilter/`, `kernel/NotchFilterSlopes/`). Note: `SecLPFilter_Vel` has no golden kernel — KGen cannot capture state for calls inside DO loops with derived-type iteration bounds. Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
+Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/sigma/`, `kernel/LPFilter/`, `kernel/HPFilter/`, `kernel/SecLPFilter/`, `kernel/NotchFilter/`, `kernel/NotchFilterSlopes/`, `kernel/SecLPFilter_Vel/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
 
 **Extraction parameters (for regenerating golden fixtures):**
 
@@ -285,16 +287,19 @@ Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful ex
 | `SecLPFilter` | `Filters.f90` | 371 | `vit extract SecLPFilter -f rosco/controller/src/Filters.f90 -l 371` |
 | `NotchFilter` | `Filters.f90` | 356 | `vit extract NotchFilter -f rosco/controller/src/Filters.f90 -l 356` |
 | `NotchFilterSlopes` | `Filters.f90` | 405 | `vit extract NotchFilterSlopes -f rosco/controller/src/Filters.f90 -l 405` |
+| `SecLPFilter_Vel` | `Controllers.f90` | 939 | `vit extract SecLPFilter_Vel -f rosco/controller/src/Controllers.f90 -l 939` |
 
 Each extraction deposits into `kernel/<function_name>/` and restores the source file automatically.
 
-**IMPORTANT:** Extraction requires clean (pre-integration) source files. If ROSCO source has already-integrated C++ wrappers, the kernel will contain unresolved `_c` function calls. Before extracting, reset tracked source files to upstream state:
+**Note:** SecLPFilter_Vel requires `CC_Mode=1` in Scenario 3 of vit_sim.py (so CableControl is actually called). This was fixed — the `CALL CableControl` in DISCON.F90 is gated by `CC_Mode > 0`.
+
+**IMPORTANT:** Extraction requires clean (pre-integration) source files. If ROSCO source has already-integrated C++ wrappers, the kernel will contain unresolved `_c` function calls. Before extracting, reset tracked Fortran source files to upstream state:
 ```bash
 cd vit_translation/ROSCO
-git checkout e8010f0 -- rosco/controller/src/Functions.f90 rosco/controller/src/ControllerBlocks.f90 rosco/controller/src/Filters.f90 rosco/controller/CMakeLists.txt
+git checkout e8010f0 -- rosco/controller/src/Functions.f90 rosco/controller/src/ControllerBlocks.f90 rosco/controller/src/Filters.f90
 rm -f rosco/controller/src/*_cpp.cpp
 ```
-Then rebuild clean Fortran before running `vit extract`.
+Do NOT reset `CMakeLists.txt` — it has `-ffp-contract=off` flags required for verification. Then rebuild clean Fortran before running `vit extract`.
 
 **When to re-extract:**
 - Changes to `vit/vit/extract.py`
@@ -330,8 +335,9 @@ After every feature implementation, run:
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify SecLPFilter translations/Filters/seclpfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/SecLPFilter 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify NotchFilter translations/Filters/notchfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/NotchFilter 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify NotchFilterSlopes translations/Filters/notchfilterslopes.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/NotchFilterSlopes 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify SecLPFilter_Vel translations/Filters/seclpfilter_vel.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/SecLPFilter_Vel 2>&1 | tail -3"
    ```
-   Must show: `40/40 passed` for each function. Note: SecLPFilter_Vel has no golden kernel (KGen DO loop limitation).
+   Must show: `40/40 passed` for each function.
 
 3. **Determinism stress test (when touching NaN handling or comparison logic):**
    ```bash
@@ -357,12 +363,12 @@ The functions included in the clean build test expand as phases complete. Initia
 
 ```bash
 cd vit_translation/ROSCO
-git checkout e8010f0 -- rosco/controller/src/Functions.f90 rosco/controller/src/ControllerBlocks.f90 rosco/controller/src/Filters.f90 rosco/controller/CMakeLists.txt
+git checkout e8010f0 -- rosco/controller/src/Functions.f90 rosco/controller/src/ControllerBlocks.f90 rosco/controller/src/Filters.f90
 rm -f rosco/controller/src/*_cpp.cpp
 rm -rf kernel/ state/ model.ini include.ini kgen.log baseline_output.txt integrated_output.txt
 ```
 
-This restores source files to upstream (pre-integration) state using the last upstream commit `e8010f0`. The `translations/` directory and `vit.yaml` are preserved. Note: `ROSCO_Types.f90` and `ExtControl.f90` are NOT reset — the Phase 4A ErrorVariables fix (`CHARACTER(1024) :: ErrMsg` and `avcMSG = C_NULL_CHAR`) is permanent and required for the build.
+This restores Fortran source files to upstream (pre-integration) state using the last upstream commit `e8010f0`. The `translations/` directory and `vit.yaml` are preserved. Note: `ROSCO_Types.f90`, `ExtControl.f90`, and `CMakeLists.txt` are NOT reset — `ROSCO_Types.f90`/`ExtControl.f90` have the Phase 4A ErrorVariables fix, and `CMakeLists.txt` has `-ffp-contract=off` flags required for bit-identical verification.
 
 **Step 2 — Build clean Fortran baseline and capture baseline output (in container):**
 
@@ -392,9 +398,10 @@ vit extract HPFilter -f rosco/controller/src/Filters.f90 -l 375
 vit extract SecLPFilter -f rosco/controller/src/Filters.f90 -l 371
 vit extract NotchFilter -f rosco/controller/src/Filters.f90 -l 356
 vit extract NotchFilterSlopes -f rosco/controller/src/Filters.f90 -l 405
+vit extract SecLPFilter_Vel -f rosco/controller/src/Controllers.f90 -l 939
 ```
 
-Each must show `Extraction successful` with `Cases: 20`. Note: SecLPFilter_Vel cannot be extracted (KGen DO loop limitation).
+Each must show `Extraction successful` with `Cases: 20`.
 
 **Step 4 — Verify C++ translations against extracted kernels (in container):**
 
@@ -413,9 +420,10 @@ vit verify HPFilter translations/Filters/hpfilter.cpp -f rosco/controller/src/Fi
 vit verify SecLPFilter translations/Filters/seclpfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/SecLPFilter
 vit verify NotchFilter translations/Filters/notchfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/NotchFilter
 vit verify NotchFilterSlopes translations/Filters/notchfilterslopes.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/NotchFilterSlopes
+vit verify SecLPFilter_Vel translations/Filters/seclpfilter_vel.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/SecLPFilter_Vel
 ```
 
-Each must show `40/40 passed`. Note: SecLPFilter_Vel has no kernel for verification.
+Each must show `40/40 passed`.
 
 **Step 5 — Integrate all functions (in container):**
 
@@ -511,7 +519,7 @@ Verified C++ translations live in `ROSCO/translations/Functions/`, organized by 
 | `translations/Filters/lpfilter.cpp` | `LPFilter` in Filters.f90 | Verified (Phase 6) — first Filters module, FilterParameters struct pointer |
 | `translations/Filters/hpfilter.cpp` | `HPFilter` in Filters.f90 | Verified (Phase 6) |
 | `translations/Filters/seclpfilter.cpp` | `SecLPFilter` in Filters.f90 | Verified (Phase 6A) — second-order, 10 state fields |
-| `translations/Filters/seclpfilter_vel.cpp` | `SecLPFilter_Vel` in Filters.f90 | Translated by pattern (Phase 6B) — no KGen kernel (DO loop limitation) |
+| `translations/Filters/seclpfilter_vel.cpp` | `SecLPFilter_Vel` in Filters.f90 | Verified (Phase 7) — was pattern-translated, now KGen-verified with CC_Mode=1 fix |
 | `translations/Filters/notchfilter.cpp` | `NotchFilter` in Filters.f90 | Verified (Phase 6B) — discrete notch, omega/betaNum/betaDen args |
 | `translations/Filters/notchfilterslopes.cpp` | `NotchFilterSlopes` in Filters.f90 | Verified (Phase 6B) — first function with two OPTIONAL args |
 
@@ -547,9 +555,11 @@ All derived types (including ErrorVariables) will become BIND(C) structs passed 
 
 ### KGen extraction limitations
 
-- **DO loops with derived-type iteration bounds**: KGen cannot capture state for function calls inside `DO I = 1, derived_type%field`. The kernel is generated but zero state files are produced. Discovered with SecLPFilter_Vel inside `DO I_GROUP = 1, CntrPar%CC_Group_N`. Workaround: add a temporary standalone call site outside the loop for extraction, then remove it. SecLPFilter_Vel was translated by pattern from SecLPFilter (structurally identical) as an interim measure.
+- **Call site must be reachable at runtime**: KGen generates the kernel and instrumented code regardless, but zero state files are produced if the call site is never executed during the simulation. This was the original SecLPFilter_Vel issue — the `CALL CableControl` in DISCON.F90 is gated by `IF (CntrPar%CC_Mode > 0)`, and Scenario 3 originally had `CC_Mode=0`. Fixed by setting `CC_Mode=1` in vit_sim.py. KGen handles DO loops with derived-type iteration bounds correctly — the instrumented code is placed inside the loop body.
 
 - **Invocation ordering across scenarios**: KGen counts invocations per enclosing subroutine. When `vit_sim.py` runs multiple scenarios, Scenario 1's invocations consume the `0:0:1-20` capture range. Code paths only active in later scenarios (e.g., Scenario 3's IPC/notch/cable control) are never captured. Fix: Scenario 3 runs first in `vit_sim.py` so its invocations fall within the capture range.
+
+- **Kernel Makefile missing project Fortran flags**: KGen-generated kernel Makefiles don't include project-specific compiler flags like `-fdefault-real-8`. Without these, Fortran literal constants (e.g., `PI = 3.14159265359`) are evaluated as single-precision, causing coefficient mismatches. VIT's `fortran.flags` config field propagates these flags to the kernel Makefile.
 
 ## Development Notes Convention
 

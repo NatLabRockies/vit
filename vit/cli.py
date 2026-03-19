@@ -509,6 +509,7 @@ def cmd_verify(args, config):
         kind_aliases=config.kind_aliases,
         field_log=field_log,
         derived_types=derived_types,
+        fortran_flags=config.fortran_flags,
     )
 
     if not setup_result["success"]:
@@ -625,6 +626,7 @@ def cmd_run(args, config):
                 kind_aliases=config.kind_aliases,
                 field_log=field_log,
                 derived_types=derived_types,
+                fortran_flags=config.fortran_flags,
             )
 
             if not setup_result["success"]:

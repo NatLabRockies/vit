@@ -51,6 +51,7 @@ DEFAULT_CONFIG = {
             "IntKi": "INTEGER(4)",
         },
         "compiler": "gfortran",
+        "flags": "",  # Extra Fortran flags for kernel compilation (e.g., -fdefault-real-8)
     },
     "verification": {
         "tolerance": 1e-14,
@@ -84,6 +85,7 @@ class VitConfig:
         "IntKi": "INTEGER(4)",
     })
     fortran_compiler: str = "gfortran"
+    fortran_flags: str = ""  # Extra Fortran flags for kernel compilation
 
     tolerance: float = 1e-14
     translations: dict = field(default_factory=dict)
@@ -159,6 +161,7 @@ def load_config(config_path: Optional[str] = None) -> VitConfig:
         target_name=build.get("target_name", "discon"),
         kind_aliases=fortran.get("kind_aliases", DEFAULT_CONFIG["fortran"]["kind_aliases"]),
         fortran_compiler=fortran.get("compiler", "gfortran"),
+        fortran_flags=fortran.get("flags", ""),
         tolerance=verify.get("tolerance", 1e-14),
         translations=data.get("translations", {}),
         config_dir=config_dir,
@@ -192,6 +195,7 @@ def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
         "fortran": {
             "kind_aliases": config.kind_aliases,
             "compiler": config.fortran_compiler,
+            "flags": config.fortran_flags,
         },
         "verification": {
             "tolerance": config.tolerance,
