@@ -356,13 +356,44 @@ Each extraction deposits into `kernel/<function_name>/` and restores the source 
 
 **Note:** SecLPFilter_Vel requires `CC_Mode=1` in Scenario 3 of vit_sim.py (so CableControl is actually called). This was fixed — the `CALL CableControl` in DISCON.F90 is gated by `CC_Mode > 0`.
 
-**IMPORTANT:** Extraction requires clean (pre-integration) source files. If ROSCO source has already-integrated C++ wrappers, the kernel will contain unresolved `_c` function calls. Before extracting, reset tracked Fortran source files to upstream state:
+**IMPORTANT:** Extraction requires clean (pre-integration) source files. If ROSCO source has already-integrated C++ wrappers, the kernel will contain unresolved `_c` function calls.
+
+Before extracting, prepare the source tree:
+
+1. **Reset integrated source files to upstream** — only files that have integration wrappers (Functions.f90, Filters.f90, ControllerBlocks.f90). Controllers.f90 at Phase 4C (`fde0498`) has no wrappers and can be used directly.
+2. **Keep Phase 4C ROSCO_Types.f90** — KGen's BIND(C) parser bug is fixed, so Phase 4C types (with `BIND(C)`, `INTEGER(C_INT) restart`) are parseable.
+3. **Apply the restart call-site fix** to upstream Filters.f90 and Functions.f90 — Phase 4C ROSCO_Types changed `restart` from `LOGICAL` to `INTEGER(C_INT)`, so call sites that pass `LocalVar%restart` to `LOGICAL` params need `(LocalVar%restart /= 0)`.
+4. **Create C++ stubs** for the `*_cpp.cpp` files referenced in CMakeLists.txt.
+
 ```bash
 cd vit_translation/ROSCO
-git checkout e8010f0 -- rosco/controller/src/Functions.f90 rosco/controller/src/ControllerBlocks.f90 rosco/controller/src/Filters.f90
-rm -f rosco/controller/src/*_cpp.cpp
+
+# Reset files with integration wrappers to upstream
+git checkout e8010f0 -- rosco/controller/src/Functions.f90 rosco/controller/src/Filters.f90
+
+# Use Phase 4C for files WITHOUT wrappers (have restart call-site fix)
+git checkout fde0498 -- rosco/controller/src/Controllers.f90 rosco/controller/src/ControllerBlocks.f90
+
+# Apply restart fix to upstream Filters.f90 and Functions.f90
+sed -i '' 's/LocalVar%restart/(LocalVar%restart \/= 0)/g' rosco/controller/src/Filters.f90 rosco/controller/src/Functions.f90
+
+# Create C++ stubs
+for f in rosco/controller/src/*_cpp.cpp; do echo "// stub" > "$f"; done
 ```
-Do NOT reset `CMakeLists.txt` — it has `-ffp-contract=off` flags required for verification. Then rebuild clean Fortran before running `vit extract`.
+
+Do NOT reset `ROSCO_Types.f90` (Phase 4C types are needed), `ExtControl.f90`, `ReadSetParameters.f90`, `ROSCO_IO.f90` (Phase 4A/4C fixes, no wrappers), or `CMakeLists.txt` (`-ffp-contract=off` flags + C++ source list).
+
+**Alternative (simpler):** Reset ALL source files to full upstream (`e8010f0`), including ROSCO_Types.f90. This avoids the restart type mismatch entirely. KGen handles the original types fine. The kernel uses upstream types but VIT's verification patches and C++ wrapper generation handle the mapping. This is simpler but loses Phase 4C type compatibility during extraction.
+
+```bash
+cd vit_translation/ROSCO
+git checkout e8010f0 -- rosco/controller/src/Functions.f90 rosco/controller/src/ControllerBlocks.f90 rosco/controller/src/Filters.f90 rosco/controller/src/Controllers.f90 rosco/controller/src/ROSCO_Types.f90 rosco/controller/src/ExtControl.f90 rosco/controller/src/ReadSetParameters.f90 rosco/controller/src/ROSCO_IO.f90
+for f in rosco/controller/src/*_cpp.cpp; do echo "// stub" > "$f"; done
+```
+
+Then rebuild clean Fortran before running `vit extract`.
+
+**Note on PIIController:** Extraction for PIIController (line 682, Flp_Mode=2) is blocked by an upstream ROSCO bug — the 1-DOF simulation segfaults with Flp_Mode=2 during `init_discon`. See dev note `202603200110`. PIIController is sim-diff verified instead.
 
 **When to re-extract:**
 - Changes to `vit/vit/extract.py`
@@ -428,12 +459,22 @@ The functions included in the clean build test expand as phases complete. Initia
 
 ```bash
 cd vit_translation/ROSCO
-git checkout e8010f0 -- rosco/controller/src/Functions.f90 rosco/controller/src/ControllerBlocks.f90 rosco/controller/src/Filters.f90
-rm -f rosco/controller/src/*_cpp.cpp
+
+# Reset files with integration wrappers to upstream
+git checkout e8010f0 -- rosco/controller/src/Functions.f90 rosco/controller/src/Filters.f90
+
+# Use Phase 4C for files WITHOUT wrappers (Controllers.f90 + ControllerBlocks.f90 have restart fix, no wrappers)
+git checkout fde0498 -- rosco/controller/src/Controllers.f90 rosco/controller/src/ControllerBlocks.f90
+
+# Apply restart call-site fix to upstream Filters.f90 and Functions.f90
+sed -i '' 's/LocalVar%restart/(LocalVar%restart \/= 0)/g' rosco/controller/src/Filters.f90 rosco/controller/src/Functions.f90
+
+# Create C++ stubs and clean artifacts
+for f in rosco/controller/src/*_cpp.cpp; do echo "// stub" > "$f"; done
 rm -rf kernel/ state/ model.ini include.ini kgen.log baseline_output.txt integrated_output.txt
 ```
 
-This restores Fortran source files to upstream (pre-integration) state using the last upstream commit `e8010f0`. The `translations/` directory and `vit.yaml` are preserved. Note: `ROSCO_Types.f90`, `ExtControl.f90`, and `CMakeLists.txt` are NOT reset — `ROSCO_Types.f90`/`ExtControl.f90` have the Phase 4A ErrorVariables fix, and `CMakeLists.txt` has `-ffp-contract=off` flags required for bit-identical verification.
+This gives clean Fortran (no integration wrappers) compatible with Phase 4C ROSCO_Types.f90. Files NOT reset: `ROSCO_Types.f90`, `ExtControl.f90`, `ReadSetParameters.f90`, `ROSCO_IO.f90` (Phase 4A/4C type fixes, no wrappers), `CMakeLists.txt` (`-ffp-contract=off` flags). The `translations/` directory and `vit.yaml` are preserved.
 
 **Step 2 — Build clean Fortran baseline and capture baseline output (in container):**
 
