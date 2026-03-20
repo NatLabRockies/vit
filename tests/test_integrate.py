@@ -20,6 +20,7 @@ from vit.integrate import (
     _generate_standalone_cpp,
     _generate_cmake_patches,
     _generate_fortran_patches,
+    _generate_c_declaration,
 )
 from vit.fortran_parser import (
     parse_signature_from_source,
@@ -572,6 +573,118 @@ class TestMultiFunctionFortranPatches:
         # Original implementation lines should be gone
         assert "MIN(MAX(" not in content
         assert "MODULO(" not in content
+
+
+class TestSharedHeader:
+    """Test shared C header generation for translated function entry points."""
+
+    def test_c_declaration_for_function(self):
+        """_generate_c_declaration produces correct extern C declaration."""
+        sig = parse_signature_from_source(SIMPLE_MODULE_SOURCE, "saturate")
+        decl = _generate_c_declaration(sig)
+        assert "double saturate_c(" in decl
+        assert decl.endswith(";")
+        assert "double inputValue" in decl
+        assert "double minValue" in decl
+
+    def test_plan_includes_header_patch(self, tmp_path):
+        """generate_integration_plan produces an append_header patch."""
+        f90 = tmp_path / "Functions.f90"
+        f90.write_text(SIMPLE_MODULE_SOURCE)
+        cpp = tmp_path / "saturate.cpp"
+        cpp.write_text(CPP_IMPL)
+
+        plan = generate_integration_plan(
+            sig=parse_signature_from_source(SIMPLE_MODULE_SOURCE, "saturate"),
+            cpp_impl_path=str(cpp),
+            source_file=str(f90),
+        )
+        header_patches = [p for p in plan.patches if p.action == "append_header"]
+        assert len(header_patches) == 1
+        assert "saturate_c" in header_patches[0].content
+        assert header_patches[0].filepath.endswith("vit_translated.h")
+
+    def test_apply_creates_header_file(self, tmp_path):
+        """apply_integration_plan creates vit_translated.h with declaration."""
+        f90 = tmp_path / "Functions.f90"
+        f90.write_text(SIMPLE_MODULE_SOURCE)
+        cpp = tmp_path / "saturate.cpp"
+        cpp.write_text(CPP_IMPL)
+
+        plan = generate_integration_plan(
+            sig=parse_signature_from_source(SIMPLE_MODULE_SOURCE, "saturate"),
+            cpp_impl_path=str(cpp),
+            source_file=str(f90),
+        )
+        apply_integration_plan(plan)
+
+        header = tmp_path / "vit_translated.h"
+        assert header.exists()
+        content = header.read_text()
+        assert "VIT_TRANSLATED_H" in content
+        assert "saturate_c" in content
+        assert 'extern "C"' in content
+
+    def test_apply_appends_to_existing_header(self, tmp_path):
+        """Second integration appends to existing header, doesn't overwrite."""
+        f90 = tmp_path / "Functions.f90"
+        f90.write_text(SIMPLE_MODULE_SOURCE.replace(
+            "END MODULE Functions",
+            """
+    REAL(8) FUNCTION wrap_180(x)
+        IMPLICIT NONE
+        REAL(8), INTENT(IN) :: x
+        wrap_180 = MODULO(x + 180.0, 360.0) - 180.0
+    END FUNCTION wrap_180
+
+END MODULE Functions"""
+        ))
+        cpp1 = tmp_path / "saturate.cpp"
+        cpp1.write_text(CPP_IMPL)
+        cpp2 = tmp_path / "wrap_180.cpp"
+        cpp2.write_text("double wrap_180(double x) { return x; }\n")
+
+        # First integration
+        plan1 = generate_integration_plan(
+            sig=parse_signature_from_source(f90.read_text(), "saturate"),
+            cpp_impl_path=str(cpp1),
+            source_file=str(f90),
+        )
+        apply_integration_plan(plan1)
+
+        # Second integration
+        plan2 = generate_integration_plan(
+            sig=parse_signature_from_source(f90.read_text(), "wrap_180"),
+            cpp_impl_path=str(cpp2),
+            source_file=str(f90),
+        )
+        apply_integration_plan(plan2)
+
+        header = tmp_path / "vit_translated.h"
+        content = header.read_text()
+        assert "saturate_c" in content
+        assert "wrap_180_c" in content
+        # Only one include guard
+        assert content.count("VIT_TRANSLATED_H") == 3  # #ifndef, #define, #endif
+
+    def test_apply_is_idempotent(self, tmp_path):
+        """Applying the same integration twice doesn't duplicate declarations."""
+        f90 = tmp_path / "Functions.f90"
+        f90.write_text(SIMPLE_MODULE_SOURCE)
+        cpp = tmp_path / "saturate.cpp"
+        cpp.write_text(CPP_IMPL)
+
+        plan = generate_integration_plan(
+            sig=parse_signature_from_source(SIMPLE_MODULE_SOURCE, "saturate"),
+            cpp_impl_path=str(cpp),
+            source_file=str(f90),
+        )
+        apply_integration_plan(plan)
+        apply_integration_plan(plan)
+
+        header = tmp_path / "vit_translated.h"
+        content = header.read_text()
+        assert content.count("saturate_c") == 1
 
 
 if __name__ == "__main__":

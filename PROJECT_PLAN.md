@@ -433,6 +433,7 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 
 #### Phase 4D: Pointer+Size View Pattern for ALLOCATABLE Types
 
+- [ ] **Read ReadControlParameterFileSub deeply** before designing the view struct. Map every ALLOCATABLE field to the scalar that determines its size (e.g., `F_NotchFreqs` sized by `F_NumNotchFilts`). Use these pairings for meaningful size parameter names. 2D arrays need special attention: dimensions come from different sources (one from a scalar, one from `SIZE()` of another array). This is a read-only dependency — we don't translate ReadSetParameters here (stays Phase 10), we just understand it.
 - [ ] New type classification in analyze-types: "bind_c" (direct struct) vs "view" (pointer+size view into Fortran-owned memory)
 - [ ] `generate_view_struct_header()` — ALLOCATABLE 1D: `double* field; int n_field;`. ALLOCATABLE 2D: `double* field; int n_field_rows; int n_field_cols;`. Scalars and fixed fields copied directly. CHARACTER fields as `char field[N]`. Use confirmation protocol (EXIT_CONFIRM) for any inferred array sizes or CHARACTER lengths.
 - [ ] `generate_view_populator()` — Fortran BIND(C) subroutine that copies scalars, takes `C_LOC` of ALLOCATABLE arrays, fills size fields. One populator per ALLOCATABLE type.
@@ -526,6 +527,8 @@ These functions take piParams/resParams (nested in LocalVariables) and ObjectIns
 
 - [ ] Read+write derived type access — these controllers read AND write fields on piParams/resParams nested in LocalVariables. C++ code modifies the struct in place; changes are visible to Fortran since the struct is passed by pointer.
 - [ ] Cross-module call chains — PIController is called by many Controllers and ControllerBlocks functions. By this phase, its dependencies (Filters, Functions) are already C++.
+- [ ] **Shared C header for translated functions** — `vit integrate --apply` emits/updates a shared header file with `extern "C"` declarations for each integrated function's `_c` entry point. C++ translations that call other translated functions `#include` this header and call `_c` directly — no round-trip through Fortran. Fortran callers still use the wrapper (unchanged). This infrastructure is built in 7A so it's ready for 7B where C++ controllers call C++ helpers.
+- [ ] `vit translate` scaffold includes `_c` declarations for already-translated callees (detected from `vit.yaml` translations registry)
 - [ ] Translate + verify + integrate `PIController` — generic PI with piParams state, integrator saturation
 - [ ] Translate + verify + integrate `PIDController` — takes ObjectInstances + LocalVariables + piParams
 - [ ] Translate + verify + integrate `PIIController` — double-integrator variant
@@ -537,7 +540,7 @@ These functions take piParams/resParams (nested in LocalVariables) and ObjectIns
 ### Phase 7B: Controllers Module — Main Subroutines (Need ControlParameters)
 **Target: 10 main controller subroutines — requires Phase 4D**
 
-All main control subroutines take ControlParameters (ALLOCATABLE arrays, needs pointer+size view from Phase 4D). These are 100-200 line subroutines with complex control flow, state machines, and multi-derived-type argument lists.
+All main control subroutines take ControlParameters (ALLOCATABLE arrays, needs pointer+size view from Phase 4D). These are 100-200 line subroutines with complex control flow, state machines, and multi-derived-type argument lists. C++ implementations call Phase 7A helpers (PIController, etc.) directly via the shared C header — no Fortran round-trip.
 
 - [ ] Large subroutine support — VIT's extraction and verification should handle these mechanically, but testing at scale is needed.
 - [ ] Translate + verify + integrate `PitchControl` — CntrPar + LocalVar + objInst + DebugVar + ErrVar

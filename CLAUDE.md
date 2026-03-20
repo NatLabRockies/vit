@@ -616,6 +616,17 @@ All derived types (including ErrorVariables) will become BIND(C) structs passed 
 
 - **No multi-dimensional assumed-shape handling**: `DIMENSION(:,:)` arrays would get a single `n_` size param via the same `:` detection, which is wrong for 2-D. There is no guard or warning — it would silently generate broken code. Add an error or proper handling when a multi-dimensional assumed-shape is encountered. Fixed in Phase 5.
 
+### C++ → C++ call path
+
+During the translation phase (mixed Fortran/C++ binary), every translated function has a Fortran wrapper. Fortran callers use the wrapper. But when a translated C++ function needs to call another translated C++ function (e.g., PitchControl calling PIController), it calls the `_c` entry point directly via a shared C header — no round-trip through Fortran.
+
+- **Fortran callers** → Fortran wrapper → `_c` function → C++ implementation (unchanged)
+- **C++ callers** → `_c` function directly via `#include` shared header (no wrapper)
+- **Shared header**: `vit integrate --apply` emits/updates a header with `extern "C"` declarations for each integrated function's `_c` entry point
+- **`vit translate`**: Scaffolds include `_c` declarations for already-translated callees (detected from `vit.yaml` translations registry)
+
+In Phase 11 (pure C++), all Fortran wrappers become dead code and are removed. C++ calls C++ directly throughout.
+
 ### KGen extraction limitations
 
 - **Call site must be reachable at runtime**: KGen generates the kernel and instrumented code regardless, but zero state files are produced if the call site is never executed during the simulation. This was the original SecLPFilter_Vel issue — the `CALL CableControl` in DISCON.F90 is gated by `IF (CntrPar%CC_Mode > 0)`, and Scenario 3 originally had `CC_Mode=0`. Fixed by setting `CC_Mode=1` in vit_sim.py. KGen handles DO loops with derived-type iteration bounds correctly — the instrumented code is placed inside the loop body.
