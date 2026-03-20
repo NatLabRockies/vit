@@ -114,6 +114,19 @@ VIT then:
 
 4. **Result**: Full ROSCO simulation output byte-for-byte identical to original Fortran.
 
+## Current Status
+
+VIT has been validated on **18 functions** across 4 Fortran modules in the ROSCO wind turbine controller, all KGen-verified 40/40 IDENTICAL:
+
+| Module | Functions | Complexity |
+|--------|-----------|------------|
+| **Functions.f90** | `saturate`, `wrap_180`, `wrap_360`, `ratelimit`, `ColemanTransform`, `ColemanTransformInverse`, `identity`, `sigma`, `interp1d` | Scalars, arrays, `ErrorVariables` struct, trig |
+| **Filters.f90** | `LPFilter`, `HPFilter`, `SecLPFilter`, `NotchFilter`, `NotchFilterSlopes`, `SecLPFilter_Vel` | `FilterParameters` struct pointer, instance-indexed state, OPTIONAL args |
+| **Controllers.f90** | `PIController`, `PIIController`, `ResController` | `piParams`/`resParams` struct R/W, inlined callees |
+| **ControllerBlocks.f90** | `identity` | Cross-module integration |
+
+The progression from simple scalar functions to struct-pointer-based filters and controllers demonstrates that the pipeline scales beyond trivial cases. With all 18 functions integrated and rebuilt, the ROSCO simulation produces **byte-identical output** across 5 scenarios (with `-ffp-contract=off` for deterministic FP).
+
 ## Configuration (vit.yaml)
 
 ```yaml

@@ -497,3 +497,33 @@ When you run `vit verify`, VIT modifies the KGen kernel directory:
 - **Fortran files — structural:** Fixes `USE kgen_utils_mod, ONLY:` → `USE kgen_utils_mod` (including multi-line continuation cleanup), adds `USE ISO_C_BINDING` before `IMPLICIT NONE`, inserts interface block above `CONTAINS`, replaces function body with C-calling wrapper
 - **Fortran files — verification correctness:** Sets `verboseLevel=100` so per-field comparison output is visible, patches NaN comparisons with IEEE 754 guards so NaN==NaN is treated as IDENTICAL
 - **New files:** `saturate_impl.hpp` (your C++ code copied in), `saturate_cpp.cpp` (extern "C" wrapper)
+
+---
+
+## Beyond Scalar Functions
+
+The `saturate` walkthrough above covers the simplest case — a pure function with scalar arguments. The same pipeline handles substantially more complex functions without any workflow changes.
+
+### Filter functions (Filters.f90)
+
+Filter functions like `LPFilter` and `NotchFilterSlopes` take a `FilterParameters` derived-type struct by pointer, with instance-indexed state fields (e.g., `objInst%instLPF` selects which filter instance's state to read/write). VIT auto-generates the struct as a C header and passes it through the `extern "C"` interface. OPTIONAL Fortran arguments are handled with sentinel values.
+
+```bash
+vit verify NotchFilterSlopes translations/Filters/notchfilterslopes.cpp \
+    -f rosco/controller/src/Filters.f90 \
+    --kernel-dir kernel/NotchFilterSlopes
+# ✓ VERIFICATION PASSED: 40/40 passed
+```
+
+### Controller functions (Controllers.f90)
+
+Controller functions like `PIController` and `ResController` take read/write struct pointers (`piParams`, `resParams`) whose fields are updated on each call. Some controllers inline calls to other translated functions (e.g., `saturate`). VIT generates a shared C header so translated C++ callers invoke the `_c` entry point directly — no round-trip through Fortran.
+
+```bash
+vit verify PIController translations/Controllers/picontroller.cpp \
+    -f rosco/controller/src/Controllers.f90 \
+    --kernel-dir kernel/PIController
+# ✓ VERIFICATION PASSED: 40/40 passed
+```
+
+In all cases the workflow is identical: `extract` → provide C++ → `verify` → `integrate`. VIT handles the interface generation, struct mapping, and kernel wiring automatically.
