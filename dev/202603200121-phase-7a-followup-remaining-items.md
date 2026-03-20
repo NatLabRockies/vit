@@ -1,56 +1,84 @@
-# Phase 7A Follow-Up: Remaining Items After Issue Resolution
+# Phase 7A Follow-Up: PIIController KGen Verification and Bug Fixes
 **Date:** 2026-03-20
 **Status:** completed
-**Scope:** Tracking what was completed vs. what remains from the Phase 7A issue resolution plan
+**Scope:** Fixing KGen BIND(C) parser bug, ROSCO Flp_Mode=2 bugs, achieving KGen verification for PIIController
 
-## Background
+## Context
 
-After Phase 7A implementation, we identified 6 issues and created a plan to fix them. The plan had 5 steps. This note tracks what was completed, what's blocked, and what still needs doing.
+Phase 7A translated PIController, PIIController, and ResController. PIController and ResController were KGen-verified 40/40. PIIController could not be KGen-extracted — the extraction produced 0 state files despite Scenario 4 (Flp_Mode=2) appearing to work. PIIController was initially verified via simulation diff only.
 
-## Completed
+This was not acceptable. VIT is a rigorous verification tool, and every translation should be KGen-verified unless there is a truly insurmountable technical barrier. We investigated the extraction failure to root cause and fixed everything we found.
 
-### Step 1: KGen BIND(C) Parser Fix
-- Fixed `KGen/kgen/parser/utils.py:142` — one-line `newline = line` initialization
-- Verified: PIController extracts with Phase 4C ROSCO_Types (BIND(C) on 6 types)
-- Committed to KGen repo: `b5fd702`
+## The Investigation
 
-### Step 2: PIIController Re-extraction Attempt
-- Set up extraction environment: Phase 4C ROSCO_Types + upstream sources with restart call-site fix
-- PIIController extraction still produced 0 state files
-- Full 5-layer root cause investigation:
-  1. KGen BIND(C) crash → fixed
-  2. Source state incompatibility → resolved by fix
-  3. F_FlpCornerFreq validation → fixed in vit_sim.py
-  4. Uninitialized K at line 669 → fixed
-  5. **ROSCO Flp_Mode=2 segfault** → upstream bug, unresolvable without fixing ROSCO
-- Confirmed: Flp_Mode=1 works, Flp_Mode=2 crashes. Same crash with full upstream ROSCO (no Phase 4C changes). This is a pre-existing ROSCO bug.
+The PIIController extraction failure had multiple causes layered on top of each other. Fixing one revealed the next. The investigation proceeded through 7 layers before reaching full KGen verification.
 
-### Step 3b: Dev Note Correction
-- Updated `202603192309-phase-7a-extraction-issues.md`: removed "2-strike rule", marked recommendations as superseded, pointed to new dev note `202603200110`
+### Layer 1: KGen BIND(C) parser crash
 
-### Step 3c: PROJECT_PLAN.md Update
-- PIIController entry updated with root cause: upstream ROSCO segfault in Flp_Mode=2, references dev note `202603200110`
+Phase 4C added `BIND(C)` to 6 TYPE definitions in ROSCO_Types.f90. KGen's Python 2.7 Fortran parser crashed on `TYPE, BIND(C), PUBLIC :: WE` with `UnboundLocalError: local variable 'newline' referenced before assignment`.
 
-### Step 3d: TRANSLATION_TIPS.md
-- Added Fortran `**` operator precedence lesson with ResController example
+**Root cause:** `KGen/kgen/parser/utils.py:142` — the `parse_bind()` function only initializes `newline` when `item is not None`, but uses it unconditionally on line 142.
 
-## Blocked
+**Fix:** Add `newline = line` in the `else` branch. One line.
 
-### Step 4: Re-verify PIIController via KGen
-- **Permanently blocked** by upstream ROSCO Flp_Mode=2 segfault
-- The 1-DOF simulation crashes during `init_discon` with Flp_Mode=2
-- `-fcheck=bounds` shows: `Array bound mismatch for dimension 1 of array 'localvar' (1024/13)`
-- Fixing this requires debugging ROSCO's SetParameters/initialization code, which is outside VIT's scope
-- PIIController remains sim-diff verified (byte-identical across 5 scenarios with 18 integrated functions)
+**Impact:** Without this fix, extraction required resetting ROSCO_Types.f90 to upstream (removing BIND(C)), which created a cascade of type incompatibilities.
 
-## Remaining
+### Layer 2: Source state incompatibility
 
-### Step 3a: CLAUDE.md Extraction Instructions
-**Done.** Updated extraction instructions and clean build test Step 1. Documents two approaches (Phase 4C types with restart fix, or full upstream reset). Added PIIController note. Commit `26c6ced`.
+With the BIND(C) bug forcing a full upstream reset, the extraction environment had upstream ROSCO_Types (`LOGICAL :: restart`) but Phase 4C call sites expected `INTEGER(C_INT) :: restart`. The workaround was resetting ALL source files to upstream and applying `sed` for the restart call-site fix. This was fragile and error-prone.
 
-### Step 5: Full Regression
-Deferred to next session — source files are in mixed state from investigation. Mechanical work: restore HEAD, rebuild, run unit tests + verification regression + simulation diff. Same regression passed during Phase 7A implementation.
+**Resolved by:** Layer 1 fix. With KGen able to parse BIND(C), we could use Phase 4C ROSCO_Types directly.
 
-## Assessment
+### Layer 3: F_FlpCornerFreq validation
 
-All plan items are complete or accounted for. KGen bug fixed, PIIController root cause fully diagnosed (upstream ROSCO bug), documentation corrected, CLAUDE.md extraction instructions updated. Only the full regression re-run remains (deferred, low risk).
+Scenario 4 set `Flp_Mode=2` but did not patch `F_FlpCornerFreq`, which defaulted to `0.0000  1.0000`. ROSCO's `CheckInputs` validates `F_FlpCornerFreq(1) > 0` when `Flp_Mode > 0`. With corner frequency = 0, validation set `aviFAIL = -1`, causing DISCON to return immediately without calling any controllers. FlapControl was never entered.
+
+This was invisible — Scenario 4 reported "PASSED" because the Python sim completed without exception. The controller error was swallowed silently.
+
+**Fix:** Patch `F_FlpCornerFreq` to `0.5000  0.7000` in Scenario 4.
+
+### Layer 4: write_discon regex
+
+The `write_discon` function used regex `^(\S+)` to match parameter values, but `AWC_CntrGains` has two space-separated values (`0.0000 0.0000`). The regex matched only the first token, and the patch silently failed (count=0).
+
+**Fix:** Changed to `^(.+?)` (non-greedy match up to the `!` comment).
+
+### Layer 5: Uninitialized K in FlapControl init
+
+Controllers.f90 line 669: `LocalVar%Flp_Angle(K) = PIIController(RootMyb_VelErr(K), ...)`. The variable `K` is a loop variable that was never assigned in the initialization block — there is no enclosing `DO K` loop. Using uninitialized `K` as an array index produced out-of-bounds access.
+
+**Fix:** Wrap in `DO K = 1,LocalVar%NumBl ... END DO`. This is an upstream ROSCO bug.
+
+### Layer 6: Uninitialized n in Flp_Mode==2 notch filter
+
+Filters.f90 line 412: the `Flp_Mode==2` branch of `PreFilterMeasuredSignals` calls `NotchFilter` using `CntrPar%F_GenSpdNotch_Ind(n)` as an array index. The variable `n` is a loop counter from an earlier `DO n = 1,CntrPar%F_GenSpdNotch_N` loop at line 355, but in the `Flp_Mode==2` branch it is used outside any loop. When `F_GenSpdNotch_N=0` (no notch filters configured), the earlier loop never executes, and `n` is never set.
+
+This was the actual segfault — using garbage `n` as an index into `F_NotchFreqs`, `F_NotchBetaNum`, `F_NotchBetaDen` arrays caused an out-of-bounds memory access. This is an upstream ROSCO bug.
+
+**Diagnosis:** Added debug WRITE statements with FLUSH to DISCON.F90 between each subroutine call. The crash occurred between `SetParameters` (completed) and `PreFilterMeasuredSignals` (never returned). The segfault was inside the filter setup, not in FlapControl or PIIController.
+
+**Fix:** Wrap the NotchFilter call in `DO n = 1,CntrPar%F_GenSpdNotch_N ... END DO`. When no notch filters are configured, the loop body is skipped entirely.
+
+### Layer 7: ACC_INFILE character assignment
+
+ReadSetParameters.f90 line 216: `LocalVar%ACC_INFILE = accINFILE`. Phase 4A changed `ACC_INFILE` from `CHARACTER(:), ALLOCATABLE` to `CHARACTER(1024)`. The `accINFILE` parameter is a `CHARACTER(C_CHAR)` array of length `avrSWAP(50)` (typically 13, the DISCON filename length). Assigning a `CHARACTER(1)` array of size 13 to a `CHARACTER(1024)` scalar is a type/shape mismatch that gfortran's `-fcheck=bounds` catches as `Array bound mismatch for dimension 1 of array 'localvar' (1024/13)`.
+
+**Fix:** Element-wise copy: `DO i = 1, MIN(size, 1024); ACC_INFILE(i:i) = accINFILE(i); END DO`.
+
+### Layer 8 (false lead): kgen_array_sumcheck STOP
+
+KGen's state integrity check crashes the kernel when denormalized (subnormal) values from uninitialized struct fields in state files don't match zero-initialized memory. This affected the FlapControl kernel because it receives `ControlParameters` (large struct with many array fields).
+
+**Fix:** VIT patches `kgen_array_sumcheck` to remove the `STOP` from the finish branch. The function output verification catches real issues.
+
+This was fixed during Phase 7A but was a red herring for the extraction failure — the extraction problem was in the simulation, not the kernel verification.
+
+## Outcome
+
+After fixing all 7 layers, PIIController extracts with 20 state files and verifies 40/40 via KGen. All 18 functions are now KGen-verified.
+
+## Key Lesson
+
+The initial conclusion was that PIIController extraction was "blocked by an upstream ROSCO bug" that was "outside VIT's scope." This was wrong. The ROSCO bugs (uninitialized variables) were straightforward to diagnose and fix once we committed to finding the actual crash location instead of accepting "it segfaults" as a final answer.
+
+The debugging approach that worked: adding `WRITE(0,*) "DBG..."` statements between each subroutine call in DISCON.F90 to binary-search for the crash location, then reading the source at the crash point to identify the uninitialized variable. Total time from "let me dig deeper" to "40/40 passed": under an hour.
