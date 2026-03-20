@@ -251,11 +251,20 @@ def _apply_header_patch(patch: IntegrationPatch) -> None:
         # Skip if this declaration is already present
         if declaration in content:
             return
-        # Insert before the closing #endif
-        content = content.replace(
-            f"\n#endif // {guard}\n",
-            f"{declaration}\n\n#endif // {guard}\n",
-        )
+        # Insert before the closing #ifdef __cplusplus / } / #endif block
+        # (i.e., inside the extern "C" scope)
+        closing_marker = "\n#ifdef __cplusplus\n}\n#endif"
+        if closing_marker in content:
+            content = content.replace(
+                closing_marker,
+                f"{declaration}\n{closing_marker}",
+            )
+        else:
+            # Fallback: insert before #endif guard
+            content = content.replace(
+                f"\n#endif // {guard}\n",
+                f"{declaration}\n\n#endif // {guard}\n",
+            )
         header_path.write_text(content)
     else:
         header_path.parent.mkdir(parents=True, exist_ok=True)
