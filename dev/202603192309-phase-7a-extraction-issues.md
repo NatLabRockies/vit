@@ -142,7 +142,9 @@ Any ROSCO parameter that's an array (2+ values on one line) will hit this. The f
 
 ## Summary of Recommendations
 
-1. **Extraction always uses full upstream source files** — including ROSCO_Types.f90. Update CLAUDE.md extraction instructions.
-2. **2-strike rule for extraction failures** — if extraction fails twice, fall back to simulation-diff verification. Don't debug KGen.
-3. **Parenthesize Fortran `**` expressions in C++** — add to TRANSLATION_TIPS.md.
-4. **Test `write_discon` patches** — print a count of successful patches when running scenarios with nonstandard parameters.
+**SUPERSEDED** — see `202603200110-kgen-bindc-fix-piicontroller-diagnosis.md` for the complete root cause analysis and corrected recommendations. Key corrections:
+
+1. ~~**Extraction always uses full upstream source files**~~ → KGen BIND(C) parser bug was fixed (`utils.py:142`). Phase 4C ROSCO_Types can now be used directly for extraction.
+2. ~~**2-strike rule for extraction failures**~~ → **WRONG STANDARD.** KGen verification is required for all translations. Sim-diff is only acceptable when extraction is blocked by upstream bugs (e.g., ROSCO Flp_Mode=2 segfault). Always investigate extraction failures to root cause.
+3. **Parenthesize Fortran `**` expressions in C++** — add to TRANSLATION_TIPS.md. (Still valid.)
+4. **Test `write_discon` patches** — print a count of successful patches when running scenarios with nonstandard parameters. (Still valid.)
