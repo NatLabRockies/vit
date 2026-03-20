@@ -433,12 +433,24 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 
 #### Phase 4D: Pointer+Size View Pattern for ALLOCATABLE Types
 
-- [ ] **Read ReadControlParameterFileSub deeply** before designing the view struct. Map every ALLOCATABLE field to the scalar that determines its size (e.g., `F_NotchFreqs` sized by `F_NumNotchFilts`). Use these pairings for meaningful size parameter names. 2D arrays need special attention: dimensions come from different sources (one from a scalar, one from `SIZE()` of another array). This is a read-only dependency — we don't translate ReadSetParameters here (stays Phase 10), we just understand it.
+**Key finding (2026-03-19):** Feasibility analysis of all ALLOCATABLE fields in ControlParameters (61 fields) and PerformanceData (5 fields) confirmed that ~90% of size sources are fully automatable via source scanning — the same pattern VIT uses for CHARACTER length inference. See dev note `202603192051-allocatable-size-mapping-feasibility.md` for the complete field-by-field classification (Types A–E) and automation strategy.
+
+**Size source patterns discovered:**
+- **Type A (~56%):** Size is a `CntrPar%` field, passed to `ParseAry` → fully automatable
+- **Type B (~12%):** Literal constant → trivial
+- **Type C (2 fields):** Local variable from loop counting → EXIT_CONFIRM (present expression, ask human)
+- **Type D (2 fields):** `SIZE()` of another field → automatable
+- **Type E (5 fields, PerformanceData):** Array index into size field (`PerfTableSize(1)`) → automatable
+- **OL_ slices (~11 fields):** POINTER-associated, not ALLOCATABLE — need special handling
+
+**Recommended approach:** Implement `vit analyze-types --scan-allocatable` (or integrate into existing `analyze-types`) to automate the mapping. Scan ParseAry calls and explicit ALLOCATE statements, classify size expressions, generate the mapping table consumed by `generate_view_struct_header()`. Use EXIT_CONFIRM for Type C (unresolvable runtime expressions). This eliminates the manual "read ReadSetParameters deeply" step — VIT does the analysis automatically.
+
+- [ ] `vit analyze-types --scan-allocatable` — scan source for ParseAry/ALLOCATE calls involving each ALLOCATABLE field, extract size expressions, classify by type (A–E), produce field→size mapping. EXIT_CONFIRM for unresolvable expressions.
 - [ ] New type classification in analyze-types: "bind_c" (direct struct) vs "view" (pointer+size view into Fortran-owned memory)
-- [ ] `generate_view_struct_header()` — ALLOCATABLE 1D: `double* field; int n_field;`. ALLOCATABLE 2D: `double* field; int n_field_rows; int n_field_cols;`. Scalars and fixed fields copied directly. CHARACTER fields as `char field[N]`. Use confirmation protocol (EXIT_CONFIRM) for any inferred array sizes or CHARACTER lengths.
-- [ ] `generate_view_populator()` — Fortran BIND(C) subroutine that copies scalars, takes `C_LOC` of ALLOCATABLE arrays, fills size fields. One populator per ALLOCATABLE type.
-- [ ] Apply to ControlParameters (213 fields: ~135 scalars, ~76 ALLOCATABLE 1D, ~5 ALLOCATABLE 2D, 6 CHARACTER)
-- [ ] Apply to PerformanceData (5 fields: 2 ALLOCATABLE 1D, 3 ALLOCATABLE 2D)
+- [ ] `generate_view_struct_header()` — consumes the field→size mapping. ALLOCATABLE 1D: `double* field; int n_field;` (using the actual size field name from the mapping, not generic `n_field`). ALLOCATABLE 2D: `double* field; int n_field_rows; int n_field_cols;`. Scalars and fixed fields copied directly. CHARACTER fields as `char field[N]`.
+- [ ] `generate_view_populator()` — Fortran BIND(C) subroutine that copies scalars, takes `C_LOC` of ALLOCATABLE arrays, fills size fields from the mapping. One populator per ALLOCATABLE type.
+- [ ] Apply to ControlParameters (213 fields: ~135 scalars, ~61 ALLOCATABLE, ~11 POINTER slices, 6 CHARACTER)
+- [ ] Apply to PerformanceData (5 fields: 2 ALLOCATABLE 1D, 3 ALLOCATABLE 2D — sizes from `CntrPar%PerfTableSize`)
 - [ ] Apply to ExtControlType (1 ALLOCATABLE 1D array — avrSWAP)
 - [ ] Integration plan generates view populator calls in Fortran wrappers (called once after ReadSetParameters allocates arrays)
 - [ ] Document 2D column-major access convention for C++: `mat[col * n_rows + row]`
