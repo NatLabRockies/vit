@@ -6,13 +6,14 @@
 
 Fully translate the ROSCO wind turbine controller from Fortran to C++, producing a drop-in replacement `libdiscon.so` that is pure C++ and produces byte-identical simulation output to the Fortran original. VIT orchestrates the verification and integration. Claude (AI) writes the C++ translations, scaffolded by the `vit translate` command (see Section 4a).
 
-### Current State (2026-03-19)
+### Current State (2026-03-20)
 
-- **Verified translations**: 15 functions across Functions.f90, Filters.f90, and ControllerBlocks.f90 — all KGen-verified 40/40 IDENTICAL and integrated
-- **Integrated**: All 15 translations integrated. Clean build test produces byte-identical simulation output across 3 scenarios.
-- **Pipeline**: End-to-end extract → verify → integrate → rebuild → diff confirmed working. Field-level CSV logging, NaN-safe comparison, `-ffp-contract=off` for bit-identical verification.
+- **Verified translations**: 18 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, and Controllers.f90 — all 18 KGen-verified 40/40 IDENTICAL and integrated
+- **Integrated**: All 18 translations integrated. Clean build test produces byte-identical simulation output across 5 scenarios (standard, yaw-by-IPC, filter coverage, flap control Flp_Mode=2, active wake AWC_Mode=4).
+- **Pipeline**: End-to-end extract → verify → integrate → rebuild → diff confirmed working. Field-level CSV logging, NaN-safe comparison, `-ffp-contract=off` for bit-identical verification. KGen BIND(C) parser fix enables extraction with Phase 4C types.
 - **Type system**: LocalVariables (168 fields + 5 nested structs) is now BIND(C)-compatible. All 4 blocker fields fixed automatically by `vit analyze-types`. ErrorVariables, FilterParameters, piParams, resParams, rlParams, WE, ObjectInstances, DebugVariables all C-compatible. Only ControlParameters, PerformanceData, ExtControlType remain (Phase 4D — ALLOCATABLE view structs).
-- **VIT codebase**: ~7,000 lines of core code, 446 unit tests, 17 modules
+- **VIT codebase**: ~7,000 lines of core code, 451 unit tests, 17 modules
+- **ROSCO fork**: Two bug fixes committed for untested Flp_Mode=2 research code (uninitialized K in Controllers.f90:669, uninitialized n in Filters.f90:412). Bug report prepared for NREL.
 - **Human-in-the-loop protocols**: EXIT_CONFIRM (10) for inferred values, EXIT_MANUAL (11) for code rewrites. Both documented in CLAUDE.md.
 - **Generality audit** (2026-03-19): VIT confirmed project-agnostic. No ROSCO-specific logic in production code. All project-specific values are configurable via vit.yaml.
 
