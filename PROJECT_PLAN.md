@@ -543,7 +543,7 @@ These functions take piParams/resParams (nested in LocalVariables) and ObjectIns
 - [x] `vit translate` scaffold includes `_c` declarations for already-translated callees (detected from `vit.yaml` translations registry)
 - [x] Translate + verify + integrate `PIController` — KGen-verified 40/40, piParams struct read/write with instance indexing
 - [ ] Translate + verify + integrate `PIDController` — **deferred**: requires OL_Mode=2 with open-loop CSV file for extraction. Will be addressed in Phase 7B when ControlParameters is available, or pattern-verified.
-- [x] Translate + verify + integrate `PIIController` — sim-diff verified (byte-identical across 5 scenarios). KGen extraction blocked by upstream ROSCO segfault: Flp_Mode=2 crashes in the 1-DOF sim during init_discon (array bounds mismatch in SetParameters). This is an ROSCO bug, not VIT/KGen. See dev note `202603200110`.
+- [x] Translate + verify + integrate `PIIController` — KGen-verified 40/40. Required fixing two upstream ROSCO bugs: uninitialized K in FlapControl init (Controllers.f90:669) and uninitialized n in Flp_Mode==2 notch filter (Filters.f90:412), plus ACC_INFILE assignment fix (ReadSetParameters.f90:216).
 - [x] Translate + verify + integrate `ResController` — KGen-verified 40/40, Tustin-discretized resonant controller with resParams state
 
 **Actual work done:**
