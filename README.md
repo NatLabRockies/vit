@@ -1,10 +1,8 @@
 # VIT — Verified Incremental Translator
 
-**A pipeline orchestrator for trustworthy Fortran→C++ incremental translation in scientific computing.**
+**An agent-driven pipeline for trustworthy Fortran→C++ incremental translation in scientific computing.**
 
-VIT automates everything *around* the translation step: extracting functions with KGen, generating deterministic Fortran↔C interfaces, wiring C++ into KGen kernels for verification, and integrating verified translations back into the codebase.
-
-The translation itself is intentionally external — use [CodeScribe](https://github.com/akashdhruv/CodeScribe), any LLM, or hand-write the C++. VIT verifies it's correct.
+VIT orchestrates the full translation workflow — extracting runtime state with KGen, generating C++ scaffolds and translation prompts, verifying bit-identical correctness, and integrating verified translations into the codebase. It is designed to be driven by a coding agent (Claude Code, OpenCode, Codex) that manages the interactive workflow between VIT, the user, and the translation process.
 
 ## Why VIT?
 
@@ -15,32 +13,33 @@ VIT closes this gap by leveraging KGen's ability to capture real runtime state f
 ## The Pipeline
 
 ```
-                    ┌──────────────────────────────┐
-                    │  YOU PROVIDE THE TRANSLATION │
-                    │  (CodeScribe / LLM / manual) │
-                    └──────────────┬───────────────┘
-                                   │
-    ┌──────────┐    ┌──────────┐   │   ┌──────────┐    ┌───────────┐
-    │ EXTRACT  │───▶│INTERFACE │───┼──▶│ VERIFY   │───▶│ INTEGRATE │
-    │ (KGen)   │    │ (determ) │   │   │ (KGen)   │    │ (patches) │
-    └──────────┘    └──────────┘   │   └──────────┘    └───────────┘
-         │                         │         │
-    Captures real           Mechanical    Bit-identical
-    runtime state           type mapping  verification
-    from simulation         (no LLM)     against runtime
+    Typically driven by a coding agent (Claude Code, OpenCode, Codex)
+    ─────────────────────────────────────────────────────────────────
+
+    ┌──────────┐    ┌───────────┐    ┌──────────┐    ┌───────────┐
+    │ EXTRACT  │───▶│ TRANSLATE │───▶│ VERIFY   │───▶│ INTEGRATE │
+    │ (KGen)   │    │ (scaffold │    │ (KGen)   │    │ (patches) │
+    │          │    │  + prompt)│    │          │    │           │
+    └──────────┘    └───────────┘    └──────────┘    └───────────┘
+         │                │                │
+    Captures real    Generates C++    Bit-identical
+    runtime state    signature +      verification
+    from simulation  LLM prompt       against runtime
 ```
 
 ### What each step does:
 
-1. **Extract** (`vit extract`): Runs KGen to capture runtime state for a target function from an actual simulation. Produces kernel/ and state/ directories.
+1. **Extract** (`vit extract`): Runs KGen to capture runtime state for a target function from an actual simulation. Produces a kernel directory with state files.
 
-2. **Interface** (`vit interface`): Deterministically generates the Fortran↔C binding layer — `extern "C"` wrapper, `ISO_C_BINDING` interface block, and Fortran wrapper function. This is a mechanical transform, not an LLM task.
+2. **Translate** (`vit translate`): Generates a C++ scaffold with the correct function signature and a translation prompt containing the original Fortran source, struct definitions, and project-specific tips. The coding agent feeds the prompt to an LLM and fills in the scaffold; or you can do this manually.
 
 3. **Verify** (`vit verify`): Wires the C++ translation into the KGen kernel build, compiles, and runs verification against captured runtime state. Reports pass/fail per case with tolerance checking.
 
-4. **Integrate** (`vit integrate`): Generates a complete integration plan (file patches) for the real project: C++ source file, Fortran module modifications, CMakeLists.txt updates.
+4. **Integrate** (`vit integrate`): Generates a complete integration plan (file patches) for the real project: C++ source file with `extern "C"` wrapper, Fortran module modifications (interface block + wrapper), CMakeLists.txt updates.
 
-**Note on the `-f` flag:** `extract` takes the file containing the **call site** (e.g., `-f Controllers.f90`), while `parse`, `verify`, and `integrate` take the file containing the function **definition** (e.g., `-f Functions.f90`).
+The Fortran↔C interface layer is generated automatically by `verify` and `integrate` — you do not need to run `vit interface` separately.
+
+**Note on the `-f` flag:** `extract` takes the file containing the **call site** (e.g., `-f Controllers.f90`), while `translate`, `verify`, and `integrate` take the file containing the function **definition** (e.g., `-f Functions.f90`).
 
 ## Quick Start
 
@@ -67,13 +66,19 @@ vit parse saturate -f rosco/controller/src/Functions.f90
 # Step 3: Extract with KGen (captures runtime state)
 vit extract saturate -f rosco/controller/src/Controllers.f90 -l 102
 
-# Step 4: [YOU PROVIDE C++ TRANSLATION] → save as saturate.cpp
+# Step 4: Generate C++ scaffold and translation prompt
+vit translate saturate -f rosco/controller/src/Functions.f90
 
-# Step 5: Verify C++ against captured state
-vit verify saturate saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/
+# Step 5: Fill in the translation (feed the prompt to an LLM, or write it by hand)
+#   The scaffold has the correct signature; replace the TODO with the algorithm.
 
-# Step 6: Generate and apply integration patches
-vit integrate saturate saturate.cpp -f rosco/controller/src/Functions.f90 --apply
+# Step 6: Verify C++ against captured state
+vit verify saturate translations/Functions/saturate.cpp \
+    -f rosco/controller/src/Functions.f90 --kernel-dir kernel/
+
+# Step 7: Generate and apply integration patches
+vit integrate saturate translations/Functions/saturate.cpp \
+    -f rosco/controller/src/Functions.f90 --apply
 ```
 
 For a complete end-to-end walkthrough using the ROSCO wind turbine controller, see [guide_ROSCO.md](guide_ROSCO.md).
@@ -90,7 +95,7 @@ FUNCTION saturate(val, minval, maxval) RESULT(saturate_result)
 END FUNCTION saturate
 ```
 
-User-provided C++ translation (`saturate.cpp`):
+C++ translation (generated scaffold, algorithm filled in):
 
 ```cpp
 double saturate(double val, double minval, double maxval) {
@@ -189,12 +194,12 @@ translations:                         # Auto-populated by VIT after verify/integ
 | `find` | `vit find <function> [--source-dir DIR]` | Search source tree for call sites of a function |
 | `parse` | `vit parse <function> [-f FILE]` | Parse and display a Fortran function signature |
 | `extract` | `vit extract <function> [-f FILE] [-l LINE] [--dry-run]` | Instrument code with KGen, run simulation, capture runtime state |
-| `interface` | `vit interface <function> [-f FILE] [-o DIR]` | Generate Fortran↔C interface files (extern "C" + ISO_C_BINDING) |
-| `verify` | `vit verify <function> <cpp_file> [-f FILE] [--kernel-dir DIR]` | Wire C++ into KGen kernel, build, and verify against captured state |
+| `translate` | `vit translate <function> -f FILE [-o DIR] [--module NAME]` | Generate C++ scaffold (correct signature) and LLM translation prompt |
+| `verify` | `vit verify <function> <cpp_file> [-f FILE] [--kernel-dir DIR] [--no-field-log]` | Wire C++ into KGen kernel, build, and verify against captured state |
 | `integrate` | `vit integrate <function> <cpp_file> [-f FILE] [--apply] [--dry-run]` | Generate (and optionally apply) codebase integration patches |
-| `translate` | `vit translate <function> [-f FILE] [-o DIR]` | Generate C++ translation scaffold and LLM prompt |
-| `run` | `vit run <function> <cpp_file> [-f FILE] [--kernel-dir DIR] [--apply] [--skip-verify]` | Full pipeline: parse → verify → integrate in one command |
-| `analyze-types` | `vit analyze-types [--fix character] [--type TYPE] [--field FIELD] [--apply]` | Analyze derived type C-compatibility; fix CHARACTER(:) ALLOCATABLE fields |
+| `run` | `vit run <function> <cpp_file> [-f FILE] [--kernel-dir DIR] [--apply] [--skip-verify] [--no-field-log]` | Full pipeline: verify → integrate in one command |
+| `interface` | `vit interface <function> [-f FILE] [-o DIR]` | Generate Fortran↔C interface files (used internally by verify/integrate) |
+| `analyze-types` | `vit analyze-types [--fix character\|logical\|complex\|bind_c] [--type TYPE] [--field FIELD] [--apply]` | Analyze derived type C-compatibility; apply automated fixes |
 | `status` | `vit status` | Show translation status for all functions tracked in vit.yaml |
 
 **Flag details:**
@@ -208,9 +213,11 @@ translations:                         # Auto-populated by VIT after verify/integ
 
 ## Key Design Decisions
 
-**Interface generation is deterministic.** Given a Fortran function signature, the `extern "C"` wrapper and `ISO_C_BINDING` interface are fully determined by the type mapping.
+**Interface generation is deterministic.** Given a Fortran function signature, the `extern "C"` wrapper and `ISO_C_BINDING` interface are fully determined by the type mapping. No LLM involved.
 
-**Translation is external.** VIT doesn't care how you produce the C++. This makes it composable with any translation tool.
+**Algorithm translation is external.** VIT generates the correct C++ function signature and a translation prompt (`vit translate`), but the algorithm implementation comes from outside VIT — a coding agent feeding an LLM, or hand-coding. This makes VIT composable with any translation source.
+
+**Agent-interactive protocols.** VIT uses structured exit codes and output blocks to communicate with coding agents. When VIT infers a value it can't be certain about (e.g., a CHARACTER buffer size), it exits with code 10 and a `[VIT:CONFIRM]` block — the agent presents the assumption to the user and re-runs with the confirmed value. When VIT encounters code it can't auto-rewrite (e.g., complex arithmetic), it exits with code 11 and a `[VIT:MANUAL]` block — the agent proposes a rewrite, the user approves, and the agent re-runs with the override. This three-way interaction (VIT↔agent↔user) keeps humans in the loop for decisions that require judgment while automating everything else.
 
 **NaN-safe verification.** KGen captures state for all invocations of the target function, including initialization calls where struct fields contain uninitialized heap residue (NaN values). VIT patches verification comparisons so that NaN==NaN is treated as identical, and reports these as "skipped" cases rather than failures. This prevents false negatives from KGen's faithful capture of uninitialized memory.
 
@@ -256,7 +263,7 @@ The KGen kernel uses project-specific type kinds (e.g., `ReKi`) that aren't stan
 
 ## What VIT Is NOT
 
-- **Not a translator.** Use CodeScribe, Claude, GPT, or hand-coding.
+- **Not an algorithm translator.** VIT generates scaffolds and prompts, but does not implement the translation logic. The coding agent (or you) fills in the algorithm.
 - **Not a full Fortran parser.** It parses signatures, not arbitrary Fortran.
 - **Not a replacement for testing.** KGen verification checks numerical equivalence for captured cases. Integration testing is still your responsibility.
 
