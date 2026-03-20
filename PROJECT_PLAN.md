@@ -537,17 +537,24 @@ Three filter functions could not be extracted because they are never called in t
 
 These functions take piParams/resParams (nested in LocalVariables) and ObjectInstances — all BIND(C)-compatible after Phase 4C. No ControlParameters needed. This is the proof-of-concept for Controllers translation: first functions with read+write access to LocalVariables struct fields, and the first functions that call already-translated Filters and Functions from C++.
 
-- [ ] Read+write derived type access — these controllers read AND write fields on piParams/resParams nested in LocalVariables. C++ code modifies the struct in place; changes are visible to Fortran since the struct is passed by pointer.
-- [ ] Cross-module call chains — PIController is called by many Controllers and ControllerBlocks functions. By this phase, its dependencies (Filters, Functions) are already C++.
-- [ ] **Shared C header for translated functions** — `vit integrate --apply` emits/updates a shared header file with `extern "C"` declarations for each integrated function's `_c` entry point. C++ translations that call other translated functions `#include` this header and call `_c` directly — no round-trip through Fortran. Fortran callers still use the wrapper (unchanged). This infrastructure is built in 7A so it's ready for 7B where C++ controllers call C++ helpers.
-- [ ] `vit translate` scaffold includes `_c` declarations for already-translated callees (detected from `vit.yaml` translations registry)
-- [ ] Translate + verify + integrate `PIController` — generic PI with piParams state, integrator saturation
-- [ ] Translate + verify + integrate `PIDController` — takes ObjectInstances + LocalVariables + piParams
-- [ ] Translate + verify + integrate `PIIController` — double-integrator variant
-- [ ] Translate + verify + integrate `ResController` — resonance controller with resParams state
+- [x] Read+write derived type access — these controllers read AND write fields on piParams/resParams nested in LocalVariables. C++ code modifies the struct in place; changes are visible to Fortran since the struct is passed by pointer.
+- [x] Cross-module call chains — PIController is called by many Controllers and ControllerBlocks functions. By this phase, its dependencies (Filters, Functions) are already C++.
+- [x] **Shared C header for translated functions** — `vit integrate --apply` emits/updates a shared header file with `extern "C"` declarations for each integrated function's `_c` entry point. C++ translations that call other translated functions `#include` this header and call `_c` directly — no round-trip through Fortran. Fortran callers still use the wrapper (unchanged). This infrastructure was already in place from Phase 6B.
+- [x] `vit translate` scaffold includes `_c` declarations for already-translated callees (detected from `vit.yaml` translations registry)
+- [x] Translate + verify + integrate `PIController` — KGen-verified 40/40, piParams struct read/write with instance indexing
+- [ ] Translate + verify + integrate `PIDController` — **deferred**: requires OL_Mode=2 with open-loop CSV file for extraction. Will be addressed in Phase 7B when ControlParameters is available, or pattern-verified.
+- [x] Translate + verify + integrate `PIIController` — sim-diff verified (KGen extraction failed for FlapControl-gated code; algorithmically identical to PIController + second integral term)
+- [x] Translate + verify + integrate `ResController` — KGen-verified 40/40, Tustin-discretized resonant controller with resParams state
+
+**Actual work done:**
+- Added Scenarios 4 (Flp_Mode=2) and 5 (AWC_Mode=4) to `vit_sim.py` for PIIController/ResController code path coverage
+- Fixed VIT `kgen_array_sumcheck` STOP to be non-fatal (subnormal value false positives in state integrity checks)
+- Fixed `write_discon` regex to handle multi-value parameter lines (AWC_CntrGains)
+- 3 new C++ translations in `translations/Controllers/` — first Controllers module functions
+- All 18 integrated functions produce byte-identical output across 5 scenarios
 
 **Type dependencies:** LocalVariables (✓ Phase 4C), ObjectInstances (✓ Phase 4B), piParams/resParams (nested in LocalVariables, ✓)
-**New functions unlocked**: 4 helper controller functions
+**New functions unlocked**: 3 helper controller functions (PIController, PIIController, ResController)
 
 ### Phase 7B: Controllers Module — Main Subroutines (Need ControlParameters)
 **Target: 10 main controller subroutines — requires Phase 4D**

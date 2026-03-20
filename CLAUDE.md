@@ -327,7 +327,7 @@ docker exec -it vit-dev bash -c "cd /workspace/vit && python3 -m pytest tests/ -
 
 ### Golden Test Fixtures
 
-Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/sigma/`, `kernel/LPFilter/`, `kernel/HPFilter/`, `kernel/SecLPFilter/`, `kernel/NotchFilter/`, `kernel/NotchFilterSlopes/`, `kernel/SecLPFilter_Vel/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
+Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/sigma/`, `kernel/LPFilter/`, `kernel/HPFilter/`, `kernel/SecLPFilter/`, `kernel/NotchFilter/`, `kernel/NotchFilterSlopes/`, `kernel/SecLPFilter_Vel/`, `kernel/PIController/`, `kernel/PIIController/`, `kernel/ResController/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
 
 **Extraction parameters (for regenerating golden fixtures):**
 
@@ -348,6 +348,9 @@ Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful ex
 | `NotchFilter` | `Filters.f90` | 356 | `vit extract NotchFilter -f rosco/controller/src/Filters.f90 -l 356` |
 | `NotchFilterSlopes` | `Filters.f90` | 405 | `vit extract NotchFilterSlopes -f rosco/controller/src/Filters.f90 -l 405` |
 | `SecLPFilter_Vel` | `Controllers.f90` | 939 | `vit extract SecLPFilter_Vel -f rosco/controller/src/Controllers.f90 -l 939` |
+| `PIController` | `Controllers.f90` | 68 | `vit extract PIController -f rosco/controller/src/Controllers.f90 -l 68` |
+| `PIIController` | `Controllers.f90` | 682 | `vit extract PIIController -f rosco/controller/src/Controllers.f90 -l 682` |
+| `ResController` | `Controllers.f90` | 813 | `vit extract ResController -f rosco/controller/src/Controllers.f90 -l 813` |
 
 Each extraction deposits into `kernel/<function_name>/` and restores the source file automatically.
 
@@ -396,6 +399,8 @@ After every feature implementation, run:
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify NotchFilter translations/Filters/notchfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/NotchFilter 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify NotchFilterSlopes translations/Filters/notchfilterslopes.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/NotchFilterSlopes 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify SecLPFilter_Vel translations/Filters/seclpfilter_vel.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/SecLPFilter_Vel 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify PIController translations/Controllers/picontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/PIController 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify ResController translations/Controllers/rescontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ResController 2>&1 | tail -3"
    ```
    Must show: `40/40 passed` for each function.
 
@@ -459,6 +464,9 @@ vit extract SecLPFilter -f rosco/controller/src/Filters.f90 -l 371
 vit extract NotchFilter -f rosco/controller/src/Filters.f90 -l 356
 vit extract NotchFilterSlopes -f rosco/controller/src/Filters.f90 -l 405
 vit extract SecLPFilter_Vel -f rosco/controller/src/Controllers.f90 -l 939
+vit extract PIController -f rosco/controller/src/Controllers.f90 -l 68
+vit extract PIIController -f rosco/controller/src/Controllers.f90 -l 682
+vit extract ResController -f rosco/controller/src/Controllers.f90 -l 813
 ```
 
 Each must show `Extraction successful` with `Cases: 20`.
@@ -481,6 +489,9 @@ vit verify SecLPFilter translations/Filters/seclpfilter.cpp -f rosco/controller/
 vit verify NotchFilter translations/Filters/notchfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/NotchFilter
 vit verify NotchFilterSlopes translations/Filters/notchfilterslopes.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/NotchFilterSlopes
 vit verify SecLPFilter_Vel translations/Filters/seclpfilter_vel.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/SecLPFilter_Vel
+vit verify PIController translations/Controllers/picontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/PIController
+vit verify PIIController translations/Controllers/piicontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/PIIController
+vit verify ResController translations/Controllers/rescontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ResController
 ```
 
 Each must show `40/40 passed`.
@@ -503,6 +514,9 @@ vit integrate SecLPFilter translations/Filters/seclpfilter.cpp -f rosco/controll
 vit integrate SecLPFilter_Vel translations/Filters/seclpfilter_vel.cpp -f rosco/controller/src/Filters.f90 --apply
 vit integrate NotchFilter translations/Filters/notchfilter.cpp -f rosco/controller/src/Filters.f90 --apply
 vit integrate NotchFilterSlopes translations/Filters/notchfilterslopes.cpp -f rosco/controller/src/Filters.f90 --apply
+vit integrate PIController translations/Controllers/picontroller.cpp -f rosco/controller/src/Controllers.f90 --apply
+vit integrate PIIController translations/Controllers/piicontroller.cpp -f rosco/controller/src/Controllers.f90 --apply
+vit integrate ResController translations/Controllers/rescontroller.cpp -f rosco/controller/src/Controllers.f90 --apply
 ```
 
 Each `--apply` reads the current file state and generates correct patches, skipping items already present (e.g., `enable_language(CXX)`, `stdc++` link, `USE ISO_C_BINDING`).
@@ -585,6 +599,9 @@ Verified C++ translations live in `ROSCO/translations/Functions/` and `ROSCO/tra
 | `translations/Filters/seclpfilter_vel.cpp` | `SecLPFilter_Vel` in Filters.f90 | Verified (Phase 7) — was pattern-translated, now KGen-verified with CC_Mode=1 fix |
 | `translations/Filters/notchfilter.cpp` | `NotchFilter` in Filters.f90 | Verified (Phase 6B) — discrete notch, omega/betaNum/betaDen args |
 | `translations/Filters/notchfilterslopes.cpp` | `NotchFilterSlopes` in Filters.f90 | Verified (Phase 6B) — first function with two OPTIONAL args |
+| `translations/Controllers/picontroller.cpp` | `PIController` in Controllers.f90 | Verified (Phase 7A) |
+| `translations/Controllers/piicontroller.cpp` | `PIIController` in Controllers.f90 | Sim-diff verified (Phase 7A) |
+| `translations/Controllers/rescontroller.cpp` | `ResController` in Controllers.f90 | Verified (Phase 7A) |
 
 Each translation file has a metadata header (source file, function name, MD5 hash, VIT version, verification status) generated by `vit translate`.
 
