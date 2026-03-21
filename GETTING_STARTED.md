@@ -195,6 +195,101 @@ Each follows the same pipeline: extract → translate → verify → integrate �
 
 ---
 
+## Troubleshooting
+
+### Container image won't run
+
+If you see `exec format error` or `platform mismatch`, the image is ARM (Apple Silicon) and your machine is Intel x86. You'll need to build the container from scratch (see below).
+
+### `vit: command not found` after loading the image
+
+The editable installs need to be re-created after mounting your workspace. Run step 4 from Environment Setup:
+```bash
+docker exec -it vit-dev bash -c "pip3 install -e /workspace/vit --break-system-packages"
+docker exec -it vit-dev bash -c "pip3 install -e /workspace/ROSCO --break-system-packages"
+```
+
+### Container was destroyed or corrupted
+
+Re-create it from the image:
+```bash
+docker run -d --name vit-dev \
+    -v ~/vit_translation:/workspace \
+    vit-dev-image
+```
+Then re-run the `pip3 install -e` commands above.
+
+---
+
+## Building the Container from Scratch
+
+If the shared image doesn't work on your machine (wrong architecture, corrupted, etc.), you can build the environment from scratch.
+
+**1. Create a container from a base Ubuntu image:**
+```bash
+docker run -d --name vit-dev \
+    -v ~/vit_translation:/workspace \
+    ubuntu:24.04 \
+    tail -f /dev/null
+```
+
+**2. Install system packages:**
+```bash
+docker exec -it vit-dev bash -c "
+    apt-get update &&
+    apt-get install -y \
+        gfortran g++ cmake make \
+        python3 python3-pip python3-dev \
+        libssl-dev zlib1g-dev libffi-dev \
+        git strace
+"
+```
+
+**3. Build Python 2.7 from source** (required by KGen):
+
+A pre-downloaded tarball is in the workspace at `/workspace/Python-2.7.18.tar.xz`. If it's not there, your agent can help you obtain it.
+
+```bash
+docker exec -it vit-dev bash -c "
+    cd /workspace &&
+    tar xf Python-2.7.18.tar.xz &&
+    cd Python-2.7.18 &&
+    ./configure --prefix=/opt/python27 &&
+    make -j\$(nproc) &&
+    make install &&
+    ln -s /opt/python27/bin/python2.7 /usr/local/bin/python2.7
+"
+```
+
+**4. Fix KGen's shebang** to use Python 2.7:
+```bash
+docker exec -it vit-dev bash -c "
+    sed -i '1s|.*|#!/usr/bin/env python2.7|' /workspace/KGen/bin/kgen
+"
+```
+
+**5. Install VIT, ROSCO, and Python dependencies:**
+```bash
+docker exec -it vit-dev bash -c "
+    pip3 install -e /workspace/vit --break-system-packages &&
+    pip3 install -e /workspace/ROSCO --break-system-packages
+"
+```
+
+ROSCO pulls in its dependencies (numpy, scipy, matplotlib, etc.) automatically via its `setup.py`.
+
+**6. Verify:**
+```bash
+docker exec -it vit-dev bash -c "vit --help"
+docker exec -it vit-dev bash -c "python2.7 --version"
+docker exec -it vit-dev bash -c "gfortran --version | head -1"
+docker exec -it vit-dev bash -c "cd /workspace/ROSCO && vit verify saturate translations/Functions/saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/saturate 2>&1 | tail -3"
+```
+
+The last command should show `40/40 passed`.
+
+---
+
 ## Key Files
 
 | File | Location | Purpose |
