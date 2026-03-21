@@ -31,26 +31,46 @@ vit_translation/
 
 All VIT commands, ROSCO builds, and KGen operations run inside a Docker container. KGen's Fortran parser does not work on macOS — never run VIT commands directly on the Mac.
 
-1. **Load the shared Docker image:**
+**Prerequisites:** Docker Desktop or [Colima](https://github.com/abiosoft/colima) on macOS. The container image is ARM (Apple Silicon). If you're on an Intel Mac, let us know.
+
+1. **Clone the repos** into a single workspace directory:
+   ```bash
+   mkdir -p ~/vit_translation && cd ~/vit_translation
+   git clone git@github.com:NatLabRockies/vit.git
+   git clone git@github.com:kevinmenear/ROSCO.git
+   git clone git@github.com:kevinmenear/KGen.git
+   ```
+
+2. **Load the shared Docker image:**
    ```bash
    docker load < vit-dev-image.tar.gz
    ```
 
-2. **Run the container** with your workspace directory mounted as `/workspace`:
+3. **Create and start the container** with your workspace mounted as `/workspace`:
    ```bash
    docker run -d --name vit-dev \
-       -v /path/to/your/vit_translation:/workspace \
+       -v ~/vit_translation:/workspace \
        vit-dev-image
    ```
-   Replace `/path/to/your/vit_translation` with the directory containing your `vit/`, `ROSCO/`, and `KGen/` clones.
+   Replace `~/vit_translation` with wherever you cloned the repos.
 
-3. **Verify the environment:**
+4. **Install VIT and ROSCO** inside the container:
+   ```bash
+   docker exec -it vit-dev bash -c "pip3 install -e /workspace/vit --break-system-packages"
+   docker exec -it vit-dev bash -c "pip3 install -e /workspace/ROSCO --break-system-packages"
+   ```
+   This creates editable installs so the container uses your local clones.
+
+5. **Verify everything works:**
    ```bash
    docker exec -it vit-dev bash -c "vit --help"
-   docker exec -it vit-dev bash -c "python2.7 --version"   # Should show 2.7.18
+   docker exec -it vit-dev bash -c "python2.7 --version"
+   docker exec -it vit-dev bash -c "gfortran --version | head -1"
+   docker exec -it vit-dev bash -c "cd /workspace/ROSCO && vit verify saturate translations/Functions/saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/saturate 2>&1 | tail -3"
    ```
+   The first three commands confirm the toolchain is present. The last command runs a real verification — it should show `40/40 passed`.
 
-4. **Start the container** if it's stopped:
+6. **Start the container** if it's stopped:
    ```bash
    docker start vit-dev
    ```
