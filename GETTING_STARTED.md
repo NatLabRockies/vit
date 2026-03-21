@@ -261,14 +261,7 @@ docker exec -it vit-dev bash -c "
 "
 ```
 
-**4. Fix KGen's shebang** to use Python 2.7:
-```bash
-docker exec -it vit-dev bash -c "
-    sed -i '1s|.*|#!/usr/bin/env python2.7|' /workspace/KGen/bin/kgen
-"
-```
-
-**5. Install VIT, ROSCO, and Python dependencies:**
+**4. Install VIT, ROSCO, and Python dependencies:**
 ```bash
 docker exec -it vit-dev bash -c "
     pip3 install -e /workspace/vit --break-system-packages &&
@@ -278,7 +271,7 @@ docker exec -it vit-dev bash -c "
 
 ROSCO pulls in its dependencies (numpy, scipy, matplotlib, etc.) automatically via its `setup.py`.
 
-**6. Verify:**
+**5. Verify:**
 ```bash
 docker exec -it vit-dev bash -c "vit --help"
 docker exec -it vit-dev bash -c "python2.7 --version"
