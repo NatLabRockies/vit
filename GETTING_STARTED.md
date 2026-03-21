@@ -36,12 +36,13 @@ All VIT commands, ROSCO builds, and KGen operations run inside a Docker containe
    docker load < vit-dev-image.tar.gz
    ```
 
-2. **Run the container** with the workspace mounted:
+2. **Run the container** with your workspace directory mounted as `/workspace`:
    ```bash
    docker run -d --name vit-dev \
-       -v ~/vit_translation:/workspace \
+       -v /path/to/your/vit_translation:/workspace \
        vit-dev-image
    ```
+   Replace `/path/to/your/vit_translation` with the directory containing your `vit/`, `ROSCO/`, and `KGen/` clones.
 
 3. **Verify the environment:**
    ```bash
