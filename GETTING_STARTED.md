@@ -18,7 +18,7 @@ Three repos, cloned into a shared workspace directory:
 vit_translation/
   vit/           → git@github.com:NatLabRockies/vit.git       (the tool)
   ROSCO/         → git@github.com:kevinmenear/ROSCO.git        (the codebase — fork of NREL/ROSCO)
-  KGen/          → https://github.com/NCAR/KGen.git             (third-party, NCAR)
+  KGen/          → git@github.com:kevinmenear/KGen.git             (fork of NCAR/KGen)
 ```
 
 **What goes where:**
