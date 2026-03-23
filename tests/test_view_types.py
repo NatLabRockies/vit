@@ -168,10 +168,12 @@ class TestViewStructHeader:
         header = generate_view_struct_header(ti, [])
         assert "char name[1024];" in header
 
-    def test_unmapped_commented_out(self):
+    def test_unmapped_still_included(self):
+        """ALLOCATABLE fields are included even without scanner mappings."""
         ti = _make_type_info("TestType", [("orphan", "REAL(8)", True, ":")])
         header = generate_view_struct_header(ti, [])  # no mappings
-        assert "orphan: unmapped" in header
+        assert "double* orphan;" in header
+        assert "int32_t n_orphan;" in header
 
     def test_view_t_suffix(self):
         ti = _make_type_info("TestType", [("x", "REAL(8)")])

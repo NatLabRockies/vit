@@ -540,26 +540,25 @@ def generate_view_struct_header(
         else:
             lines.append(f"    {mapping.c_type} {f.name};")
 
-    # --- ALLOCATABLE fields as pointer + size ---
-    mapped_alloc = [
-        f for f in type_info.fields
-        if f.is_allocatable and f.name in mapping_by_name
-    ]
-    unmapped_alloc = [
-        f for f in type_info.fields
-        if f.is_allocatable and f.name not in mapping_by_name
-    ]
-
-    if mapped_alloc:
+    # --- ALL ALLOCATABLE fields as pointer + size ---
+    alloc_fields = [f for f in type_info.fields if f.is_allocatable]
+    if alloc_fields:
         lines.append(f"")
         lines.append(f"    // --- ALLOCATABLE fields (pointer + size) ---")
-    for f in mapped_alloc:
-        m = mapping_by_name[f.name]
+    for f in alloc_fields:
         mapping = get_type_mapping(f.fortran_type, kind_aliases)
-        if m.rank == 1:
+        m = mapping_by_name.get(f.name)
+        # Determine rank: from scanner mapping if available, else from array_dims
+        if m:
+            rank = m.rank
+        elif f.array_dims:
+            rank = f.array_dims.count(",") + 1
+        else:
+            rank = 1
+        if rank == 1:
             lines.append(f"    {mapping.c_type}* {f.name};")
             lines.append(f"    int32_t n_{f.name};")
-        elif m.rank >= 2:
+        elif rank >= 2:
             lines.append(f"    {mapping.c_type}* {f.name};  // column-major")
             lines.append(f"    int32_t n_{f.name}_rows;")
             lines.append(f"    int32_t n_{f.name}_cols;")
@@ -571,13 +570,6 @@ def generate_view_struct_header(
         lines.append(f"    // --- POINTER fields (not in view; access via parent array) ---")
         for f in pointer_fields:
             lines.append(f"    // {f.name}: POINTER — access via parent 2D array")
-
-    # --- Unmapped ALLOCATABLE fields ---
-    if unmapped_alloc:
-        lines.append(f"")
-        lines.append(f"    // --- Unmapped ALLOCATABLE fields (no size source found) ---")
-        for f in unmapped_alloc:
-            lines.append(f"    // {f.name}: unmapped — needs manual size mapping")
 
     lines.append(f"}} {name_lower}_view_t;")
     lines.append(f"")

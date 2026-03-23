@@ -85,19 +85,17 @@ def generate_view_populator(
         if iso_decl:
             lines.append(f"        {iso_decl}")
 
-    # ALLOCATABLE fields as TYPE(C_PTR) + INTEGER(C_INT32_T) size
-    mapped_alloc = [
-        f for f in type_info.fields
-        if f.is_allocatable and f.name in mapping_by_name
-    ]
-    if mapped_alloc:
+    # ALL ALLOCATABLE fields as TYPE(C_PTR) + INTEGER(C_INT32_T) size
+    alloc_fields = [f for f in type_info.fields if f.is_allocatable]
+    if alloc_fields:
         lines.append(f"        ! ALLOCATABLE fields (pointer + size)")
-    for f in mapped_alloc:
-        m = mapping_by_name[f.name]
+    for f in alloc_fields:
+        m = mapping_by_name.get(f.name)
+        rank = m.rank if m else (f.array_dims.count(",") + 1 if f.array_dims else 1)
         lines.append(f"        TYPE(C_PTR) :: {f.name} = C_NULL_PTR")
-        if m.rank == 1:
+        if rank == 1:
             lines.append(f"        INTEGER(C_INT32_T) :: n_{f.name} = 0")
-        elif m.rank >= 2:
+        elif rank >= 2:
             lines.append(f"        INTEGER(C_INT32_T) :: n_{f.name}_rows = 0")
             lines.append(f"        INTEGER(C_INT32_T) :: n_{f.name}_cols = 0")
 
@@ -125,24 +123,25 @@ def generate_view_populator(
 
     lines.append(f"")
 
-    # ALLOCATABLE arrays
-    if mapped_alloc:
+    # ALL ALLOCATABLE arrays
+    if alloc_fields:
         lines.append(f"        ! --- ALLOCATABLE arrays ---")
-    for f in mapped_alloc:
-        m = mapping_by_name[f.name]
+    for f in alloc_fields:
+        m = mapping_by_name.get(f.name)
+        rank = m.rank if m else (f.array_dims.count(",") + 1 if f.array_dims else 1)
         lines.append(f"        IF (ALLOCATED(src%{f.name})) THEN")
-        if m.rank == 1:
+        if rank == 1:
             lines.append(f"            view%{f.name} = C_LOC(src%{f.name}(1))")
             lines.append(f"            view%n_{f.name} = INT(SIZE(src%{f.name}), C_INT32_T)")
-        elif m.rank >= 2:
+        elif rank >= 2:
             lines.append(f"            view%{f.name} = C_LOC(src%{f.name}(1,1))")
             lines.append(f"            view%n_{f.name}_rows = INT(SIZE(src%{f.name}, 1), C_INT32_T)")
             lines.append(f"            view%n_{f.name}_cols = INT(SIZE(src%{f.name}, 2), C_INT32_T)")
         lines.append(f"        ELSE")
         lines.append(f"            view%{f.name} = C_NULL_PTR")
-        if m.rank == 1:
+        if rank == 1:
             lines.append(f"            view%n_{f.name} = 0")
-        elif m.rank >= 2:
+        elif rank >= 2:
             lines.append(f"            view%n_{f.name}_rows = 0")
             lines.append(f"            view%n_{f.name}_cols = 0")
         lines.append(f"        END IF")
