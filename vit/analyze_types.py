@@ -344,7 +344,7 @@ def _scan_field_size(
             m = allocate_re.search(line)
             if m:
                 dims_str = m.group(1).strip()
-                dims = [d.strip() for d in dims_str.split(",")]
+                dims = _split_dims_aware(dims_str)
                 evidence = f"ALLOCATE(%{field_name}({dims_str})) in {f90_file.name}:{line_num}"
 
                 # Classify each dimension
@@ -370,6 +370,30 @@ def _scan_field_size(
                 )
 
     return None
+
+
+def _split_dims_aware(dims_str: str) -> list[str]:
+    """Split dimension string on commas, respecting nested parentheses.
+
+    "N, M" → ["N", "M"]
+    "N, SIZE(Var%field,DIM=1)" → ["N", "SIZE(Var%field,DIM=1)"]
+    """
+    dims = []
+    depth = 0
+    current = []
+    for ch in dims_str:
+        if ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+        elif ch == ',' and depth == 0:
+            dims.append(''.join(current).strip())
+            current = []
+            continue
+        current.append(ch)
+    if current:
+        dims.append(''.join(current).strip())
+    return dims
 
 
 def _classify_size_expr(expr: str) -> tuple[str, bool]:

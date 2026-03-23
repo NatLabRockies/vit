@@ -891,10 +891,16 @@ def cmd_analyze_types(args, config):
 # --- Helpers ---
 
 def _build_registry(sig: FortranSignature, config) -> dict:
-    """Build a derived type registry for the function's TYPE(...) args."""
+    """Build a derived type registry for the function's TYPE(...) args.
+
+    Applies type strategies from config (e.g., view pattern for ALLOCATABLE types).
+    """
     source_dir = config.abs_source_dir
     if source_dir and os.path.isdir(source_dir):
-        return build_derived_type_registry(sig, source_dir)
+        from .derived_type_parser import apply_type_strategies
+        registry = build_derived_type_registry(sig, source_dir)
+        apply_type_strategies(registry, config.type_strategies)
+        return registry
     return {}
 
 
