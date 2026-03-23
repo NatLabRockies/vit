@@ -5,13 +5,18 @@ populator generation, type registry with view strategies, and
 interface generation with view types.
 """
 
+import os
+import tempfile
+
 import pytest
 from vit.analyze_types import (
     AllocatableFieldMapping,
     scan_allocatable_sizes,
     _classify_size_expr,
     _split_dims_aware,
+    _scan_helper_call,
 )
+from vit.config import _parse_allocatable_helpers
 from vit.derived_type_parser import (
     DerivedTypeInfo,
     DerivedTypeField,
@@ -318,3 +323,213 @@ class TestInterfaceGenViewType:
         assert "C_LOC(LocalVar)" in wrapper
         # LocalVar should NOT have a view
         assert "LocalVar_view" not in wrapper
+
+
+# ---------------------------------------------------------------------------
+# Configurable helper scanner (_scan_helper_call)
+# ---------------------------------------------------------------------------
+
+def _write_temp_fortran(content):
+    """Write content to a temp .f90 file and return {Path: content} dict."""
+    from pathlib import Path
+    tmp = tempfile.NamedTemporaryFile(suffix=".f90", mode="w", delete=False)
+    tmp.write(content)
+    tmp.close()
+    return {Path(tmp.name): content}
+
+
+class TestScanHelperCall:
+    def test_adjacent_args(self):
+        """Helper with size_arg = array_arg + 1 (fast regex path)."""
+        source = "        CALL AllocHelper(FileLines, 'label', Var%myfield, Var%mysize, extra)\n"
+        files = _write_temp_fortran(source)
+        field = DerivedTypeField(name="myfield", fortran_type="REAL(8)",
+                                  is_allocatable=True, is_array=True, array_dims=":")
+        helper = {"name": "AllocHelper", "array_arg": 3, "size_arg": 4}
+        result = _scan_helper_call(field, files, helper)
+        assert result is not None
+        assert result.field_name == "myfield"
+        assert "Var%mysize" in result.dim_sizes[0]
+        assert result.size_class == "A"
+
+    def test_non_adjacent_args(self):
+        """Helper with size_arg != array_arg + 1 (positional parsing path)."""
+        source = "        CALL CustomAlloc(Var%myfield, extra1, extra2, 42, moreargs)\n"
+        files = _write_temp_fortran(source)
+        field = DerivedTypeField(name="myfield", fortran_type="REAL(8)",
+                                  is_allocatable=True, is_array=True, array_dims=":")
+        helper = {"name": "CustomAlloc", "array_arg": 1, "size_arg": 4}
+        result = _scan_helper_call(field, files, helper)
+        assert result is not None
+        assert result.field_name == "myfield"
+        assert "42" in result.dim_sizes[0]
+        assert result.size_class == "B"
+
+    def test_skips_comments(self):
+        """Commented-out helper call should not match."""
+        source = "    ! CALL AllocHelper(FileLines, 'label', Var%myfield, Var%mysize, extra)\n"
+        files = _write_temp_fortran(source)
+        field = DerivedTypeField(name="myfield", fortran_type="REAL(8)",
+                                  is_allocatable=True, is_array=True, array_dims=":")
+        helper = {"name": "AllocHelper", "array_arg": 3, "size_arg": 4}
+        result = _scan_helper_call(field, files, helper)
+        assert result is None
+
+    def test_no_match(self):
+        """Field not in any helper call."""
+        source = "        CALL AllocHelper(FileLines, 'label', Var%otherfield, Var%othersize, extra)\n"
+        files = _write_temp_fortran(source)
+        field = DerivedTypeField(name="myfield", fortran_type="REAL(8)",
+                                  is_allocatable=True, is_array=True, array_dims=":")
+        helper = {"name": "AllocHelper", "array_arg": 3, "size_arg": 4}
+        result = _scan_helper_call(field, files, helper)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# scan_allocatable_sizes with helpers
+# ---------------------------------------------------------------------------
+
+class TestScanAllocatableSizes:
+    def test_with_helpers(self):
+        """Helper match takes priority over ALLOCATE."""
+        source = (
+            "    CALL ParseAry(FileLines, 'lbl', Var%arr, Var%n_arr, extra)\n"
+            "    ALLOCATE(Var%arr(100))\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fpath = os.path.join(tmpdir, "test.f90")
+            with open(fpath, "w") as f:
+                f.write(source)
+            ti = _make_type_info("T", [("arr", "REAL(8)", True, ":")])
+            helpers = [{"name": "ParseAry", "array_arg": 3, "size_arg": 4}]
+            result = scan_allocatable_sizes(tmpdir, "T", ti, allocatable_helpers=helpers)
+            assert len(result) == 1
+            assert "Var%n_arr" in result[0].dim_sizes[0]  # helper matched, not ALLOCATE
+
+    def test_without_helpers(self):
+        """Without helpers, falls through to ALLOCATE."""
+        source = "    ALLOCATE(Var%arr(100))\n"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fpath = os.path.join(tmpdir, "test.f90")
+            with open(fpath, "w") as f:
+                f.write(source)
+            ti = _make_type_info("T", [("arr", "REAL(8)", True, ":")])
+            result = scan_allocatable_sizes(tmpdir, "T", ti, allocatable_helpers=[])
+            assert len(result) == 1
+            assert "100" in result[0].dim_sizes[0]
+
+    def test_empty_type(self):
+        """Type with no ALLOCATABLE fields returns empty list."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fpath = os.path.join(tmpdir, "test.f90")
+            with open(fpath, "w") as f:
+                f.write("! nothing\n")
+            ti = _make_type_info("T", [("x", "REAL(8)")])  # no ALLOCATABLE
+            result = scan_allocatable_sizes(tmpdir, "T", ti)
+            assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Config parser: _parse_allocatable_helpers
+# ---------------------------------------------------------------------------
+
+class TestParseAllocatableHelpers:
+    def test_valid(self):
+        section = {"helpers": [{"name": "ParseAry", "array_arg": 3, "size_arg": 4}]}
+        result = _parse_allocatable_helpers(section)
+        assert len(result) == 1
+        assert result[0]["name"] == "ParseAry"
+        assert result[0]["array_arg"] == 3
+        assert result[0]["size_arg"] == 4
+
+    def test_defaults(self):
+        """Missing array_arg/size_arg default to 3/4."""
+        section = {"helpers": [{"name": "MyHelper"}]}
+        result = _parse_allocatable_helpers(section)
+        assert result[0]["array_arg"] == 3
+        assert result[0]["size_arg"] == 4
+
+    def test_empty(self):
+        result = _parse_allocatable_helpers({})
+        assert result == []
+
+    def test_malformed(self):
+        """Non-dict entries and entries without 'name' are skipped."""
+        section = {"helpers": ["not_a_dict", {"no_name": True}, {"name": "Valid"}]}
+        result = _parse_allocatable_helpers(section)
+        assert len(result) == 1
+        assert result[0]["name"] == "Valid"
+
+
+# ---------------------------------------------------------------------------
+# Unmapped 2D rank inference
+# ---------------------------------------------------------------------------
+
+class TestUnmapped2DRankInference:
+    def test_view_header_unmapped_2d(self):
+        """2D ALLOCATABLE with no mapping infers rank from array_dims."""
+        ti = _make_type_info("T", [("mat", "REAL(8)", True, ":,:")])
+        header = generate_view_struct_header(ti, [], {"DbKi": "REAL(8)"})
+        assert "double* mat;" in header
+        assert "n_mat_rows" in header
+        assert "n_mat_cols" in header
+
+    def test_populator_unmapped_2d(self):
+        """Populator handles unmapped 2D with SIZE(field, 1) and SIZE(field, 2)."""
+        ti = _make_type_info("T", [("mat", "REAL(8)", True, ":,:")])
+        code = generate_view_populator(ti, [], {"DbKi": "REAL(8)"}, "TestMod")
+        assert "C_LOC(src%mat(1,1))" in code
+        assert "SIZE(src%mat, 1)" in code
+        assert "SIZE(src%mat, 2)" in code
+
+
+# ---------------------------------------------------------------------------
+# Source module error cases
+# ---------------------------------------------------------------------------
+
+class TestSourceModuleErrors:
+    def test_integrate_missing_source_module(self):
+        """View type without source_module raises ValueError in integration."""
+        from vit.integrate import generate_integration_plan
+        ti = _make_type_info("ViewType", [("arr", "REAL(8)", True, ":")])
+        ti.view_strategy = "view"
+        ti.source_module = None
+        ti.source_file = None
+        ti.field_mappings = []
+
+        sig = _make_sig_with_view_arg()
+        registry = {"ControlParameters": ti, "LocalVariables": _make_type_info("LocalVariables", [("x", "REAL(8)")])}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create minimal files for integration
+            src = os.path.join(tmpdir, "test.f90")
+            cpp = os.path.join(tmpdir, "test.cpp")
+            with open(src, "w") as f:
+                f.write("! source\n")
+            with open(cpp, "w") as f:
+                f.write("// impl\n")
+
+            with pytest.raises(ValueError, match="source module unknown"):
+                generate_integration_plan(
+                    sig=sig, cpp_impl_path=cpp, source_file=src,
+                    derived_types=registry,
+                )
+
+
+# ---------------------------------------------------------------------------
+# POINTER field handling
+# ---------------------------------------------------------------------------
+
+class TestPointerFieldHandling:
+    def test_view_header_pointer_commented(self):
+        """POINTER fields appear as comments, not struct members."""
+        ti = _make_type_info("T", [("x", "REAL(8)")])
+        # Add a POINTER field manually
+        ti.fields.append(DerivedTypeField(
+            name="ptr_field", fortran_type="REAL(8)",
+            is_pointer=True, is_array=True, array_dims=":",
+        ))
+        header = generate_view_struct_header(ti, [])
+        assert "ptr_field: POINTER" in header
+        assert "double* ptr_field;" not in header
