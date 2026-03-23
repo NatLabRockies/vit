@@ -51,12 +51,26 @@ def generate_translation_scaffold(
 
     # Include struct typedefs for C-compatible derived types (in dependency order)
     if derived_types:
-        from .derived_type_parser import generate_c_struct_header, order_types_by_dependency
-        compatible = [info for info in derived_types.values() if info.is_c_compatible]
+        from .derived_type_parser import (
+            generate_c_struct_header, generate_view_struct_header,
+            order_types_by_dependency,
+        )
+        from .analyze_types import scan_allocatable_sizes
+        compatible = [info for info in derived_types.values()
+                      if info.is_c_compatible or getattr(info, 'view_strategy', None) == 'view']
         for type_info in order_types_by_dependency(compatible):
-            header = generate_c_struct_header(type_info, kind_aliases,
-                                               registry=derived_types,
-                                               emit_includes=False)
+            if getattr(type_info, 'view_strategy', None) == 'view':
+                source_dir = type_info.source_file
+                if source_dir:
+                    source_dir = str(Path(source_dir).parent)
+                    mappings = scan_allocatable_sizes(source_dir, type_info.name, type_info)
+                else:
+                    mappings = []
+                header = generate_view_struct_header(type_info, mappings, kind_aliases)
+            else:
+                header = generate_c_struct_header(type_info, kind_aliases,
+                                                   registry=derived_types,
+                                                   emit_includes=False)
             lines.append(header.rstrip())
             lines.append("")
 
@@ -132,13 +146,27 @@ def generate_translation_prompt(
 
     # C struct definitions for derived types (in dependency order)
     if derived_types:
-        from .derived_type_parser import generate_c_struct_header, order_types_by_dependency
+        from .derived_type_parser import (
+            generate_c_struct_header, generate_view_struct_header,
+            order_types_by_dependency,
+        )
+        from .analyze_types import scan_allocatable_sizes
         struct_defs = []
-        compatible = [info for info in derived_types.values() if info.is_c_compatible]
+        compatible = [info for info in derived_types.values()
+                      if info.is_c_compatible or getattr(info, 'view_strategy', None) == 'view']
         for type_info in order_types_by_dependency(compatible):
-            header = generate_c_struct_header(type_info, kind_aliases,
-                                               registry=derived_types,
-                                               emit_includes=False)
+            if getattr(type_info, 'view_strategy', None) == 'view':
+                source_dir = type_info.source_file
+                if source_dir:
+                    source_dir = str(Path(source_dir).parent)
+                    mappings = scan_allocatable_sizes(source_dir, type_info.name, type_info)
+                else:
+                    mappings = []
+                header = generate_view_struct_header(type_info, mappings, kind_aliases)
+            else:
+                header = generate_c_struct_header(type_info, kind_aliases,
+                                                   registry=derived_types,
+                                                   emit_includes=False)
             struct_defs.append(header)
         if struct_defs:
             sections.append("## C Struct Definitions\n")

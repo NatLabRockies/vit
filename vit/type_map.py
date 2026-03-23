@@ -20,6 +20,7 @@ class TypeMapping:
     byte_size: int             # e.g., 8
     is_derived: bool = False   # True for TYPE(...) args
     is_c_compatible: bool = True  # False → passthrough (not included in C interface)
+    is_view_type: bool = False   # True for pointer+size view pattern (ALLOCATABLE types)
     character_length: Optional[int] = None  # For CHARACTER(N), the fixed length N
 
 
@@ -127,6 +128,8 @@ def get_type_mapping(fortran_type: str, kind_aliases: Optional[dict] = None,
                        If provided and the type is TYPE(...), uses this to
                        determine C compatibility. If not provided or type not
                        found, defaults to passthrough (non-C-compatible).
+                       Types with view_strategy="view" are treated as C-compatible
+                       with is_view_type=True.
 
     Returns:
         TypeMapping with all the C/ISO_C_BINDING equivalents
@@ -206,8 +209,11 @@ def get_derived_type_mapping(fortran_type: str, type_info) -> TypeMapping:
         type_info: DerivedTypeInfo from derived_type_parser
 
     Returns:
-        TypeMapping with is_derived=True and is_c_compatible set appropriately
+        TypeMapping with is_derived=True and is_c_compatible set appropriately.
+        If type_info.view_strategy == "view", the type is treated as C-compatible
+        with is_view_type=True, even if it has ALLOCATABLE fields.
     """
+    is_view = (getattr(type_info, 'view_strategy', None) == "view")
     return TypeMapping(
         fortran_type=fortran_type,
         fortran_kind="",
@@ -216,5 +222,6 @@ def get_derived_type_mapping(fortran_type: str, type_info) -> TypeMapping:
         iso_c_type="TYPE(C_PTR)",
         byte_size=0,
         is_derived=True,
-        is_c_compatible=type_info.is_c_compatible,
+        is_c_compatible=type_info.is_c_compatible or is_view,
+        is_view_type=is_view,
     )

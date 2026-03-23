@@ -37,6 +37,7 @@ class DerivedTypeInfo:
     is_bind_c: bool = False           # TYPE, BIND(C) :: Name
     source_module: Optional[str] = None  # Which module defines it
     source_file: Optional[str] = None    # Absolute path to file containing this type
+    view_strategy: Optional[str] = None  # "view" for pointer+size pattern, None for default
 
     @property
     def is_c_compatible(self) -> bool:
@@ -447,6 +448,25 @@ def generate_c_struct_header(type_info: DerivedTypeInfo,
     lines.append("")
 
     return "\n".join(lines)
+
+
+def apply_type_strategies(registry: dict, type_strategies: dict) -> None:
+    """
+    Apply type strategy overrides from config to a derived type registry.
+
+    For types with strategy "view", sets view_strategy on the DerivedTypeInfo.
+    This causes get_derived_type_mapping() to return is_c_compatible=True
+    and is_view_type=True, even if the type has ALLOCATABLE fields.
+
+    Args:
+        registry: Dict mapping type_name → DerivedTypeInfo (modified in place)
+        type_strategies: Dict mapping type_name → strategy string from config
+    """
+    for type_name, strategy in type_strategies.items():
+        for key, info in registry.items():
+            if key.upper() == type_name.upper():
+                info.view_strategy = strategy
+                break
 
 
 def generate_view_struct_header(

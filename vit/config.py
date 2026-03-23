@@ -89,6 +89,7 @@ class VitConfig:
 
     tolerance: float = 1e-14
     translations: dict = field(default_factory=dict)
+    type_strategies: dict = field(default_factory=dict)  # type_name → "bind_c" | "view"
 
     config_dir: str = "."  # Directory containing vit.yaml
 
@@ -164,8 +165,33 @@ def load_config(config_path: Optional[str] = None) -> VitConfig:
         fortran_flags=fortran.get("flags", ""),
         tolerance=verify.get("tolerance", 1e-14),
         translations=data.get("translations", {}),
+        type_strategies=_parse_type_strategies(data.get("types", {})),
         config_dir=config_dir,
     )
+
+
+def _parse_type_strategies(types_section: dict) -> dict:
+    """Parse the types: section of vit.yaml into a type_name → strategy dict.
+
+    Example input:
+        types:
+          ControlParameters:
+            strategy: view
+          PerformanceData:
+            strategy: view
+
+    Returns: {"ControlParameters": "view", "PerformanceData": "view"}
+    """
+    strategies = {}
+    for type_name, info in types_section.items():
+        if isinstance(info, dict):
+            strategy = info.get("strategy", "bind_c")
+        elif isinstance(info, str):
+            strategy = info
+        else:
+            strategy = "bind_c"
+        strategies[type_name] = strategy
+    return strategies
 
 
 def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
@@ -202,6 +228,13 @@ def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
         },
         "translations": config.translations,
     }
+
+    # Only include types section if strategies exist
+    if config.type_strategies:
+        data["types"] = {
+            name: {"strategy": strategy}
+            for name, strategy in config.type_strategies.items()
+        }
 
     if HAS_YAML:
         with open(config_path, "w") as f:

@@ -198,21 +198,24 @@ def generate_fortran_wrapper(sig: FortranSignature,
         if a.is_optional and not _is_passthrough(a, kind_aliases, derived_types)
     ]
 
+    view_args = _get_view_type_args(sig, kind_aliases, derived_types)
+
     if sig.is_function:
         lines.extend(_generate_wrapper_function(
-            sig, c_func_name, kind_aliases, derived_types, optional_forwarded
+            sig, c_func_name, kind_aliases, derived_types, optional_forwarded, view_args
         ))
     else:
         lines.extend(_generate_wrapper_subroutine(
-            sig, c_func_name, kind_aliases, derived_types, optional_forwarded
+            sig, c_func_name, kind_aliases, derived_types, optional_forwarded, view_args
         ))
 
     return "\n".join(lines)
 
 
 def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
-                                optional_forwarded):
+                                optional_forwarded, view_args=None):
     """Generate wrapper body for a FUNCTION."""
+    view_args = view_args or []
     lines = []
 
     # Function header — includes ALL args
@@ -224,6 +227,9 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     # Add USE statements for modules providing derived types
     for use_stmt in _get_use_statements_for_derived_types(sig):
         lines.append(f"        {use_stmt}")
+
+    # Add USE for view type modules
+    lines.extend(_get_view_use_statements(view_args))
 
     lines.append(f"        IMPLICIT NONE")
 
@@ -256,6 +262,10 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     if optional_forwarded:
         lines.extend(_generate_optional_preamble(optional_forwarded, kind_aliases, derived_types))
 
+    # View type preamble: local view structs + populator calls
+    if view_args:
+        lines.extend(_generate_view_preamble(view_args))
+
     # Build the C function call (only non-passthrough args, with size params for arrays)
     ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
     call_args = _build_wrapper_call_args(sig, kind_aliases, derived_types)
@@ -285,8 +295,9 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
 
 
 def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
-                                  optional_forwarded):
+                                  optional_forwarded, view_args=None):
     """Generate wrapper body for a SUBROUTINE."""
+    view_args = view_args or []
     lines = []
 
     arg_str = ", ".join(a.name for a in sig.args)
@@ -296,6 +307,9 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     # Add USE statements for modules providing derived types
     for use_stmt in _get_use_statements_for_derived_types(sig):
         lines.append(f"        {use_stmt}")
+
+    # Add USE for view type modules
+    lines.extend(_get_view_use_statements(view_args))
 
     lines.append(f"        IMPLICIT NONE")
 
@@ -312,11 +326,77 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     if optional_forwarded:
         lines.extend(_generate_optional_preamble(optional_forwarded, kind_aliases, derived_types))
 
+    # View type preamble: local view structs + populator calls
+    if view_args:
+        lines.extend(_generate_view_preamble(view_args))
+
     # Build call with conversions (only non-passthrough args)
     call_args = _build_wrapper_call_args(sig, kind_aliases, derived_types)
     call_str = ", ".join(call_args)
     lines.append(f"        CALL {c_func_name}({call_str})")
     lines.append(f"    END SUBROUTINE {sig.name}")
+    return lines
+
+
+def _get_view_type_args(sig: FortranSignature, kind_aliases, derived_types) -> list[tuple]:
+    """
+    Identify args that use the view type pattern.
+
+    Returns list of (arg, mapping) tuples for view-type args.
+    """
+    result = []
+    for arg in sig.args:
+        if not arg.is_derived_type:
+            continue
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+        if mapping.is_view_type:
+            result.append((arg, mapping))
+    return result
+
+
+def _generate_view_preamble(view_args: list[tuple]) -> list[str]:
+    """
+    Generate USE statements, local declarations, and populator calls
+    for view-type arguments.
+
+    Args:
+        view_args: List of (arg, mapping) tuples from _get_view_type_args()
+
+    Returns:
+        List of Fortran lines to insert into the wrapper
+    """
+    if not view_args:
+        return []
+
+    lines = []
+    # Local view struct declarations
+    for arg, mapping in view_args:
+        type_lower = mapping.c_type.lower()
+        view_type = f"{type_lower}_view_t"
+        lines.append(f"        TYPE({view_type}), TARGET :: {arg.name}_view")
+
+    # Populator calls (before the C function call)
+    lines.append(f"        ! Populate view structs from Fortran types")
+    for arg, mapping in view_args:
+        type_lower = mapping.c_type.lower()
+        lines.append(f"        CALL vit_populate_{type_lower}({arg.name}, {arg.name}_view)")
+
+    return lines
+
+
+def _get_view_use_statements(view_args: list[tuple]) -> list[str]:
+    """Generate USE statements for view type modules."""
+    lines = []
+    seen = set()
+    for arg, mapping in view_args:
+        type_lower = mapping.c_type.lower()
+        module_name = f"vit_{type_lower}_view"
+        if module_name not in seen:
+            lines.append(
+                f"        USE {module_name}, ONLY: {type_lower}_view_t, "
+                f"vit_populate_{type_lower}"
+            )
+            seen.add(module_name)
     return lines
 
 
@@ -415,7 +495,8 @@ def build_c_params(sig: FortranSignature,
         if arg.is_optional:
             params.append(("int", f"has_{arg.name}"))
             if mapping.is_derived and mapping.is_c_compatible:
-                params.append((f"{mapping.c_type.lower()}_t*", arg.name))
+                suffix = "_view_t" if mapping.is_view_type else "_t"
+                params.append((f"{mapping.c_type.lower()}{suffix}*", arg.name))
             elif arg.is_array:
                 params.append((f"{mapping.c_type}*", arg.name))
                 if arg.is_assumed_shape:
@@ -426,7 +507,8 @@ def build_c_params(sig: FortranSignature,
 
         # C-compatible derived type → struct pointer
         if mapping.is_derived and mapping.is_c_compatible:
-            params.append((f"{mapping.c_type.lower()}_t*", arg.name))
+            suffix = "_view_t" if mapping.is_view_type else "_t"
+            params.append((f"{mapping.c_type.lower()}{suffix}*", arg.name))
             continue
 
         if arg.is_array:
@@ -581,7 +663,10 @@ def _build_wrapper_call_args(sig: FortranSignature,
         if arg.is_optional:
             call_args.append(f"has_{arg.name}_flag")
             if mapping.is_derived and mapping.is_c_compatible:
-                call_args.append(f"C_LOC({arg.name})")
+                if mapping.is_view_type:
+                    call_args.append(f"C_LOC({arg.name}_view)")
+                else:
+                    call_args.append(f"C_LOC({arg.name})")
             elif arg.is_array:
                 call_args.append(arg.name)
                 if arg.is_assumed_shape:
@@ -592,7 +677,11 @@ def _build_wrapper_call_args(sig: FortranSignature,
 
         # C-compatible derived type → C_LOC()
         if mapping.is_derived and mapping.is_c_compatible:
-            call_args.append(f"C_LOC({arg.name})")
+            if mapping.is_view_type:
+                # View type: pass local view struct, not original arg
+                call_args.append(f"C_LOC({arg.name}_view)")
+            else:
+                call_args.append(f"C_LOC({arg.name})")
             continue
 
         if arg.is_array:
