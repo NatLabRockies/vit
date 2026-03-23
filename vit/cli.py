@@ -520,6 +520,8 @@ def cmd_verify(args, config):
         field_log=field_log,
         derived_types=derived_types,
         fortran_flags=config.fortran_flags,
+        translations=config.translations,
+        source_dir=config.abs_source_dir,
     )
 
     if not setup_result["success"]:

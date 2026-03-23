@@ -74,6 +74,8 @@ def setup_kernel_cpp(
     field_log: bool = True,
     derived_types: Optional[dict] = None,
     fortran_flags: str = "",
+    translations: Optional[dict] = None,
+    source_dir: Optional[str] = None,
 ) -> dict:
     """
     Wire a C++ translation into a KGen kernel directory for verification.
@@ -191,6 +193,26 @@ def setup_kernel_cpp(
     except Exception as e:
         result["errors"].append(f"Fortran patch failed: {e}")
         return result
+
+    # --- Step 5: Generate callee bridges for translated callees ---
+    callee_bridge_sources = []
+    if translations and source_dir:
+        try:
+            callee_bridge_sources = _generate_callee_bridges(
+                kernel, sig, translations, source_dir,
+                kind_aliases, derived_types, result,
+            )
+        except Exception as e:
+            result["errors"].append(f"Callee bridge generation failed: {e}")
+            return result
+
+    # --- Step 5b: Patch Makefile for callee bridges ---
+    if callee_bridge_sources:
+        try:
+            _add_bridges_to_makefile(kernel, callee_bridge_sources)
+            result["files_modified"].append(str(kernel / "Makefile"))
+        except Exception as e:
+            result["errors"].append(f"Callee bridge Makefile patch failed: {e}")
 
     result["success"] = len(result["errors"]) == 0
     return result
@@ -409,7 +431,8 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
             m = rule_re.search(content_joined)
             if m and pop_obj not in m.group(2):
                 old_rule = m.group(0)
-                new_rule = f"{m.group(1)}{pop_obj} {m.group(2)}"
+                # APPEND dependency (not prepend) — $< must remain the .f90 source file
+                new_rule = f"{m.group(1)}{m.group(2)} {pop_obj}"
                 content_joined = content_joined.replace(old_rule, new_rule, 1)
         lines = content_joined.split("\n")
 
@@ -420,6 +443,208 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
             if "-o kernel.exe" in line or "-o\tkernel.exe" in line:
                 lines[i] = line.replace("-o kernel.exe", "-o kernel.exe -lstdc++")
                 break
+
+    makefile.write_text("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
+# Kernel callee bridges
+# ---------------------------------------------------------------------------
+
+def detect_translated_callees(source: str, target_name: str,
+                               translations: dict) -> list[str]:
+    """
+    Scan target function body for calls to already-translated functions.
+
+    Args:
+        source: Full Fortran source text containing the target function
+        target_name: Name of the target function
+        translations: Translations registry from vit.yaml (name → info dict)
+
+    Returns:
+        List of translation keys (function names) found as callees
+    """
+    import re as _re
+
+    # Extract the target function body
+    lines = source.split("\n")
+    name_upper = target_name.upper()
+    in_body = False
+    body_lines = []
+    for line in lines:
+        stripped = line.strip().upper()
+        # Remove comments
+        if "!" in stripped:
+            stripped = stripped[:stripped.index("!")]
+        stripped = stripped.strip()
+        if not in_body:
+            if _re.search(rf'\b(FUNCTION|SUBROUTINE)\s+{name_upper}\s*\(', stripped):
+                in_body = True
+        else:
+            if _re.search(rf'\bEND\s+(FUNCTION|SUBROUTINE)\b', stripped):
+                break
+            body_lines.append(line)
+
+    body_text = "\n".join(body_lines).upper()
+
+    # Search for each translated function name in the body
+    callees = []
+    for func_name in translations:
+        # Match CALL func_name( or func_name( as a function call
+        pattern = rf'\b{_re.escape(func_name.upper())}\s*\('
+        if _re.search(pattern, body_text):
+            callees.append(func_name)
+
+    return callees
+
+
+def _generate_callee_bridges(
+    kernel: Path,
+    sig: FortranSignature,
+    translations: dict,
+    source_dir: str,
+    kind_aliases: Optional[dict],
+    derived_types: Optional[dict],
+    result: dict,
+) -> list[str]:
+    """
+    Generate BIND(C) bridge functions for translated callees in the kernel.
+
+    Returns list of bridge .f90 filenames created.
+    """
+    from .fortran_parser import find_function_in_file
+    from .interface_gen import (
+        generate_kernel_callee_bridge,
+        generate_callee_declarations_header,
+        build_c_params,
+    )
+    from .derived_type_parser import build_derived_type_registry, generate_c_struct_header
+
+    # Read the ORIGINAL source file (not the patched kernel — the kernel has
+    # the function body replaced with a wrapper, so callees won't be found there)
+    if not sig.source_file:
+        return []
+    target_source = Path(sig.source_file).read_text()
+
+    # Detect which translated functions are called
+    callee_names = detect_translated_callees(target_source, sig.name, translations)
+    if not callee_names:
+        return []
+
+    bridge_sources = []
+    callee_sigs = []
+
+    for callee_name in callee_names:
+        # Find the callee's definition in the source directory
+        callee_sig = None
+        for pattern in ("**/*.f90", "**/*.F90"):
+            for f90_file in sorted(Path(source_dir).glob(pattern)):
+                try:
+                    callee_sig = find_function_in_file(str(f90_file), callee_name)
+                    if callee_sig:
+                        break
+                except (ValueError, FileNotFoundError):
+                    continue
+            if callee_sig:
+                break
+
+        if not callee_sig:
+            continue
+
+        # Build type registry for the callee (for struct pointer handling)
+        callee_registry = build_derived_type_registry(callee_sig, source_dir)
+
+        # Generate any needed struct headers for the callee's types
+        # (that aren't already generated for the target function)
+        for type_name, type_info in callee_registry.items():
+            header_filename = f"{type_name.lower()}_t.h"
+            header_path = kernel / header_filename
+            if not header_path.exists() and type_info.is_c_compatible:
+                header_content = generate_c_struct_header(
+                    type_info, kind_aliases, registry=callee_registry
+                )
+                header_path.write_text(header_content)
+                result["files_modified"].append(str(header_path))
+
+        # Generate the bridge
+        bridge_code = generate_kernel_callee_bridge(
+            callee_sig, kind_aliases, callee_registry
+        )
+        bridge_filename = f"vit_bridge_{callee_name.lower()}.f90"
+        bridge_path = kernel / bridge_filename
+        bridge_path.write_text(bridge_code)
+        bridge_sources.append(bridge_filename)
+        callee_sigs.append(callee_sig)
+        result["files_modified"].append(str(bridge_path))
+
+    # Generate callee declarations header for C++
+    if callee_sigs:
+        header_content = generate_callee_declarations_header(
+            callee_sigs, kind_aliases, derived_types
+        )
+        header_path = kernel / "vit_kernel_callees.h"
+        header_path.write_text(header_content)
+        result["files_modified"].append(str(header_path))
+
+        # Patch the C++ wrapper to include the callee header
+        wrapper_cpp = kernel / f"{sig.name.lower()}_cpp.cpp"
+        if wrapper_cpp.exists():
+            content = wrapper_cpp.read_text()
+            if "vit_kernel_callees.h" not in content:
+                content = content.replace(
+                    '// User-provided C++ implementation',
+                    '#include "vit_kernel_callees.h"\n\n// User-provided C++ implementation',
+                )
+                wrapper_cpp.write_text(content)
+
+    return bridge_sources
+
+
+def _add_bridges_to_makefile(kernel: Path, bridge_sources: list[str]) -> None:
+    """Add callee bridge .f90 files to the kernel Makefile."""
+    makefile = kernel / "Makefile"
+    content = makefile.read_text()
+    lines = content.split("\n")
+
+    for bridge_src in bridge_sources:
+        bridge_obj = bridge_src.replace(".f90", ".o")
+
+        # Add to ALL_OBJS
+        content_joined = "\n".join(lines)
+        all_objs_match = re.search(r'^(ALL_OBJS\s*[:?]?=\s*)(.*)', content_joined, re.MULTILINE)
+        if all_objs_match and bridge_obj not in all_objs_match.group(2):
+            old_line = all_objs_match.group(0)
+            new_line = f"{all_objs_match.group(1)}{bridge_obj} {all_objs_match.group(2)}"
+            content_joined = content_joined.replace(old_line, new_line, 1)
+            lines = content_joined.split("\n")
+
+        # Add compilation rule.
+        # The bridge USEs both ROSCO_Types (for derived types) and the callee's
+        # module (e.g., Controllers). It must compile after both.
+        # We use a broad dependency on all .o files that might provide modules,
+        # which is safe since the bridge is a leaf node (nothing depends on it
+        # except the linker).
+        content_joined = "\n".join(lines)
+        if bridge_src not in content_joined:
+            # Find all existing .o targets to depend on (ensures all modules are available)
+            all_objs_match = re.search(r'^ALL_OBJS\s*[:?]?=\s*(.*)', content_joined, re.MULTILINE)
+            other_objs = ""
+            if all_objs_match:
+                # Depend on all Fortran .o files (exclude the bridge itself and C++ .o)
+                objs = all_objs_match.group(1).split()
+                fortran_objs = [o for o in objs if o != bridge_obj and not o.endswith("_cpp.o")]
+                other_objs = " " + " ".join(fortran_objs)
+            rule_lines = [
+                f"# VIT: callee bridge for kernel verification",
+                f"{bridge_obj}: {bridge_src}{other_objs}",
+                f"\t$(FC_0) $(FC_FLAGS_SET_0) -c $< -o $@",
+                "",
+            ]
+            for i, line in enumerate(lines):
+                if re.match(r'^build\s*:', line):
+                    for j, rule_line in enumerate(rule_lines):
+                        lines.insert(i + j, rule_line)
+                    break
 
     makefile.write_text("\n".join(lines))
 

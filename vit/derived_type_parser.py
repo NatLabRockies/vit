@@ -364,6 +364,25 @@ def build_derived_type_registry(sig, source_dir: str) -> dict:
                 info = find_and_parse_derived_type(type_name, source_dir)
                 if info:
                     registry[type_name] = info
+
+    # Phase 2: Recursively discover nested types.
+    # Iterate until no new types found (fixed-point expansion).
+    # Types like C_PTR from ISO_C_BINDING are harmlessly skipped (not found on disk).
+    visited = {k.upper() for k in registry}
+    changed = True
+    while changed:
+        changed = False
+        for type_info in list(registry.values()):
+            for f in type_info.fields:
+                if f.fortran_type.upper().startswith("TYPE("):
+                    nested_name = f.fortran_type[5:-1].strip()
+                    if nested_name.upper() not in visited:
+                        visited.add(nested_name.upper())
+                        nested_info = find_and_parse_derived_type(nested_name, source_dir)
+                        if nested_info:
+                            registry[nested_name] = nested_info
+                            changed = True
+
     return registry
 
 

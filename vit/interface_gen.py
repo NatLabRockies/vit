@@ -758,3 +758,219 @@ def _format_dims(arg: FortranArg) -> str:
     if arg.array_dims:
         return f"({arg.array_dims})"
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Kernel callee bridges (C → Fortran)
+# ---------------------------------------------------------------------------
+
+def generate_kernel_callee_bridge(
+    sig: FortranSignature,
+    kind_aliases: Optional[dict] = None,
+    derived_types: Optional[dict] = None,
+) -> str:
+    """
+    Generate a Fortran BIND(C) bridge that calls the original Fortran function.
+
+    This is the inverse of generate_fortran_wrapper(): instead of Fortran→C,
+    it wraps C→Fortran. Used in the KGen kernel to allow C++ translations
+    to call functions that remain as original Fortran in the kernel context.
+
+    The bridge:
+    1. Has BIND(C, NAME='callee_c') so C++ can call it
+    2. Accepts C-compatible types (same as the BIND(C) interface)
+    3. Converts C types back to Fortran types where needed
+    4. Calls the original Fortran function
+    5. Returns the result as a C type
+
+    Args:
+        sig: Parsed signature of the callee function
+        kind_aliases: Project-specific kind aliases
+        derived_types: Registry of known derived types
+
+    Returns:
+        Complete Fortran source for the bridge function
+    """
+    lines = []
+    c_func_name = sig.c_func_name
+    bridge_name = f"{sig.name.lower()}_bridge"
+
+    lines.append(f"! VIT: Kernel callee bridge for {sig.name}")
+    lines.append(f"! Allows C++ translations to call the original Fortran function.")
+
+    # Build the BIND(C) interface args (same as what the C++ side expects)
+    iface_args = _build_interface_args(sig, kind_aliases, derived_types)
+
+    # Collect USE statements for derived types
+    use_stmts = _get_use_statements_for_derived_types(sig)
+
+    # Identify struct pointer args that need C_F_POINTER conversion
+    struct_args = []
+    for arg in sig.args:
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+        if mapping.is_derived and mapping.is_c_compatible and not arg.is_optional:
+            struct_args.append((arg, mapping))
+
+    if sig.is_function and not sig.result_is_array:
+        # Scalar-returning function
+        ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
+        result_name = "bridge_result"
+
+        lines.append(f"    FUNCTION {bridge_name}({', '.join(a['iface_name'] for a in iface_args)}) &")
+        lines.append(f"        BIND(C, NAME='{c_func_name}') RESULT({result_name})")
+    else:
+        # Subroutine (or array-valued function treated as subroutine)
+        lines.append(f"    SUBROUTINE {bridge_name}({', '.join(a['iface_name'] for a in iface_args)}) &")
+        lines.append(f"        BIND(C, NAME='{c_func_name}')")
+
+    lines.append(f"        USE ISO_C_BINDING")
+    # USE the module that defines the callee so we can call it
+    if sig.module_name:
+        lines.append(f"        USE {sig.module_name}, ONLY: {sig.name}")
+    for use_stmt in use_stmts:
+        lines.append(f"        {use_stmt}")
+    lines.append(f"        IMPLICIT NONE")
+
+    # Declare BIND(C) arguments (same as interface block)
+    for a in iface_args:
+        lines.append(f"        {a['iface_decl']}")
+
+    # Declare result for functions
+    if sig.is_function and not sig.result_is_array:
+        lines.append(f"        {ret_mapping.iso_c_type} :: {result_name}")
+
+    # Declare local Fortran pointer variables for struct args
+    for arg, mapping in struct_args:
+        lines.append(f"        TYPE({arg.derived_type_name}), POINTER :: {arg.name}_f")
+
+    # Convert C struct pointers to Fortran pointers
+    if struct_args:
+        lines.append(f"        ! Convert C pointers to Fortran pointers")
+    for arg, mapping in struct_args:
+        lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_f)")
+
+    # Build the call to the original Fortran function
+    call_args = _build_bridge_call_args(sig, kind_aliases, derived_types)
+    call_str = ", ".join(call_args)
+
+    if sig.is_function and not sig.result_is_array:
+        # Get the return kind for conversion
+        ret_type = sig.result_type or sig.args[0].fortran_type if sig.args else "REAL(8)"
+        if ret_mapping.c_kind != ret_mapping.fortran_kind and ret_mapping.fortran_kind:
+            lines.append(f"        {result_name} = {ret_mapping.iso_c_type.split('(')[0]}({sig.name}({call_str}), {ret_mapping.c_kind})")
+        else:
+            lines.append(f"        {result_name} = {sig.name}({call_str})")
+        lines.append(f"    END FUNCTION {bridge_name}")
+    else:
+        lines.append(f"        CALL {sig.name}({call_str})")
+        lines.append(f"    END SUBROUTINE {bridge_name}")
+
+    return "\n".join(lines)
+
+
+def _build_bridge_call_args(sig: FortranSignature,
+                             kind_aliases: Optional[dict] = None,
+                             derived_types: Optional[dict] = None) -> list[str]:
+    """
+    Build argument list for the bridge's call to the original Fortran function.
+
+    Converts C types back to Fortran types:
+    - Struct pointers: use the C_F_POINTER'd local variable (arg_f)
+    - LOGICAL: convert INTEGER(C_INT) back to LOGICAL via (/= 0)
+    - Assumed-shape arrays with size params: skip the size param, pass array directly
+    - Scalars: direct pass-through (implicit kind conversion)
+    """
+    call_args = []
+    skip_next_size = False
+
+    for arg in sig.args:
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+
+        # Skip passthrough args
+        if mapping.is_derived and not mapping.is_c_compatible:
+            continue
+
+        # Skip OPTIONAL args for now (bridge doesn't handle OPTIONAL)
+        if arg.is_optional:
+            # OPTIONAL args need the flag + value — pass through as-is
+            call_args.append(f"has_{arg.name}")
+            if mapping.is_derived and mapping.is_c_compatible:
+                call_args.append(f"{arg.name}_f")
+            elif arg.is_array:
+                call_args.append(arg.name)
+                # Don't pass size param to Fortran
+            else:
+                call_args.append(arg.name)
+            continue
+
+        # C-compatible derived type → use C_F_POINTER'd local
+        if mapping.is_derived and mapping.is_c_compatible:
+            call_args.append(f"{arg.name}_f")
+            continue
+
+        if arg.is_array:
+            call_args.append(arg.name)
+            # Assumed-shape arrays have a synthetic size param in the C interface
+            # that the Fortran original doesn't expect — skip it.
+            # (The bridge declares the array as assumed-size (*), which is compatible)
+            continue
+
+        # Scalar args — INOUT args must be passed directly (no conversion wrapping).
+        # VALUE args may need kind conversion for LOGICAL.
+        if arg.intent in (IntentKind.OUT, IntentKind.INOUT):
+            # INOUT/OUT: pass directly — can't wrap in conversion function
+            call_args.append(arg.name)
+        elif mapping.iso_c_type.startswith("LOGICAL("):
+            # LOGICAL(C_BOOL) → LOGICAL: explicit conversion needed
+            call_args.append(f"LOGICAL({arg.name})")
+        else:
+            # Scalar VALUE args: direct pass-through.
+            # BIND(C) VALUE args are already the right type for calling Fortran
+            # (gfortran handles implicit kind promotion for REAL/INTEGER).
+            call_args.append(arg.name)
+
+    return call_args
+
+
+def generate_callee_declarations_header(
+    callee_sigs: list,
+    kind_aliases: Optional[dict] = None,
+    derived_types: Optional[dict] = None,
+) -> str:
+    """
+    Generate a C header with extern "C" declarations for kernel callee bridges.
+
+    This header is included by the kernel C++ wrapper so the translation
+    can call callee_c() functions.
+    """
+    lines = []
+    lines.append("// VIT: Kernel callee bridge declarations")
+    lines.append("// Auto-generated — allows C++ translations to call")
+    lines.append("// original Fortran functions via BIND(C) bridges.")
+    lines.append("")
+    lines.append("#ifndef VIT_KERNEL_CALLEES_H")
+    lines.append("#define VIT_KERNEL_CALLEES_H")
+    lines.append("")
+    lines.append('#ifdef __cplusplus')
+    lines.append('extern "C" {')
+    lines.append('#endif')
+    lines.append("")
+
+    for sig in callee_sigs:
+        params = build_c_params(sig, kind_aliases, derived_types)
+        param_str = ", ".join(f"{p[0]} {p[1]}" for p in params)
+        if sig.is_function and not sig.result_is_array:
+            ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
+            lines.append(f"{ret_mapping.c_type} {sig.c_func_name}({param_str});")
+        else:
+            lines.append(f"void {sig.c_func_name}({param_str});")
+
+    lines.append("")
+    lines.append('#ifdef __cplusplus')
+    lines.append('}')
+    lines.append('#endif')
+    lines.append("")
+    lines.append("#endif // VIT_KERNEL_CALLEES_H")
+    lines.append("")
+
+    return "\n".join(lines)
