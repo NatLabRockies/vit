@@ -91,7 +91,6 @@ def generate_integration_plan(
     target_name: str = "discon",
     kind_aliases: Optional[dict] = None,
     derived_types: Optional[dict] = None,
-    allocatable_helpers: Optional[list] = None,
 ) -> IntegrationPlan:
     """
     Generate a complete integration plan for a verified C++ function.
@@ -121,7 +120,7 @@ def generate_integration_plan(
 
     # Generate the complete C++ file (impl + wrapper)
     cpp_complete = _generate_standalone_cpp(sig, cpp_impl_content, kind_aliases,
-                                             derived_types, allocatable_helpers)
+                                             derived_types)
 
     patches.append(IntegrationPatch(
         filepath=cpp_wrapper_path,
@@ -134,7 +133,6 @@ def generate_integration_plan(
     view_populator_names = []
     if derived_types:
         from .view_populator import generate_view_populator
-        from .analyze_types import scan_allocatable_sizes
         seen_view_types = set()
         for type_name, type_info in derived_types.items():
             if getattr(type_info, 'view_strategy', None) != 'view':
@@ -150,14 +148,8 @@ def generate_integration_plan(
             if os.path.exists(populator_path):
                 continue
 
-            # Scan for ALLOCATABLE sizes
-            source_dir_for_scan = type_info.source_file
-            if source_dir_for_scan:
-                source_dir_for_scan = str(Path(source_dir_for_scan).parent)
-            else:
-                source_dir_for_scan = src_dir
-            mappings = scan_allocatable_sizes(source_dir_for_scan, type_name, type_info,
-                                              allocatable_helpers=allocatable_helpers)
+            # Use pre-computed field mappings from registry
+            mappings = getattr(type_info, 'field_mappings', None) or []
 
             # Detect source module from type's source file
             source_module = type_info.source_module or "ROSCO_Types"
@@ -366,8 +358,7 @@ def _generate_c_declaration(sig: FortranSignature,
 
 def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
                               kind_aliases: Optional[dict] = None,
-                              derived_types: Optional[dict] = None,
-                              allocatable_helpers: Optional[list] = None) -> str:
+                              derived_types: Optional[dict] = None) -> str:
     """
     Generate a standalone C++ file with implementation + extern "C" wrapper.
 
@@ -391,19 +382,11 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
             generate_c_struct_header, generate_view_struct_header,
             order_types_by_dependency,
         )
-        from .analyze_types import scan_allocatable_sizes
         compatible = [info for info in derived_types.values()
                       if info.is_c_compatible or getattr(info, 'view_strategy', None) == 'view']
         for type_info in order_types_by_dependency(compatible):
             if getattr(type_info, 'view_strategy', None) == 'view':
-                # View type: generate pointer+size view struct
-                source_dir = type_info.source_file
-                if source_dir:
-                    source_dir = str(Path(source_dir).parent)
-                    mappings = scan_allocatable_sizes(source_dir, type_info.name, type_info,
-                                                      allocatable_helpers=allocatable_helpers)
-                else:
-                    mappings = []
+                mappings = getattr(type_info, 'field_mappings', None) or []
                 header = generate_view_struct_header(type_info, mappings,
                                                       kind_aliases)
             else:

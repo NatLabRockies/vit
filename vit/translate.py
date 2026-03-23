@@ -25,7 +25,6 @@ def generate_translation_scaffold(
     source_file: Optional[str] = None,
     vit_version: str = "0.1.0",
     derived_types: Optional[dict] = None,
-    allocatable_helpers: Optional[list] = None,
 ) -> str:
     """
     Generate a C++ translation scaffold with metadata header and correct signature.
@@ -56,18 +55,11 @@ def generate_translation_scaffold(
             generate_c_struct_header, generate_view_struct_header,
             order_types_by_dependency,
         )
-        from .analyze_types import scan_allocatable_sizes
         compatible = [info for info in derived_types.values()
                       if info.is_c_compatible or getattr(info, 'view_strategy', None) == 'view']
         for type_info in order_types_by_dependency(compatible):
             if getattr(type_info, 'view_strategy', None) == 'view':
-                source_dir = type_info.source_file
-                if source_dir:
-                    source_dir = str(Path(source_dir).parent)
-                    mappings = scan_allocatable_sizes(source_dir, type_info.name, type_info,
-                                                      allocatable_helpers=allocatable_helpers)
-                else:
-                    mappings = []
+                mappings = getattr(type_info, 'field_mappings', None) or []
                 header = generate_view_struct_header(type_info, mappings, kind_aliases)
             else:
                 header = generate_c_struct_header(type_info, kind_aliases,
@@ -101,7 +93,6 @@ def generate_translation_prompt(
     call_site_info: Optional[str] = None,
     tips_text: Optional[str] = None,
     derived_types: Optional[dict] = None,
-    allocatable_helpers: Optional[list] = None,
 ) -> str:
     """
     Generate a complete translation prompt for LLM-assisted translation.
@@ -153,19 +144,12 @@ def generate_translation_prompt(
             generate_c_struct_header, generate_view_struct_header,
             order_types_by_dependency,
         )
-        from .analyze_types import scan_allocatable_sizes
         struct_defs = []
         compatible = [info for info in derived_types.values()
                       if info.is_c_compatible or getattr(info, 'view_strategy', None) == 'view']
         for type_info in order_types_by_dependency(compatible):
             if getattr(type_info, 'view_strategy', None) == 'view':
-                source_dir = type_info.source_file
-                if source_dir:
-                    source_dir = str(Path(source_dir).parent)
-                    mappings = scan_allocatable_sizes(source_dir, type_info.name, type_info,
-                                                      allocatable_helpers=allocatable_helpers)
-                else:
-                    mappings = []
+                mappings = getattr(type_info, 'field_mappings', None) or []
                 header = generate_view_struct_header(type_info, mappings, kind_aliases)
             else:
                 header = generate_c_struct_header(type_info, kind_aliases,

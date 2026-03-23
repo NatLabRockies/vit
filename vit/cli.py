@@ -393,7 +393,6 @@ def cmd_translate(args, config):
         source_file=args.file,
         vit_version=__version__,
         derived_types=derived_types,
-        allocatable_helpers=config.allocatable_helpers,
     )
 
     # Write scaffold
@@ -420,7 +419,6 @@ def cmd_translate(args, config):
         scaffold_text=scaffold,
         tips_text=tips_text,
         derived_types=derived_types,
-        allocatable_helpers=config.allocatable_helpers,
     )
 
     # Print summary
@@ -522,7 +520,6 @@ def cmd_verify(args, config):
         field_log=field_log,
         derived_types=derived_types,
         fortran_flags=config.fortran_flags,
-        allocatable_helpers=config.allocatable_helpers,
     )
 
     if not setup_result["success"]:
@@ -581,7 +578,6 @@ def cmd_integrate(args, config):
         target_name=config.target_name,
         kind_aliases=config.kind_aliases,
         derived_types=derived_types,
-        allocatable_helpers=config.allocatable_helpers,
     )
 
     print(plan.to_markdown())
@@ -674,7 +670,6 @@ def cmd_run(args, config):
         target_name=config.target_name,
         kind_aliases=config.kind_aliases,
         derived_types=derived_types,
-        allocatable_helpers=config.allocatable_helpers,
     )
 
     print(plan.to_markdown())
@@ -899,12 +894,22 @@ def _build_registry(sig: FortranSignature, config) -> dict:
     """Build a derived type registry for the function's TYPE(...) args.
 
     Applies type strategies from config (e.g., view pattern for ALLOCATABLE types).
+    Pre-computes ALLOCATABLE field mappings for view types so downstream code
+    (integrate, verify, translate) can use type_info.field_mappings directly.
     """
     source_dir = config.abs_source_dir
     if source_dir and os.path.isdir(source_dir):
         from .derived_type_parser import apply_type_strategies
+        from .analyze_types import scan_allocatable_sizes
         registry = build_derived_type_registry(sig, source_dir)
         apply_type_strategies(registry, config.type_strategies)
+        # Pre-compute field mappings for view types
+        for name, info in registry.items():
+            if getattr(info, 'view_strategy', None) == 'view':
+                info.field_mappings = scan_allocatable_sizes(
+                    source_dir, name, info,
+                    allocatable_helpers=config.allocatable_helpers,
+                )
         return registry
     return {}
 

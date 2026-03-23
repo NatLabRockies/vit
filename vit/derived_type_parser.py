@@ -38,6 +38,7 @@ class DerivedTypeInfo:
     source_module: Optional[str] = None  # Which module defines it
     source_file: Optional[str] = None    # Absolute path to file containing this type
     view_strategy: Optional[str] = None  # "view" for pointer+size pattern, None for default
+    field_mappings: Optional[list] = None  # Pre-computed AllocatableFieldMapping list (set by _build_registry)
 
     @property
     def is_c_compatible(self) -> bool:
