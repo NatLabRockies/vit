@@ -212,6 +212,268 @@ def _find_parameter_value(var_name: str, source_content: str) -> Optional[int]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# ALLOCATABLE size source scanning (Phase 4D)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AllocatableFieldMapping:
+    """Maps one ALLOCATABLE field to its runtime size source.
+
+    Size classes:
+        A — Size is a field on the same/another type (e.g., CntrPar%PC_GS_n)
+        B — Size is a literal integer (e.g., 2)
+        C — Size is a local variable or complex expression (needs EXIT_CONFIRM)
+        D — Size is SIZE() of another field (e.g., SIZE(CntrPar%OL_Channels, DIM=1))
+        E — Size is an array-indexed field (e.g., CntrPar%PerfTableSize(1))
+    """
+    field_name: str
+    fortran_type: str        # e.g., "REAL(DbKi)"
+    rank: int                # 1 or 2
+    size_class: str          # "A", "B", "C", "D", "E"
+    dim_sizes: list[str] = field(default_factory=list)  # per-dimension size expressions
+    evidence: str = ""       # source line showing the ParseAry/ALLOCATE call
+    needs_confirm: bool = False  # True for Type C
+
+
+def scan_allocatable_sizes(
+    source_dir: str,
+    type_name: str,
+    type_info: DerivedTypeInfo,
+) -> list[AllocatableFieldMapping]:
+    """
+    Scan source files for ParseAry and ALLOCATE calls to map every
+    ALLOCATABLE field in a type to its runtime size source.
+
+    Searches all .f90/.F90 files in source_dir. For each ALLOCATABLE field
+    in type_info, looks for:
+    1. ParseAry calls: CALL ParseAry(..., Var%field, size_expr, ...)
+    2. ALLOCATE calls: ALLOCATE(Var%field(dim1, dim2, ...))
+
+    Args:
+        source_dir: Root directory of Fortran sources
+        type_name: Name of the derived type (e.g., "ControlParameters")
+        type_info: Parsed type definition with field list
+
+    Returns:
+        List of AllocatableFieldMapping, one per ALLOCATABLE field found.
+        Fields with no size source found are omitted.
+    """
+    source_path = Path(source_dir)
+    alloc_fields = [
+        f for f in type_info.fields if f.is_allocatable
+    ]
+    if not alloc_fields:
+        return []
+
+    # Read all source content once
+    source_files = {}
+    for pattern in ("**/*.f90", "**/*.F90"):
+        for f90_file in sorted(source_path.glob(pattern)):
+            source_files[f90_file] = f90_file.read_text()
+
+    mappings = []
+    for af in alloc_fields:
+        mapping = _scan_field_size(af, source_files)
+        if mapping is not None:
+            mappings.append(mapping)
+
+    return mappings
+
+
+def _scan_field_size(
+    af: 'DerivedTypeField',
+    source_files: dict,
+) -> Optional[AllocatableFieldMapping]:
+    """
+    Scan all source files to find the size source for one ALLOCATABLE field.
+
+    Checks ParseAry calls first (most common), then ALLOCATE calls.
+    """
+    field_name = af.name
+
+    # --- Try ParseAry first ---
+    # Two ParseAry call signatures in ROSCO:
+    #   CALL ParseAry(FileLines, 'label', Var%field, size_expr, ...)
+    #   CALL ParseAry(Unit, CurLine, 'label', Var%field, size_expr, ...)
+    # In both cases, the field is followed by the size expression.
+    # Use a general pattern: match Var%field anywhere in the call, capture the next arg.
+    parseary_re = re.compile(
+        r'CALL\s+ParseAry\s*\('
+        r'.*?'                         # any preceding args
+        r'\w+%' + re.escape(field_name) + r'\s*,'  # Var%field
+        r'\s*([^,]+)',                 # next arg: size expression
+        re.IGNORECASE,
+    )
+
+    for f90_file, content in source_files.items():
+        for line_num, line in enumerate(content.split("\n"), 1):
+            # Skip commented-out lines
+            if line.lstrip().startswith("!"):
+                continue
+            m = parseary_re.search(line)
+            if m:
+                size_expr = m.group(1).strip()
+                evidence = f"ParseAry(..., %{field_name}, {size_expr}, ...) in {f90_file.name}:{line_num}"
+                size_class, needs_confirm = _classify_size_expr(size_expr)
+                return AllocatableFieldMapping(
+                    field_name=field_name,
+                    fortran_type=af.fortran_type,
+                    rank=_field_rank(af),
+                    size_class=size_class,
+                    dim_sizes=[size_expr],
+                    evidence=evidence,
+                    needs_confirm=needs_confirm,
+                )
+
+    # --- Try ALLOCATE ---
+    # Pattern: ALLOCATE(Var%field(dim1)) or ALLOCATE(Var%field(dim1, dim2))
+    # Use a pattern that handles one level of nested parens (e.g., PerfTableSize(2))
+    allocate_re = re.compile(
+        r'(?<!\!)\s*ALLOCATE\s*\(\s*\w+%' + re.escape(field_name) +
+        r'\s*\(((?:[^()]*|\([^()]*\))*)\)\s*\)',
+        re.IGNORECASE,
+    )
+
+    for f90_file, content in source_files.items():
+        for line_num, line in enumerate(content.split("\n"), 1):
+            # Skip commented-out lines
+            stripped = line.lstrip()
+            if stripped.startswith("!"):
+                continue
+            m = allocate_re.search(line)
+            if m:
+                dims_str = m.group(1).strip()
+                dims = [d.strip() for d in dims_str.split(",")]
+                evidence = f"ALLOCATE(%{field_name}({dims_str})) in {f90_file.name}:{line_num}"
+
+                # Classify each dimension
+                dim_classes = []
+                any_confirm = False
+                for d in dims:
+                    sc, nc = _classify_size_expr(d)
+                    dim_classes.append(sc)
+                    if nc:
+                        any_confirm = True
+
+                # Overall class is the "hardest" dimension
+                overall_class = _worst_class(dim_classes)
+
+                return AllocatableFieldMapping(
+                    field_name=field_name,
+                    fortran_type=af.fortran_type,
+                    rank=len(dims),
+                    size_class=overall_class,
+                    dim_sizes=dims,
+                    evidence=evidence,
+                    needs_confirm=any_confirm,
+                )
+
+    return None
+
+
+def _classify_size_expr(expr: str) -> tuple[str, bool]:
+    """
+    Classify a size expression into a type (A-E) and whether it needs
+    human confirmation.
+
+    Returns:
+        (size_class, needs_confirm)
+    """
+    expr = expr.strip()
+
+    # Type B: literal integer
+    if expr.isdigit():
+        return ("B", False)
+
+    # Type D: SIZE(Var%field) or SIZE(Var%field, DIM=N)
+    if re.match(r'SIZE\s*\(', expr, re.IGNORECASE):
+        return ("D", False)
+
+    # Type E: Var%field(index) — array-indexed field reference
+    if re.match(r'\w+%\w+\s*\(\s*\d+\s*\)', expr):
+        return ("E", False)
+
+    # Type A: Var%field — simple field reference (most common)
+    if re.match(r'\w+%\w+$', expr):
+        return ("A", False)
+
+    # Type C: anything else (local variable, complex expression)
+    return ("C", True)
+
+
+def _field_rank(af: 'DerivedTypeField') -> int:
+    """Determine the array rank of a field from its array_dims."""
+    if not af.array_dims:
+        return 0
+    return af.array_dims.count(":") + af.array_dims.count(",")
+
+
+def _worst_class(classes: list[str]) -> str:
+    """Return the 'hardest' classification from a list (C > D > E > A > B)."""
+    priority = {"C": 5, "D": 4, "E": 3, "A": 2, "B": 1}
+    return max(classes, key=lambda c: priority.get(c, 0))
+
+
+def format_allocatable_scan_report(
+    type_name: str,
+    mappings: list[AllocatableFieldMapping],
+    unmapped_fields: list[str],
+) -> str:
+    """
+    Format the allocatable scan results as a human-readable report.
+
+    Args:
+        type_name: Name of the type scanned
+        mappings: Successfully mapped fields
+        unmapped_fields: ALLOCATABLE fields with no size source found
+
+    Returns:
+        Formatted report string
+    """
+    lines = []
+    lines.append(f"ALLOCATABLE Size Scan: {type_name}")
+    lines.append("=" * 60)
+    lines.append(f"  Mapped:   {len(mappings)}")
+    lines.append(f"  Unmapped: {len(unmapped_fields)}")
+    lines.append("")
+
+    # Group by class
+    by_class = {}
+    for m in mappings:
+        by_class.setdefault(m.size_class, []).append(m)
+
+    class_labels = {
+        "A": "Type A — field reference (fully automatable)",
+        "B": "Type B — literal constant (trivial)",
+        "C": "Type C — local variable (needs confirmation)",
+        "D": "Type D — SIZE() of another field (automatable)",
+        "E": "Type E — array-indexed field (automatable)",
+    }
+
+    for cls in ["A", "B", "D", "E", "C"]:
+        fields = by_class.get(cls, [])
+        if not fields:
+            continue
+        lines.append(f"{class_labels[cls]}")
+        lines.append("-" * 60)
+        for m in sorted(fields, key=lambda x: x.field_name):
+            dims_str = " x ".join(m.dim_sizes)
+            rank_str = f"{m.rank}D" if m.rank > 1 else "1D"
+            lines.append(f"  {m.field_name} ({rank_str}): {dims_str}")
+            lines.append(f"    {m.evidence}")
+        lines.append("")
+
+    if unmapped_fields:
+        lines.append("Unmapped (no ParseAry/ALLOCATE found)")
+        lines.append("-" * 60)
+        for name in sorted(unmapped_fields):
+            lines.append(f"  {name}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def fix_character_allocatable(source_dir: str, type_name: str,
                               field_name: str, fixed_length: int = 1024,
                               dry_run: bool = True) -> FixResult:

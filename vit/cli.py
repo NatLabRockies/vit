@@ -34,7 +34,7 @@ from .translate import generate_translation_scaffold, generate_translation_promp
 from .analyze_types import (
     analyze_all_types, format_analysis_report, fix_character_allocatable,
     infer_character_length, fix_logical_field, fix_complex_field,
-    fix_bind_c,
+    fix_bind_c, scan_allocatable_sizes, format_allocatable_scan_report,
 )
 from .confirm import (
     Assumption, ManualReview, EXIT_CONFIRM, EXIT_MANUAL,
@@ -142,6 +142,8 @@ def main():
                            help="Manual rewrite: 'file:line=replacement' (repeatable)")
     p_analyze.add_argument("--apply", action="store_true",
                            help="Apply changes (default is dry-run)")
+    p_analyze.add_argument("--scan-allocatable", action="store_true",
+                           help="Scan for ALLOCATABLE field size sources")
 
     args = parser.parse_args()
 
@@ -728,6 +730,9 @@ def cmd_analyze_types(args, config):
         print(f"ERROR: Source directory not found: {source_dir}")
         return 1
 
+    if args.scan_allocatable:
+        return _cmd_scan_allocatable(args, config, source_dir)
+
     if args.fix:
         # Fix mode — bind_c doesn't need --field
         if args.fix == "bind_c":
@@ -939,6 +944,50 @@ def _print_signature(sig: FortranSignature):
         print(f"  Returns: {result_str} :: {type_str}")
 
     print(f"  C name: {sig.c_func_name}")
+
+
+def _cmd_scan_allocatable(args, config, source_dir):
+    """Handle --scan-allocatable: scan for ALLOCATABLE field size sources."""
+    from .derived_type_parser import scan_all_derived_types
+
+    if not args.type_name:
+        print("ERROR: --type is required with --scan-allocatable")
+        return 1
+
+    # Find the type definition
+    all_types = scan_all_derived_types(source_dir)
+    type_info = None
+    for ti in all_types:
+        if ti.name.upper() == args.type_name.upper():
+            type_info = ti
+            break
+
+    if type_info is None:
+        print(f"ERROR: Type '{args.type_name}' not found in {source_dir}")
+        return 1
+
+    # Get all ALLOCATABLE field names for unmapped tracking
+    alloc_field_names = {
+        f.name for f in type_info.fields if f.is_allocatable
+    }
+
+    # Scan
+    mappings = scan_allocatable_sizes(source_dir, args.type_name, type_info)
+
+    # Determine unmapped
+    mapped_names = {m.field_name for m in mappings}
+    unmapped = sorted(alloc_field_names - mapped_names)
+
+    # Report
+    report = format_allocatable_scan_report(args.type_name, mappings, unmapped)
+    print(report)
+
+    # Summary
+    confirm_count = sum(1 for m in mappings if m.needs_confirm)
+    if confirm_count:
+        print(f"  {confirm_count} field(s) need confirmation (Type C)")
+
+    return 0
 
 
 if __name__ == "__main__":
