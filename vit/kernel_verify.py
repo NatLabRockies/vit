@@ -108,10 +108,48 @@ def setup_kernel_cpp(
 
     # --- Step 1b: Generate struct headers for C-compatible derived types ---
     struct_headers = []
+    view_populator_sources = []
     if derived_types:
-        from .derived_type_parser import generate_c_struct_header
+        from .derived_type_parser import (
+            generate_c_struct_header, generate_view_struct_header,
+        )
+        from .view_populator import generate_view_populator
+        from .analyze_types import scan_allocatable_sizes
+
         for type_name, type_info in derived_types.items():
-            if type_info.is_c_compatible:
+            is_view = getattr(type_info, 'view_strategy', None) == 'view'
+
+            if is_view:
+                # View type: generate view struct header + populator .f90
+                source_dir_for_scan = type_info.source_file
+                if source_dir_for_scan:
+                    source_dir_for_scan = str(Path(source_dir_for_scan).parent)
+                mappings = scan_allocatable_sizes(
+                    source_dir_for_scan, type_name, type_info
+                ) if source_dir_for_scan else []
+
+                header_filename = f"{type_name.lower()}_view_t.h"
+                header_content = generate_view_struct_header(
+                    type_info, mappings, kind_aliases
+                )
+                header_path = kernel / header_filename
+                header_path.write_text(header_content)
+                struct_headers.append(header_filename)
+                result["files_modified"].append(str(header_path))
+
+                # Generate populator Fortran module
+                source_module = type_info.source_module or "ROSCO_Types"
+                populator_content = generate_view_populator(
+                    type_info, mappings, kind_aliases, source_module=source_module
+                )
+                populator_filename = f"vit_{type_name.lower()}_view.f90"
+                populator_path = kernel / populator_filename
+                populator_path.write_text(populator_content)
+                view_populator_sources.append(populator_filename)
+                result["files_modified"].append(str(populator_path))
+
+            elif type_info.is_c_compatible:
+                # Regular BIND(C) type: generate standard struct header
                 header_filename = f"{type_name.lower()}_t.h"
                 header_content = generate_c_struct_header(type_info, kind_aliases,
                                                           registry=derived_types)
@@ -130,7 +168,9 @@ def setup_kernel_cpp(
 
     # --- Step 3: Modify Makefile ---
     try:
-        _patch_kernel_makefile(kernel, sig, wrapper_filename, fortran_flags=fortran_flags)
+        _patch_kernel_makefile(kernel, sig, wrapper_filename,
+                               fortran_flags=fortran_flags,
+                               view_populator_sources=view_populator_sources)
         result["files_modified"].append(str(kernel / "Makefile"))
     except Exception as e:
         result["errors"].append(f"Makefile patch failed: {e}")
@@ -233,7 +273,8 @@ def run_kernel_verify(kernel_dir: str, env: Optional[dict] = None,
 
 
 def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
-                           cpp_source: str, fortran_flags: str = "") -> None:
+                           cpp_source: str, fortran_flags: str = "",
+                           view_populator_sources: Optional[list] = None) -> None:
     """
     Patch the kernel Makefile to:
     1. Define FC_0 and FC_FLAGS_SET_0 (KGen bug: uses but never defines these)
@@ -310,6 +351,34 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
                 for j, cxx_line in enumerate(cxx_lines):
                     lines.insert(i + j, cxx_line)
                 break
+
+    # 3b. Add populator .f90 compilation rules and objects
+    for pop_src in (view_populator_sources or []):
+        pop_obj = pop_src.replace(".f90", ".o")
+        content_joined = "\n".join(lines)
+
+        # Add object to ALL_OBJS
+        all_objs_match = re.search(r'^(ALL_OBJS\s*[:?]?=\s*)(.*)', content_joined, re.MULTILINE)
+        if all_objs_match and pop_obj not in all_objs_match.group(2):
+            old_line = all_objs_match.group(0)
+            new_line = f"{all_objs_match.group(1)}{pop_obj} {all_objs_match.group(2)}"
+            content_joined = content_joined.replace(old_line, new_line, 1)
+            lines = content_joined.split("\n")
+
+        # Add Fortran compilation rule (before "build:" target)
+        content_joined = "\n".join(lines)
+        if pop_src not in content_joined:
+            pop_lines = [
+                f"# VIT: view populator module",
+                f"{pop_obj}: {pop_src}",
+                f"\t$(FC_0) $(FC_FLAGS_SET_0) -c $< -o $@",
+                "",
+            ]
+            for i, line in enumerate(lines):
+                if re.match(r'^build\s*:', line):
+                    for j, pop_line in enumerate(pop_lines):
+                        lines.insert(i + j, pop_line)
+                    break
 
     # 4. Add -lstdc++ to link flags
     content_joined = "\n".join(lines)

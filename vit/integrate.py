@@ -129,6 +129,48 @@ def generate_integration_plan(
         content=cpp_complete,
     ))
 
+    # 1b. Create populator .f90 files for view-type args (if not already present)
+    view_populator_names = []
+    if derived_types:
+        from .view_populator import generate_view_populator
+        from .analyze_types import scan_allocatable_sizes
+        seen_view_types = set()
+        for type_name, type_info in derived_types.items():
+            if getattr(type_info, 'view_strategy', None) != 'view':
+                continue
+            if type_name.upper() in seen_view_types:
+                continue
+            seen_view_types.add(type_name.upper())
+
+            populator_name = f"vit_{type_name.lower()}_view.f90"
+            populator_path = os.path.join(src_dir, populator_name)
+
+            # Skip if already exists (idempotent — another function may have created it)
+            if os.path.exists(populator_path):
+                continue
+
+            # Scan for ALLOCATABLE sizes
+            source_dir_for_scan = type_info.source_file
+            if source_dir_for_scan:
+                source_dir_for_scan = str(Path(source_dir_for_scan).parent)
+            else:
+                source_dir_for_scan = src_dir
+            mappings = scan_allocatable_sizes(source_dir_for_scan, type_name, type_info)
+
+            # Detect source module from type's source file
+            source_module = type_info.source_module or "ROSCO_Types"
+
+            populator_content = generate_view_populator(
+                type_info, mappings, kind_aliases, source_module=source_module
+            )
+            patches.append(IntegrationPatch(
+                filepath=populator_path,
+                description=f"Create view populator for {type_name}",
+                action="create",
+                content=populator_content,
+            ))
+            view_populator_names.append(populator_name)
+
     # 2. Modify the Fortran source file
     fortran_patches = _generate_fortran_patches(
         sig, source_file, kind_aliases, derived_types
@@ -138,7 +180,8 @@ def generate_integration_plan(
     # 3. Update CMakeLists.txt
     if cmake_file:
         cmake_patches = _generate_cmake_patches(
-            cmake_file, cpp_wrapper_name, target_name
+            cmake_file, cpp_wrapper_name, target_name,
+            extra_fortran_sources=view_populator_names,
         )
         patches.extend(cmake_patches)
 
@@ -467,7 +510,9 @@ def _generate_fortran_patches(sig: FortranSignature, source_file: str,
 
 
 def _generate_cmake_patches(cmake_file: str, cpp_source_name: str,
-                             target_name: str) -> list[IntegrationPatch]:
+                             target_name: str,
+                             extra_fortran_sources: Optional[list] = None,
+                             ) -> list[IntegrationPatch]:
     """Generate patches for CMakeLists.txt."""
     content = Path(cmake_file).read_text()
     patches = []
@@ -509,6 +554,30 @@ def _generate_cmake_patches(cmake_file: str, cpp_source_name: str,
                     original_snippet=last_entry,
                     replacement_snippet=f"{last_entry}\n    src/{cpp_source_name}",
                 ))
+
+    # Add extra Fortran sources (e.g., view populator .f90 files)
+    for f90_name in (extra_fortran_sources or []):
+        if f90_name not in content:
+            # Re-read content to account for prior patches
+            current_content = Path(cmake_file).read_text() if patches else content
+            sources_match = re.search(
+                r'set\s*\(\s*SOURCES\b(.*?)(^\))',
+                current_content, re.MULTILINE | re.DOTALL | re.IGNORECASE,
+            )
+            if sources_match:
+                block_body = sources_match.group(1)
+                source_lines = [l for l in block_body.strip().split('\n')
+                                if l.strip() and not l.strip().startswith('#')]
+                if source_lines:
+                    last_entry = source_lines[-1]
+                    patches.append(IntegrationPatch(
+                        filepath=cmake_file,
+                        description=f"Add {f90_name} to source list",
+                        action="modify",
+                        content="",
+                        original_snippet=last_entry,
+                        replacement_snippet=f"{last_entry}\n    src/{f90_name}",
+                    ))
 
     # Link stdc++
     if "stdc++" not in content:
