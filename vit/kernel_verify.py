@@ -132,14 +132,21 @@ def setup_kernel_cpp(
                 result["files_modified"].append(str(header_path))
 
                 # Generate populator Fortran module
-                source_module = type_info.source_module or "ROSCO_Types"
+                source_module = type_info.source_module
+                if not source_module:
+                    result["errors"].append(
+                        f"Cannot generate view populator for {type_name}: "
+                        f"source module unknown. Ensure the TYPE definition is "
+                        f"inside a MODULE block in the Fortran source."
+                    )
+                    return result
                 populator_content = generate_view_populator(
                     type_info, mappings, kind_aliases, source_module=source_module
                 )
                 populator_filename = f"vit_{type_name.lower()}_view.f90"
                 populator_path = kernel / populator_filename
                 populator_path.write_text(populator_content)
-                view_populator_sources.append(populator_filename)
+                view_populator_sources.append((populator_filename, source_module))
                 result["files_modified"].append(str(populator_path))
 
             elif type_info.is_c_compatible:
@@ -353,8 +360,15 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
                 break
 
     # 3b. Add populator .f90 compilation rules and objects
-    for pop_src in (view_populator_sources or []):
+    for pop_entry in (view_populator_sources or []):
+        # Each entry is (filename, source_module) tuple
+        if isinstance(pop_entry, tuple):
+            pop_src, pop_module = pop_entry
+        else:
+            pop_src, pop_module = pop_entry, None
         pop_obj = pop_src.replace(".f90", ".o")
+        # The populator USEs the source module — depend on its .o
+        module_dep = f" {pop_module}.o" if pop_module else ""
         content_joined = "\n".join(lines)
 
         # Add object to ALL_OBJS
@@ -370,7 +384,7 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
         if pop_src not in content_joined:
             pop_lines = [
                 f"# VIT: view populator module",
-                f"{pop_obj}: {pop_src} ROSCO_Types.o",
+                f"{pop_obj}: {pop_src}{module_dep}",
                 f"\t$(FC_0) $(FC_FLAGS_SET_0) -c $< -o $@",
                 "",
             ]
@@ -384,7 +398,8 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
     # The wrapper USEs the populator module, so it must compile after the populator.
     if wrapper_fortran_obj and view_populator_sources:
         content_joined = "\n".join(lines)
-        for pop_src in view_populator_sources:
+        for pop_entry in view_populator_sources:
+            pop_src = pop_entry[0] if isinstance(pop_entry, tuple) else pop_entry
             pop_obj = pop_src.replace(".f90", ".o")
             # Find the wrapper .o rule and add the populator .o as dependency
             rule_re = re.compile(

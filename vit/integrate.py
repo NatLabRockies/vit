@@ -152,7 +152,13 @@ def generate_integration_plan(
             mappings = getattr(type_info, 'field_mappings', None) or []
 
             # Detect source module from type's source file
-            source_module = type_info.source_module or "ROSCO_Types"
+            source_module = type_info.source_module
+            if not source_module:
+                raise ValueError(
+                    f"Cannot generate view populator for {type_name}: "
+                    f"source module unknown. Ensure the TYPE definition is "
+                    f"inside a MODULE block in the Fortran source."
+                )
 
             populator_content = generate_view_populator(
                 type_info, mappings, kind_aliases, source_module=source_module

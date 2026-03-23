@@ -37,7 +37,8 @@ def generate_view_populator(
         type_info: Parsed derived type definition
         field_mappings: List of AllocatableFieldMapping from scan_allocatable_sizes()
         kind_aliases: Project-specific kind aliases
-        source_module: Fortran module that defines the type (e.g., "ROSCO_Types")
+        source_module: Fortran module that defines the type (e.g., "ROSCO_Types").
+                       Required — the populator needs USE <module>, ONLY: <type>.
 
     Returns:
         Complete Fortran module source as a string
