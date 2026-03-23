@@ -168,9 +168,14 @@ def setup_kernel_cpp(
 
     # --- Step 3: Modify Makefile ---
     try:
+        # Determine which .o file contains the wrapper (needs populator dependency)
+        wrapper_fortran_obj = None
+        if sig.source_file and view_populator_sources:
+            wrapper_fortran_obj = Path(sig.source_file).stem + ".o"
         _patch_kernel_makefile(kernel, sig, wrapper_filename,
                                fortran_flags=fortran_flags,
-                               view_populator_sources=view_populator_sources)
+                               view_populator_sources=view_populator_sources,
+                               wrapper_fortran_obj=wrapper_fortran_obj)
         result["files_modified"].append(str(kernel / "Makefile"))
     except Exception as e:
         result["errors"].append(f"Makefile patch failed: {e}")
@@ -274,7 +279,8 @@ def run_kernel_verify(kernel_dir: str, env: Optional[dict] = None,
 
 def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
                            cpp_source: str, fortran_flags: str = "",
-                           view_populator_sources: Optional[list] = None) -> None:
+                           view_populator_sources: Optional[list] = None,
+                           wrapper_fortran_obj: Optional[str] = None) -> None:
     """
     Patch the kernel Makefile to:
     1. Define FC_0 and FC_FLAGS_SET_0 (KGen bug: uses but never defines these)
@@ -370,7 +376,7 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
         if pop_src not in content_joined:
             pop_lines = [
                 f"# VIT: view populator module",
-                f"{pop_obj}: {pop_src}",
+                f"{pop_obj}: {pop_src} ROSCO_Types.o",
                 f"\t$(FC_0) $(FC_FLAGS_SET_0) -c $< -o $@",
                 "",
             ]
@@ -379,6 +385,24 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
                     for j, pop_line in enumerate(pop_lines):
                         lines.insert(i + j, pop_line)
                     break
+
+    # 3c. Add populator dependency to the wrapper's Fortran .o file
+    # The wrapper USEs the populator module, so it must compile after the populator.
+    if wrapper_fortran_obj and view_populator_sources:
+        content_joined = "\n".join(lines)
+        for pop_src in view_populator_sources:
+            pop_obj = pop_src.replace(".f90", ".o")
+            # Find the wrapper .o rule and add the populator .o as dependency
+            rule_re = re.compile(
+                rf'^({re.escape(wrapper_fortran_obj)}\s*:\s*)(.*)',
+                re.MULTILINE,
+            )
+            m = rule_re.search(content_joined)
+            if m and pop_obj not in m.group(2):
+                old_rule = m.group(0)
+                new_rule = f"{m.group(1)}{pop_obj} {m.group(2)}"
+                content_joined = content_joined.replace(old_rule, new_rule, 1)
+        lines = content_joined.split("\n")
 
     # 4. Add -lstdc++ to link flags
     content_joined = "\n".join(lines)
