@@ -74,6 +74,7 @@ def setup_kernel_cpp(
     field_log: bool = True,
     derived_types: Optional[dict] = None,
     fortran_flags: str = "",
+    allocatable_helpers: Optional[list] = None,
 ) -> dict:
     """
     Wire a C++ translation into a KGen kernel directory for verification.
@@ -125,7 +126,8 @@ def setup_kernel_cpp(
                 if source_dir_for_scan:
                     source_dir_for_scan = str(Path(source_dir_for_scan).parent)
                 mappings = scan_allocatable_sizes(
-                    source_dir_for_scan, type_name, type_info
+                    source_dir_for_scan, type_name, type_info,
+                    allocatable_helpers=allocatable_helpers,
                 ) if source_dir_for_scan else []
 
                 header_filename = f"{type_name.lower()}_view_t.h"

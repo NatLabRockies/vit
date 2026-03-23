@@ -90,6 +90,7 @@ class VitConfig:
     tolerance: float = 1e-14
     translations: dict = field(default_factory=dict)
     type_strategies: dict = field(default_factory=dict)  # type_name → "bind_c" | "view"
+    allocatable_helpers: list = field(default_factory=list)  # allocation helper patterns
 
     config_dir: str = "."  # Directory containing vit.yaml
 
@@ -166,6 +167,7 @@ def load_config(config_path: Optional[str] = None) -> VitConfig:
         tolerance=verify.get("tolerance", 1e-14),
         translations=data.get("translations", {}),
         type_strategies=_parse_type_strategies(data.get("types", {})),
+        allocatable_helpers=_parse_allocatable_helpers(data.get("allocatable", {})),
         config_dir=config_dir,
     )
 
@@ -192,6 +194,39 @@ def _parse_type_strategies(types_section: dict) -> dict:
             strategy = "bind_c"
         strategies[type_name] = strategy
     return strategies
+
+
+def _parse_allocatable_helpers(alloc_section: dict) -> list[dict]:
+    """Parse the allocatable: section of vit.yaml into helper definitions.
+
+    Example input:
+        allocatable:
+          helpers:
+            - name: ParseAry
+              array_arg: 3
+              size_arg: 4
+
+    Each helper describes a subroutine that allocates an array internally.
+    The scanner generates a regex from these definitions:
+    - name: the subroutine name to match in CALL statements
+    - array_arg: which positional argument (1-indexed) is the array being allocated
+    - size_arg: which positional argument is the size expression
+
+    The scanner matches: CALL <name>(..., Var%field [at position array_arg],
+    size_expr [at position size_arg], ...)
+
+    Returns: list of {"name": str, "array_arg": int, "size_arg": int}
+    """
+    helpers = alloc_section.get("helpers", [])
+    parsed = []
+    for h in helpers:
+        if isinstance(h, dict) and "name" in h:
+            parsed.append({
+                "name": h["name"],
+                "array_arg": int(h.get("array_arg", 3)),
+                "size_arg": int(h.get("size_arg", 4)),
+            })
+    return parsed
 
 
 def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
@@ -235,6 +270,9 @@ def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
             name: {"strategy": strategy}
             for name, strategy in config.type_strategies.items()
         }
+
+    if config.allocatable_helpers:
+        data["allocatable"] = {"helpers": config.allocatable_helpers}
 
     if HAS_YAML:
         with open(config_path, "w") as f:

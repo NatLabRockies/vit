@@ -393,6 +393,7 @@ def cmd_translate(args, config):
         source_file=args.file,
         vit_version=__version__,
         derived_types=derived_types,
+        allocatable_helpers=config.allocatable_helpers,
     )
 
     # Write scaffold
@@ -419,6 +420,7 @@ def cmd_translate(args, config):
         scaffold_text=scaffold,
         tips_text=tips_text,
         derived_types=derived_types,
+        allocatable_helpers=config.allocatable_helpers,
     )
 
     # Print summary
@@ -520,6 +522,7 @@ def cmd_verify(args, config):
         field_log=field_log,
         derived_types=derived_types,
         fortran_flags=config.fortran_flags,
+        allocatable_helpers=config.allocatable_helpers,
     )
 
     if not setup_result["success"]:
@@ -578,6 +581,7 @@ def cmd_integrate(args, config):
         target_name=config.target_name,
         kind_aliases=config.kind_aliases,
         derived_types=derived_types,
+        allocatable_helpers=config.allocatable_helpers,
     )
 
     print(plan.to_markdown())
@@ -670,6 +674,7 @@ def cmd_run(args, config):
         target_name=config.target_name,
         kind_aliases=config.kind_aliases,
         derived_types=derived_types,
+        allocatable_helpers=config.allocatable_helpers,
     )
 
     print(plan.to_markdown())
@@ -978,7 +983,8 @@ def _cmd_scan_allocatable(args, config, source_dir):
     }
 
     # Scan
-    mappings = scan_allocatable_sizes(source_dir, args.type_name, type_info)
+    mappings = scan_allocatable_sizes(source_dir, args.type_name, type_info,
+                                      allocatable_helpers=config.allocatable_helpers)
 
     # Determine unmapped
     mapped_names = {m.field_name for m in mappings}

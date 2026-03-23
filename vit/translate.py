@@ -25,6 +25,7 @@ def generate_translation_scaffold(
     source_file: Optional[str] = None,
     vit_version: str = "0.1.0",
     derived_types: Optional[dict] = None,
+    allocatable_helpers: Optional[list] = None,
 ) -> str:
     """
     Generate a C++ translation scaffold with metadata header and correct signature.
@@ -63,7 +64,8 @@ def generate_translation_scaffold(
                 source_dir = type_info.source_file
                 if source_dir:
                     source_dir = str(Path(source_dir).parent)
-                    mappings = scan_allocatable_sizes(source_dir, type_info.name, type_info)
+                    mappings = scan_allocatable_sizes(source_dir, type_info.name, type_info,
+                                                      allocatable_helpers=allocatable_helpers)
                 else:
                     mappings = []
                 header = generate_view_struct_header(type_info, mappings, kind_aliases)
@@ -99,6 +101,7 @@ def generate_translation_prompt(
     call_site_info: Optional[str] = None,
     tips_text: Optional[str] = None,
     derived_types: Optional[dict] = None,
+    allocatable_helpers: Optional[list] = None,
 ) -> str:
     """
     Generate a complete translation prompt for LLM-assisted translation.
@@ -159,7 +162,8 @@ def generate_translation_prompt(
                 source_dir = type_info.source_file
                 if source_dir:
                     source_dir = str(Path(source_dir).parent)
-                    mappings = scan_allocatable_sizes(source_dir, type_info.name, type_info)
+                    mappings = scan_allocatable_sizes(source_dir, type_info.name, type_info,
+                                                      allocatable_helpers=allocatable_helpers)
                 else:
                     mappings = []
                 header = generate_view_struct_header(type_info, mappings, kind_aliases)

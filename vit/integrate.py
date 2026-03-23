@@ -91,6 +91,7 @@ def generate_integration_plan(
     target_name: str = "discon",
     kind_aliases: Optional[dict] = None,
     derived_types: Optional[dict] = None,
+    allocatable_helpers: Optional[list] = None,
 ) -> IntegrationPlan:
     """
     Generate a complete integration plan for a verified C++ function.
@@ -120,7 +121,7 @@ def generate_integration_plan(
 
     # Generate the complete C++ file (impl + wrapper)
     cpp_complete = _generate_standalone_cpp(sig, cpp_impl_content, kind_aliases,
-                                             derived_types)
+                                             derived_types, allocatable_helpers)
 
     patches.append(IntegrationPatch(
         filepath=cpp_wrapper_path,
@@ -155,7 +156,8 @@ def generate_integration_plan(
                 source_dir_for_scan = str(Path(source_dir_for_scan).parent)
             else:
                 source_dir_for_scan = src_dir
-            mappings = scan_allocatable_sizes(source_dir_for_scan, type_name, type_info)
+            mappings = scan_allocatable_sizes(source_dir_for_scan, type_name, type_info,
+                                              allocatable_helpers=allocatable_helpers)
 
             # Detect source module from type's source file
             source_module = type_info.source_module or "ROSCO_Types"
@@ -364,7 +366,8 @@ def _generate_c_declaration(sig: FortranSignature,
 
 def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
                               kind_aliases: Optional[dict] = None,
-                              derived_types: Optional[dict] = None) -> str:
+                              derived_types: Optional[dict] = None,
+                              allocatable_helpers: Optional[list] = None) -> str:
     """
     Generate a standalone C++ file with implementation + extern "C" wrapper.
 
@@ -397,7 +400,8 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
                 source_dir = type_info.source_file
                 if source_dir:
                     source_dir = str(Path(source_dir).parent)
-                    mappings = scan_allocatable_sizes(source_dir, type_info.name, type_info)
+                    mappings = scan_allocatable_sizes(source_dir, type_info.name, type_info,
+                                                      allocatable_helpers=allocatable_helpers)
                 else:
                     mappings = []
                 header = generate_view_struct_header(type_info, mappings,

@@ -240,20 +240,26 @@ def scan_allocatable_sizes(
     source_dir: str,
     type_name: str,
     type_info: DerivedTypeInfo,
+    allocatable_helpers: Optional[list] = None,
 ) -> list[AllocatableFieldMapping]:
     """
-    Scan source files for ParseAry and ALLOCATE calls to map every
-    ALLOCATABLE field in a type to its runtime size source.
+    Scan source files for allocation calls to map every ALLOCATABLE field
+    in a type to its runtime size source.
 
     Searches all .f90/.F90 files in source_dir. For each ALLOCATABLE field
     in type_info, looks for:
-    1. ParseAry calls: CALL ParseAry(..., Var%field, size_expr, ...)
+    1. Configurable allocation helper calls (e.g., ParseAry) — defined in vit.yaml
     2. ALLOCATE calls: ALLOCATE(Var%field(dim1, dim2, ...))
 
     Args:
         source_dir: Root directory of Fortran sources
         type_name: Name of the derived type (e.g., "ControlParameters")
         type_info: Parsed type definition with field list
+        allocatable_helpers: List of helper definitions from config, each with
+            "name" (subroutine name), "array_arg" (1-indexed position of the
+            array argument), "size_arg" (1-indexed position of the size argument).
+            The scanner matches CALL <name>(...) and extracts the field and size
+            from the specified argument positions.
 
     Returns:
         List of AllocatableFieldMapping, one per ALLOCATABLE field found.
@@ -274,7 +280,7 @@ def scan_allocatable_sizes(
 
     mappings = []
     for af in alloc_fields:
-        mapping = _scan_field_size(af, source_files)
+        mapping = _scan_field_size(af, source_files, allocatable_helpers or [])
         if mapping is not None:
             mappings.append(mapping)
 
@@ -284,47 +290,22 @@ def scan_allocatable_sizes(
 def _scan_field_size(
     af: 'DerivedTypeField',
     source_files: dict,
+    allocatable_helpers: list,
 ) -> Optional[AllocatableFieldMapping]:
     """
     Scan all source files to find the size source for one ALLOCATABLE field.
 
-    Checks ParseAry calls first (most common), then ALLOCATE calls.
+    Checks configurable allocation helpers first, then ALLOCATE calls.
     """
     field_name = af.name
 
-    # --- Try ParseAry first ---
-    # Two ParseAry call signatures in ROSCO:
-    #   CALL ParseAry(FileLines, 'label', Var%field, size_expr, ...)
-    #   CALL ParseAry(Unit, CurLine, 'label', Var%field, size_expr, ...)
-    # In both cases, the field is followed by the size expression.
-    # Use a general pattern: match Var%field anywhere in the call, capture the next arg.
-    parseary_re = re.compile(
-        r'CALL\s+ParseAry\s*\('
-        r'.*?'                         # any preceding args
-        r'\w+%' + re.escape(field_name) + r'\s*,'  # Var%field
-        r'\s*([^,]+)',                 # next arg: size expression
-        re.IGNORECASE,
-    )
-
-    for f90_file, content in source_files.items():
-        for line_num, line in enumerate(content.split("\n"), 1):
-            # Skip commented-out lines
-            if line.lstrip().startswith("!"):
-                continue
-            m = parseary_re.search(line)
-            if m:
-                size_expr = m.group(1).strip()
-                evidence = f"ParseAry(..., %{field_name}, {size_expr}, ...) in {f90_file.name}:{line_num}"
-                size_class, needs_confirm = _classify_size_expr(size_expr)
-                return AllocatableFieldMapping(
-                    field_name=field_name,
-                    fortran_type=af.fortran_type,
-                    rank=_field_rank(af),
-                    size_class=size_class,
-                    dim_sizes=[size_expr],
-                    evidence=evidence,
-                    needs_confirm=needs_confirm,
-                )
+    # --- Try configurable allocation helpers ---
+    # Each helper defines a subroutine where a specific arg is the array
+    # and the next arg (or a specified arg) is the size.
+    for helper in allocatable_helpers:
+        mapping = _scan_helper_call(af, source_files, helper)
+        if mapping is not None:
+            return mapping
 
     # --- Try ALLOCATE ---
     # Pattern: ALLOCATE(Var%field(dim1)) or ALLOCATE(Var%field(dim1, dim2))
@@ -368,6 +349,97 @@ def _scan_field_size(
                     evidence=evidence,
                     needs_confirm=any_confirm,
                 )
+
+    return None
+
+
+def _scan_helper_call(
+    af: 'DerivedTypeField',
+    source_files: dict,
+    helper: dict,
+) -> Optional[AllocatableFieldMapping]:
+    """
+    Scan for an allocation helper call that allocates a specific field.
+
+    The helper config specifies:
+    - name: subroutine name (e.g., "ParseAry")
+    - array_arg: 1-indexed position of the array argument
+    - size_arg: 1-indexed position of the size argument
+
+    The scanner matches CALL <name>(...) and checks whether the array_arg
+    position contains Var%field_name. If so, extracts the size_arg value.
+
+    Uses a general approach: match Var%field anywhere in the call arguments,
+    then extract the argument at the size position relative to the field.
+    When size_arg == array_arg + 1 (the common case), the size is the
+    next argument after the field.
+    """
+    field_name = af.name
+    helper_name = helper["name"]
+    array_pos = helper.get("array_arg", 3)
+    size_pos = helper.get("size_arg", 4)
+
+    if size_pos == array_pos + 1:
+        # Common case: size is the next arg after the array.
+        # Use a simple regex: match Var%field, capture the next arg.
+        helper_re = re.compile(
+            r'CALL\s+' + re.escape(helper_name) + r'\s*\('
+            r'.*?'                         # preceding args
+            r'\w+%' + re.escape(field_name) + r'\s*,'  # Var%field
+            r'\s*([^,)]+)',                # next arg: size expression
+            re.IGNORECASE,
+        )
+    else:
+        # General case: need to count arguments to find the size.
+        # Match the full call and parse arguments positionally.
+        helper_re = None  # Fall through to positional parsing below
+
+    for f90_file, content in source_files.items():
+        for line_num, line in enumerate(content.split("\n"), 1):
+            if line.lstrip().startswith("!"):
+                continue
+
+            if helper_re:
+                m = helper_re.search(line)
+                if m:
+                    size_expr = m.group(1).strip()
+                    evidence = (f"{helper_name}(..., %{field_name}, {size_expr}, ...) "
+                                f"in {f90_file.name}:{line_num}")
+                    size_class, needs_confirm = _classify_size_expr(size_expr)
+                    return AllocatableFieldMapping(
+                        field_name=field_name,
+                        fortran_type=af.fortran_type,
+                        rank=_field_rank(af),
+                        size_class=size_class,
+                        dim_sizes=[size_expr],
+                        evidence=evidence,
+                        needs_confirm=needs_confirm,
+                    )
+            else:
+                # Positional argument parsing for non-adjacent array/size args
+                call_re = re.compile(
+                    r'CALL\s+' + re.escape(helper_name) + r'\s*\((.*)\)',
+                    re.IGNORECASE,
+                )
+                m = call_re.search(line)
+                if m:
+                    args = _split_dims_aware(m.group(1))
+                    if (len(args) >= max(array_pos, size_pos)
+                            and f'%{field_name}' in args[array_pos - 1]):
+                        size_expr = args[size_pos - 1].strip()
+                        evidence = (f"{helper_name}(arg{array_pos}=%{field_name}, "
+                                    f"arg{size_pos}={size_expr}) "
+                                    f"in {f90_file.name}:{line_num}")
+                        size_class, needs_confirm = _classify_size_expr(size_expr)
+                        return AllocatableFieldMapping(
+                            field_name=field_name,
+                            fortran_type=af.fortran_type,
+                            rank=_field_rank(af),
+                            size_class=size_class,
+                            dim_sizes=[size_expr],
+                            evidence=evidence,
+                            needs_confirm=needs_confirm,
+                        )
 
     return None
 
