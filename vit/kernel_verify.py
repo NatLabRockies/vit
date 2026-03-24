@@ -451,18 +451,23 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
 # Kernel callee bridges
 # ---------------------------------------------------------------------------
 
-def detect_translated_callees(source: str, target_name: str,
-                               translations: dict) -> list[str]:
+def detect_callees(source: str, target_name: str,
+                    known_functions: Optional[set] = None) -> list[str]:
     """
-    Scan target function body for calls to already-translated functions.
+    Scan target function body for calls to other functions/subroutines.
+
+    Detects all CALL statements and function-call patterns, optionally
+    filtered to a set of known function names. If known_functions is None,
+    returns all detected callee names.
 
     Args:
         source: Full Fortran source text containing the target function
         target_name: Name of the target function
-        translations: Translations registry from vit.yaml (name → info dict)
+        known_functions: Optional set of function names to filter to.
+                         If None, all detected callees are returned.
 
     Returns:
-        List of translation keys (function names) found as callees
+        List of callee function names found in the target function body
     """
     import re as _re
 
@@ -485,17 +490,50 @@ def detect_translated_callees(source: str, target_name: str,
                 break
             body_lines.append(line)
 
-    body_text = "\n".join(body_lines).upper()
+    body_text = "\n".join(body_lines)
 
-    # Search for each translated function name in the body
-    callees = []
-    for func_name in translations:
-        # Match CALL func_name( or func_name( as a function call
-        pattern = rf'\b{_re.escape(func_name.upper())}\s*\('
-        if _re.search(pattern, body_text):
-            callees.append(func_name)
+    # Extract all CALL targets and function-call patterns
+    callees = set()
 
-    return callees
+    # CALL subroutine_name(...)
+    for m in _re.finditer(r'\bCALL\s+(\w+)\s*\(', body_text, _re.IGNORECASE):
+        name = m.group(1)
+        # Skip intrinsics and KGen utilities
+        if name.upper() not in ('C_F_POINTER', 'C_LOC', 'PRESENT', 'TRANSFER',
+                                  'ALLOCATED', 'SIZE', 'MIN', 'MAX', 'ABS',
+                                  'WRITE', 'READ', 'PRINT'):
+            callees.add(name)
+
+    # function_name(...) = ... (assignment context, harder to detect reliably)
+    # Use known_functions to filter if available
+    if known_functions:
+        for func_name in known_functions:
+            pattern = rf'\b{_re.escape(func_name)}\s*\('
+            if _re.search(pattern, body_text, _re.IGNORECASE):
+                callees.add(func_name)
+
+    # Filter to known functions if provided
+    if known_functions:
+        callees = {c for c in callees if c.upper() in {f.upper() for f in known_functions}}
+
+    # Remove the target function itself (recursive calls shouldn't be bridged)
+    callees.discard(target_name)
+    callees = {c for c in callees if c.upper() != target_name.upper()}
+
+    # Filter out VIT-generated artifacts (wrappers, populators)
+    callees = {c for c in callees
+                if not c.lower().endswith('_c')
+                and not c.lower().startswith('vit_')}
+
+    return sorted(callees, key=str.upper)
+
+
+# Keep backwards compatibility
+def detect_translated_callees(source: str, target_name: str,
+                               translations: dict) -> list[str]:
+    """Backwards-compatible wrapper — detects only translated callees."""
+    return detect_callees(source, target_name,
+                           known_functions=set(translations.keys()))
 
 
 def _generate_callee_bridges(
@@ -508,7 +546,12 @@ def _generate_callee_bridges(
     result: dict,
 ) -> list[str]:
     """
-    Generate BIND(C) bridge functions for translated callees in the kernel.
+    Generate BIND(C) bridge functions for callees in the kernel.
+
+    Generates bridges for ALL callees the target function calls (not just
+    translated ones). In the kernel, every callee is original Fortran —
+    the bridge provides a C-callable entry point regardless of translation
+    status.
 
     Returns list of bridge .f90 filenames created.
     """
@@ -526,8 +569,24 @@ def _generate_callee_bridges(
         return []
     target_source = Path(sig.source_file).read_text()
 
-    # Detect which translated functions are called
-    callee_names = detect_translated_callees(target_source, sig.name, translations)
+    # Build a set of all known function names for detection
+    # (translations + any function we can find in the source directory)
+    known_funcs = set(translations.keys()) if translations else set()
+
+    # Also scan all source files for FUNCTION/SUBROUTINE definitions
+    if source_dir:
+        import re as _re
+        for pattern in ("**/*.f90", "**/*.F90"):
+            for f90_file in sorted(Path(source_dir).glob(pattern)):
+                content = f90_file.read_text()
+                for m in _re.finditer(
+                    r'\b(?:FUNCTION|SUBROUTINE)\s+(\w+)\s*\(',
+                    content, _re.IGNORECASE,
+                ):
+                    known_funcs.add(m.group(1))
+
+    # Detect all callees in the target function body
+    callee_names = detect_callees(target_source, sig.name, known_functions=known_funcs)
     if not callee_names:
         return []
 
@@ -552,30 +611,36 @@ def _generate_callee_bridges(
             continue
 
         # Build type registry for the callee (for struct pointer handling)
-        callee_registry = build_derived_type_registry(callee_sig, source_dir)
+        try:
+            callee_registry = build_derived_type_registry(callee_sig, source_dir)
 
-        # Generate any needed struct headers for the callee's types
-        # (that aren't already generated for the target function)
-        for type_name, type_info in callee_registry.items():
-            header_filename = f"{type_name.lower()}_t.h"
-            header_path = kernel / header_filename
-            if not header_path.exists() and type_info.is_c_compatible:
-                header_content = generate_c_struct_header(
-                    type_info, kind_aliases, registry=callee_registry
-                )
-                header_path.write_text(header_content)
-                result["files_modified"].append(str(header_path))
+            # Generate any needed struct headers for the callee's types
+            # (that aren't already generated for the target function)
+            for type_name, type_info in callee_registry.items():
+                header_filename = f"{type_name.lower()}_t.h"
+                header_path = kernel / header_filename
+                if not header_path.exists() and type_info.is_c_compatible:
+                    header_content = generate_c_struct_header(
+                        type_info, kind_aliases, registry=callee_registry
+                    )
+                    header_path.write_text(header_content)
+                    result["files_modified"].append(str(header_path))
 
-        # Generate the bridge
-        bridge_code = generate_kernel_callee_bridge(
-            callee_sig, kind_aliases, callee_registry
-        )
-        bridge_filename = f"vit_bridge_{callee_name.lower()}.f90"
-        bridge_path = kernel / bridge_filename
-        bridge_path.write_text(bridge_code)
-        bridge_sources.append(bridge_filename)
-        callee_sigs.append(callee_sig)
-        result["files_modified"].append(str(bridge_path))
+            # Generate the bridge
+            bridge_code = generate_kernel_callee_bridge(
+                callee_sig, kind_aliases, callee_registry
+            )
+            bridge_filename = f"vit_bridge_{callee_name.lower()}.f90"
+            bridge_path = kernel / bridge_filename
+            bridge_path.write_text(bridge_code)
+            bridge_sources.append(bridge_filename)
+            callee_sigs.append(callee_sig)
+            result["files_modified"].append(str(bridge_path))
+        except (ValueError, TypeError) as e:
+            # Skip callees whose signatures can't be bridged (e.g., CHARACTER
+            # args, unsupported types). The C++ will get a linker error only
+            # if it actually calls this callee — which is the right behavior.
+            pass
 
     # Generate callee declarations header for C++
     if callee_sigs:
