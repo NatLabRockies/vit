@@ -526,7 +526,13 @@ def detect_callees(source: str, target_name: str,
                 break
             body_lines.append(line)
 
-    body_text = "\n".join(body_lines)
+    # Strip comments from body lines before searching for callees
+    stripped_body_lines = []
+    for line in body_lines:
+        if "!" in line:
+            line = line[:line.index("!")]
+        stripped_body_lines.append(line)
+    body_text = "\n".join(stripped_body_lines)
 
     # Extract all CALL targets and function-call patterns
     callees = set()

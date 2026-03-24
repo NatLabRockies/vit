@@ -953,13 +953,16 @@ def _build_bridge_call_args(sig: FortranSignature,
             continue
 
         if arg.is_array:
-            # The bridge receives assumed-size (*) arrays from C, but the Fortran
-            # callee expects assumed-shape (:). Passing (*) to (:) is illegal.
-            # Use an explicit section: arg(1:n_arg) which creates a temporary
-            # that's compatible with (:).
-            call_args.append(f"{arg.name}(1:n_{arg.name})")
-            # Assumed-shape arrays have a synthetic size param in the C interface
-            # that the Fortran original doesn't expect — skip it.
+            if arg.is_assumed_shape:
+                # The bridge receives assumed-size (*) arrays from C, but the
+                # Fortran callee expects assumed-shape (:). Passing (*) to (:)
+                # is illegal. Use an explicit section: arg(1:n_arg) which
+                # creates a temporary that's compatible with (:).
+                call_args.append(f"{arg.name}(1:n_{arg.name})")
+                # Skip the synthetic size param (Fortran original doesn't expect it)
+            else:
+                # Fixed-size arrays: pass directly (no size mismatch)
+                call_args.append(arg.name)
             continue
 
         # Scalar args — INOUT args must be passed directly (no conversion wrapping).
