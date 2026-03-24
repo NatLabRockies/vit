@@ -121,18 +121,18 @@ VIT then:
 
 ## Current Status
 
-VIT has been validated on **19 functions** across 4 Fortran modules in the ROSCO wind turbine controller, all KGen-verified 40/40 IDENTICAL and integrated (501 unit tests):
+VIT has been validated on **28 functions** across 4 Fortran modules in the ROSCO wind turbine controller, all KGen-verified 40/40 IDENTICAL (501 unit tests):
 
 | Module | Functions | Complexity |
 |--------|-----------|------------|
 | **Functions.f90** | `saturate`, `wrap_180`, `wrap_360`, `ratelimit`, `ColemanTransform`, `ColemanTransformInverse`, `identity`, `sigma`, `interp1d` | Scalars, arrays, `ErrorVariables` struct, trig |
 | **Filters.f90** | `LPFilter`, `HPFilter`, `SecLPFilter`, `NotchFilter`, `NotchFilterSlopes`, `SecLPFilter_Vel` | `FilterParameters` struct pointer, instance-indexed state, OPTIONAL args |
-| **Controllers.f90** | `PIController`, `PIIController`, `ResController`, `ForeAftDamping` | `piParams`/`resParams` struct R/W, ControlParameters view type, callee bridges |
+| **Controllers.f90** | `PIController`, `PIIController`, `ResController`, `ForeAftDamping`, `FloatingFeedback`, `StructuralControl`, `CableControl`, `FlapControl`, `YawRateControl`, `VariableSpeedControl`, `IPC`, `ActiveWakeControl`, `PitchControl` | `piParams`/`resParams` struct R/W, ControlParameters view type, callee bridges, SAVE variables, avrSWAP array, 5 AWC modes, master pitch orchestrator |
 | **ControllerBlocks.f90** | `identity` | Cross-module integration |
 
-**Phase 7B extraction complete**: 10 additional main controller subroutines (`PitchControl`, `VariableSpeedControl`, `YawRateControl`, `IPC`, `FloatingFeedback`, `FlapControl`, `CableControl`, `StructuralControl`, `ActiveWakeControl` + `ForeAftDamping` from Phase 4D) extracted with golden fixtures (20 cases each). Translation phase is next.
+**Phase 7B complete**: All 10 main controller subroutines extracted (20 cases each) and translated to C++, KGen-verified 40/40.
 
-With all 19 functions integrated and rebuilt, the ROSCO simulation produces **byte-identical output** across 5 scenarios (with `-ffp-contract=off` for deterministic FP).
+With the first 19 functions integrated and rebuilt, the ROSCO simulation produces **byte-identical output** across 5 scenarios (with `-ffp-contract=off` for deterministic FP). Phase 7B integration test pending.
 
 ## Configuration (vit.yaml)
 

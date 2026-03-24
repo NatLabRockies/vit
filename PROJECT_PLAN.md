@@ -8,9 +8,9 @@ Fully translate the ROSCO wind turbine controller from Fortran to C++, producing
 
 ### Current State (2026-03-24)
 
-- **Verified translations**: 19 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, and Controllers.f90 — all 19 KGen-verified 40/40 IDENTICAL and integrated. ForeAftDamping is the first using the ControlParameters view type (Phase 4D).
-- **Integrated**: All 19 translations integrated. Clean build test produces byte-identical simulation output across 5 scenarios (standard, yaw-by-IPC, filter coverage, flap control Flp_Mode=2, active wake AWC_Mode=4).
-- **Phase 7B extraction complete**: All 10 Phase 7B functions extracted with 20 state files each (IPC, FloatingFeedback, ActiveWakeControl, VariableSpeedControl, PitchControl, YawRateControl, FlapControl, CableControl, StructuralControl + ForeAftDamping from Phase 4D). Golden fixtures committed. Translation phase next.
+- **Verified translations**: 28 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, and Controllers.f90 — all 28 KGen-verified 40/40 IDENTICAL. Phase 7B translation complete: all 10 main controller subroutines (PitchControl, VariableSpeedControl, YawRateControl, IPC, ForeAftDamping, FloatingFeedback, FlapControl, ActiveWakeControl, CableControl, StructuralControl) verified.
+- **Integrated (first 19)**: First 19 translations integrated. Clean build test produces byte-identical simulation output across 5 scenarios. Phase 7B integration test pending.
+- **Phase 7B complete**: All 10 functions extracted (20 cases each) and translated to C++. Required 10 VIT infrastructure fixes (bridge assumed-size arrays, DISCON.F90 kernel patches, avrSWAP kind mismatch, OPTIONAL bridge handling, view-type stash for callee bridges). See dev notes 202603241408, 202603241444.
 - **Pipeline**: End-to-end extract → verify → integrate → rebuild → diff confirmed working. Field-level CSV logging, NaN-safe comparison, `-ffp-contract=off` for bit-identical verification. KGen BIND(C) parser fix and PROCEDURE POINTER parser fix enable extraction with Phase 4C types and DISCON.F90 call sites.
 - **Type system**: LocalVariables (168 fields + 5 nested structs) is now BIND(C)-compatible. All 4 blocker fields fixed automatically by `vit analyze-types`. ErrorVariables, FilterParameters, piParams, resParams, rlParams, WE, ObjectInstances, DebugVariables all C-compatible. ControlParameters, PerformanceData, ExtControlType use view structs (Phase 4D).
 - **VIT codebase**: ~7,000 lines of core code, 501 unit tests, 17 modules
@@ -571,16 +571,17 @@ All main control subroutines take ControlParameters (ALLOCATABLE arrays, needs p
 
 - [x] Extraction infrastructure — KGen parser fix, assumed-size array patching, DLL persistence workaround, `--run-args` CLI, simplified extraction protocol
 - [x] Extract all 10 functions (20 cases each): golden fixtures committed
-- [ ] Translate + verify + integrate `PitchControl` — CntrPar + LocalVar + objInst + DebugVar + ErrVar
-- [ ] Translate + verify + integrate `VariableSpeedControl` — CntrPar + LocalVar + objInst + ErrVar
-- [ ] Translate + verify + integrate `YawRateControl` — CntrPar + LocalVar + objInst + DebugVar + ErrVar
-- [ ] Translate + verify + integrate `IPC` — CntrPar + LocalVar + objInst + DebugVar + ErrVar
-- [x] Translate + verify + integrate `ForeAftDamping` — CntrPar (view type) + LocalVar + objInst. First view type validation (Phase 4D Step 9). Callee bridge to PIController. 40/40 IDENTICAL, byte-identical output.
-- [ ] Translate + verify + integrate `FloatingFeedback` — CntrPar + LocalVar + objInst + ErrVar
-- [ ] Translate + verify + integrate `FlapControl` — CntrPar + LocalVar + objInst
-- [ ] Translate + verify + integrate `ActiveWakeControl` — CntrPar + LocalVar + DebugVar + objInst
-- [ ] Translate + verify + integrate `CableControl` — CntrPar + LocalVar + objInst + ErrVar
-- [ ] Translate + verify + integrate `StructuralControl` — CntrPar + LocalVar + objInst + ErrVar
+- [x] Translate + verify `PitchControl` — 40/40 PASSED. Master pitch orchestrator (185 lines), 11+ callees. Required view-type stash fix for callee bridges.
+- [x] Translate + verify `VariableSpeedControl` — 40/40 PASSED. Generator torque state machine, K*Omega^2 law.
+- [x] Translate + verify `YawRateControl` — 40/40 PASSED. Yaw state machine, SAVE variables, trig filtering.
+- [x] Translate + verify `IPC` — 40/40 PASSED. 1P/2P Individual Pitch Control, Coleman transforms.
+- [x] Translate + verify `ForeAftDamping` — 40/40 PASSED (Phase 4D). First view type validation. Callee bridge to PIController.
+- [x] Translate + verify `FloatingFeedback` — 40/40 PASSED. FUNCTION (returns double), gain-scheduled nacelle velocity feedback.
+- [x] Translate + verify `FlapControl` — 40/40 PASSED. 3 Flp_Mode branches, Coleman transforms.
+- [x] Translate + verify `ActiveWakeControl` — 40/40 PASSED. 5 AWC modes, complex decomposition.
+- [x] Translate + verify `CableControl` — 40/40 PASSED. Cable length control, SecLPFilter_Vel + PIController.
+- [x] Translate + verify `StructuralControl` — 40/40 PASSED. Structural control inputs, 2 modes.
+- [ ] Integration test — all 28 functions integrated, byte-identical simulation output
 
 **Type dependencies:** All Phase 7A types + ControlParameters (Phase 4D) + DebugVariables (✓ Phase 4B) + ErrorVariables (✓ Phase 4A)
 **New functions unlocked**: 10 main controller subroutines
