@@ -304,6 +304,18 @@ translations:
   saturate:
     status: integrated
     cpp_file: saturate.cpp
+types:
+  ControlParameters:
+    strategy: view
+  PerformanceData:
+    strategy: view
+  ExtControlType:
+    strategy: view
+allocatable:
+  helpers:
+    - name: ParseAry
+      array_arg: 3
+      size_arg: 4
 ```
 
 Key fields:
@@ -312,6 +324,8 @@ Key fields:
 - `kgen.invocation`: selects which KGen invocations to capture state for (`0:0:1-20` means process 0, thread 0, invocations 1 through 20)
 - `fortran.kind_aliases`: maps ROSCO's custom kinds to standard types (`DbKi → REAL(8)`, etc.)
 - `fortran.flags`: extra Fortran compiler flags propagated to kernel Makefile (e.g., `-fdefault-real-8`). Without these, Fortran literals in the kernel may lose precision.
+- `types`: maps derived type names to their handling strategy (`view` for ALLOCATABLE types, default is `bind_c`)
+- `allocatable.helpers`: configurable allocation helper subroutines for ALLOCATABLE size scanning (name, array_arg position, size_arg position)
 - `verification.tolerance`: maximum acceptable floating-point difference (`1.0e-14`)
 - `translations`: tracks which functions have been verified/integrated
 
@@ -327,7 +341,7 @@ docker exec -it vit-dev bash -c "cd /workspace/vit && python3 -m pytest tests/ -
 
 ### Golden Test Fixtures
 
-Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/sigma/`, `kernel/LPFilter/`, `kernel/HPFilter/`, `kernel/SecLPFilter/`, `kernel/NotchFilter/`, `kernel/NotchFilterSlopes/`, `kernel/SecLPFilter_Vel/`, `kernel/PIController/`, `kernel/PIIController/`, `kernel/ResController/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
+Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/sigma/`, `kernel/LPFilter/`, `kernel/HPFilter/`, `kernel/SecLPFilter/`, `kernel/NotchFilter/`, `kernel/NotchFilterSlopes/`, `kernel/SecLPFilter_Vel/`, `kernel/PIController/`, `kernel/PIIController/`, `kernel/ResController/`, `kernel/ForeAftDamping/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
 
 **Extraction parameters (for regenerating golden fixtures):**
 
@@ -351,6 +365,7 @@ Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful ex
 | `PIController` | `Controllers.f90` | 68 | `vit extract PIController -f rosco/controller/src/Controllers.f90 -l 68` |
 | `PIIController` | `Controllers.f90` | 682 | `vit extract PIIController -f rosco/controller/src/Controllers.f90 -l 682` |
 | `ResController` | `Controllers.f90` | 813 | `vit extract ResController -f rosco/controller/src/Controllers.f90 -l 813` |
+| `ForeAftDamping` | `Controllers.f90` | 80 | `vit extract ForeAftDamping -f rosco/controller/src/Controllers.f90 -l 80` |
 
 Each extraction deposits into `kernel/<function_name>/` and restores the source file automatically.
 
@@ -433,6 +448,7 @@ After every feature implementation, run:
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify PIController translations/Controllers/picontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/PIController 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify PIIController translations/Controllers/piicontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/PIIController 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify ResController translations/Controllers/rescontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ResController 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify ForeAftDamping translations/Controllers/foreaftdamping.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ForeAftDamping 2>&1 | tail -3"
    ```
    Must show: `40/40 passed` for each function.
 
@@ -509,6 +525,7 @@ vit extract SecLPFilter_Vel -f rosco/controller/src/Controllers.f90 -l 939
 vit extract PIController -f rosco/controller/src/Controllers.f90 -l 68
 vit extract PIIController -f rosco/controller/src/Controllers.f90 -l 682
 vit extract ResController -f rosco/controller/src/Controllers.f90 -l 813
+vit extract ForeAftDamping -f rosco/controller/src/Controllers.f90 -l 80
 ```
 
 Each must show `Extraction successful` with `Cases: 20`.
@@ -534,6 +551,7 @@ vit verify SecLPFilter_Vel translations/Filters/seclpfilter_vel.cpp -f rosco/con
 vit verify PIController translations/Controllers/picontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/PIController
 vit verify PIIController translations/Controllers/piicontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/PIIController
 vit verify ResController translations/Controllers/rescontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ResController
+vit verify ForeAftDamping translations/Controllers/foreaftdamping.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ForeAftDamping
 ```
 
 Each must show `40/40 passed`.
@@ -559,6 +577,7 @@ vit integrate NotchFilterSlopes translations/Filters/notchfilterslopes.cpp -f ro
 vit integrate PIController translations/Controllers/picontroller.cpp -f rosco/controller/src/Controllers.f90 --apply
 vit integrate PIIController translations/Controllers/piicontroller.cpp -f rosco/controller/src/Controllers.f90 --apply
 vit integrate ResController translations/Controllers/rescontroller.cpp -f rosco/controller/src/Controllers.f90 --apply
+vit integrate ForeAftDamping translations/Controllers/foreaftdamping.cpp -f rosco/controller/src/Controllers.f90 --apply
 ```
 
 Each `--apply` reads the current file state and generates correct patches, skipping items already present (e.g., `enable_language(CXX)`, `stdc++` link, `USE ISO_C_BINDING`).
@@ -644,6 +663,7 @@ Verified C++ translations live in `ROSCO/translations/Functions/` and `ROSCO/tra
 | `translations/Controllers/picontroller.cpp` | `PIController` in Controllers.f90 | Verified (Phase 7A) |
 | `translations/Controllers/piicontroller.cpp` | `PIIController` in Controllers.f90 | Verified (Phase 7A) — required ROSCO Flp_Mode=2 bug fixes |
 | `translations/Controllers/rescontroller.cpp` | `ResController` in Controllers.f90 | Verified (Phase 7A) |
+| `translations/Controllers/foreaftdamping.cpp` | `ForeAftDamping` in Controllers.f90 | Verified (Phase 4D) — first ControlParameters view type function, callee bridge to PIController |
 
 Each translation file has a metadata header (source file, function name, MD5 hash, VIT version, verification status) generated by `vit translate`.
 
@@ -659,13 +679,13 @@ Note: `interp1d.cpp` uses VIT's per-array size parameter convention (`n_xData`, 
 
 ### Derived types
 
-All derived types (including ErrorVariables) will become BIND(C) structs passed by pointer — no passthrough, no decomposed args. The passthrough mechanism in the current code is legacy and not used for new translations.
+VIT handles derived types with two strategies, configured per type in `vit.yaml`:
 
-- **ErrorVariables is C-compatible** (Phase 4A): `CHARACTER(:), ALLOCATABLE :: ErrMsg` was fixed to `CHARACTER(1024) :: ErrMsg` by `vit analyze-types --fix character --apply`. The build-fix loop auto-fixed a downstream `TRANSFER(C_NULL_CHAR, avcMSG)` shape mismatch in ExtControl.f90. Functions with ErrorVariables (interp1d, sigma, unwrap, interp2d) are now unblocked for Phase 5 translation.
+- **BIND(C) structs** (default for compatible types): Types with only scalar/fixed-size fields are passed directly as C struct pointers. ErrorVariables, LocalVariables, FilterParameters, piParams, etc. all use this path. `vit analyze-types` scans types and offers automated fixes (`--fix character`, `--fix logical`, `--fix complex`, `--fix bind_c`) to make types C-compatible. All four fix modes are implemented (Phases 4A-4C).
 
-- **`vit analyze-types`** scans all TYPE definitions and reports C compatibility. `--fix character --apply` rewrites CHARACTER(:) ALLOCATABLE fields, comments out ALLOCATE/DEALLOCATE, builds, and auto-fixes downstream compiler errors via the fix registry (`build_fixer.py`). Phases 4B–4D will add `--fix logical`, `--fix complex`, `--fix bind_c`.
+- **View structs** (for ALLOCATABLE types): Types with ALLOCATABLE arrays (ControlParameters, PerformanceData, ExtControlType) use the pointer+size view pattern. A generated view struct exposes ALLOCATABLE fields as `type* field; int n_field;` pairs. A generated Fortran populator fills the view from the real type at runtime using `C_LOC()` + `SIZE()`. Configured in `vit.yaml` under `types: { TypeName: { strategy: view } }`. ALLOCATABLE field sizes are scanned from source via configurable allocation helpers (`allocatable.helpers` in `vit.yaml`) and universal `ALLOCATE` pattern matching. All ALLOCATABLE fields are included in the view struct — the scanner is informational only.
 
-- **Derived type registry is auto-discovered**: `build_derived_type_registry()` searches the source directory for TYPE definitions used in function args. C-compatible types (no ALLOCATABLE, POINTER, or nested types) are passed as struct pointers. Non-C-compatible types default to passthrough.
+- **Derived type registry is auto-discovered and recursive**: `build_derived_type_registry()` searches the source directory for TYPE definitions used in function args, then recursively discovers nested TYPE(X) fields until all transitive dependencies are found. Types with `strategy: view` in config are marked for view struct treatment. Types not in the registry at all default to passthrough.
 
 - **USE statement matching is string-based**: `_get_use_statements_for_derived_types()` checks if the derived type name appears in the USE line text. This works for `USE Module, ONLY: TypeName` but would miss bare `USE Module` (can't tell what it exports) or false-match on substring collisions.
 
@@ -685,6 +705,18 @@ During the translation phase (mixed Fortran/C++ binary), every translated functi
 - **`vit translate`**: Scaffolds include `_c` declarations for already-translated callees (detected from `vit.yaml` translations registry)
 
 In Phase 11 (pure C++), all Fortran wrappers become dead code and are removed. C++ calls C++ directly throughout.
+
+### Kernel callee bridges
+
+During kernel verification, only the target function is replaced with C++. If it calls another already-translated function (e.g., ForeAftDamping calls PIController), VIT auto-generates a BIND(C) bridge in the kernel that wraps C→Fortran:
+
+```
+C++ translation calls picontroller_c()
+    → BIND(C) bridge (auto-generated in kernel)
+        → original Fortran PIController() (in kernel, untouched)
+```
+
+VIT detects translated callees by scanning the target function's original source and cross-referencing against `vit.yaml` translations. For each callee, it generates: a Fortran bridge function, a C declarations header (`vit_kernel_callees.h`), and Makefile rules. This is automatic during `vit verify` — no manual configuration needed.
 
 ### KGen extraction limitations
 

@@ -8,7 +8,7 @@ Fully translate the ROSCO wind turbine controller from Fortran to C++, producing
 
 ### Current State (2026-03-20)
 
-- **Verified translations**: 18 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, and Controllers.f90 — all 18 KGen-verified 40/40 IDENTICAL and integrated
+- **Verified translations**: 19 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, and Controllers.f90 — all 19 KGen-verified 40/40 IDENTICAL and integrated. ForeAftDamping is the first using the ControlParameters view type (Phase 4D).
 - **Integrated**: All 18 translations integrated. Clean build test produces byte-identical simulation output across 5 scenarios (standard, yaw-by-IPC, filter coverage, flap control Flp_Mode=2, active wake AWC_Mode=4).
 - **Pipeline**: End-to-end extract → verify → integrate → rebuild → diff confirmed working. Field-level CSV logging, NaN-safe comparison, `-ffp-contract=off` for bit-identical verification. KGen BIND(C) parser fix enables extraction with Phase 4C types.
 - **Type system**: LocalVariables (168 fields + 5 nested structs) is now BIND(C)-compatible. All 4 blocker fields fixed automatically by `vit analyze-types`. ErrorVariables, FilterParameters, piParams, resParams, rlParams, WE, ObjectInstances, DebugVariables all C-compatible. Only ControlParameters, PerformanceData, ExtControlType remain (Phase 4D — ALLOCATABLE view structs).
@@ -446,20 +446,23 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 
 **Recommended approach:** Implement `vit analyze-types --scan-allocatable` (or integrate into existing `analyze-types`) to automate the mapping. Scan ParseAry calls and explicit ALLOCATE statements, classify size expressions, generate the mapping table consumed by `generate_view_struct_header()`. Use EXIT_CONFIRM for Type C (unresolvable runtime expressions). This eliminates the manual "read ReadSetParameters deeply" step — VIT does the analysis automatically.
 
-- [ ] `vit analyze-types --scan-allocatable` — scan source for ParseAry/ALLOCATE calls involving each ALLOCATABLE field, extract size expressions, classify by type (A–E), produce field→size mapping. EXIT_CONFIRM for unresolvable expressions.
-- [ ] New type classification in analyze-types: "bind_c" (direct struct) vs "view" (pointer+size view into Fortran-owned memory)
-- [ ] `generate_view_struct_header()` — consumes the field→size mapping. ALLOCATABLE 1D: `double* field; int n_field;` (using the actual size field name from the mapping, not generic `n_field`). ALLOCATABLE 2D: `double* field; int n_field_rows; int n_field_cols;`. Scalars and fixed fields copied directly. CHARACTER fields as `char field[N]`.
-- [ ] `generate_view_populator()` — Fortran BIND(C) subroutine that copies scalars, takes `C_LOC` of ALLOCATABLE arrays, fills size fields from the mapping. One populator per ALLOCATABLE type.
-- [ ] Apply to ControlParameters (213 fields: ~135 scalars, ~61 ALLOCATABLE, ~11 POINTER slices, 6 CHARACTER)
-- [ ] Apply to PerformanceData (5 fields: 2 ALLOCATABLE 1D, 3 ALLOCATABLE 2D — sizes from `CntrPar%PerfTableSize`)
-- [ ] Apply to ExtControlType (1 ALLOCATABLE 1D array — avrSWAP)
-- [ ] Integration plan generates view populator calls in Fortran wrappers (called once after ReadSetParameters allocates arrays)
-- [ ] Document 2D column-major access convention for C++: `mat[col * n_rows + row]`
-- [ ] Ownership tracking in `vit.yaml`: types tagged as "bind_c" or "view". When all Fortran consumers are translated, VIT flags ownership transfer eligibility.
-- [ ] Verify simulation still produces identical output
+- [x] `vit analyze-types --scan-allocatable` — configurable allocation helper scanner (ParseAry defined in `vit.yaml`, not hardcoded). Scans ParseAry/ALLOCATE calls, classifies by type (A–E). All 68 ALLOCATABLE fields in ControlParameters included in view struct (scanner is informational, not gating).
+- [x] New type classification: `types:` section in `vit.yaml` maps type names to strategies ("bind_c" or "view"). `apply_type_strategies()` marks registry entries. Pre-computed field mappings stored on DerivedTypeInfo.
+- [x] `generate_view_struct_header()` — all ALLOCATABLE fields emitted as pointer+size pairs (1D: `type* field; int n_field;`, 2D: `type* field; int n_field_rows; int n_field_cols;`). Scalars and CHARACTER copied directly.
+- [x] `generate_view_populator()` — Fortran module with BIND(C) mirror type + populator subroutine. Uses C_LOC + SIZE at runtime. ALLOCATED checks for safety. 941 lines for ControlParameters, compiles with gfortran.
+- [x] Apply to ControlParameters (259 view struct fields: ~150 scalars, 68 ALLOCATABLE pointer+size pairs, CHARACTER fields)
+- [x] Apply to PerformanceData (5 ALLOCATABLE fields: 2×1D, 3×2D — all Type E)
+- [x] Apply to ExtControlType (1 ALLOCATABLE field — avrSWAP, Type C)
+- [x] Integration generates populator .f90 + adds to CMake SOURCES. Wrapper USEs populator module, declares local view struct, calls populator before C function.
+- [x] Kernel verification: view struct headers + populator in kernel. Makefile dependencies for compilation ordering.
+- [x] Recursive nested type registry — `build_derived_type_registry()` discovers all transitive TYPE(X) field dependencies.
+- [x] Kernel callee bridges — auto-generated BIND(C) bridges for translated callees (e.g., PIController) so C++ can call them in kernel context.
+- [x] ForeAftDamping verified 40/40 — first ControlParameters view type function. Byte-identical simulation output.
+- [x] 501 tests (50 view type tests covering scanner, struct gen, populator, registry, interface gen, callee detection).
+- [ ] Ownership tracking in `vit.yaml`: types tagged as "bind_c" or "view". When all Fortran consumers are translated, VIT flags ownership transfer eligibility. (Deferred to Phase 9)
 
 **Types usable after:** ControlParameters, PerformanceData, ExtControlType
-**Unblocks:** Phase 5 AeroDynTorque (all 4 type args ready), Phases 7-8 full ControlParameters field access
+**Unblocks:** Phase 5 AeroDynTorque (all 4 type args ready), Phases 7-8 full ControlParameters field access. **Now unblocked.**
 
 #### Phase 4 Dependency Graph and Execution Order
 
@@ -567,7 +570,7 @@ All main control subroutines take ControlParameters (ALLOCATABLE arrays, needs p
 - [ ] Translate + verify + integrate `VariableSpeedControl` — CntrPar + LocalVar + objInst + ErrVar
 - [ ] Translate + verify + integrate `YawRateControl` — CntrPar + LocalVar + objInst + DebugVar + ErrVar
 - [ ] Translate + verify + integrate `IPC` — CntrPar + LocalVar + objInst + DebugVar + ErrVar
-- [ ] Translate + verify + integrate `ForeAftDamping` — CntrPar + LocalVar + objInst
+- [x] Translate + verify + integrate `ForeAftDamping` — CntrPar (view type) + LocalVar + objInst. First view type validation (Phase 4D Step 9). Callee bridge to PIController. 40/40 IDENTICAL, byte-identical output.
 - [ ] Translate + verify + integrate `FloatingFeedback` — CntrPar + LocalVar + objInst + ErrVar
 - [ ] Translate + verify + integrate `FlapControl` — CntrPar + LocalVar + objInst
 - [ ] Translate + verify + integrate `ActiveWakeControl` — CntrPar + LocalVar + DebugVar + objInst

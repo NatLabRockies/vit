@@ -121,16 +121,16 @@ VIT then:
 
 ## Current Status
 
-VIT has been validated on **18 functions** across 4 Fortran modules in the ROSCO wind turbine controller, all KGen-verified 40/40 IDENTICAL:
+VIT has been validated on **19 functions** across 4 Fortran modules in the ROSCO wind turbine controller, all KGen-verified 40/40 IDENTICAL:
 
 | Module | Functions | Complexity |
 |--------|-----------|------------|
 | **Functions.f90** | `saturate`, `wrap_180`, `wrap_360`, `ratelimit`, `ColemanTransform`, `ColemanTransformInverse`, `identity`, `sigma`, `interp1d` | Scalars, arrays, `ErrorVariables` struct, trig |
 | **Filters.f90** | `LPFilter`, `HPFilter`, `SecLPFilter`, `NotchFilter`, `NotchFilterSlopes`, `SecLPFilter_Vel` | `FilterParameters` struct pointer, instance-indexed state, OPTIONAL args |
-| **Controllers.f90** | `PIController`, `PIIController`, `ResController` | `piParams`/`resParams` struct R/W, inlined callees |
+| **Controllers.f90** | `PIController`, `PIIController`, `ResController`, `ForeAftDamping` | `piParams`/`resParams` struct R/W, ControlParameters view type, callee bridges |
 | **ControllerBlocks.f90** | `identity` | Cross-module integration |
 
-The progression from simple scalar functions to struct-pointer-based filters and controllers demonstrates that the pipeline scales beyond trivial cases. With all 18 functions integrated and rebuilt, the ROSCO simulation produces **byte-identical output** across 5 scenarios (with `-ffp-contract=off` for deterministic FP).
+The progression from simple scalar functions to struct-pointer-based filters and controllers demonstrates that the pipeline scales beyond trivial cases. With all 19 functions integrated and rebuilt, the ROSCO simulation produces **byte-identical output** across 5 scenarios (with `-ffp-contract=off` for deterministic FP).
 
 ## Configuration (vit.yaml)
 
@@ -169,6 +169,18 @@ translations:                         # Auto-populated by VIT after verify/integ
   saturate:
     status: integrated
     cpp_file: saturate.cpp
+
+types:                                # Derived type handling strategies
+  ControlParameters:
+    strategy: view                    # Pointer+size view for ALLOCATABLE types
+  PerformanceData:
+    strategy: view
+
+allocatable:                          # Configurable allocation helper patterns
+  helpers:
+    - name: ParseAry                  # Subroutine name
+      array_arg: 3                    # 1-indexed position of array argument
+      size_arg: 4                     # 1-indexed position of size argument
 ```
 
 **Key fields:**
@@ -199,7 +211,7 @@ translations:                         # Auto-populated by VIT after verify/integ
 | `integrate` | `vit integrate <function> <cpp_file> [-f FILE] [--apply] [--dry-run]` | Generate (and optionally apply) codebase integration patches |
 | `run` | `vit run <function> <cpp_file> [-f FILE] [--kernel-dir DIR] [--apply] [--skip-verify] [--no-field-log]` | Full pipeline: verify → integrate in one command |
 | `interface` | `vit interface <function> [-f FILE] [-o DIR]` | Generate Fortran↔C interface files (used internally by verify/integrate) |
-| `analyze-types` | `vit analyze-types [--fix character\|logical\|complex\|bind_c] [--type TYPE] [--field FIELD] [--apply]` | Analyze derived type C-compatibility; apply automated fixes |
+| `analyze-types` | `vit analyze-types [--fix character\|logical\|complex\|bind_c] [--scan-allocatable] [--type TYPE] [--field FIELD] [--apply]` | Analyze derived type C-compatibility; apply fixes; scan ALLOCATABLE sizes |
 | `status` | `vit status` | Show translation status for all functions tracked in vit.yaml |
 
 **Flag details:**
@@ -218,6 +230,8 @@ translations:                         # Auto-populated by VIT after verify/integ
 **Algorithm translation is external.** VIT generates the correct C++ function signature and a translation prompt (`vit translate`), but the algorithm implementation comes from outside VIT — a coding agent feeding an LLM, or hand-coding. This makes VIT composable with any translation source.
 
 **Agent-interactive protocols.** VIT uses structured exit codes and output blocks to communicate with coding agents. When VIT infers a value it can't be certain about (e.g., a CHARACTER buffer size), it exits with code 10 and a `[VIT:CONFIRM]` block — the agent presents the assumption to the user and re-runs with the confirmed value. When VIT encounters code it can't auto-rewrite (e.g., complex arithmetic), it exits with code 11 and a `[VIT:MANUAL]` block — the agent proposes a rewrite, the user approves, and the agent re-runs with the override. This three-way interaction (VIT↔agent↔user) keeps humans in the loop for decisions that require judgment while automating everything else.
+
+**View type pattern for ALLOCATABLE types.** Derived types with ALLOCATABLE arrays (like ControlParameters) can't use BIND(C) directly. VIT generates a "view struct" with pointer+size pairs for each array, plus a Fortran populator that fills the view from the real type at runtime using `C_LOC()` and `SIZE()`. Configured per type in `vit.yaml` under `types:`. The populator handles all ALLOCATABLE fields — allocated arrays get pointers and sizes, unallocated arrays get null and zero.
 
 **NaN-safe verification.** KGen captures state for all invocations of the target function, including initialization calls where struct fields contain uninitialized heap residue (NaN values). VIT patches verification comparisons so that NaN==NaN is treated as identical, and reports these as "skipped" cases rather than failures. This prevents false negatives from KGen's faithful capture of uninitialized memory.
 
@@ -238,6 +252,7 @@ vit/
   analyze_types.py    # Derived type C-compatibility analysis + fixes
   derived_type_parser.py  # Parse TYPE definitions, generate C struct headers
   build_fixer.py      # Auto-fix compiler errors during type fixes
+  view_populator.py   # Generate view struct populators for ALLOCATABLE types
 ```
 
 ## Requirements
