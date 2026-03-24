@@ -849,20 +849,59 @@ def generate_kernel_callee_bridge(
     for arg, mapping in struct_args:
         lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_f)")
 
-    # Build the call to the original Fortran function
-    call_args = _build_bridge_call_args(sig, kind_aliases, derived_types)
-    call_str = ", ".join(call_args)
+    # Build the call to the original Fortran function.
+    # OPTIONAL args require IF/ELSE branching — Fortran uses argument
+    # presence (not a flag) to indicate optionality.
+    optional_args = [a for a in sig.args if a.is_optional]
+    required_call_args = _build_bridge_call_args(
+        sig, kind_aliases, derived_types, skip_optional=True
+    )
+    required_str = ", ".join(required_call_args)
+
+    def _make_call(func_name, args_str, is_function, result_name=None,
+                   ret_mapping=None):
+        """Generate a single CALL or assignment line."""
+        if is_function and not sig.result_is_array:
+            ret_type = sig.result_type or sig.args[0].fortran_type if sig.args else "REAL(8)"
+            if ret_mapping and ret_mapping.c_kind != ret_mapping.fortran_kind and ret_mapping.fortran_kind:
+                return f"        {result_name} = {ret_mapping.iso_c_type.split('(')[0]}({func_name}({args_str}), {ret_mapping.c_kind})"
+            else:
+                return f"        {result_name} = {func_name}({args_str})"
+        else:
+            return f"        CALL {func_name}({args_str})"
+
+    if optional_args:
+        # Generate IF/ELSE branching for OPTIONAL args.
+        # For simplicity, handle up to 1 optional arg (covers all current cases).
+        opt = optional_args[0]
+        opt_mapping = get_type_mapping(opt.fortran_type, kind_aliases, derived_types)
+        opt_call_name = opt.name
+        if opt_mapping.iso_c_type.startswith("LOGICAL"):
+            opt_call_name = f"LOGICAL({opt.name})"
+
+        args_with = required_str + (", " if required_str else "") + opt_call_name
+        args_without = required_str
+
+        lines.append(f"        IF (has_{opt.name} /= 0) THEN")
+        if sig.is_function and not sig.result_is_array:
+            lines.append(_make_call(sig.name, args_with, True, result_name, ret_mapping))
+        else:
+            lines.append(_make_call(sig.name, args_with, False))
+        lines.append(f"        ELSE")
+        if sig.is_function and not sig.result_is_array:
+            lines.append(_make_call(sig.name, args_without, True, result_name, ret_mapping))
+        else:
+            lines.append(_make_call(sig.name, args_without, False))
+        lines.append(f"        END IF")
+    else:
+        if sig.is_function and not sig.result_is_array:
+            lines.append(_make_call(sig.name, required_str, True, result_name, ret_mapping))
+        else:
+            lines.append(_make_call(sig.name, required_str, False))
 
     if sig.is_function and not sig.result_is_array:
-        # Get the return kind for conversion
-        ret_type = sig.result_type or sig.args[0].fortran_type if sig.args else "REAL(8)"
-        if ret_mapping.c_kind != ret_mapping.fortran_kind and ret_mapping.fortran_kind:
-            lines.append(f"        {result_name} = {ret_mapping.iso_c_type.split('(')[0]}({sig.name}({call_str}), {ret_mapping.c_kind})")
-        else:
-            lines.append(f"        {result_name} = {sig.name}({call_str})")
         lines.append(f"    END FUNCTION {bridge_name}")
     else:
-        lines.append(f"        CALL {sig.name}({call_str})")
         lines.append(f"    END SUBROUTINE {bridge_name}")
 
     return "\n".join(lines)
@@ -870,7 +909,8 @@ def generate_kernel_callee_bridge(
 
 def _build_bridge_call_args(sig: FortranSignature,
                              kind_aliases: Optional[dict] = None,
-                             derived_types: Optional[dict] = None) -> list[str]:
+                             derived_types: Optional[dict] = None,
+                             skip_optional: bool = False) -> list[str]:
     """
     Build argument list for the bridge's call to the original Fortran function.
 
@@ -879,6 +919,9 @@ def _build_bridge_call_args(sig: FortranSignature,
     - LOGICAL: convert INTEGER(C_INT) back to LOGICAL via (/= 0)
     - Assumed-shape arrays with size params: skip the size param, pass array directly
     - Scalars: direct pass-through (implicit kind conversion)
+
+    If skip_optional=True, OPTIONAL args are excluded entirely (caller handles
+    them via IF/ELSE branching in the bridge).
     """
     call_args = []
     skip_next_size = False
@@ -890,15 +933,16 @@ def _build_bridge_call_args(sig: FortranSignature,
         if mapping.is_derived and not mapping.is_c_compatible:
             continue
 
-        # Skip OPTIONAL args for now (bridge doesn't handle OPTIONAL)
+        # OPTIONAL args: skip when building required-only list
         if arg.is_optional:
-            # OPTIONAL args need the flag + value — pass through as-is
+            if skip_optional:
+                continue
+            # Legacy path: pass through as-is (used when no branching)
             call_args.append(f"has_{arg.name}")
             if mapping.is_derived and mapping.is_c_compatible:
                 call_args.append(f"{arg.name}_f")
             elif arg.is_array:
                 call_args.append(arg.name)
-                # Don't pass size param to Fortran
             else:
                 call_args.append(arg.name)
             continue
@@ -909,10 +953,13 @@ def _build_bridge_call_args(sig: FortranSignature,
             continue
 
         if arg.is_array:
-            call_args.append(arg.name)
+            # The bridge receives assumed-size (*) arrays from C, but the Fortran
+            # callee expects assumed-shape (:). Passing (*) to (:) is illegal.
+            # Use an explicit section: arg(1:n_arg) which creates a temporary
+            # that's compatible with (:).
+            call_args.append(f"{arg.name}(1:n_{arg.name})")
             # Assumed-shape arrays have a synthetic size param in the C interface
             # that the Fortran original doesn't expect — skip it.
-            # (The bridge declares the array as assumed-size (*), which is compatible)
             continue
 
         # Scalar args — INOUT args must be passed directly (no conversion wrapping).
