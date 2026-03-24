@@ -303,6 +303,7 @@ def generate_state_capture_build_script(
     source_dir: str = "",
     kernel_dir: str = "kernel",
     assumed_size_arrays: dict = None,
+    dll_persistence: dict = None,
 ) -> str:
     """
     Generate a shell script that wraps the build command for state capture.
@@ -406,31 +407,52 @@ def generate_state_capture_build_script(
         script_lines.append("")
 
     # Step 2c: DLL SAVE variable persistence workaround.
-    # KGen's profiling phase loads the DLL (setting SAVE variables including
-    # AlreadyInitialized=1, kgen_isstop, kgen_invoke, kgen_islast, etc.).
-    # If the DLL isn't truly unloaded before the state capture phase (common
-    # with ctypes/dlclose), ALL SAVE variables persist. This causes:
-    #   1. ROSCO's SetParameters rejects reinitialization (aviFAIL=-1)
-    #   2. KGen's invocation counter and stop flags are stale
-    # Fix: Reset AlreadyInitialized before ReadAvrSWAP, and deallocate
-    # KGen's SAVE arrays before the allocation check so they reinitialize.
-    if source_dir:
-        source_dir_abs = os.path.abspath(source_dir)
-        script_lines.extend([
-            "# Step 2c: Reset SAVE variables (DLL persistence workaround)",
-            f'for f90 in "{source_dir_abs}"/*.f90 "{source_dir_abs}"/*.F90; do',
-            '    [ -f "$f90" ] || continue',
-            "    # Reset ROSCO's AlreadyInitialized flag",
-            "    sed -i '/CALL ReadAvrSWAP/i\\    LocalVar%AlreadyInitialized = 0' \"$f90\"",
-            "    # Deallocate KGen's SAVE arrays on init call only (iStatus=0).",
-            "    # Anchored on the KGen init check (exists in ALL instrumented files,",
-            "    # not just DISCON.F90). Only runs on iStatus=0 to avoid resetting the",
-            "    # invocation counter on every call.",
-            "    sed -i '/IF (.NOT. ALLOCATED(kgen_isstop))/i\\        IF (NINT(avrSWAP(1)) == 0 .AND. ALLOCATED(kgen_isstop)) THEN\\n            DEALLOCATE(kgen_isstop, kgen_issave, kgen_islast, kgen_ischecked)\\n            DEALLOCATE(kgen_invoke, kgen_last_invoke, kgen_filepath, kgen_lockpath)\\n        END IF' \"$f90\"",
-            'done',
-            'echo "VIT: Patched DLL SAVE variable reset in instrumented source"',
-            "",
-        ])
+    # When Python's ctypes loads a Fortran shared library, dlclose() may not
+    # truly unload it — SAVE variables persist across "reloads." KGen's
+    # profiling phase sets SAVE arrays (kgen_isstop, kgen_invoke, etc.) that
+    # persist into the state capture phase, preventing fresh state capture.
+    # The project may also have its own SAVE guards that need resetting.
+    # Both the init condition and project-specific resets are configured in
+    # vit.yaml under kgen.dll_persistence (no project-specific code here).
+    if dll_persistence and source_dir:
+        init_cond = dll_persistence.get("init_condition", "")
+        resets = dll_persistence.get("resets", [])
+
+        if init_cond or resets:
+            source_dir_abs = os.path.abspath(source_dir)
+            script_lines.extend([
+                "# Step 2c: Reset SAVE variables (DLL persistence workaround)",
+                f'for f90 in "{source_dir_abs}"/*.f90 "{source_dir_abs}"/*.F90; do',
+                '    [ -f "$f90" ] || continue',
+            ])
+
+            # Project-specific resets (configured in vit.yaml)
+            for reset in resets:
+                anchor = reset.get("anchor", "")
+                code = reset.get("code", "")
+                if anchor and code:
+                    script_lines.append(
+                        f"    sed -i '/{anchor}/i\\    {code}' \"$f90\""
+                    )
+
+            # KGen-generic DEALLOCATE: reset KGen's SAVE arrays on init call.
+            # Anchored on IF (.NOT. ALLOCATED(kgen_isstop)) — exists in ALL
+            # KGen-instrumented files. Conditioned on the project's init
+            # expression so it only runs once per DLL "load," not every call.
+            if init_cond:
+                script_lines.append(
+                    f"    sed -i '/IF (.NOT. ALLOCATED(kgen_isstop))/i\\"
+                    f"        IF ({init_cond} .AND. ALLOCATED(kgen_isstop)) THEN\\n"
+                    f"            DEALLOCATE(kgen_isstop, kgen_issave, kgen_islast, kgen_ischecked)\\n"
+                    f"            DEALLOCATE(kgen_invoke, kgen_last_invoke, kgen_filepath, kgen_lockpath)\\n"
+                    f"        END IF' \"$f90\""
+                )
+
+            script_lines.extend([
+                'done',
+                'echo "VIT: Patched DLL SAVE variable reset in instrumented source"',
+                "",
+            ])
 
     script_lines.extend([
         "# Step 3: Run the actual build",
@@ -559,6 +581,7 @@ def run_kgen_extract(
     package_name: str = "",
     invocation: str = "",
     assumed_size_arrays: Optional[dict] = None,
+    dll_persistence: Optional[dict] = None,
     env: Optional[dict] = None,
     dry_run: bool = False,
 ) -> dict:
@@ -639,6 +662,7 @@ def run_kgen_extract(
         source_dir=source_dir,
         kernel_dir=output_dir or "kernel",
         assumed_size_arrays=assumed_size_arrays,
+        dll_persistence=dll_persistence,
     )
     effective_build_cmd = f"bash {wrapper_script}"
 

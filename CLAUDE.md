@@ -375,26 +375,28 @@ Each extraction deposits into `kernel/<function_name>/` and restores the source 
 
 Before extracting, prepare the source tree:
 
-1. **Reset integrated source files to upstream** — only files that have integration wrappers (Functions.f90, Filters.f90, ControllerBlocks.f90). Controllers.f90 at Phase 4C (`fde0498`) has no wrappers and can be used directly.
+1. **Reset integrated source files** — use commits that have all bug fixes but NO integration wrappers.
 2. **Keep Phase 4C ROSCO_Types.f90** — KGen's BIND(C) parser bug is fixed, so Phase 4C types (with `BIND(C)`, `INTEGER(C_INT) restart`) are parseable.
-3. **Apply the restart call-site fix** to upstream Filters.f90 and Functions.f90 — Phase 4C ROSCO_Types changed `restart` from `LOGICAL` to `INTEGER(C_INT)`, so call sites that pass `LocalVar%restart` to `LOGICAL` params need `(LocalVar%restart /= 0)`.
-4. **Create C++ stubs** for the `*_cpp.cpp` files referenced in CMakeLists.txt.
+3. **Create C++ stubs** for the `*_cpp.cpp` files referenced in CMakeLists.txt.
+4. **For DISCON.F90 extractions:** use `--run-args '--scenario 3'` to run only the scenario with all modes enabled.
 
 ```bash
 cd vit_translation/ROSCO
 
-# Reset files with integration wrappers to upstream
-git checkout e8010f0 -- rosco/controller/src/Functions.f90 rosco/controller/src/Filters.f90
+# Functions.f90 + Filters.f90: use dba7738 (has restart fix + notch filter bug fix, no wrappers)
+git checkout dba7738 -- rosco/controller/src/Functions.f90 rosco/controller/src/Filters.f90
 
-# Use Phase 4C for files WITHOUT wrappers (have restart call-site fix)
+# Controllers.f90 + ControllerBlocks.f90: use fde0498 (Phase 4C, has restart fix + AWC decomposition + FlapControl K init fix, no wrappers)
 git checkout fde0498 -- rosco/controller/src/Controllers.f90 rosco/controller/src/ControllerBlocks.f90
 
-# Apply restart fix to upstream Filters.f90 and Functions.f90
-sed -i '' 's/LocalVar%restart/(LocalVar%restart \/= 0)/g' rosco/controller/src/Filters.f90 rosco/controller/src/Functions.f90
+# DISCON.F90: use upstream (no wrappers)
+git checkout e8010f0 -- rosco/controller/src/DISCON.F90
 
 # Create C++ stubs
 for f in rosco/controller/src/*_cpp.cpp; do echo "// stub" > "$f"; done
 ```
+
+No manual `sed` fixes needed — the correct commits already have all bug fixes applied.
 
 Do NOT reset `ROSCO_Types.f90` (Phase 4C types are needed), `ExtControl.f90`, `ReadSetParameters.f90`, `ROSCO_IO.f90` (Phase 4A/4C fixes, no wrappers), or `CMakeLists.txt` (`-ffp-contract=off` flags + C++ source list).
 
