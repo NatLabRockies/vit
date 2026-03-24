@@ -405,6 +405,32 @@ def generate_state_capture_build_script(
             ])
         script_lines.append("")
 
+    # Step 2c: DLL SAVE variable persistence workaround.
+    # KGen's profiling phase loads the DLL (setting SAVE variables including
+    # AlreadyInitialized=1, kgen_isstop, kgen_invoke, kgen_islast, etc.).
+    # If the DLL isn't truly unloaded before the state capture phase (common
+    # with ctypes/dlclose), ALL SAVE variables persist. This causes:
+    #   1. ROSCO's SetParameters rejects reinitialization (aviFAIL=-1)
+    #   2. KGen's invocation counter and stop flags are stale
+    # Fix: Reset AlreadyInitialized before ReadAvrSWAP, and deallocate
+    # KGen's SAVE arrays before the allocation check so they reinitialize.
+    if source_dir:
+        source_dir_abs = os.path.abspath(source_dir)
+        script_lines.extend([
+            "# Step 2c: Reset SAVE variables (DLL persistence workaround)",
+            f'for f90 in "{source_dir_abs}"/*.f90 "{source_dir_abs}"/*.F90; do',
+            '    [ -f "$f90" ] || continue',
+            "    # Reset ROSCO's AlreadyInitialized flag",
+            "    sed -i '/CALL ReadAvrSWAP/i\\    LocalVar%AlreadyInitialized = 0' \"$f90\"",
+            "    # Deallocate KGen's SAVE arrays on init call only (iStatus=0)",
+            "    # Must be OUTSIDE mode-gated blocks; only on iStatus=0 to avoid",
+            "    # resetting invocation counter on every call",
+            "    sed -i '/CALL ReadAvrSWAP/i\\    IF (NINT(avrSWAP(1)) == 0 .AND. ALLOCATED(kgen_isstop)) THEN\\n        DEALLOCATE(kgen_isstop, kgen_issave, kgen_islast, kgen_ischecked)\\n        DEALLOCATE(kgen_invoke, kgen_last_invoke, kgen_filepath, kgen_lockpath)\\n    END IF' \"$f90\"",
+            'done',
+            'echo "VIT: Patched DLL SAVE variable reset in instrumented source"',
+            "",
+        ])
+
     script_lines.extend([
         "# Step 3: Run the actual build",
         f"{build_cmd}",

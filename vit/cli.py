@@ -76,6 +76,7 @@ def main():
     p_extract.add_argument("--file", "-f", help="Source file containing call site")
     p_extract.add_argument("--line", "-l", type=int, help="Line number of call site")
     p_extract.add_argument("--dry-run", action="store_true")
+    p_extract.add_argument("--run-args", help="Extra arguments to append to the run command (e.g., '--scenario 3')")
 
     # --- translate ---
     p_translate = subparsers.add_parser("translate", help="Generate C++ translation scaffold")
@@ -296,11 +297,16 @@ def cmd_extract(args, config):
         print(f"Inserting KGen pragma at {file_path}:{actual_line}")
         insert_kgen_pragma(file_path, actual_line, function_name=args.function_name)
 
+        # Apply --run-args to customize run command for this extraction
+        run_cmd = config.run_cmd
+        if hasattr(args, 'run_args') and args.run_args:
+            run_cmd = f"{run_cmd} {args.run_args}"
+
         print(f"Running KGen extraction...")
         result = run_kgen_extract(
             source_file=file_path,
             build_cmd=config.build_cmd,
-            run_cmd=config.run_cmd,
+            run_cmd=run_cmd,
             clean_cmd=config.clean_cmd,
             install_cmd=config.install_cmd,
             kgen_path=config.kgen_path,
