@@ -254,9 +254,17 @@ def cmd_extract(args, config):
         print(f"ERROR: File not found: {file_path}")
         return 1
 
-    # Clean any leftover pragmas from previous attempts before backing up,
-    # so the backup is always a clean copy of the source file.
-    remove_kgen_pragma(file_path)
+    # Clean any leftover pragmas from ALL source files before backing up.
+    # KGen reads all source files in the project (not just the target file),
+    # so stale pragmas in other files would contaminate the extraction —
+    # KGen would find the stale pragma and use its function name for state
+    # capture paths, overwriting the intended extraction target.
+    source_dir = config.abs_source_dir
+    if source_dir:
+        for f90 in sorted(Path(source_dir).glob("*.f90")) + sorted(Path(source_dir).glob("*.F90")):
+            remove_kgen_pragma(str(f90))
+    else:
+        remove_kgen_pragma(file_path)
 
     # Back up the (now clean) source file
     backup_path = file_path + ".vit_backup"

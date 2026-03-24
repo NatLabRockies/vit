@@ -221,11 +221,19 @@ def clean_kgen_artifacts(working_dir: str = ".") -> list[str]:
             os.remove(path)
             removed.append(path)
 
+    # Remove elapsedtime/ directory — KGen stores ETime profiling data here
+    # and reuses it across extractions, which can embed the wrong function
+    # name in state capture instrumented code.
+    etime_dir = os.path.join(working_dir, "elapsedtime")
+    if os.path.isdir(etime_dir):
+        shutil.rmtree(etime_dir)
+        removed.append(etime_dir)
+
+    # Note: .kgen_org files (KGen's instrumented source backups) are
+    # cleaned in run_kgen_extract() which knows the source_dir.
+
     # Don't remove include.ini — we generate it ourselves and want KGen to reuse it
     # Don't remove kernel/ or state/ — user may want to keep previous data
-    # model.ini stores KGen's ETime profiling data. If --invocation is used,
-    # this file is bypassed, but stale data could cause issues if the user
-    # later runs without --invocation.
 
     return removed
 
@@ -535,6 +543,16 @@ def run_kgen_extract(
 
     # Step 2: Clean stale artifacts
     result["cleaned"] = clean_kgen_artifacts()
+
+    # Clean stale .kgen_org files (KGen's instrumented source backups).
+    # These may contain pragmas from a previous extraction that would
+    # contaminate this extraction — KGen reads all source files and
+    # processes all pragmas it finds, including in .kgen_org files
+    # that get restored to the source directory during state capture.
+    if source_dir:
+        for kgen_org in sorted(Path(source_dir).glob("*.kgen_org")):
+            kgen_org.unlink()
+            result["cleaned"].append(str(kgen_org))
 
     # Step 3: Run clean command to force full rebuild for strace
     if clean_cmd:
