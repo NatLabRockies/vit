@@ -668,6 +668,12 @@ def _generate_callee_bridges(
                     header_path.write_text(header_content)
                     result["files_modified"].append(str(header_path))
 
+            # Skip array-returning functions — bridges for these require
+            # allocatable temporaries that we can't generate reliably.
+            # If the C++ actually calls them, it'll get a linker error.
+            if callee_sig.is_function and callee_sig.result_is_array:
+                continue
+
             # Generate the bridge
             bridge_code = generate_kernel_callee_bridge(
                 callee_sig, kind_aliases, callee_registry
