@@ -67,7 +67,12 @@ def generate_view_populator(
         lines.append(f"    USE {source_module}, ONLY: {name}")
     lines.append(f"    IMPLICIT NONE")
     lines.append(f"    PRIVATE")
-    lines.append(f"    PUBLIC :: {view_type_name}, {sub_name}")
+    stash_name = f"vit_original_{name_lower}"
+    lines.append(f"    PUBLIC :: {view_type_name}, {sub_name}, {stash_name}")
+    lines.append(f"")
+    lines.append(f"    ! Kernel stash: pointer to original Fortran type, set by wrapper before calling C++.")
+    lines.append(f"    ! Callee bridges USE this to pass the original type to Fortran callees.")
+    lines.append(f"    TYPE({name}), POINTER, SAVE :: {stash_name} => NULL()")
     lines.append(f"")
 
     # --- BIND(C) mirror type ---

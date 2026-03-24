@@ -381,6 +381,15 @@ def _generate_view_preamble(view_args: list[tuple]) -> list[str]:
         type_lower = mapping.c_type.lower()
         lines.append(f"        CALL vit_populate_{type_lower}({arg.name}, {arg.name}_view)")
 
+    # Stash original Fortran pointers for callee bridges.
+    # Bridges can't C_F_POINTER the view back to the original type (different layout).
+    # Instead, they USE this module variable to get the original type directly.
+    lines.append(f"        ! Stash original Fortran pointers for callee bridges")
+    for arg, mapping in view_args:
+        type_lower = mapping.c_type.lower()
+        stash_name = f"vit_original_{type_lower}"
+        lines.append(f"        {stash_name} => {arg.name}")
+
     return lines
 
 
@@ -392,9 +401,10 @@ def _get_view_use_statements(view_args: list[tuple]) -> list[str]:
         type_lower = mapping.c_type.lower()
         module_name = f"vit_{type_lower}_view"
         if module_name not in seen:
+            stash_name = f"vit_original_{type_lower}"
             lines.append(
                 f"        USE {module_name}, ONLY: {type_lower}_view_t, "
-                f"vit_populate_{type_lower}"
+                f"vit_populate_{type_lower}, {stash_name}"
             )
             seen.add(module_name)
     return lines
@@ -804,12 +814,18 @@ def generate_kernel_callee_bridge(
     # Collect USE statements for derived types
     use_stmts = _get_use_statements_for_derived_types(sig)
 
-    # Identify struct pointer args that need C_F_POINTER conversion
+    # Identify struct pointer args that need C_F_POINTER conversion.
+    # View-type args are handled differently — they use a module stash variable
+    # instead of C_F_POINTER (the view struct has a different memory layout).
     struct_args = []
+    view_struct_args = []
     for arg in sig.args:
         mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
         if mapping.is_derived and mapping.is_c_compatible and not arg.is_optional:
-            struct_args.append((arg, mapping))
+            if mapping.is_view_type:
+                view_struct_args.append((arg, mapping))
+            else:
+                struct_args.append((arg, mapping))
 
     if sig.is_function and not sig.result_is_array:
         # Scalar-returning function
@@ -829,6 +845,12 @@ def generate_kernel_callee_bridge(
         lines.append(f"        USE {sig.module_name}, ONLY: {sig.name}")
     for use_stmt in use_stmts:
         lines.append(f"        {use_stmt}")
+    # USE view stash modules for view-type args (bridges use the stash instead of C_F_POINTER)
+    for arg, mapping in view_struct_args:
+        type_lower = mapping.c_type.lower()
+        module_name = f"vit_{type_lower}_view"
+        stash_name = f"vit_original_{type_lower}"
+        lines.append(f"        USE {module_name}, ONLY: {stash_name}")
     lines.append(f"        IMPLICIT NONE")
 
     # Declare BIND(C) arguments (same as interface block)
@@ -839,11 +861,11 @@ def generate_kernel_callee_bridge(
     if sig.is_function and not sig.result_is_array:
         lines.append(f"        {ret_mapping.iso_c_type} :: {result_name}")
 
-    # Declare local Fortran pointer variables for struct args
+    # Declare local Fortran pointer variables for regular struct args (not view types)
     for arg, mapping in struct_args:
         lines.append(f"        TYPE({arg.derived_type_name}), POINTER :: {arg.name}_f")
 
-    # Convert C struct pointers to Fortran pointers
+    # Convert C struct pointers to Fortran pointers (regular structs only)
     if struct_args:
         lines.append(f"        ! Convert C pointers to Fortran pointers")
     for arg, mapping in struct_args:
@@ -947,9 +969,16 @@ def _build_bridge_call_args(sig: FortranSignature,
                 call_args.append(arg.name)
             continue
 
-        # C-compatible derived type → use C_F_POINTER'd local
+        # C-compatible derived type
         if mapping.is_derived and mapping.is_c_compatible:
-            call_args.append(f"{arg.name}_f")
+            if mapping.is_view_type:
+                # View type → use module stash variable (not C_F_POINTER'd local,
+                # because the view struct has a different memory layout)
+                type_lower = mapping.c_type.lower()
+                call_args.append(f"vit_original_{type_lower}")
+            else:
+                # Regular BIND(C) struct → use C_F_POINTER'd local
+                call_args.append(f"{arg.name}_f")
             continue
 
         if arg.is_array:

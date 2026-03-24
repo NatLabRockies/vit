@@ -674,11 +674,18 @@ def _generate_callee_bridges(
             if callee_sig.is_function and callee_sig.result_is_array:
                 continue
 
-            # Generate the bridge.
-            # Note: view-type args (like ControlParameters) are left as passthrough
-            # in callee bridges. The bridge skips them in both the interface and
-            # the call. The original Fortran callee still receives CntrPar from
-            # the kernel's module-level variable (set by the wrapper before calling C++).
+            # Propagate view strategies from the target's registry to the callee's.
+            # The target's registry has view_strategy applied from vit.yaml, but
+            # each callee gets a fresh registry. Without this, view-type args
+            # (like ControlParameters) would be treated as passthrough instead
+            # of using the module stash variable.
+            if derived_types and callee_registry:
+                for type_name, type_info in callee_registry.items():
+                    if type_name in derived_types:
+                        parent_info = derived_types[type_name]
+                        if getattr(parent_info, 'view_strategy', None) == "view":
+                            type_info.view_strategy = "view"
+
             bridge_code = generate_kernel_callee_bridge(
                 callee_sig, kind_aliases, callee_registry
             )
