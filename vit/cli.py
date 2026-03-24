@@ -596,7 +596,6 @@ def cmd_integrate(args, config):
         target_name=config.target_name,
         kind_aliases=config.kind_aliases,
         derived_types=derived_types,
-        assumed_size_arrays=config.assumed_size_arrays,
     )
 
     print(plan.to_markdown())
@@ -689,7 +688,6 @@ def cmd_run(args, config):
         target_name=config.target_name,
         kind_aliases=config.kind_aliases,
         derived_types=derived_types,
-        assumed_size_arrays=config.assumed_size_arrays,
     )
 
     print(plan.to_markdown())

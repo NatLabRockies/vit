@@ -53,7 +53,7 @@ FORTRAN_TO_C = {
 # These map symbolic kind names to their underlying numeric kinds
 DEFAULT_KIND_ALIASES = {
     # NWTC Library / OpenFAST / ROSCO kinds
-    "ReKi": "REAL(8)",       # Real kind (typically double precision)
+    "ReKi": "REAL(4)",       # Real kind (C_FLOAT = single precision)
     "DbKi": "REAL(8)",       # Double kind
     "SiKi": "REAL(4)",       # Single kind
     "IntKi": "INTEGER(4)",   # Integer kind

@@ -177,8 +177,7 @@ def generate_fortran_interface_block(sig: FortranSignature,
 def generate_fortran_wrapper(sig: FortranSignature,
                              kind_aliases: Optional[dict] = None,
                              derived_types: Optional[dict] = None,
-                             is_kernel: bool = False,
-                             assumed_size_arrays: Optional[dict] = None) -> str:
+                             is_kernel: bool = False) -> str:
     """
     Generate the Fortran wrapper function that replaces the original.
 
@@ -194,8 +193,6 @@ def generate_fortran_wrapper(sig: FortranSignature,
     Args:
         is_kernel: If True, generates kernel-specific code (view-type stash for
                    callee bridges). If False (default), generates integration code.
-        assumed_size_arrays: Map of array name → explicit size for assumed-size
-                            arrays with kind mismatches (e.g., {"avrSWAP": 2000}).
     """
     lines = []
     c_func_name = sig.c_func_name
@@ -211,12 +208,12 @@ def generate_fortran_wrapper(sig: FortranSignature,
     if sig.is_function:
         lines.extend(_generate_wrapper_function(
             sig, c_func_name, kind_aliases, derived_types, optional_forwarded,
-            view_args, is_kernel, assumed_size_arrays
+            view_args, is_kernel
         ))
     else:
         lines.extend(_generate_wrapper_subroutine(
             sig, c_func_name, kind_aliases, derived_types, optional_forwarded,
-            view_args, is_kernel, assumed_size_arrays
+            view_args, is_kernel
         ))
 
     return "\n".join(lines)
@@ -224,7 +221,7 @@ def generate_fortran_wrapper(sig: FortranSignature,
 
 def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
                                 optional_forwarded, view_args=None,
-                                is_kernel=False, assumed_size_arrays=None):
+                                is_kernel=False):
     """Generate wrapper body for a FUNCTION."""
     view_args = view_args or []
     lines = []
@@ -307,7 +304,7 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
 
 def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
                                   optional_forwarded, view_args=None,
-                                  is_kernel=False, assumed_size_arrays=None):
+                                  is_kernel=False):
     """Generate wrapper body for a SUBROUTINE."""
     view_args = view_args or []
     lines = []
@@ -344,71 +341,11 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
 
     # Build call with conversions (only non-passthrough args)
     call_args = _build_wrapper_call_args(sig, kind_aliases, derived_types)
-    # Check for assumed-size arrays with kind mismatches that need BLOCK conversion
-    kind_mismatch_arrays = _find_kind_mismatch_arrays(sig, kind_aliases, derived_types, assumed_size_arrays)
-
-    if kind_mismatch_arrays:
-        # Wrap CALL in BLOCK with temporary conversion
-        lines.append(f"        BLOCK")
-        for arr_name, c_kind, arr_size in kind_mismatch_arrays:
-            tmp_name = f"vit_tmp_{arr_name.lower()}"
-            lines.append(f"            REAL({c_kind}) :: {tmp_name}({arr_size})")
-        for arr_name, c_kind, arr_size in kind_mismatch_arrays:
-            tmp_name = f"vit_tmp_{arr_name.lower()}"
-            lines.append(f"            {tmp_name} = REAL({arr_name}(1:{arr_size}), {c_kind})")
-        # Replace array names with temp names in call args
-        patched_args = list(call_args)
-        for arr_name, c_kind, arr_size in kind_mismatch_arrays:
-            tmp_name = f"vit_tmp_{arr_name.lower()}"
-            patched_args = [tmp_name if a == arr_name else a for a in patched_args]
-        call_str = ", ".join(patched_args)
-        lines.append(f"            CALL {c_func_name}({call_str})")
-        # Copy back for INOUT arrays
-        for arr_name, c_kind, arr_size in kind_mismatch_arrays:
-            tmp_name = f"vit_tmp_{arr_name.lower()}"
-            for arg in sig.args:
-                if arg.name == arr_name and arg.intent in (IntentKind.INOUT, IntentKind.OUT):
-                    lines.append(f"            {arr_name}(1:{arr_size}) = REAL({tmp_name}, KIND({arr_name}))")
-                    break
-        lines.append(f"        END BLOCK")
-    else:
-        call_str = ", ".join(call_args)
-        lines.append(f"        CALL {c_func_name}({call_str})")
+    call_str = ", ".join(call_args)
+    lines.append(f"        CALL {c_func_name}({call_str})")
 
     lines.append(f"    END SUBROUTINE {sig.name}")
     return lines
-
-
-def _find_kind_mismatch_arrays(sig, kind_aliases, derived_types, assumed_size_arrays):
-    """Find assumed-size array args with kind mismatches that need BLOCK conversion.
-
-    Returns list of (arg_name, c_kind, explicit_size) tuples.
-    Only applies to non-assumed-shape arrays (i.e., assumed-size (*)) where the
-    Fortran kind differs from the C kind.
-    """
-    if not assumed_size_arrays:
-        return []
-
-    result = []
-    for arg in sig.args:
-        if not arg.is_array or arg.is_assumed_shape:
-            continue
-        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
-        if mapping.is_derived:
-            continue
-        if mapping.c_kind and mapping.fortran_kind and \
-           mapping.c_kind.upper() != mapping.fortran_kind.upper():
-            # Check if we have an explicit size for this array
-            size = assumed_size_arrays.get(arg.name)
-            if not size:
-                # Try case-insensitive lookup
-                for k, v in assumed_size_arrays.items():
-                    if k.upper() == arg.name.upper():
-                        size = v
-                        break
-            if size:
-                result.append((arg.name, mapping.c_kind, size))
-    return result
 
 
 def _get_view_type_args(sig: FortranSignature, kind_aliases, derived_types) -> list[tuple]:
