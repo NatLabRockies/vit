@@ -121,7 +121,7 @@ VIT then:
 
 ## Current Status
 
-VIT has been validated on **19 functions** across 4 Fortran modules in the ROSCO wind turbine controller, all KGen-verified 40/40 IDENTICAL:
+VIT has been validated on **19 functions** across 4 Fortran modules in the ROSCO wind turbine controller, all KGen-verified 40/40 IDENTICAL and integrated (501 unit tests):
 
 | Module | Functions | Complexity |
 |--------|-----------|------------|
@@ -130,7 +130,9 @@ VIT has been validated on **19 functions** across 4 Fortran modules in the ROSCO
 | **Controllers.f90** | `PIController`, `PIIController`, `ResController`, `ForeAftDamping` | `piParams`/`resParams` struct R/W, ControlParameters view type, callee bridges |
 | **ControllerBlocks.f90** | `identity` | Cross-module integration |
 
-The progression from simple scalar functions to struct-pointer-based filters and controllers demonstrates that the pipeline scales beyond trivial cases. With all 19 functions integrated and rebuilt, the ROSCO simulation produces **byte-identical output** across 5 scenarios (with `-ffp-contract=off` for deterministic FP).
+**Phase 7B extraction complete**: 10 additional main controller subroutines (`PitchControl`, `VariableSpeedControl`, `YawRateControl`, `IPC`, `FloatingFeedback`, `FlapControl`, `CableControl`, `StructuralControl`, `ActiveWakeControl` + `ForeAftDamping` from Phase 4D) extracted with golden fixtures (20 cases each). Translation phase is next.
+
+With all 19 functions integrated and rebuilt, the ROSCO simulation produces **byte-identical output** across 5 scenarios (with `-ffp-contract=off` for deterministic FP).
 
 ## Configuration (vit.yaml)
 

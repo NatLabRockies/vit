@@ -6,16 +6,18 @@
 
 Fully translate the ROSCO wind turbine controller from Fortran to C++, producing a drop-in replacement `libdiscon.so` that is pure C++ and produces byte-identical simulation output to the Fortran original. VIT orchestrates the verification and integration. Claude (AI) writes the C++ translations, scaffolded by the `vit translate` command (see Section 4a).
 
-### Current State (2026-03-20)
+### Current State (2026-03-24)
 
 - **Verified translations**: 19 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, and Controllers.f90 — all 19 KGen-verified 40/40 IDENTICAL and integrated. ForeAftDamping is the first using the ControlParameters view type (Phase 4D).
-- **Integrated**: All 18 translations integrated. Clean build test produces byte-identical simulation output across 5 scenarios (standard, yaw-by-IPC, filter coverage, flap control Flp_Mode=2, active wake AWC_Mode=4).
-- **Pipeline**: End-to-end extract → verify → integrate → rebuild → diff confirmed working. Field-level CSV logging, NaN-safe comparison, `-ffp-contract=off` for bit-identical verification. KGen BIND(C) parser fix enables extraction with Phase 4C types.
-- **Type system**: LocalVariables (168 fields + 5 nested structs) is now BIND(C)-compatible. All 4 blocker fields fixed automatically by `vit analyze-types`. ErrorVariables, FilterParameters, piParams, resParams, rlParams, WE, ObjectInstances, DebugVariables all C-compatible. Only ControlParameters, PerformanceData, ExtControlType remain (Phase 4D — ALLOCATABLE view structs).
-- **VIT codebase**: ~7,000 lines of core code, 451 unit tests, 17 modules
+- **Integrated**: All 19 translations integrated. Clean build test produces byte-identical simulation output across 5 scenarios (standard, yaw-by-IPC, filter coverage, flap control Flp_Mode=2, active wake AWC_Mode=4).
+- **Phase 7B extraction complete**: All 10 Phase 7B functions extracted with 20 state files each (IPC, FloatingFeedback, ActiveWakeControl, VariableSpeedControl, PitchControl, YawRateControl, FlapControl, CableControl, StructuralControl + ForeAftDamping from Phase 4D). Golden fixtures committed. Translation phase next.
+- **Pipeline**: End-to-end extract → verify → integrate → rebuild → diff confirmed working. Field-level CSV logging, NaN-safe comparison, `-ffp-contract=off` for bit-identical verification. KGen BIND(C) parser fix and PROCEDURE POINTER parser fix enable extraction with Phase 4C types and DISCON.F90 call sites.
+- **Type system**: LocalVariables (168 fields + 5 nested structs) is now BIND(C)-compatible. All 4 blocker fields fixed automatically by `vit analyze-types`. ErrorVariables, FilterParameters, piParams, resParams, rlParams, WE, ObjectInstances, DebugVariables all C-compatible. ControlParameters, PerformanceData, ExtControlType use view structs (Phase 4D).
+- **VIT codebase**: ~7,000 lines of core code, 501 unit tests, 17 modules
 - **ROSCO fork**: Two bug fixes committed for untested Flp_Mode=2 research code (uninitialized K in Controllers.f90:669, uninitialized n in Filters.f90:412). Bug report prepared for NREL.
+- **Extraction infrastructure** (Phase 7B): KGen PROCEDURE POINTER parser fix, assumed-size array patching (`kgen.assumed_size_arrays`), DLL SAVE persistence workaround (`kgen.dll_persistence`), `--run-args` CLI option, simplified extraction protocol (no manual sed).
 - **Human-in-the-loop protocols**: EXIT_CONFIRM (10) for inferred values, EXIT_MANUAL (11) for code rewrites. Both documented in CLAUDE.md.
-- **Generality audit** (2026-03-19): VIT confirmed project-agnostic. No ROSCO-specific logic in production code. All project-specific values are configurable via vit.yaml.
+- **Generality audits** (2026-03-19, 2026-03-24): VIT confirmed project-agnostic. No ROSCO-specific logic in production code. All project-specific values configurable via vit.yaml, including DLL persistence workaround.
 
 ### Total Scope
 
@@ -565,7 +567,10 @@ These functions take piParams/resParams (nested in LocalVariables) and ObjectIns
 
 All main control subroutines take ControlParameters (ALLOCATABLE arrays, needs pointer+size view from Phase 4D). These are 100-200 line subroutines with complex control flow, state machines, and multi-derived-type argument lists. C++ implementations call Phase 7A helpers (PIController, etc.) directly via the shared C header — no Fortran round-trip.
 
-- [ ] Large subroutine support — VIT's extraction and verification should handle these mechanically, but testing at scale is needed.
+**Extraction complete (2026-03-24).** All 10 functions extracted with 20 state files each. Required KGen parser fix (PROCEDURE POINTER), assumed-size array patching, DLL SAVE persistence workaround, and ROSCO validation fixes. See dev notes 202603240026, 202603240139, 202603240952, 202603241004, 202603241047.
+
+- [x] Extraction infrastructure — KGen parser fix, assumed-size array patching, DLL persistence workaround, `--run-args` CLI, simplified extraction protocol
+- [x] Extract all 10 functions (20 cases each): golden fixtures committed
 - [ ] Translate + verify + integrate `PitchControl` — CntrPar + LocalVar + objInst + DebugVar + ErrVar
 - [ ] Translate + verify + integrate `VariableSpeedControl` — CntrPar + LocalVar + objInst + ErrVar
 - [ ] Translate + verify + integrate `YawRateControl` — CntrPar + LocalVar + objInst + DebugVar + ErrVar

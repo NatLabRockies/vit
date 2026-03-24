@@ -286,6 +286,13 @@ kgen:
   clean_cmd: cd /workspace/ROSCO/rosco/controller/build && make clean
   install_cmd: cp /workspace/ROSCO/rosco/controller/build/libdiscon.so /workspace/ROSCO/rosco/lib/libdiscon.so
   invocation: 0:0:1-20
+  assumed_size_arrays:
+    avrSWAP: 2000
+  dll_persistence:
+    init_condition: "NINT(avrSWAP(1)) == 0"
+    resets:
+      - anchor: "CALL ReadAvrSWAP"
+        code: "LocalVar%AlreadyInitialized = 0"
 build_system:
   type: cmake
   cmake_file: rosco/controller/CMakeLists.txt
@@ -328,6 +335,8 @@ Key fields:
 - `allocatable.helpers`: configurable allocation helper subroutines for ALLOCATABLE size scanning (name, array_arg position, size_arg position)
 - `verification.tolerance`: maximum acceptable floating-point difference (`1.0e-14`)
 - `translations`: tracks which functions have been verified/integrated
+- `kgen.assumed_size_arrays`: maps assumed-size array parameter names to explicit sizes. KGen generates `DIMENSION(:)` write functions that can't accept `(*)` arrays. VIT patches the call sites to use explicit sections (e.g., `avrswap(1:2000)` instead of `avrswap`).
+- `kgen.dll_persistence`: workaround for ctypes/dlclose not truly unloading Fortran shared libraries. `init_condition` is a Fortran expression true on the DLL's init call. `resets` is a list of project-specific SAVE variable resets (each with a sed `anchor` pattern and `code` to insert). VIT uses these to reset stale state between KGen's profiling and state capture phases.
 
 ## Testing and Development Process
 
@@ -341,14 +350,14 @@ docker exec -it vit-dev bash -c "cd /workspace/vit && python3 -m pytest tests/ -
 
 ### Golden Test Fixtures
 
-Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/sigma/`, `kernel/LPFilter/`, `kernel/HPFilter/`, `kernel/SecLPFilter/`, `kernel/NotchFilter/`, `kernel/NotchFilterSlopes/`, `kernel/SecLPFilter_Vel/`, `kernel/PIController/`, `kernel/PIIController/`, `kernel/ResController/`, `kernel/ForeAftDamping/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
+Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/sigma/`, `kernel/LPFilter/`, `kernel/HPFilter/`, `kernel/SecLPFilter/`, `kernel/NotchFilter/`, `kernel/NotchFilterSlopes/`, `kernel/SecLPFilter_Vel/`, `kernel/PIController/`, `kernel/PIIController/`, `kernel/ResController/`, `kernel/ForeAftDamping/`, `kernel/IPC/`, `kernel/FloatingFeedback/`, `kernel/ActiveWakeControl/`, `kernel/VariableSpeedControl/`, `kernel/PitchControl/`, `kernel/YawRateControl/`, `kernel/FlapControl/`, `kernel/CableControl/`, `kernel/StructuralControl/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
 
 **Extraction parameters (for regenerating golden fixtures):**
 
 | Function | Call site file | Line | Command |
 |----------|---------------|------|---------|
 | `saturate` | `Controllers.f90` | 102 | `vit extract saturate -f rosco/controller/src/Controllers.f90 -l 102` |
-| `wrap_180` | `Filters.f90` | 430 | `vit extract wrap_180 -f rosco/controller/src/Filters.f90 -l 430` |
+| `wrap_180` | `Filters.f90` | 432 | `vit extract wrap_180 -f rosco/controller/src/Filters.f90 -l 432` |
 | `wrap_360` | `Controllers.f90` | 517 | `vit extract wrap_360 -f rosco/controller/src/Controllers.f90 -l 517` |
 | `ColemanTransform` | `Controllers.f90` | 510 | `vit extract ColemanTransform -f rosco/controller/src/Controllers.f90 -l 510` |
 | `ColemanTransformInverse` | `Controllers.f90` | 561 | `vit extract ColemanTransformInverse -f rosco/controller/src/Controllers.f90 -l 561` |
@@ -361,13 +370,24 @@ Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful ex
 | `SecLPFilter` | `Filters.f90` | 371 | `vit extract SecLPFilter -f rosco/controller/src/Filters.f90 -l 371` |
 | `NotchFilter` | `Filters.f90` | 356 | `vit extract NotchFilter -f rosco/controller/src/Filters.f90 -l 356` |
 | `NotchFilterSlopes` | `Filters.f90` | 405 | `vit extract NotchFilterSlopes -f rosco/controller/src/Filters.f90 -l 405` |
-| `SecLPFilter_Vel` | `Controllers.f90` | 939 | `vit extract SecLPFilter_Vel -f rosco/controller/src/Controllers.f90 -l 939` |
+| `SecLPFilter_Vel` | `Controllers.f90` | 941 | `vit extract SecLPFilter_Vel -f rosco/controller/src/Controllers.f90 -l 941` |
 | `PIController` | `Controllers.f90` | 68 | `vit extract PIController -f rosco/controller/src/Controllers.f90 -l 68` |
 | `PIIController` | `Controllers.f90` | 682 | `vit extract PIIController -f rosco/controller/src/Controllers.f90 -l 682` |
 | `ResController` | `Controllers.f90` | 813 | `vit extract ResController -f rosco/controller/src/Controllers.f90 -l 813` |
 | `ForeAftDamping` | `Controllers.f90` | 80 | `vit extract ForeAftDamping -f rosco/controller/src/Controllers.f90 -l 80` |
+| `IPC` | `Controllers.f90` | 73 | `vit extract IPC -f rosco/controller/src/Controllers.f90 -l 73` |
+| `FloatingFeedback` | `Controllers.f90` | 96 | `vit extract FloatingFeedback -f rosco/controller/src/Controllers.f90 -l 96 --run-args '--scenario 3'` |
+| `ActiveWakeControl` | `Controllers.f90` | 144 | `vit extract ActiveWakeControl -f rosco/controller/src/Controllers.f90 -l 144` |
+| `VariableSpeedControl` | `DISCON.F90` | 117 | `vit extract VariableSpeedControl -f rosco/controller/src/DISCON.F90 -l 117` |
+| `PitchControl` | `DISCON.F90` | 119 | `vit extract PitchControl -f rosco/controller/src/DISCON.F90 -l 119` |
+| `YawRateControl` | `DISCON.F90` | 123 | `vit extract YawRateControl -f rosco/controller/src/DISCON.F90 -l 123` |
+| `FlapControl` | `DISCON.F90` | 127 | `vit extract FlapControl -f rosco/controller/src/DISCON.F90 -l 127 --run-args '--scenario 3'` |
+| `CableControl` | `DISCON.F90` | 132 | `vit extract CableControl -f rosco/controller/src/DISCON.F90 -l 132 --run-args '--scenario 3'` |
+| `StructuralControl` | `DISCON.F90` | 137 | `vit extract StructuralControl -f rosco/controller/src/DISCON.F90 -l 137 --run-args '--scenario 3'` |
 
 Each extraction deposits into `kernel/<function_name>/` and restores the source file automatically.
+
+**Note:** DISCON.F90 extractions require `--run-args '--scenario 3'` when the target function is gated by a mode flag (CC_Mode, StC_Mode, Fl_Mode, Flp_Mode) to ensure only the scenario with all modes enabled runs. This avoids DLL SAVE persistence issues across multi-scenario runs. See `kgen.dll_persistence` in vit.yaml.
 
 **Note:** SecLPFilter_Vel requires `CC_Mode=1` in Scenario 3 of vit_sim.py (so CableControl is actually called). This was fixed — the `CALL CableControl` in DISCON.F90 is gated by `CC_Mode > 0`.
 
@@ -479,19 +499,21 @@ The functions included in the clean build test expand as phases complete. Initia
 ```bash
 cd vit_translation/ROSCO
 
-# Reset files with integration wrappers to upstream
-git checkout e8010f0 -- rosco/controller/src/Functions.f90 rosco/controller/src/Filters.f90
+# Functions.f90 + Filters.f90: use dba7738 (has restart fix + notch filter bug fix, no wrappers)
+git checkout dba7738 -- rosco/controller/src/Functions.f90 rosco/controller/src/Filters.f90
 
-# Use Phase 4C for files WITHOUT wrappers (Controllers.f90 + ControllerBlocks.f90 have restart fix, no wrappers)
+# Controllers.f90 + ControllerBlocks.f90: use fde0498 (Phase 4C, has restart fix + AWC decomposition + FlapControl K init fix, no wrappers)
 git checkout fde0498 -- rosco/controller/src/Controllers.f90 rosco/controller/src/ControllerBlocks.f90
 
-# Apply restart call-site fix to upstream Filters.f90 and Functions.f90
-sed -i '' 's/LocalVar%restart/(LocalVar%restart \/= 0)/g' rosco/controller/src/Filters.f90 rosco/controller/src/Functions.f90
+# DISCON.F90: use upstream (no wrappers)
+git checkout e8010f0 -- rosco/controller/src/DISCON.F90
 
 # Create C++ stubs and clean artifacts
 for f in rosco/controller/src/*_cpp.cpp; do echo "// stub" > "$f"; done
 rm -rf kernel/ state/ model.ini include.ini kgen.log baseline_output.txt integrated_output.txt
 ```
+
+No manual `sed` fixes needed — the correct commits already have all bug fixes applied.
 
 This gives clean Fortran (no integration wrappers) compatible with Phase 4C ROSCO_Types.f90. Files NOT reset: `ROSCO_Types.f90`, `ExtControl.f90`, `ReadSetParameters.f90`, `ROSCO_IO.f90` (Phase 4A/4C type fixes, no wrappers), `CMakeLists.txt` (`-ffp-contract=off` flags). The `translations/` directory and `vit.yaml` are preserved.
 
@@ -727,6 +749,12 @@ VIT detects translated callees by scanning the target function's original source
 - **Invocation ordering across scenarios**: KGen counts invocations per enclosing subroutine. When `vit_sim.py` runs multiple scenarios, Scenario 1's invocations consume the `0:0:1-20` capture range. Code paths only active in later scenarios (e.g., Scenario 3's IPC/notch/cable control) are never captured. Fix: Scenario 3 runs first in `vit_sim.py` so its invocations fall within the capture range.
 
 - **Kernel Makefile missing project Fortran flags**: KGen-generated kernel Makefiles don't include project-specific compiler flags like `-fdefault-real-8`. Without these, Fortran literal constants (e.g., `PI = 3.14159265359`) are evaluated as single-precision, causing coefficient mismatches. VIT's `fortran.flags` config field propagates these flags to the kernel Makefile.
+
+- **PROCEDURE POINTER declarations** (fixed in our KGen fork): KGen's parser couldn't handle `PROCEDURE(...), POINTER` declarations (Fortran 2003+). Fixed by uncommenting and completing the `Procedure` class in KGen's parser (commit `31d653c`). Users of unpatched KGen will hit `'Line' object has no attribute 'analyze'` when extracting from files that USE modules with procedure pointers.
+
+- **Assumed-size arrays in state capture**: KGen generates state capture write functions with `DIMENSION(:)` (assumed-shape) parameters. Fortran forbids passing assumed-size `(*)` arrays to assumed-shape parameters. Workaround: configure `kgen.assumed_size_arrays` in vit.yaml to map array names to explicit sizes. VIT patches the instrumented call sites to use array sections (e.g., `avrswap(1:2000)`).
+
+- **DLL SAVE variable persistence**: When Python's ctypes loads a Fortran shared library, `dlclose()` may not truly unload it — SAVE variables persist between KGen's profiling and state capture phases. This causes stale invocation counters, stop flags, and project-specific guard variables. Workaround: configure `kgen.dll_persistence` in vit.yaml with an `init_condition` (Fortran expression true on init call) and project-specific `resets`. VIT patches the instrumented source to reset these on the init call. Use `--run-args '--scenario N'` to limit extraction to a single scenario, avoiding multi-scenario DLL reload contamination.
 
 ## Development Notes Convention
 
