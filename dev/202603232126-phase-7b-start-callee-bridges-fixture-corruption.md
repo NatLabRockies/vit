@@ -142,3 +142,39 @@ The failure mode was: re-running `vit verify` on a golden fixture corrupts it. T
 - Callee bridge system handles ALL callees (translated and untranslated)
 - Golden fixtures include .kgen backups for clean verification
 - Phase 7B is unblocked — extraction protocol and verification idempotency are established
+
+## Reflection
+
+### What Actually Happened
+
+We sat down to start Phase 7B — translating PitchControl and the other main controller subroutines. The work should have been routine: extract, translate, verify, integrate. The pipeline was proven. The infrastructure was complete. 501 tests passing.
+
+Instead, within the first hour we hit three interleaved failures that traced to a fundamental gap in how VIT manages its own artifacts. The callee bridge generalization was a planned enhancement. But the golden fixture corruption and the verification non-idempotency were lurking problems that had never surfaced because we'd never re-run `vit verify` on the same kernel twice, and we'd never re-extracted from integrated source.
+
+These weren't edge cases. They were the default failure mode for any normal development workflow: "the verification failed, let me try again" or "I changed the translation, let me re-verify." Both would have silently corrupted the kernel.
+
+### What We Gained
+
+**Verification idempotency.** This is the most important property VIT now has that it didn't have this morning. You can run `vit verify` ten times on the same kernel and get the same result every time. The backup/restore mechanism is simple (30 lines), but it changes VIT from a tool you have to be careful with to a tool you can use freely. No mental model of "has this kernel been patched already?" needed.
+
+**Generalized callee bridges.** The original system only bridged translated functions. Now it bridges everything — translated, untranslated, Phase 7B, Phase 8, doesn't matter. PitchControl can call IPC (untranslated) through a bridge the same way it calls PIController (translated). This removes the dependency ordering constraint: functions don't need to be translated bottom-up. Any function can be translated at any time, and its callees get bridged automatically.
+
+**Understanding of KGen's type capture.** We now know that KGen captures types selectively based on the function body it instruments. When the body is a VIT wrapper (from integrated source), KGen captures the wrapper's dependencies — which are fundamentally different from the algorithm's dependencies. This isn't a bug in KGen; it's doing exactly what it's designed to do. But it means extraction from integrated source is not just "wrong" in a theoretical sense — it produces kernels that compile differently, miss type definitions, and can't be verified. The extraction protocol (clean source only) isn't a suggestion; it's a correctness requirement.
+
+### How This Affects Phase 7B
+
+The practical impact: Phase 7B is simpler than it looked this morning.
+
+Before today, translating PitchControl required translating IPC, FloatingFeedback, and ActiveWakeControl first (bottom-up dependency order). Now, PitchControl can be translated directly — its untranslated callees get bridges automatically. The execution order becomes a choice of convenience, not a requirement.
+
+The extraction protocol is clear: reset to clean source → extract → restore integrated state. This is already documented in CLAUDE.md, and the idempotency fix means verification is robust even if something goes wrong during the cycle.
+
+The golden fixture model is now sound: `.kgen` backups store the original KGen output, `vit verify` restores from them before patching, and running verify multiple times is safe. New Phase 7B fixtures will have `.kgen` backups from the start.
+
+### The Broader Pattern
+
+This session followed the same pattern that Phase 4D established: implement the feature, attempt the real-world test, discover infrastructure gaps at the seams between subsystems, fix them. The callee bridge generalization was the feature. The fixture corruption was the seam. The idempotency fix was the infrastructure.
+
+Each time we hit a seam like this, VIT gets more robust. The NaN comparison patches, the build ordering fixes, the configurable allocation helpers, the recursive type registry, and now the backup/restore mechanism — these aren't features anyone would have designed upfront. They emerged from contact with reality. The tool that exists now is meaningfully more reliable than the tool that existed at the start of the session, and that reliability compounds: every future phase benefits from fixes made in earlier phases.
+
+The next time someone runs `vit verify` twice — during debugging, during regression testing, during a translation retry — it will just work. That's what we gained today.
