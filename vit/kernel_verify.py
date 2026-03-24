@@ -66,6 +66,37 @@ class VerifyResult:
     field_data: list[dict] = field(default_factory=list)  # Per-field results
 
 
+def _backup_or_restore_kgen_originals(kernel: Path) -> None:
+    """
+    Ensure the kernel directory is in its original KGen state before patching.
+
+    On FIRST run (no backups exist): saves Makefile and .f90 files as .kgen backups.
+    On SUBSEQUENT runs (backups exist): restores originals from .kgen backups,
+    then VIT's patching pipeline runs fresh on clean KGen output.
+
+    This makes vit verify idempotent — safe to run multiple times on the same kernel.
+    """
+    makefile = kernel / "Makefile"
+    makefile_backup = kernel / "Makefile.kgen"
+
+    # Makefile
+    if makefile.exists() and not makefile_backup.exists():
+        shutil.copy2(makefile, makefile_backup)
+    elif makefile_backup.exists():
+        shutil.copy2(makefile_backup, makefile)
+
+    # Fortran source files
+    for f90_file in sorted(kernel.glob("*.f90")):
+        # Skip VIT-generated files (bridges, populators) — no backup needed
+        if f90_file.name.startswith("vit_"):
+            continue
+        backup = f90_file.with_suffix(".f90.kgen")
+        if not backup.exists():
+            shutil.copy2(f90_file, backup)
+        else:
+            shutil.copy2(backup, f90_file)
+
+
 def setup_kernel_cpp(
     kernel_dir: str,
     sig: FortranSignature,
@@ -101,6 +132,11 @@ def setup_kernel_cpp(
     """
     result = {"success": False, "files_modified": [], "errors": []}
     kernel = Path(kernel_dir)
+
+    # --- Step 0: Backup/restore original KGen files ---
+    # On first run, save KGen originals. On subsequent runs, restore from backup.
+    # This makes the entire patching pipeline idempotent.
+    _backup_or_restore_kgen_originals(kernel)
 
     # --- Step 1: Copy C++ implementation ---
     impl_filename = f"{sig.name.lower()}_impl.hpp"
