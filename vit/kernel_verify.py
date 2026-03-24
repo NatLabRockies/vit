@@ -674,7 +674,11 @@ def _generate_callee_bridges(
             if callee_sig.is_function and callee_sig.result_is_array:
                 continue
 
-            # Generate the bridge
+            # Generate the bridge.
+            # Note: view-type args (like ControlParameters) are left as passthrough
+            # in callee bridges. The bridge skips them in both the interface and
+            # the call. The original Fortran callee still receives CntrPar from
+            # the kernel's module-level variable (set by the wrapper before calling C++).
             bridge_code = generate_kernel_callee_bridge(
                 callee_sig, kind_aliases, callee_registry
             )
