@@ -1013,7 +1013,10 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
             content = _add_use_iso_c_binding(content)
 
         # 2. Add INTERFACE block above CONTAINS
-        if sig.c_func_name.upper() not in content.upper():
+        # Check for the INTERFACE keyword + c_func_name, not just c_func_name
+        # (the CALL line already contains c_func_name from the wrapper body)
+        iface_marker = f"BIND(C, NAME='{sig.c_func_name}')"
+        if iface_marker.upper() not in content.upper():
             content = _add_interface_block(content, interface_block)
 
         # 3. Replace function body with wrapper
