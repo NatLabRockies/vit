@@ -302,6 +302,7 @@ def generate_state_capture_build_script(
     cmake_file: str = "",
     source_dir: str = "",
     kernel_dir: str = "kernel",
+    assumed_size_arrays: dict = None,
 ) -> str:
     """
     Generate a shell script that wraps the build command for state capture.
@@ -364,18 +365,47 @@ def generate_state_capture_build_script(
     # Step 2: Patch CMakeLists.txt if cmake project
     if cmake_file_abs:
         script_lines.extend([
-            '    # Patch CMakeLists.txt to include kgen_utils.f90',
+            '    # Patch CMakeLists.txt to include kgen_utils.f90 (only once)',
             '    if [ -f "$CMAKE_FILE" ]; then',
-            '        cp "$CMAKE_FILE" "${CMAKE_FILE}.vit_backup"',
-            "        # Find a .f90 file in the sources list and add kgen_utils.f90 after it",
-            r"""        sed -i '0,/\(src\/[A-Za-z_]*\.f90\)/s//\1\n    src\/kgen_utils.f90/' "$CMAKE_FILE" """,
-            '        echo "VIT: Patched CMakeLists.txt to include kgen_utils.f90"',
+            '        # Backup only if no backup exists (wrapper may run multiple times)',
+            '        if [ ! -f "${CMAKE_FILE}.vit_backup" ]; then',
+            '            cp "$CMAKE_FILE" "${CMAKE_FILE}.vit_backup"',
+            '        fi',
+            '        # Add kgen_utils.f90 only if not already present',
+            '        if ! grep -q "kgen_utils.f90" "$CMAKE_FILE"; then',
+            r"""            sed -i '0,/\(src\/[A-Za-z_]*\.f90\)/s//\1\n    src\/kgen_utils.f90/' "$CMAKE_FILE" """,
+            '            echo "VIT: Patched CMakeLists.txt to include kgen_utils.f90"',
+            '        fi',
             "    fi",
         ])
 
     script_lines.extend([
         "fi",
         "",
+    ])
+
+    # Step 2b: Patch assumed-size arrays in instrumented source.
+    # KGen generates write subroutines with DIMENSION(:) (assumed-shape)
+    # parameters, but assumed-size (*) arrays can't be passed to assumed-shape.
+    # Fix: replace bare array names with explicit sections at kw_* call sites.
+    if assumed_size_arrays and source_dir:
+        script_lines.append("# Step 2b: Patch assumed-size arrays in instrumented source")
+        source_dir_abs = os.path.abspath(source_dir)
+        for varname, size in assumed_size_arrays.items():
+            varname_lower = varname.lower()
+            # Replace (varname, kgen_unit with (varname(1:N), kgen_unit in kw_* calls
+            # Case-insensitive because KGen lowercases variable names
+            sed_pattern = f"s/({varname_lower}, kgen_unit/({varname_lower}(1:{size}), kgen_unit/gI"
+            script_lines.extend([
+                f'for f90 in "{source_dir_abs}"/*.f90 "{source_dir_abs}"/*.F90; do',
+                f'    [ -f "$f90" ] || continue',
+                f"    sed -i '{sed_pattern}' \"$f90\"",
+                f'done',
+                f'echo "VIT: Patched assumed-size array {varname} with size {size}"',
+            ])
+        script_lines.append("")
+
+    script_lines.extend([
         "# Step 3: Run the actual build",
         f"{build_cmd}",
         "BUILD_RC=$?",
@@ -501,6 +531,7 @@ def run_kgen_extract(
     output_dir: Optional[str] = None,
     package_name: str = "",
     invocation: str = "",
+    assumed_size_arrays: Optional[dict] = None,
     env: Optional[dict] = None,
     dry_run: bool = False,
 ) -> dict:
@@ -580,6 +611,7 @@ def run_kgen_extract(
         cmake_file=cmake_file,
         source_dir=source_dir,
         kernel_dir=output_dir or "kernel",
+        assumed_size_arrays=assumed_size_arrays,
     )
     effective_build_cmd = f"bash {wrapper_script}"
 

@@ -309,6 +309,7 @@ def cmd_extract(args, config):
             cmake_file=config.abs_cmake_file if config.build_type == "cmake" else "",
             package_name=config.project_name,
             invocation=config.invocation,
+            assumed_size_arrays=config.assumed_size_arrays or None,
             dry_run=args.dry_run,
         )
 
