@@ -928,7 +928,7 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
     """
     modified_files = []
     interface_block = generate_fortran_interface_block(sig, kind_aliases, derived_types)
-    wrapper_body = generate_fortran_wrapper(sig, kind_aliases, derived_types)
+    wrapper_body = generate_fortran_wrapper(sig, kind_aliases, derived_types, is_kernel=True)
 
     for f90_file in sorted(kernel.glob("*.[fF]90")):
         content = f90_file.read_text()

@@ -251,6 +251,8 @@ def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
             "clean_cmd": config.clean_cmd,
             "install_cmd": config.install_cmd,
             "invocation": config.invocation,
+            **({"assumed_size_arrays": config.assumed_size_arrays} if config.assumed_size_arrays else {}),
+            **({"dll_persistence": config.dll_persistence} if config.dll_persistence else {}),
         },
         "build_system": {
             "type": config.build_type,
