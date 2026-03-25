@@ -361,6 +361,7 @@ def generate_state_capture_build_script(
         "# Step 1: Copy kgen_utils.f90 into source tree (if it exists)",
         'if [ -f "$KGEN_UTILS_SRC" ]; then',
         '    cp "$KGEN_UTILS_SRC" "$KGEN_UTILS_DEST"',
+        "    # (kgen_utils.f90 copied as-is, no modifications needed)",
         '    echo "VIT: Copied kgen_utils.f90 to source tree"',
         "",
     ]
@@ -433,7 +434,9 @@ def generate_state_capture_build_script(
                 '    [ -f "$f90" ] || continue',
             ])
 
-            # Project-specific resets (configured in vit.yaml)
+            # Project-specific resets (configured in vit.yaml).
+            # Also set the kgen_vit_needs_reset flag so the KGen-generic
+            # DEALLOCATE fires in whichever instrumented file runs next.
             for reset in resets:
                 anchor = reset.get("anchor", "")
                 code = reset.get("code", "")
@@ -443,17 +446,27 @@ def generate_state_capture_build_script(
                     )
 
             # KGen-generic DEALLOCATE: reset KGen's SAVE arrays on init call.
-            # Anchored on IF (.NOT. ALLOCATED(kgen_isstop)) — exists in ALL
-            # KGen-instrumented files. Conditioned on the project's init
-            # expression so it only runs once per DLL "load," not every call.
+            # Only inserted in files where BOTH a project anchor AND
+            # kgen_isstop exist — this ensures init_condition variables
+            # are in scope (same file = same enclosing subroutine).
+            # Files without a project anchor don't need the DEALLOCATE
+            # because each extraction phase is a separate process with
+            # fresh SAVE variables.
             if init_cond:
-                script_lines.append(
-                    f"    sed -i '/IF (.NOT. ALLOCATED(kgen_isstop))/i\\"
-                    f"        IF ({init_cond} .AND. ALLOCATED(kgen_isstop)) THEN {tag}\\n"
-                    f"            DEALLOCATE(kgen_isstop, kgen_issave, kgen_islast, kgen_ischecked) {tag}\\n"
-                    f"            DEALLOCATE(kgen_invoke, kgen_last_invoke, kgen_filepath, kgen_lockpath) {tag}\\n"
-                    f"        END IF {tag}' \"$f90\""
-                )
+                anchors = [r.get("anchor", "") for r in resets if r.get("anchor")]
+                if anchors:
+                    anchor_check = " && ".join(
+                        f'grep -q "{a}" "$f90"' for a in anchors
+                    )
+                    script_lines.extend([
+                        f'    if {anchor_check} && grep -q "kgen_isstop" "$f90"; then',
+                        f"        sed -i '/IF (.NOT. ALLOCATED(kgen_isstop))/i\\"
+                        f"            IF ({init_cond} .AND. ALLOCATED(kgen_isstop)) THEN {tag}\\n"
+                        f"                DEALLOCATE(kgen_isstop, kgen_issave, kgen_islast, kgen_ischecked) {tag}\\n"
+                        f"                DEALLOCATE(kgen_invoke, kgen_last_invoke, kgen_filepath, kgen_lockpath) {tag}\\n"
+                        f"            END IF {tag}' \"$f90\"",
+                        '    fi',
+                    ])
 
             script_lines.extend([
                 'done',
