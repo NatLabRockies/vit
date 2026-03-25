@@ -35,6 +35,8 @@ import warnings
 from pathlib import Path
 from typing import Optional
 
+from vit.confirm import Assumption, print_assumption
+
 
 def find_call_sites(source_dir: str, function_name: str,
                     file_pattern: str = "*.f90") -> list[tuple[str, int, str]]:
@@ -420,6 +422,11 @@ def generate_state_capture_build_script(
 
         if init_cond or resets:
             source_dir_abs = os.path.abspath(source_dir)
+            # Tag all inserted lines with !VIT_DLL_RESET so they can be
+            # cleanly removed after the build. Without this, sed patches
+            # accumulate in files KGen doesn't restore (e.g., DISCON.F90
+            # when extracting from Controllers.f90).
+            tag = "!VIT_DLL_RESET"
             script_lines.extend([
                 "# Step 2c: Reset SAVE variables (DLL persistence workaround)",
                 f'for f90 in "{source_dir_abs}"/*.f90 "{source_dir_abs}"/*.F90; do',
@@ -432,7 +439,7 @@ def generate_state_capture_build_script(
                 code = reset.get("code", "")
                 if anchor and code:
                     script_lines.append(
-                        f"    sed -i '/{anchor}/i\\    {code}' \"$f90\""
+                        f"    sed -i '/{anchor}/i\\    {code} {tag}' \"$f90\""
                     )
 
             # KGen-generic DEALLOCATE: reset KGen's SAVE arrays on init call.
@@ -442,10 +449,10 @@ def generate_state_capture_build_script(
             if init_cond:
                 script_lines.append(
                     f"    sed -i '/IF (.NOT. ALLOCATED(kgen_isstop))/i\\"
-                    f"        IF ({init_cond} .AND. ALLOCATED(kgen_isstop)) THEN\\n"
-                    f"            DEALLOCATE(kgen_isstop, kgen_issave, kgen_islast, kgen_ischecked)\\n"
-                    f"            DEALLOCATE(kgen_invoke, kgen_last_invoke, kgen_filepath, kgen_lockpath)\\n"
-                    f"        END IF' \"$f90\""
+                    f"        IF ({init_cond} .AND. ALLOCATED(kgen_isstop)) THEN {tag}\\n"
+                    f"            DEALLOCATE(kgen_isstop, kgen_issave, kgen_islast, kgen_ischecked) {tag}\\n"
+                    f"            DEALLOCATE(kgen_invoke, kgen_last_invoke, kgen_filepath, kgen_lockpath) {tag}\\n"
+                    f"        END IF {tag}' \"$f90\""
                 )
 
             script_lines.extend([
@@ -456,27 +463,42 @@ def generate_state_capture_build_script(
 
     script_lines.extend([
         "# Step 3: Run the actual build",
+        "# Temporarily disable set -e so the cleanup step always runs",
+        "set +e",
         f"{build_cmd}",
         "BUILD_RC=$?",
+        "set -e",
         "",
     ])
 
     # Step 4: Install
     if install_cmd:
         script_lines.extend([
-            "# Step 4: Install",
+            "# Step 4: Install (inside set +e to ensure cleanup runs)",
             f'if [ $BUILD_RC -eq 0 ]; then',
-            f"    {install_cmd}",
+            f"    {install_cmd} || true",
             "fi",
             "",
         ])
 
-    # Step 5: Clean up (always, even on failure)
+    # Step 5: Remove tagged DLL persistence lines from source.
+    # The compiled library already has the patches baked in. Removing them
+    # from source prevents accumulation across sequential extractions.
+    if dll_persistence and source_dir:
+        init_cond = dll_persistence.get("init_condition", "")
+        resets_cfg = dll_persistence.get("resets", [])
+        if init_cond or resets_cfg:
+            source_dir_abs = os.path.abspath(source_dir)
+            script_lines.extend([
+                "# Step 5: Remove VIT_DLL_RESET tagged lines from source",
+                f'for f90 in "{source_dir_abs}"/*.f90 "{source_dir_abs}"/*.F90; do',
+                '    [ -f "$f90" ] || continue',
+                "    sed -i '/!VIT_DLL_RESET/d' \"$f90\"",
+                'done',
+                "",
+            ])
+
     script_lines.extend([
-        "# Step 5: Clean up injected files (restore source tree)",
-        '# NOTE: We do NOT clean up here because KGen may need to rebuild',
-        '# multiple times. Cleanup happens after state capture is complete.',
-        "",
         "exit $BUILD_RC",
     ])
 
@@ -565,6 +587,139 @@ def generate_kgen_command(
         parts.append(f"--invocation {invocation}")
 
     return " ".join(parts)
+
+
+def infer_assumed_size_arrays(
+    source_dir: str,
+    assumed_size_arrays: dict[str, int],
+) -> list[Assumption]:
+    """Scan source for assumed-size array index accesses and validate configured sizes.
+
+    For each configured assumed-size array, scans all Fortran source files for:
+    1. Literal index accesses: arrayname(N) where N is a numeric constant
+    2. Variable index accesses: arrayname(expr) where expr involves a variable
+    3. Bounds checks: IF (var < N) or IF (var >= N) patterns that constrain index variables
+
+    Returns a list of Assumptions for any configured size that appears insufficient.
+    Returns empty list if all sizes appear adequate.
+    """
+    assumptions = []
+    src = Path(source_dir)
+    f90_files = sorted(src.glob("*.f90")) + sorted(src.glob("*.F90"))
+
+    for varname, configured_size in assumed_size_arrays.items():
+        varname_lower = varname.lower()
+        max_literal = 0
+        literal_loc = ""
+        variable_accesses = []
+        bounds_checks = []
+
+        for f90 in f90_files:
+            content = f90.read_text()
+            lines = content.split("\n")
+            fname = f90.name
+
+            for i, line in enumerate(lines, 1):
+                line_stripped = line.strip()
+                # Skip comments
+                if line_stripped.startswith("!"):
+                    continue
+                line_upper = line_stripped.upper()
+
+                # 1. Literal index: arrayname(digits)
+                for m in re.finditer(
+                    rf'\b{varname_lower}\s*\(\s*(\d+)\s*\)',
+                    line_stripped, re.IGNORECASE
+                ):
+                    idx = int(m.group(1))
+                    if idx > max_literal:
+                        max_literal = idx
+                        literal_loc = f"{fname}:{i}"
+
+                # 2. Variable index: arrayname(expr) where expr contains %
+                #    (derived type field access, e.g., CntrPar%CC_GroupIndex(I))
+                for m in re.finditer(
+                    rf'\b{varname_lower}\s*\(\s*([^)]*%[^)]+)\)',
+                    line_stripped, re.IGNORECASE
+                ):
+                    expr = m.group(1).strip()
+                    access = f"{varname}({expr}) at {fname}:{i}"
+                    if access not in variable_accesses:
+                        variable_accesses.append(access)
+
+                # 3. Bounds checks: IF (field < N) or IF (field >= N) patterns
+                #    Look for comparisons with numeric constants near GroupIndex-like names
+                for m in re.finditer(
+                    r'(\w+%\w*[Ii]ndex\w*)\s*\(\s*\w+\s*\)\s*(<|>=?)\s*(\d+)',
+                    line_stripped
+                ):
+                    field = m.group(1)
+                    op = m.group(2)
+                    val = int(m.group(3))
+                    check = f"{field} {op} {val} ({fname}:{i})"
+                    if check not in bounds_checks:
+                        bounds_checks.append(check)
+
+        # Compute inferred minimum from bounds checks
+        inferred_min = max_literal
+        for check in bounds_checks:
+            # Extract the numeric value from each check
+            m = re.search(r'(\d+)', check.split("(")[0].split()[-1]
+                          if "(" in check else check.split()[-1])
+            if not m:
+                # Try extracting from the full check string
+                nums = re.findall(r'\d+', check)
+                if nums:
+                    val = max(int(n) for n in nums)
+                    if val > inferred_min:
+                        inferred_min = val
+            else:
+                val = int(m.group(1))
+                if val > inferred_min:
+                    inferred_min = val
+
+        # Account for +1 offsets in variable accesses (e.g., avrSWAP(idx+1))
+        for access in variable_accesses:
+            if "+1" in access or "+ 1" in access:
+                inferred_min = max(inferred_min, inferred_min + 1)
+                break
+
+        # Add margin (10% or at least 100)
+        recommended = max(inferred_min + max(int(inferred_min * 0.1), 100), configured_size)
+
+        if configured_size < inferred_min:
+            # Build evidence context
+            context_lines = []
+            if max_literal > 0:
+                context_lines.append(f"Max literal index: {max_literal} ({literal_loc})")
+            if variable_accesses:
+                context_lines.append("Variable index accesses:")
+                for va in variable_accesses:
+                    context_lines.append(f"  - {va}")
+            if bounds_checks:
+                context_lines.append("Index bounds checks found in source:")
+                for bc in bounds_checks:
+                    context_lines.append(f"  - {bc}")
+            context_lines.append(f"Inferred minimum index: {inferred_min}")
+            context_lines.append(f"Configured size: {configured_size}")
+            context_lines.append(
+                f"WARNING: Configured size ({configured_size}) is less than the "
+                f"inferred minimum ({inferred_min}). Undersizing causes silent heap "
+                f"corruption — Fortran cannot bounds-check assumed-size arrays."
+            )
+
+            assumptions.append(Assumption(
+                id=f"assumed_size_{varname}",
+                summary=f"assumed_size_arrays.{varname} ({configured_size}) "
+                        f"is less than inferred minimum ({inferred_min})",
+                assumed_value=str(recommended),
+                inferred_from="; ".join(bounds_checks[:3]) if bounds_checks
+                              else f"max literal index {max_literal} at {literal_loc}",
+                context="\n".join(context_lines),
+                cli_override=f"--assumed-size {varname}={recommended}",
+            ))
+
+    return assumptions
 
 
 def run_kgen_extract(

@@ -287,7 +287,7 @@ kgen:
   install_cmd: cp /workspace/ROSCO/rosco/controller/build/libdiscon.so /workspace/ROSCO/rosco/lib/libdiscon.so
   invocation: 0:0:1-20
   assumed_size_arrays:
-    avrSWAP: 2000
+    avrSWAP: 3000
   dll_persistence:
     init_condition: "NINT(avrSWAP(1)) == 0"
     resets:
@@ -335,7 +335,7 @@ Key fields:
 - `allocatable.helpers`: configurable allocation helper subroutines for ALLOCATABLE size scanning (name, array_arg position, size_arg position)
 - `verification.tolerance`: maximum acceptable floating-point difference (`1.0e-14`)
 - `translations`: tracks which functions have been verified/integrated
-- `kgen.assumed_size_arrays`: maps assumed-size array parameter names to explicit sizes. KGen generates `DIMENSION(:)` write functions that can't accept `(*)` arrays. VIT patches the call sites to use explicit sections (e.g., `avrswap(1:2000)` instead of `avrswap`).
+- `kgen.assumed_size_arrays`: maps assumed-size array parameter names to explicit sizes. KGen generates `DIMENSION(:)` write functions that can't accept `(*)` arrays. VIT patches the call sites to use explicit sections (e.g., `avrswap(1:3000)` instead of `avrswap`).
 - `kgen.dll_persistence`: workaround for ctypes/dlclose not truly unloading Fortran shared libraries. `init_condition` is a Fortran expression true on the DLL's init call. `resets` is a list of project-specific SAVE variable resets (each with a sed `anchor` pattern and `code` to insert). VIT uses these to reset stale state between KGen's profiling and state capture phases.
 
 ## Testing and Development Process
@@ -772,7 +772,7 @@ VIT detects translated callees by scanning the target function's original source
 
 - **PROCEDURE POINTER declarations** (fixed in our KGen fork): KGen's parser couldn't handle `PROCEDURE(...), POINTER` declarations (Fortran 2003+). Fixed by uncommenting and completing the `Procedure` class in KGen's parser (commit `31d653c`). Users of unpatched KGen will hit `'Line' object has no attribute 'analyze'` when extracting from files that USE modules with procedure pointers.
 
-- **Assumed-size arrays in state capture**: KGen generates state capture write functions with `DIMENSION(:)` (assumed-shape) parameters. Fortran forbids passing assumed-size `(*)` arrays to assumed-shape parameters. Workaround: configure `kgen.assumed_size_arrays` in vit.yaml to map array names to explicit sizes. VIT patches the instrumented call sites to use array sections (e.g., `avrswap(1:2000)`).
+- **Assumed-size arrays in state capture**: KGen generates state capture write functions with `DIMENSION(:)` (assumed-shape) parameters. Fortran forbids passing assumed-size `(*)` arrays to assumed-shape parameters. Workaround: configure `kgen.assumed_size_arrays` in vit.yaml to map array names to explicit sizes. VIT patches the instrumented call sites to use array sections (e.g., `avrswap(1:3000)`). **The configured size must cover ALL indices the function writes to** — including extended indices used by advanced features (e.g., ROSCO's cable control at 2601+, structural control at 2801+). Undersizing causes silent heap corruption in the kernel because Fortran cannot bounds-check assumed-size `(*)` arrays. VIT scans the source during extraction and uses the confirm protocol (exit code 10) to warn if the configured size appears insufficient. Use `--assumed-size NAME=SIZE` to override on the CLI.
 
 - **DLL SAVE variable persistence**: When Python's ctypes loads a Fortran shared library, `dlclose()` may not truly unload it — SAVE variables persist between KGen's profiling and state capture phases. This causes stale invocation counters, stop flags, and project-specific guard variables. Workaround: configure `kgen.dll_persistence` in vit.yaml with an `init_condition` (Fortran expression true on init call) and project-specific `resets`. VIT patches the instrumented source to reset these on the init call. Use `--run-args '--scenario N'` to limit extraction to a single scenario, avoiding multi-scenario DLL reload contamination.
 

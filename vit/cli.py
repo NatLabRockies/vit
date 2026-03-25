@@ -77,6 +77,8 @@ def main():
     p_extract.add_argument("--line", "-l", type=int, help="Line number of call site")
     p_extract.add_argument("--dry-run", action="store_true")
     p_extract.add_argument("--run-args", help="Extra arguments to append to the run command (e.g., '--scenario 3')")
+    p_extract.add_argument("--assumed-size", action="append", metavar="NAME=SIZE",
+                           help="Override assumed-size array size (e.g., --assumed-size avrSWAP=3000)")
 
     # --- translate ---
     p_translate = subparsers.add_parser("translate", help="Generate C++ translation scaffold")
@@ -302,6 +304,25 @@ def cmd_extract(args, config):
         if hasattr(args, 'run_args') and args.run_args:
             run_cmd = f"{run_cmd} {args.run_args}"
 
+        # Build effective assumed_size_arrays: config + CLI overrides
+        assumed_size = dict(config.assumed_size_arrays or {})
+        if hasattr(args, 'assumed_size') and args.assumed_size:
+            for override in args.assumed_size:
+                if "=" in override:
+                    name, val = override.split("=", 1)
+                    assumed_size[name.strip()] = int(val.strip())
+
+        # Validate assumed-size array sizes against source evidence
+        if assumed_size and config.abs_source_dir:
+            from .extract import infer_assumed_size_arrays
+            size_assumptions = infer_assumed_size_arrays(
+                config.abs_source_dir, assumed_size
+            )
+            if size_assumptions:
+                for assumption in size_assumptions:
+                    print_assumption(assumption)
+                return EXIT_CONFIRM
+
         print(f"Running KGen extraction...")
         result = run_kgen_extract(
             source_file=file_path,
@@ -315,7 +336,7 @@ def cmd_extract(args, config):
             cmake_file=config.abs_cmake_file if config.build_type == "cmake" else "",
             package_name=config.project_name,
             invocation=config.invocation,
-            assumed_size_arrays=config.assumed_size_arrays or None,
+            assumed_size_arrays=assumed_size or None,
             dll_persistence=config.dll_persistence or None,
             dry_run=args.dry_run,
         )
