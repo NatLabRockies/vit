@@ -86,7 +86,7 @@ ROSCO's `CMakeLists.txt` sets `-ffp-contract=off` on both Fortran and C++ compil
 
 **If a translation shows `IN_TOL` (instead of `IDENTICAL`) in KGen field data with `-ffp-contract=off`**, it indicates a real translation bug — investigate the expression structure.
 
-VIT's kernel verification Makefile also uses `-ffp-contract=off` in CXXFLAGS to match.
+VIT's kernel verification Makefile uses `-ffp-contract=off` in CXXFLAGS to match. **`vit.yaml`'s `fortran.flags` must also include `-ffp-contract=off`** so the kernel Makefile's Fortran compiler flags match the project's CMakeLists.txt. Without this, the kernel Fortran uses FMA while the kernel C++ does not, causing sub-ULP differences that show as IN_TOL instead of IDENTICAL.
 
 ## VIT Assumption Confirmation Protocol
 
