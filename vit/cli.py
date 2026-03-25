@@ -550,7 +550,7 @@ def cmd_verify(args, config):
 
     print(f"\nRunning verification...")
     verify_result = run_kernel_verify(kernel_dir, tolerance=config.tolerance,
-                                      field_log=field_log)
+                                      field_log=field_log, sig=sig)
 
     print(f"\n{_format_verify_summary(verify_result)}")
 
@@ -662,7 +662,7 @@ def cmd_run(args, config):
                 return 1
 
             verify_result = run_kernel_verify(kernel_dir, tolerance=config.tolerance,
-                                              field_log=field_log)
+                                              field_log=field_log, sig=sig)
             print(_format_verify_summary(verify_result))
 
             if field_log and verify_result.field_data:
