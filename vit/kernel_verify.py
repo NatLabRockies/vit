@@ -1114,6 +1114,51 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
         if field_log:
             content = _patch_field_value_logging(content)
 
+        # Add SAVE to state variables in the kernel driver shim (DISCON.F90
+        # or equivalent). Without SAVE, local ALLOCATABLE-bearing types are
+        # auto-deallocated when the subroutine returns (Fortran 2003+),
+        # causing hundreds of heap frees per call. Combined with the 3-stage
+        # execution (eval/warmup/main) × 20 state files, this triggers
+        # gfortran/ARM tcache corruption from heap fragmentation.
+        for varname in ['cntrpar', 'kgenref_cntrpar', 'localvar', 'kgenref_localvar',
+                        'objinst', 'kgenref_objinst', 'errvar', 'kgenref_errvar',
+                        'kgenref_avrswap']:
+            content = re.sub(
+                rf'^(\s*)(TYPE\(\w+\))\s*::\s*({varname})\s*$',
+                rf'\1\2, SAVE :: \3',
+                content, count=1, flags=re.MULTILINE | re.IGNORECASE,
+            )
+            # Also handle ALLOCATABLE declarations (kgenref_avrswap)
+            content = re.sub(
+                rf'^(\s*)(REAL\([^)]+\)\s*,\s*dimension\([^)]*\)\s*,\s*allocatable)\s*::\s*({varname})\s*$',
+                rf'\1\2, SAVE :: \3',
+                content, count=1, flags=re.MULTILINE | re.IGNORECASE,
+            )
+
+        # Patch kr_ read routines to reuse existing allocations.
+        # KGen's generated kr_ routines always DEALLOCATE + ALLOCATE for every
+        # ALLOCATABLE field on every call. Fix: read bounds first, skip
+        # reallocation if already allocated with correct bounds.
+        content = re.sub(
+            r'IF \(ALLOCATED\(\s*(\w+)\s*\)\) THEN\s*\n'
+            r'(\s*)DEALLOCATE \(\1\)\s*\n'
+            r'\s*END IF\s*\n'
+            r'(\s*READ \(UNIT = kgen_unit\) kgen_array_sum\s*\n)'
+            r'(\s*READ \(UNIT = kgen_unit\) kgen_bound\(1, 1\)\s*\n)'
+            r'(\s*READ \(UNIT = kgen_unit\) kgen_bound\(2, 1\)\s*\n)'
+            r'(\s*)ALLOCATE \(\1\(kgen_bound\(1,1\):kgen_bound\(2,1\)\)\)',
+            lambda m: (
+                f'{m.group(3)}{m.group(4)}{m.group(5)}'
+                f'{m.group(6)}IF (.NOT. ALLOCATED({m.group(1)}) .OR. '
+                f'LBOUND({m.group(1)},1) /= kgen_bound(1,1) .OR. '
+                f'UBOUND({m.group(1)},1) /= kgen_bound(2,1)) THEN\n'
+                f'{m.group(2)}    IF (ALLOCATED({m.group(1)})) DEALLOCATE({m.group(1)})\n'
+                f'{m.group(6)}ALLOCATE ({m.group(1)}(kgen_bound(1,1):kgen_bound(2,1)))\n'
+                f'{m.group(6)}END IF'
+            ),
+            content, flags=re.IGNORECASE,
+        )
+
         # Check if this file contains our function
         func_pattern = rf'\b(FUNCTION|SUBROUTINE)\s+{name_upper}\s*\('
         if not re.search(func_pattern, content_upper):
