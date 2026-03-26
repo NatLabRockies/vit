@@ -525,11 +525,12 @@ No manual `sed` fixes needed — the correct commits already have all bug fixes 
 
 This gives clean Fortran (no integration wrappers) compatible with Phase 4C ROSCO_Types.f90. Files NOT reset: `ROSCO_Types.f90`, `ExtControl.f90`, `ReadSetParameters.f90`, `ROSCO_IO.f90` (Phase 4A/4C type fixes, no wrappers), `CMakeLists.txt` (`-ffp-contract=off` flags). The `translations/` directory and `vit.yaml` are preserved.
 
-**Step 2 — Build clean Fortran baseline and capture baseline output (in container):**
+**Step 2 — Build clean Fortran baseline and capture baseline output + arrays (in container):**
 
 ```bash
 cd rosco/controller/build && rm -rf * && cmake .. -DCMAKE_INSTALL_PREFIX=install && cmake --build . && cp libdiscon.so ../../lib/libdiscon.so && cd /workspace/ROSCO
-cd Examples && python3 vit_sim.py > /workspace/ROSCO/baseline_output.txt 2>&1 && cd /workspace/ROSCO
+mkdir -p baseline_arrays
+cd Examples && python3 vit_sim.py --output-dir /workspace/ROSCO/baseline_arrays > /workspace/ROSCO/baseline_output.txt 2>&1 && cd /workspace/ROSCO
 ```
 
 If the turbine model pickle doesn't exist yet, run `python3 01_turbine_model.py` in `Examples/` first (see "Initialize Turbine Model" above).
@@ -632,15 +633,43 @@ vit integrate ActiveWakeControl translations/Controllers/activewakecontrol.cpp -
 
 Each `--apply` reads the current file state and generates correct patches, skipping items already present (e.g., `enable_language(CXX)`, `stdc++` link, `USE ISO_C_BINDING`).
 
-**Step 6 — Rebuild with C++ and diff against baseline (in container):**
+**Step 6 — Rebuild with C++ and compare simulation arrays against baseline (in container):**
 
 ```bash
 cd rosco/controller/build && rm -rf * && cmake .. -DCMAKE_INSTALL_PREFIX=install && cmake --build . && cp libdiscon.so ../../lib/libdiscon.so && cd /workspace/ROSCO
-cd Examples && python3 vit_sim.py > /workspace/ROSCO/integrated_output.txt 2>&1 && cd /workspace/ROSCO
-diff baseline_output.txt integrated_output.txt
+mkdir -p integrated_arrays
+cd Examples && python3 vit_sim.py --output-dir /workspace/ROSCO/integrated_arrays > /workspace/ROSCO/integrated_output.txt 2>&1 && cd /workspace/ROSCO
 ```
 
-With `-ffp-contract=off` (the default in CMakeLists.txt), the diff must be empty — all scenarios byte-identical.
+Then compare all simulation arrays byte-for-byte:
+
+```bash
+python3 -c "
+import numpy as np, sys
+ok = True
+total = 0
+for s in [1, 2, 3, 4, 5, 6]:
+    b = np.load(f'baseline_arrays/scenario_{s}.npz')
+    i = np.load(f'integrated_arrays/scenario_{s}.npz')
+    for key in sorted(b.files):
+        n = len(b[key])
+        total += n
+        if not np.array_equal(b[key], i[key]):
+            diff = np.abs(b[key] - i[key])
+            print(f'MISMATCH scenario {s} {key}: max_diff={diff.max():.2e} at index {diff.argmax()}')
+            ok = False
+        else:
+            print(f'  scenario_{s} {key}: IDENTICAL ({n} values)')
+if ok:
+    print(f'ALL SCENARIOS IDENTICAL — {total} total values compared')
+else:
+    print('DIFFERENCES FOUND'); sys.exit(1)
+"
+```
+
+With `-ffp-contract=off` (the default in CMakeLists.txt), every value must be IDENTICAL. The comparison covers gen_torque, bld_pitch, gen_speed, gen_power, and nac_yaw at every timestep across all 6 scenarios (~412,000 values total). Any difference — even 1 ULP — indicates a translation or integration bug.
+
+Cleanup after passing: `rm -rf integrated_arrays integrated_output.txt`
 
 After confirming the diff is empty, run the **FMA sanity check** — rebuild both baseline and integrated with FMA enabled (the production default) and verify the diff is small and bounded:
 
