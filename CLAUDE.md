@@ -584,9 +584,19 @@ vit verify PIController translations/Controllers/picontroller.cpp -f rosco/contr
 vit verify PIIController translations/Controllers/piicontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/PIIController
 vit verify ResController translations/Controllers/rescontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ResController
 vit verify ForeAftDamping translations/Controllers/foreaftdamping.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ForeAftDamping
+vit verify FloatingFeedback translations/Controllers/floatingfeedback.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/FloatingFeedback
+vit verify StructuralControl translations/Controllers/structuralcontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/StructuralControl
+vit verify CableControl translations/Controllers/cablecontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/CableControl
+vit verify FlapControl translations/Controllers/flapcontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/FlapControl
+vit verify YawRateControl translations/Controllers/yawratecontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/YawRateControl
+vit verify VariableSpeedControl translations/Controllers/variablespeedcontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/VariableSpeedControl
+vit verify IPC translations/Controllers/ipc.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/IPC
+vit verify ActiveWakeControl translations/Controllers/activewakecontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ActiveWakeControl
 ```
 
 Each must show `40/40 passed`.
+
+**Note:** PitchControl is excluded from the clean build test. It depends on PitchSaturation (ControllerBlocks.f90, Phase 8), which is not yet translated. PitchControl's C++ calls `pitchsaturation_c()` — an undefined symbol without the translation. PitchControl joins the clean build test once PitchSaturation is translated in Phase 8.
 
 **Step 5 — Integrate all functions (in container):**
 
@@ -610,6 +620,14 @@ vit integrate PIController translations/Controllers/picontroller.cpp -f rosco/co
 vit integrate PIIController translations/Controllers/piicontroller.cpp -f rosco/controller/src/Controllers.f90 --apply
 vit integrate ResController translations/Controllers/rescontroller.cpp -f rosco/controller/src/Controllers.f90 --apply
 vit integrate ForeAftDamping translations/Controllers/foreaftdamping.cpp -f rosco/controller/src/Controllers.f90 --apply
+vit integrate FloatingFeedback translations/Controllers/floatingfeedback.cpp -f rosco/controller/src/Controllers.f90 --apply
+vit integrate StructuralControl translations/Controllers/structuralcontrol.cpp -f rosco/controller/src/Controllers.f90 --apply
+vit integrate CableControl translations/Controllers/cablecontrol.cpp -f rosco/controller/src/Controllers.f90 --apply
+vit integrate FlapControl translations/Controllers/flapcontrol.cpp -f rosco/controller/src/Controllers.f90 --apply
+vit integrate YawRateControl translations/Controllers/yawratecontrol.cpp -f rosco/controller/src/Controllers.f90 --apply
+vit integrate VariableSpeedControl translations/Controllers/variablespeedcontrol.cpp -f rosco/controller/src/Controllers.f90 --apply
+vit integrate IPC translations/Controllers/ipc.cpp -f rosco/controller/src/Controllers.f90 --apply
+vit integrate ActiveWakeControl translations/Controllers/activewakecontrol.cpp -f rosco/controller/src/Controllers.f90 --apply
 ```
 
 Each `--apply` reads the current file state and generates correct patches, skipping items already present (e.g., `enable_language(CXX)`, `stdc++` link, `USE ISO_C_BINDING`).
