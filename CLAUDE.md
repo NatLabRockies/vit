@@ -368,10 +368,10 @@ Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful ex
 | `HPFilter` | `Filters.f90` | 375 | `vit extract HPFilter -f rosco/controller/src/Filters.f90 -l 375` |
 | `SecLPFilter` | `Filters.f90` | 371 | `vit extract SecLPFilter -f rosco/controller/src/Filters.f90 -l 371` |
 | `NotchFilter` | `Filters.f90` | 356 | `vit extract NotchFilter -f rosco/controller/src/Filters.f90 -l 356` |
-| `NotchFilterSlopes` | `Filters.f90` | 405 | `vit extract NotchFilterSlopes -f rosco/controller/src/Filters.f90 -l 405` |
+| `NotchFilterSlopes` | `Filters.f90` | 405 | `vit extract NotchFilterSlopes -f rosco/controller/src/Filters.f90 -l 405 --run-args '--scenario 6'` |
 | `SecLPFilter_Vel` | `Controllers.f90` | 941 | `vit extract SecLPFilter_Vel -f rosco/controller/src/Controllers.f90 -l 941` |
 | `PIController` | `Controllers.f90` | 68 | `vit extract PIController -f rosco/controller/src/Controllers.f90 -l 68` |
-| `PIIController` | `Controllers.f90` | 682 | `vit extract PIIController -f rosco/controller/src/Controllers.f90 -l 682` |
+| `PIIController` | `Controllers.f90` | 682 | `vit extract PIIController -f rosco/controller/src/Controllers.f90 -l 682 --run-args '--scenario 4'` |
 | `ResController` | `Controllers.f90` | 813 | `vit extract ResController -f rosco/controller/src/Controllers.f90 -l 813` |
 | `ForeAftDamping` | `Controllers.f90` | 80 | `vit extract ForeAftDamping -f rosco/controller/src/Controllers.f90 -l 80` |
 | `IPC` | `Controllers.f90` | 73 | `vit extract IPC -f rosco/controller/src/Controllers.f90 -l 73` |
@@ -429,7 +429,7 @@ for f in rosco/controller/src/*_cpp.cpp; do echo "// stub" > "$f"; done
 
 Then rebuild clean Fortran before running `vit extract`.
 
-**Note on PIIController extraction:** PIIController (line 682, Flp_Mode=2) requires two ROSCO bug fixes committed to our fork: uninitialized K in FlapControl init (Controllers.f90:669) and uninitialized n in the Flp_Mode==2 notch filter branch (Filters.f90:412). These are defects in ROSCO's untested Flp_Mode=2 research code (BAR turbine), introduced in v2.9.0. Without the fixes, the 1-DOF sim segfaults before FlapControl is entered. With the fixes, PIIController extracts and verifies 40/40. See dev note `202603201150`.
+**Note on PIIController extraction:** PIIController (line 682, Flp_Mode=2) requires two ROSCO bug fixes committed to our fork: uninitialized K in FlapControl init (Controllers.f90:669) and uninitialized n in the Flp_Mode==2 notch filter branch (Filters.f90:412). These are defects in ROSCO's untested Flp_Mode=2 research code (BAR turbine), introduced in v2.9.0. Without the fixes, the 1-DOF sim segfaults before FlapControl is entered. With the fixes, PIIController extracts and verifies 40/40. See dev note `202603201150`. The K init fix is in `dba7738` but not `fde0498` — when resetting Controllers.f90 to `fde0498` for extraction, the K init fix must be manually applied (wrap line 669 in `DO K = 1,LocalVar%NumBl ... END DO`).
 
 **When to re-extract:**
 - Changes to `vit/vit/extract.py`
@@ -552,10 +552,10 @@ vit extract LPFilter -f rosco/controller/src/Filters.f90 -l 347
 vit extract HPFilter -f rosco/controller/src/Filters.f90 -l 375
 vit extract SecLPFilter -f rosco/controller/src/Filters.f90 -l 371
 vit extract NotchFilter -f rosco/controller/src/Filters.f90 -l 356
-vit extract NotchFilterSlopes -f rosco/controller/src/Filters.f90 -l 405
+vit extract NotchFilterSlopes -f rosco/controller/src/Filters.f90 -l 405 --run-args '--scenario 6'
 vit extract SecLPFilter_Vel -f rosco/controller/src/Controllers.f90 -l 939
 vit extract PIController -f rosco/controller/src/Controllers.f90 -l 68
-vit extract PIIController -f rosco/controller/src/Controllers.f90 -l 682
+vit extract PIIController -f rosco/controller/src/Controllers.f90 -l 682 --run-args '--scenario 4'
 vit extract ResController -f rosco/controller/src/Controllers.f90 -l 813
 vit extract ForeAftDamping -f rosco/controller/src/Controllers.f90 -l 80
 ```
