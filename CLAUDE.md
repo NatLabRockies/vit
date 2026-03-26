@@ -289,7 +289,6 @@ kgen:
   assumed_size_arrays:
     avrSWAP: 3000
   dll_persistence:
-    init_condition: "NINT(avrSWAP(1)) == 0"
     resets:
       - anchor: "CALL ReadAvrSWAP"
         code: "LocalVar%AlreadyInitialized = 0"
@@ -336,7 +335,7 @@ Key fields:
 - `verification.tolerance`: maximum acceptable floating-point difference (`1.0e-14`)
 - `translations`: tracks which functions have been verified/integrated
 - `kgen.assumed_size_arrays`: maps assumed-size array parameter names to explicit sizes. KGen generates `DIMENSION(:)` write functions that can't accept `(*)` arrays. VIT patches the call sites to use explicit sections (e.g., `avrswap(1:3000)` instead of `avrswap`).
-- `kgen.dll_persistence`: workaround for ctypes/dlclose not truly unloading Fortran shared libraries. `init_condition` is a Fortran expression true on the DLL's init call. `resets` is a list of project-specific SAVE variable resets (each with a sed `anchor` pattern and `code` to insert). VIT uses these to reset stale state between KGen's profiling and state capture phases.
+- `kgen.dll_persistence`: workaround for Fortran SAVE variables persisting across scenario boundaries within a single simulation run. `resets` is a list of project-specific SAVE variable resets (each with a sed `anchor` pattern and `code` to insert before it). VIT patches the instrumented source to reset these on every call, ensuring each scenario re-initializes. Note: KGen's own SAVE arrays (kgen_isstop, kgen_invoke) do NOT need resetting — each extraction phase is a separate subprocess, and within a single run the counters naturally exceed the capture range after the first scenario.
 
 ## Testing and Development Process
 
@@ -774,7 +773,7 @@ VIT detects translated callees by scanning the target function's original source
 
 - **Assumed-size arrays in state capture**: KGen generates state capture write functions with `DIMENSION(:)` (assumed-shape) parameters. Fortran forbids passing assumed-size `(*)` arrays to assumed-shape parameters. Workaround: configure `kgen.assumed_size_arrays` in vit.yaml to map array names to explicit sizes. VIT patches the instrumented call sites to use array sections (e.g., `avrswap(1:3000)`). **The configured size must cover ALL indices the function writes to** — including extended indices used by advanced features (e.g., ROSCO's cable control at 2601+, structural control at 2801+). Undersizing causes silent heap corruption in the kernel because Fortran cannot bounds-check assumed-size `(*)` arrays. VIT scans the source during extraction and uses the confirm protocol (exit code 10) to warn if the configured size appears insufficient. Use `--assumed-size NAME=SIZE` to override on the CLI.
 
-- **DLL SAVE variable persistence**: When Python's ctypes loads a Fortran shared library, `dlclose()` may not truly unload it — SAVE variables persist between KGen's profiling and state capture phases. This causes stale invocation counters, stop flags, and project-specific guard variables. Workaround: configure `kgen.dll_persistence` in vit.yaml with an `init_condition` (Fortran expression true on init call) and project-specific `resets`. VIT patches the instrumented source to reset these on the init call. Use `--run-args '--scenario N'` to limit extraction to a single scenario, avoiding multi-scenario DLL reload contamination.
+- **DLL SAVE variable persistence**: Within a single `vit_sim.py` run, Fortran SAVE variables may persist across scenarios (ctypes `dlclose()` may not truly unload the library). Project-specific guard variables (e.g., ROSCO's `AlreadyInitialized`) need resetting between scenarios so the controller re-initializes. Workaround: configure `kgen.dll_persistence.resets` in vit.yaml with anchor patterns and reset code. VIT patches the instrumented source via `sed` with `!VIT_DLL_RESET` tags (cleaned up after build). KGen's own SAVE arrays (`kgen_isstop`, `kgen_invoke`) do NOT need resetting — each extraction phase (elapsedtime, state capture) is a separate subprocess with fresh SAVE variables, and within a single run the invocation counters naturally exceed the capture range after the first scenario. Use `--run-args '--scenario N'` to limit extraction to a single scenario when the target function is gated by a mode flag.
 
 ## Development Notes Convention
 

@@ -411,17 +411,20 @@ def generate_state_capture_build_script(
 
     # Step 2c: DLL SAVE variable persistence workaround.
     # When Python's ctypes loads a Fortran shared library, dlclose() may not
-    # truly unload it — SAVE variables persist across "reloads." KGen's
-    # profiling phase sets SAVE arrays (kgen_isstop, kgen_invoke, etc.) that
-    # persist into the state capture phase, preventing fresh state capture.
-    # The project may also have its own SAVE guards that need resetting.
-    # Both the init condition and project-specific resets are configured in
-    # vit.yaml under kgen.dll_persistence (no project-specific code here).
+    # truly unload it — SAVE variables persist across scenario boundaries
+    # within a single simulation run. Project-specific SAVE guards (e.g.,
+    # AlreadyInitialized) need resetting so each scenario re-initializes.
+    # Resets are configured in vit.yaml under kgen.dll_persistence.
+    #
+    # Note: KGen's own SAVE arrays (kgen_isstop, kgen_invoke, etc.) do NOT
+    # need resetting. Each extraction phase runs as a separate subprocess
+    # with fresh SAVE variables. Within a single run, KGen's invocation
+    # counters naturally exceed the capture range (0:0:1-20) after the
+    # first scenario, which is the desired behavior.
     if dll_persistence and source_dir:
-        init_cond = dll_persistence.get("init_condition", "")
         resets = dll_persistence.get("resets", [])
 
-        if init_cond or resets:
+        if resets:
             source_dir_abs = os.path.abspath(source_dir)
             # Tag all inserted lines with !VIT_DLL_RESET so they can be
             # cleanly removed after the build. Without this, sed patches
@@ -435,8 +438,6 @@ def generate_state_capture_build_script(
             ])
 
             # Project-specific resets (configured in vit.yaml).
-            # Also set the kgen_vit_needs_reset flag so the KGen-generic
-            # DEALLOCATE fires in whichever instrumented file runs next.
             for reset in resets:
                 anchor = reset.get("anchor", "")
                 code = reset.get("code", "")
@@ -444,29 +445,6 @@ def generate_state_capture_build_script(
                     script_lines.append(
                         f"    sed -i '/{anchor}/i\\    {code} {tag}' \"$f90\""
                     )
-
-            # KGen-generic DEALLOCATE: reset KGen's SAVE arrays on init call.
-            # Only inserted in files where BOTH a project anchor AND
-            # kgen_isstop exist — this ensures init_condition variables
-            # are in scope (same file = same enclosing subroutine).
-            # Files without a project anchor don't need the DEALLOCATE
-            # because each extraction phase is a separate process with
-            # fresh SAVE variables.
-            if init_cond:
-                anchors = [r.get("anchor", "") for r in resets if r.get("anchor")]
-                if anchors:
-                    anchor_check = " && ".join(
-                        f'grep -q "{a}" "$f90"' for a in anchors
-                    )
-                    script_lines.extend([
-                        f'    if {anchor_check} && grep -q "kgen_isstop" "$f90"; then',
-                        f"        sed -i '/IF (.NOT. ALLOCATED(kgen_isstop))/i\\"
-                        f"            IF ({init_cond} .AND. ALLOCATED(kgen_isstop)) THEN {tag}\\n"
-                        f"                DEALLOCATE(kgen_isstop, kgen_issave, kgen_islast, kgen_ischecked) {tag}\\n"
-                        f"                DEALLOCATE(kgen_invoke, kgen_last_invoke, kgen_filepath, kgen_lockpath) {tag}\\n"
-                        f"            END IF {tag}' \"$f90\"",
-                        '    fi',
-                    ])
 
             script_lines.extend([
                 'done',
@@ -498,9 +476,8 @@ def generate_state_capture_build_script(
     # The compiled library already has the patches baked in. Removing them
     # from source prevents accumulation across sequential extractions.
     if dll_persistence and source_dir:
-        init_cond = dll_persistence.get("init_condition", "")
         resets_cfg = dll_persistence.get("resets", [])
-        if init_cond or resets_cfg:
+        if resets_cfg:
             source_dir_abs = os.path.abspath(source_dir)
             script_lines.extend([
                 "# Step 5: Remove VIT_DLL_RESET tagged lines from source",
