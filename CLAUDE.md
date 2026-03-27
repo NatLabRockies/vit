@@ -405,8 +405,8 @@ cd vit_translation/ROSCO
 # Functions.f90 + Filters.f90: use dba7738 (has restart fix + notch filter bug fix, no wrappers)
 git checkout dba7738 -- rosco/controller/src/Functions.f90 rosco/controller/src/Filters.f90
 
-# Controllers.f90 + ControllerBlocks.f90: use fde0498 (Phase 4C, has restart fix + AWC decomposition + FlapControl K init fix, no wrappers)
-git checkout fde0498 -- rosco/controller/src/Controllers.f90 rosco/controller/src/ControllerBlocks.f90
+# Controllers.f90 + ControllerBlocks.f90: use 46e8d4f (Phase 4C + K init fix, no wrappers)
+git checkout 46e8d4f -- rosco/controller/src/Controllers.f90 rosco/controller/src/ControllerBlocks.f90
 
 # DISCON.F90: use upstream (no wrappers)
 git checkout e8010f0 -- rosco/controller/src/DISCON.F90
@@ -429,7 +429,9 @@ for f in rosco/controller/src/*_cpp.cpp; do echo "// stub" > "$f"; done
 
 Then rebuild clean Fortran before running `vit extract`.
 
-**Note on PIIController extraction:** PIIController (line 682, Flp_Mode=2) requires two ROSCO bug fixes committed to our fork: uninitialized K in FlapControl init (Controllers.f90:669) and uninitialized n in the Flp_Mode==2 notch filter branch (Filters.f90:412). These are defects in ROSCO's untested Flp_Mode=2 research code (BAR turbine), introduced in v2.9.0. Without the fixes, the 1-DOF sim segfaults before FlapControl is entered. With the fixes, PIIController extracts and verifies 40/40. See dev note `202603201150`. The K init fix is in `dba7738` but not `fde0498` — when resetting Controllers.f90 to `fde0498` for extraction, the K init fix must be manually applied (wrap line 669 in `DO K = 1,LocalVar%NumBl ... END DO`).
+**Note on PIIController extraction:** PIIController (line 682, Flp_Mode=2) requires two ROSCO bug fixes committed to our fork: uninitialized K in FlapControl init (Controllers.f90:669) and uninitialized n in the Flp_Mode==2 notch filter branch (Filters.f90:412). These are defects in ROSCO's untested Flp_Mode=2 research code (BAR turbine), introduced in v2.9.0. Without the fixes, the 1-DOF sim segfaults before FlapControl is entered. With the fixes, PIIController extracts and verifies 40/40. See dev note `202603201150`. Both fixes are included in the commits used by `scripts/reset_to_clean.sh` — no manual patching needed.
+
+**Source reset shortcut:** Instead of the manual git checkout commands above, use `bash scripts/reset_to_clean.sh` from the ROSCO repo root. It performs all resets, applies bug fixes, and creates C++ stubs in one step.
 
 **When to re-extract:**
 - Changes to `vit/vit/extract.py`
@@ -509,22 +511,11 @@ The functions included in the clean build test expand as phases complete. Initia
 
 ```bash
 cd vit_translation/ROSCO
-
-# Functions.f90 + Filters.f90: use dba7738 (has restart fix + notch filter bug fix, no wrappers)
-git checkout dba7738 -- rosco/controller/src/Functions.f90 rosco/controller/src/Filters.f90
-
-# Controllers.f90 + ControllerBlocks.f90: use fde0498 (Phase 4C, has restart fix + AWC decomposition + FlapControl K init fix, no wrappers)
-git checkout fde0498 -- rosco/controller/src/Controllers.f90 rosco/controller/src/ControllerBlocks.f90
-
-# DISCON.F90: use upstream (no wrappers)
-git checkout e8010f0 -- rosco/controller/src/DISCON.F90
-
-# Create C++ stubs and clean artifacts
-for f in rosco/controller/src/*_cpp.cpp; do echo "// stub" > "$f"; done
+bash scripts/reset_to_clean.sh
 rm -rf kernel/ state/ model.ini include.ini kgen.log baseline_output.txt integrated_output.txt
 ```
 
-No manual `sed` fixes needed — the correct commits already have all bug fixes applied.
+The script resets all source files to clean Fortran with bug fixes applied and creates C++ stubs. No manual patching needed. See `scripts/reset_to_clean.sh` for commit details.
 
 This gives clean Fortran (no integration wrappers) compatible with Phase 4C ROSCO_Types.f90. Files NOT reset: `ROSCO_Types.f90`, `ExtControl.f90`, `ReadSetParameters.f90`, `ROSCO_IO.f90` (Phase 4A/4C type fixes, no wrappers), `CMakeLists.txt` (`-ffp-contract=off` flags). The `translations/` directory and `vit.yaml` are preserved.
 
