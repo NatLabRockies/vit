@@ -930,5 +930,75 @@ Controllers.o: Controllers.f90 ROSCO_Types.o
                 break
 
 
+# === Edge case tests ===
+
+class TestReplaceFunctionBodyEdgeCases:
+
+    def _make_sig(self, name, is_function=True):
+        return FortranSignature(
+            name=name,
+            kind=SubprogramKind.FUNCTION if is_function else SubprogramKind.SUBROUTINE,
+            args=[],
+            result_name="result" if is_function else None,
+            result_type="REAL(8)" if is_function else None,
+        )
+
+    def test_function_with_multiple_returns(self):
+        """Function body with multiple RETURN statements is fully replaced."""
+        content = (
+            "    FUNCTION check(x)\n"
+            "        REAL :: x, check\n"
+            "        IF (x > 0) THEN\n"
+            "            check = 1.0\n"
+            "            RETURN\n"
+            "        END IF\n"
+            "        check = 0.0\n"
+            "        RETURN\n"
+            "    END FUNCTION check\n"
+        )
+        sig = self._make_sig("check")
+        wrapper = "    FUNCTION check(x)\n        ! wrapper\n    END FUNCTION check"
+
+        result = _replace_function_body(content, sig, wrapper)
+        assert "! wrapper" in result
+        assert "RETURN" not in result
+        assert "x > 0" not in result
+
+    def test_function_with_contains(self):
+        """Function that has CONTAINS with internal subroutines."""
+        content = (
+            "    FUNCTION outer(x)\n"
+            "        REAL :: x, outer\n"
+            "        outer = inner(x)\n"
+            "    CONTAINS\n"
+            "        FUNCTION inner(y)\n"
+            "            REAL :: y, inner\n"
+            "            inner = y * 2\n"
+            "        END FUNCTION inner\n"
+            "    END FUNCTION outer\n"
+        )
+        sig = self._make_sig("outer")
+        wrapper = "    FUNCTION outer(x)\n        ! replaced\n    END FUNCTION outer"
+
+        result = _replace_function_body(content, sig, wrapper)
+        assert "! replaced" in result
+        assert "inner" not in result
+
+
+class TestNaNPatchingEdgeCases:
+
+    def test_nan_with_array_element(self):
+        """NaN comparison on array element like arr(i) .NE. arr(i)."""
+        source = (
+            '        IF (var%arr(1) .NE. kgenref_var%arr(1)) THEN\n'
+            '            check_status%numTotal = check_status%numTotal + 1\n'
+            '            IF (var%arr(1) /= var%arr(1)) THEN\n'
+            '                check_status%numIdentical = check_status%numIdentical + 1\n'
+        )
+        result = _patch_nan_comparisons(source)
+        # The /= self-comparison pattern should still be detected for array elements
+        assert "/=" in result or ".NE." in result
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

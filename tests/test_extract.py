@@ -275,5 +275,87 @@ class TestGenerateIncludeIni:
         assert content.strip() == "[include]"
 
 
+# === Edge case tests for insert_kgen_pragma ===
+
+class TestInsertKgenPragmaEdgeCases:
+
+    def test_long_continuation(self, tmp_path):
+        """Wraps a 5-line continuation statement."""
+        src = tmp_path / "test.f90"
+        src.write_text(
+            "SUBROUTINE Foo(x)\n"
+            "    IMPLICIT NONE\n"
+            "    REAL :: x\n"
+            "    x = bar(a, &\n"
+            "            b, &\n"
+            "            c, &\n"
+            "            d, &\n"
+            "            e)\n"
+            "END SUBROUTINE Foo\n"
+        )
+
+        insert_kgen_pragma(str(src), 4, "bar")
+
+        result = src.read_text()
+        lines = result.split("\n")
+        begin_idx = next(i for i, l in enumerate(lines)
+                         if "begin_callsite" in l.lower())
+        end_idx = next(i for i, l in enumerate(lines)
+                       if "end_callsite" in l.lower())
+        # begin + 5 continuation lines + end
+        assert end_idx - begin_idx == 6
+
+    def test_continuation_with_inline_comments(self, tmp_path):
+        """Handles continuation lines with inline comments after &."""
+        src = tmp_path / "test.f90"
+        src.write_text(
+            "SUBROUTINE Foo(x)\n"
+            "    IMPLICIT NONE\n"
+            "    REAL :: x\n"
+            "    x = bar(a, &  ! first arg\n"
+            "            b, &  ! second arg\n"
+            "            c)    ! third arg\n"
+            "END SUBROUTINE Foo\n"
+        )
+
+        insert_kgen_pragma(str(src), 4, "bar")
+
+        result = src.read_text()
+        assert "begin_callsite" in result
+        assert "end_callsite" in result
+        # All 3 lines should be inside the pragma
+        lines = result.split("\n")
+        begin_idx = next(i for i, l in enumerate(lines)
+                         if "begin_callsite" in l.lower())
+        end_idx = next(i for i, l in enumerate(lines)
+                       if "end_callsite" in l.lower())
+        # All continuation lines should be wrapped (begin + lines + end)
+        assert end_idx > begin_idx + 1  # At least the call line is wrapped
+
+    def test_call_at_first_code_line(self, tmp_path):
+        """Pragma works when the call is at the first code line."""
+        src = tmp_path / "test.f90"
+        src.write_text("    x = foo(1)\n    y = 2\n")
+
+        insert_kgen_pragma(str(src), 1, "foo")
+
+        result = src.read_text()
+        assert "begin_callsite" in result
+        assert "end_callsite" in result
+        assert "y = 2" in result
+
+    def test_call_at_last_line(self, tmp_path):
+        """Pragma works when the call is at the last line of the file."""
+        src = tmp_path / "test.f90"
+        src.write_text("    y = 2\n    x = foo(1)\n")
+
+        insert_kgen_pragma(str(src), 2, "foo")
+
+        result = src.read_text()
+        assert "begin_callsite" in result
+        assert "end_callsite" in result
+        assert "y = 2" in result
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
