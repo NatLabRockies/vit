@@ -250,6 +250,16 @@ def clean_kgen_artifacts(working_dir: str = ".") -> list[str]:
         shutil.rmtree(etime_dir)
         removed.append(etime_dir)
 
+    # Remove model/ directory — KGen stores ElapsedTime raw profiling data
+    # here (model/__data__/<id>/0.0) and reuses it if present. The data is
+    # function-specific but not labeled by function name, so stale data from
+    # a previous extraction causes ElapsedTime to use the wrong function's
+    # timing profile for invocation selection.
+    model_dir = os.path.join(working_dir, "model")
+    if os.path.isdir(model_dir):
+        shutil.rmtree(model_dir)
+        removed.append(model_dir)
+
     # Note: .kgen_org files (KGen's instrumented source backups) are
     # cleaned in run_kgen_extract() which knows the source_dir.
 
@@ -522,11 +532,20 @@ def generate_state_capture_build_script(
 def cleanup_kgen_utils_injection(
     cmake_file: str = "",
     source_dir: str = "",
+    build_dir: str = "",
 ) -> list[str]:
     """
     Remove kgen_utils.f90 injection after state capture is complete.
 
-    Restores CMakeLists.txt from backup and removes the copied kgen_utils.f90.
+    Restores CMakeLists.txt from backup, removes the copied kgen_utils.f90,
+    and reconfigures CMake to clear stale dependency cache entries.
+
+    Without the CMake reconfiguration, DependInfo.cmake retains
+    kgen_utils.f90 as a source file even after CMakeLists.txt is restored.
+    This causes all subsequent cmake --build invocations to fail with
+    "No rule to make target kgen_utils.f90". KGen's ElapsedTime phase
+    is particularly affected because it runs the build before the
+    Extractor generates kernel/kgen_utils.f90.
 
     Returns:
         List of files cleaned up
@@ -546,6 +565,14 @@ def cleanup_kgen_utils_injection(
         if os.path.exists(injected):
             os.remove(injected)
             cleaned.append(f"Removed {injected}")
+
+    # Reconfigure CMake to clear stale DependInfo.cmake references.
+    if build_dir and os.path.isdir(build_dir):
+        subprocess.run(
+            f"cd {build_dir} && cmake ..",
+            shell=True, capture_output=True,
+        )
+        cleaned.append(f"Reconfigured CMake in {build_dir}")
 
     # Remove wrapper script
     wrapper = os.path.join(os.getcwd(), ".vit_build_wrapper.sh")
@@ -1019,6 +1046,7 @@ def run_kgen_extract(
         cleanup_result = cleanup_kgen_utils_injection(
             cmake_file=cmake_file,
             source_dir=source_dir,
+            build_dir=build_dir,
         )
         if cleanup_result:
             result["cleaned"].extend(cleanup_result)

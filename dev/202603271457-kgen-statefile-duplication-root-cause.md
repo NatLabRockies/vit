@@ -190,14 +190,58 @@ With the duplication understood, here is the accurate picture:
 | `ROSCO/kernel/saturate/Controllers.f90:114-151` | Per-case verification print (only in `kgen_mainstage`) |
 | `vit/vit/kernel_verify.py:1682-1700` | VIT's `_parse_verify_output`: counts all "Verification PASSED with" lines |
 
-## Fix Options (Not Yet Implemented)
+## Secondary Issue: ElapsedTime Build Failure
 
-Three approaches were considered:
+### Problem
 
-1. **Fix KGen**: Clear `Config.invocation['triples']` before appending in `elapsedtime/main.py:471`. Root cause fix but changes KGen behavior.
+While investigating the duplication, we discovered that KGen's ElapsedTime phase was failing to build during extraction. The error:
 
-2. **Fix VIT (deduplicate)**: After extraction, deduplicate `kgen_statefile.lst` in `extract.py`. Safe but treats the symptom.
+```
+gmake[3]: *** No rule to make target '.../kgen_utils.f90', needed by 'CMakeFiles/discon.dir/src/kgen_utils.f90.o'. Stop.
+```
 
-3. **Fix VIT (regenerate)**: After extraction, regenerate `kgen_statefile.lst` from the actual state directories on disk. Most robust — makes VIT independent of KGen's list-generation logic.
+### Root Cause
 
-Decision on which fix to implement is deferred to the user.
+VIT's `cleanup_kgen_utils_injection()` restores CMakeLists.txt and removes `kgen_utils.f90` from the source directory after extraction, but does NOT clear CMake's build cache. `DependInfo.cmake` in the build directory retains a stale reference to `kgen_utils.f90`, causing every subsequent `cmake --build` to fail.
+
+This created a hidden break-fix-break cycle:
+1. Post-extraction cleanup leaves CMake cache stale → next `cmake --build` fails
+2. VIT's pre-extraction steps (clean + build) silently swallow the failure (`capture_output=True`, no `check=True`)
+3. KGen's Extractor phase runs the wrapper, which copies `kernel/kgen_utils.f90` and patches CMakeLists.txt → build succeeds
+4. Post-extraction cleanup restores CMakeLists.txt but leaves cache stale again
+
+ElapsedTime broke this cycle because it runs **before** the Extractor generates `kernel/kgen_utils.f90`. The wrapper can't copy the file, and the stale cache causes the build to fail.
+
+Additionally, the `model/` directory (containing ElapsedTime raw profiling data) persisted across extractions. Since the data is function-specific but not labeled by function name, ElapsedTime would reuse a previous function's timing data for the current function.
+
+### Fix (Implemented)
+
+Two changes to `vit/vit/extract.py`:
+
+1. **`cleanup_kgen_utils_injection()`**: Added `build_dir` parameter. After restoring CMakeLists.txt and removing `kgen_utils.f90`, runs `cmake ..` in the build directory to reconfigure CMake and clear stale `DependInfo.cmake` references.
+
+2. **`clean_kgen_artifacts()`**: Added `model/` directory to the cleanup list so ElapsedTime always profiles the current function, not a stale previous one.
+
+## ElapsedTime Invocation Selection Analysis
+
+With ElapsedTime fixed, we analyzed what invocations it selects for ROSCO functions.
+
+### Findings
+
+For both `saturate` (trivial clamp) and `FlapControl` (3-mode branch, Coleman transforms):
+- **99.7%+** of invocations fall in timing bin 0 (the fastest bin)
+- Bins 1-4 have `quota=0` (their share of `ndata=20` rounds to 0)
+- All 20 selected invocations come from bin 0
+- `sorted()` at `elapsedtime/main.py:451` picks the lowest-numbered invocations from each bin
+- Result: ElapsedTime selects essentially the same first-20 invocations as the CLI `--invocation 0:0:1-20`
+
+| Function | Profiled | etimemin | etimemax | Bin 0 % | ElapsedTime selection |
+|----------|----------|----------|----------|---------|----------------------|
+| saturate | 163,991 | 1.0 us | 212 us | 99.7% | 1-20 (same as CLI) |
+| FlapControl | 15,999 | 0.8 us | 17.3 us | 99.7% | 1-18, 20-21 (mostly same) |
+
+### Conclusion
+
+For ROSCO functions on this hardware, timing variation is too small for ElapsedTime's 5-bin stratification to produce meaningful diversity. The `--invocation 0:0:1-20` flag remains the right choice — it gives deterministic, repeatable extractions and captures the same invocations ElapsedTime would select anyway.
+
+The duplication in `kgen_statefile.lst` (40 entries instead of 20) remains unfixed in KGen itself. It's harmless but wasteful — each verification takes ~2x as long and produces inflated field logs. A future fix could either clear KGen's triples list before ElapsedTime appends (`elapsedtime/main.py:471`), or have VIT regenerate the list from actual state directories on disk after extraction.
