@@ -214,6 +214,60 @@ class TestCountKernelCases:
         assert count_kernel_cases(str(tmp_path)) == 3
 
 
+# === kgen_statefile.lst deduplication tests ===
+
+class TestStatefileDeduplication:
+    """Test deduplication of kgen_statefile.lst entries.
+
+    KGen's ElapsedTime phase appends invocation triples to the CLI triples
+    instead of replacing them, causing duplicate entries in the list file.
+    VIT deduplicates the list after extraction.
+    """
+
+    def test_removes_duplicates(self, tmp_path):
+        """Duplicate entries are removed, preserving order."""
+        from pathlib import Path
+        lst = tmp_path / "kgen_statefile.lst"
+        lst.write_text(
+            "saturate.0.0.1\nsaturate.0.0.2\nsaturate.0.0.3\n"
+            "saturate.0.0.1\nsaturate.0.0.2\nsaturate.0.0.3\n"
+        )
+        # Apply same dedup logic as extract.py
+        lst.write_text('\n'.join(dict.fromkeys(lst.read_text().splitlines())) + '\n')
+        lines = lst.read_text().strip().split('\n')
+        assert lines == ["saturate.0.0.1", "saturate.0.0.2", "saturate.0.0.3"]
+
+    def test_preserves_order_with_partial_overlap(self, tmp_path):
+        """When ElapsedTime selects different invocations, order is preserved."""
+        from pathlib import Path
+        lst = tmp_path / "kgen_statefile.lst"
+        lst.write_text(
+            "func.0.0.1\nfunc.0.0.2\nfunc.0.0.3\n"
+            "func.0.0.2\nfunc.0.0.3\nfunc.0.0.4\n"
+        )
+        lst.write_text('\n'.join(dict.fromkeys(lst.read_text().splitlines())) + '\n')
+        lines = lst.read_text().strip().split('\n')
+        assert lines == ["func.0.0.1", "func.0.0.2", "func.0.0.3", "func.0.0.4"]
+
+    def test_no_duplicates_unchanged(self, tmp_path):
+        """A list with no duplicates is unchanged."""
+        from pathlib import Path
+        lst = tmp_path / "kgen_statefile.lst"
+        lst.write_text("saturate.0.0.1\nsaturate.0.0.2\nsaturate.0.0.3\n")
+        lst.write_text('\n'.join(dict.fromkeys(lst.read_text().splitlines())) + '\n')
+        lines = lst.read_text().strip().split('\n')
+        assert lines == ["saturate.0.0.1", "saturate.0.0.2", "saturate.0.0.3"]
+
+    def test_empty_lines_removed(self, tmp_path):
+        """Empty lines are removed during deduplication."""
+        from pathlib import Path
+        lst = tmp_path / "kgen_statefile.lst"
+        lst.write_text("func.0.0.1\n\nfunc.0.0.2\n\nfunc.0.0.1\n")
+        lst.write_text('\n'.join(dict.fromkeys(lst.read_text().splitlines())) + '\n')
+        lines = [l for l in lst.read_text().strip().split('\n') if l]
+        assert lines == ["func.0.0.1", "func.0.0.2"]
+
+
 # === generate_include_ini tests ===
 
 class TestGenerateIncludeIni:

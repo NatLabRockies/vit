@@ -1014,6 +1014,14 @@ def run_kgen_extract(
             result["state_cases"] = count_kernel_cases(result["kernel_dir"])
             result["success"] = True
 
+            # Deduplicate kgen_statefile.lst. KGen's ElapsedTime phase
+            # appends profiling-selected invocation triples to the CLI
+            # triples instead of replacing them, causing duplicate entries.
+            # See dev note 202603271457.
+            lst = Path(result["kernel_dir"]) / "kgen_statefile.lst"
+            if lst.exists():
+                lst.write_text('\n'.join(dict.fromkeys(lst.read_text().splitlines())) + '\n')
+
             # Create .kgen backups of clean kernel files.
             # These are the ONLY safe point to create backups — source is
             # guaranteed clean (fresh from KGen, no VIT patches applied yet).
