@@ -298,12 +298,12 @@ build_system:
   target_name: discon
 fortran:
   kind_aliases:
-    ReKi: REAL(8)
+    ReKi: REAL(4)
     DbKi: REAL(8)
     SiKi: REAL(4)
     IntKi: INTEGER(4)
   compiler: gfortran
-  flags: -fdefault-real-8 -fdefault-double-8
+  flags: -fdefault-real-8 -fdefault-double-8 -ffp-contract=off
 verification:
   tolerance: 1.0e-14
 translations:
@@ -460,6 +460,9 @@ After every feature implementation, run:
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify ratelimit translations/Functions/ratelimit.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ratelimit 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify sigma translations/Functions/sigma.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/sigma 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify interp1d translations/Functions/interp1d.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/interp1d 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify ColemanTransform translations/Functions/colemantransform.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ColemanTransform 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify ColemanTransformInverse translations/Functions/colemantransforminverse.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ColemanTransformInverse 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify identity translations/Functions/identity.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/identity 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify LPFilter translations/Filters/lpfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/LPFilter 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify HPFilter translations/Filters/hpfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/HPFilter 2>&1 | tail -3"
    docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify SecLPFilter translations/Filters/seclpfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/SecLPFilter 2>&1 | tail -3"
@@ -525,6 +528,11 @@ No manual `sed` fixes needed — the correct commits already have all bug fixes 
 
 This gives clean Fortran (no integration wrappers) compatible with Phase 4C ROSCO_Types.f90. Files NOT reset: `ROSCO_Types.f90`, `ExtControl.f90`, `ReadSetParameters.f90`, `ROSCO_IO.f90` (Phase 4A/4C type fixes, no wrappers), `CMakeLists.txt` (`-ffp-contract=off` flags). The `translations/` directory and `vit.yaml` are preserved.
 
+**FITPACK stack scrubber prerequisite:** Scenario 3 determinism requires `libscrub.so`. If not already built:
+```bash
+gcc -shared -fPIC -o /workspace/ROSCO/rosco/lib/libscrub.so /workspace/ROSCO/rosco/controller/src/scrub_stack.c
+```
+
 **Step 2 — Build clean Fortran baseline and capture baseline output + arrays (in container):**
 
 ```bash
@@ -541,7 +549,7 @@ Each extraction instruments the source, rebuilds, runs the simulation, captures 
 
 ```bash
 vit extract saturate -f rosco/controller/src/Controllers.f90 -l 102
-vit extract wrap_180 -f rosco/controller/src/Filters.f90 -l 430
+vit extract wrap_180 -f rosco/controller/src/Filters.f90 -l 432
 vit extract wrap_360 -f rosco/controller/src/Controllers.f90 -l 517
 vit extract ratelimit -f rosco/controller/src/Controllers.f90 -l 103
 vit extract ColemanTransform -f rosco/controller/src/Controllers.f90 -l 510
@@ -554,7 +562,7 @@ vit extract HPFilter -f rosco/controller/src/Filters.f90 -l 375
 vit extract SecLPFilter -f rosco/controller/src/Filters.f90 -l 371
 vit extract NotchFilter -f rosco/controller/src/Filters.f90 -l 356
 vit extract NotchFilterSlopes -f rosco/controller/src/Filters.f90 -l 405 --run-args '--scenario 6'
-vit extract SecLPFilter_Vel -f rosco/controller/src/Controllers.f90 -l 939
+vit extract SecLPFilter_Vel -f rosco/controller/src/Controllers.f90 -l 941
 vit extract PIController -f rosco/controller/src/Controllers.f90 -l 68
 vit extract PIIController -f rosco/controller/src/Controllers.f90 -l 682 --run-args '--scenario 4'
 vit extract ResController -f rosco/controller/src/Controllers.f90 -l 813
@@ -648,7 +656,7 @@ python3 -c "
 import numpy as np, sys
 ok = True
 total = 0
-for s in [1, 2, 3, 4, 5, 6]:
+for s in [1, 2, 3, 4, 5, 6, 7, 8]:
     b = np.load(f'baseline_arrays/scenario_{s}.npz')
     i = np.load(f'integrated_arrays/scenario_{s}.npz')
     for key in sorted(b.files):
@@ -667,7 +675,7 @@ else:
 "
 ```
 
-With `-ffp-contract=off` (the default in CMakeLists.txt), every value must be IDENTICAL. The comparison covers gen_torque, bld_pitch, gen_speed, gen_power, and nac_yaw at every timestep across all 6 scenarios (~412,000 values total). Any difference — even 1 ULP — indicates a translation or integration bug.
+With `-ffp-contract=off` (the default in CMakeLists.txt), every value must be IDENTICAL. The comparison covers gen_torque, bld_pitch, gen_speed, gen_power, and nac_yaw at every timestep across all 8 scenarios (~612,000 values total). Any difference — even 1 ULP — indicates a translation or integration bug.
 
 Cleanup after passing: `rm -rf integrated_arrays integrated_output.txt`
 

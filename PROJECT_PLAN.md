@@ -6,10 +6,12 @@
 
 Fully translate the ROSCO wind turbine controller from Fortran to C++, producing a drop-in replacement `libdiscon.so` that is pure C++ and produces byte-identical simulation output to the Fortran original. VIT orchestrates the verification and integration. Claude (AI) writes the C++ translations, scaffolded by the `vit translate` command (see Section 4a).
 
-### Current State (2026-03-24)
+### Current State (2026-03-27)
 
 - **Verified translations**: 28 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, and Controllers.f90 — all 28 KGen-verified 40/40 IDENTICAL. Phase 7B translation complete: all 10 main controller subroutines (PitchControl, VariableSpeedControl, YawRateControl, IPC, ForeAftDamping, FloatingFeedback, FlapControl, ActiveWakeControl, CableControl, StructuralControl) verified.
-- **Integrated (27 of 28)**: 27 translations integrated and validated (per-function compile+sim+diff). Clean rebuild produces byte-identical simulation output across 6 scenarios. PitchControl deferred to Phase 8 (depends on untranslated PitchSaturation in ControllerBlocks.f90).
+- **Integrated (27 of 28)**: 27 translations produce byte-identical simulation output across 8 scenarios (612,000 float64 values). PitchControl is KGen-verified (40/40) but excluded from integration testing until PitchSaturation (ControllerBlocks.f90, Phase 8) is translated.
+- **Scenario 3 FITPACK fix**: scipy's FITPACK `bispev` reads an uninitialized stack variable, causing non-deterministic Cp interpolation. Fixed with a stack scrubber + cached RectBivariateSpline in vit_sim.py (dev note `202603261539`).
+- **Scenario 8 NotchFilterSlopes fix**: Fortran `**` precedence grouping mismatch in coefficient computation caused 1-ULP errors that accumulated over 14,791 timesteps. Fixed by parenthesizing C++ to match Fortran grouping (dev note `202603261747`).
 - **Phase 7B complete**: All 10 functions extracted (20 cases each) and translated to C++. Required 10 VIT infrastructure fixes (bridge assumed-size arrays, DISCON.F90 kernel patches, avrSWAP kind mismatch, OPTIONAL bridge handling, view-type stash for callee bridges). See dev notes 202603241408, 202603241444.
 - **Pipeline**: End-to-end extract → verify → integrate → rebuild → diff confirmed working. Field-level CSV logging, NaN-safe comparison, `-ffp-contract=off` for bit-identical verification. KGen BIND(C) parser fix and PROCEDURE POINTER parser fix enable extraction with Phase 4C types and DISCON.F90 call sites.
 - **Type system**: LocalVariables (168 fields + 5 nested structs) is now BIND(C)-compatible. All 4 blocker fields fixed automatically by `vit analyze-types`. ErrorVariables, FilterParameters, piParams, resParams, rlParams, WE, ObjectInstances, DebugVariables all C-compatible. ControlParameters, PerformanceData, ExtControlType use view structs (Phase 4D).
