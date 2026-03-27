@@ -332,7 +332,15 @@ def cmd_extract(args, config):
                 config.abs_source_dir, arrays_to_validate
             )
             if size_assumptions:
-                for assumption in size_assumptions:
+                # Separate hard errors (no evidence) from confirmations (has proposal)
+                errors = [a for a in size_assumptions if not a.assumed_value]
+                confirms = [a for a in size_assumptions if a.assumed_value]
+                if errors:
+                    for err in errors:
+                        print(f"ERROR: {err.summary}", file=sys.stderr)
+                        print(f"  {err.context}", file=sys.stderr)
+                    return 1
+                for assumption in confirms:
                     print_assumption(assumption)
                 return EXIT_CONFIRM
 

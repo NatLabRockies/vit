@@ -751,14 +751,33 @@ def infer_assumed_size_arrays(
         else:
             recommended = configured_size  # No evidence found, keep configured
 
-        # Determine if confirmation is needed
+        # Determine if confirmation or error is needed
         needs_confirm = False
-        if configured_size == 0:
-            # Auto-detect mode: always confirm with inferred size
-            needs_confirm = inferred_min > 0
+        needs_error = False
+        if configured_size == 0 and inferred_min == 0:
+            # Auto-detect mode with no evidence: hard error
+            needs_error = True
+        elif configured_size == 0:
+            # Auto-detect mode with evidence: confirm with inferred size
+            needs_confirm = True
         elif configured_size < inferred_min:
             # Configured size is undersized
             needs_confirm = True
+
+        if needs_error:
+            assumptions.append(Assumption(
+                id=f"assumed_size_{varname}_no_evidence",
+                summary=(f"Detected assumed-size array {varname}(*) but found no index "
+                         f"evidence in source. Cannot infer size automatically."),
+                assumed_value="",
+                inferred_from="no evidence found",
+                context=(f"VIT detected {varname} as an assumed-size (*) array but could "
+                         f"not find any literal index accesses or bounds checks in the "
+                         f"source directory. Provide the size explicitly with "
+                         f"--assumed-size {varname}=<SIZE> or configure "
+                         f"kgen.assumed_size_arrays in vit.yaml."),
+                cli_override=f"--assumed-size {varname}=<SIZE>",
+            ))
 
         if needs_confirm:
             # Build evidence context

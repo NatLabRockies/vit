@@ -456,13 +456,15 @@ class TestInferAssumedSizeArrays:
         assert "Detected" in result[0].summary
         assert int(result[0].assumed_value) > 1018
 
-    def test_zero_size_no_evidence(self, tmp_path):
-        """Size 0 with no index evidence returns empty (nothing to infer)."""
+    def test_zero_size_no_evidence_returns_error(self, tmp_path):
+        """Size 0 with no index evidence returns error Assumption (cannot infer)."""
         src = tmp_path / "src"
         src.mkdir()
         (src / "Empty.f90").write_text("    x = 1.0\n")
         result = infer_assumed_size_arrays(str(src), {"avrSWAP": 0})
-        assert result == []
+        assert len(result) == 1
+        assert "no index evidence" in result[0].summary or "no evidence" in result[0].summary
+        assert result[0].assumed_value == ""  # No proposal — hard error
 
 
 if __name__ == "__main__":
