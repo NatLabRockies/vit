@@ -550,7 +550,7 @@ These functions take piParams/resParams (nested in LocalVariables) and ObjectIns
 - [x] **Shared C header for translated functions** — `vit integrate --apply` emits/updates a shared header file with `extern "C"` declarations for each integrated function's `_c` entry point. C++ translations that call other translated functions `#include` this header and call `_c` directly — no round-trip through Fortran. Fortran callers still use the wrapper (unchanged). This infrastructure was already in place from Phase 6B.
 - [x] `vit translate` scaffold includes `_c` declarations for already-translated callees (detected from `vit.yaml` translations registry)
 - [x] Translate + verify + integrate `PIController` — KGen-verified 40/40, piParams struct read/write with instance indexing
-- [ ] Translate + verify + integrate `PIDController` — **deferred**: requires OL_Mode=2 with open-loop CSV file for extraction. Will be addressed in Phase 7B when ControlParameters is available, or pattern-verified.
+- [ ] ~~Translate + verify + integrate `PIDController`~~ — **moved to Phase 10**. PIDController is only called when `OL_Mode==2` (open-loop azimuth tracking). Extraction requires an OL CSV file. It doesn't block PitchControl or any Phase 8 function. Address alongside OL_Mode infrastructure in Phase 10.
 - [x] Translate + verify + integrate `PIIController` — KGen-verified 40/40. Required fixing two upstream ROSCO bugs: uninitialized K in FlapControl init (Controllers.f90:669) and uninitialized n in Flp_Mode==2 notch filter (Filters.f90:412), plus ACC_INFILE assignment fix (ReadSetParameters.f90:216).
 - [x] Translate + verify + integrate `ResController` — KGen-verified 40/40, Tustin-discretized resonant controller with resParams state
 
@@ -660,6 +660,7 @@ Functions with side effects only, stateful (SAVE variables), non-deterministic e
 - [ ] `vit.yaml` configuration for I/O modes (`io_mode: file_reader | file_writer | diagnostic`, `file_dependencies`, `output_files`, `comparison_spec`)
 
 **Translations:**
+- [ ] Translate + verify + integrate `PIDController` — requires OL_Mode=2 with open-loop CSV file for extraction. Only called in `VariableSpeedControl` when `OL_Mode==2` (azimuth tracking). Structurally similar to PIController with an added derivative term (LPFilter on error). Moved from Phase 7A.
 - [ ] Translate `ReadAvrSWAP` (Category 1 — standard pipeline)
 - [ ] Translate helper functions: `ParseDbAry`, `ParseInAry`, `FindLine`, `GetWords`, etc. (Category 1)
 - [ ] Translate `ReadControlParameterFileSub` (Category 2 — file pre-staging)
