@@ -54,6 +54,11 @@ class FortranArg:
         """True if this is an assumed-shape array (has ':' in dims)."""
         return self.is_array and self.array_dims is not None and ":" in self.array_dims
 
+    @property
+    def is_assumed_size(self) -> bool:
+        """True if this is an assumed-size array (declared with *)."""
+        return self.is_array and self.array_dims is not None and "*" in self.array_dims
+
 
 @dataclass
 class FortranSignature:

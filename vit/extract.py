@@ -579,19 +579,90 @@ def generate_kgen_command(
     return " ".join(parts)
 
 
+def detect_assumed_size_from_source(source_file: str, line_num: int) -> list[str]:
+    """Detect assumed-size (*) array parameters in the subroutine containing line_num.
+
+    Reads the source file, finds the enclosing SUBROUTINE/FUNCTION header above
+    line_num, and returns the names of any parameters declared with (*).
+
+    Args:
+        source_file: Path to the Fortran source file containing the call site
+        line_num: 1-indexed line number within the file
+
+    Returns:
+        List of parameter names that are assumed-size (*) arrays.
+    """
+    content = Path(source_file).read_text()
+    lines = content.split("\n")
+
+    # Search backwards from line_num to find enclosing SUBROUTINE/FUNCTION
+    enclosing_start = None
+    for i in range(min(line_num - 1, len(lines) - 1), -1, -1):
+        stripped = lines[i].strip().upper()
+        if stripped.startswith("!"):
+            continue
+        if re.match(r'\s*(SUBROUTINE|FUNCTION)\s+\w+\s*\(', stripped):
+            enclosing_start = i
+            break
+
+    if enclosing_start is None:
+        return []
+
+    # Find the matching END SUBROUTINE/FUNCTION
+    enclosing_end = None
+    for i in range(line_num, len(lines)):
+        stripped = lines[i].strip().upper()
+        if re.match(r'\s*END\s+(SUBROUTINE|FUNCTION)\b', stripped):
+            enclosing_end = i
+            break
+
+    if enclosing_end is None:
+        enclosing_end = len(lines) - 1
+
+    # Extract the subroutine body and scan for (*) declarations
+    assumed_size_names = []
+    body = "\n".join(lines[enclosing_start:enclosing_end + 1])
+
+    # Match patterns like: REAL(ReKi), INTENT(INOUT) :: avrSWAP(*)
+    # Also: DIMENSION(*) in attribute list
+    for line in lines[enclosing_start:enclosing_end + 1]:
+        stripped = line.strip()
+        if stripped.upper().startswith("!"):
+            continue
+        # Inline dimension: varname(*)
+        for m in re.finditer(r'(\w+)\s*\(\s*\*\s*\)', stripped):
+            varname = m.group(1).upper()
+            # Skip if it's a type keyword (e.g., CHARACTER(*))
+            if varname in ("REAL", "INTEGER", "LOGICAL", "CHARACTER", "COMPLEX",
+                           "DIMENSION", "TYPE", "KIND"):
+                continue
+            assumed_size_names.append(m.group(1))
+        # DIMENSION(*) attribute — find the variable name after ::
+        if re.search(r'DIMENSION\s*\(\s*\*\s*\)', stripped, re.IGNORECASE):
+            after_colons = stripped.split("::")[-1] if "::" in stripped else ""
+            for m in re.finditer(r'(\w+)', after_colons):
+                assumed_size_names.append(m.group(1))
+
+    return list(dict.fromkeys(assumed_size_names))  # deduplicate, preserve order
+
+
 def infer_assumed_size_arrays(
     source_dir: str,
     assumed_size_arrays: dict[str, int],
 ) -> list[Assumption]:
-    """Scan source for assumed-size array index accesses and validate configured sizes.
+    """Scan source for assumed-size array index accesses and validate/infer sizes.
 
-    For each configured assumed-size array, scans all Fortran source files for:
+    For each assumed-size array in the dict, scans all Fortran source files for:
     1. Literal index accesses: arrayname(N) where N is a numeric constant
     2. Variable index accesses: arrayname(expr) where expr involves a variable
     3. Bounds checks: IF (var < N) or IF (var >= N) patterns that constrain index variables
 
-    Returns a list of Assumptions for any configured size that appears insufficient.
-    Returns empty list if all sizes appear adequate.
+    If configured_size > 0 and >= inferred_min: passes silently (adequate).
+    If configured_size > 0 and < inferred_min: returns Assumption (undersized).
+    If configured_size == 0: returns Assumption with inferred size (auto-detect).
+
+    Returns a list of Assumptions for any arrays needing user confirmation.
+    Returns empty list if all sizes are adequate.
     """
     assumptions = []
     src = Path(source_dir)
@@ -675,9 +746,21 @@ def infer_assumed_size_arrays(
                 break
 
         # Add margin (10% or at least 100)
-        recommended = max(inferred_min + max(int(inferred_min * 0.1), 100), configured_size)
+        if inferred_min > 0:
+            recommended = inferred_min + max(int(inferred_min * 0.1), 100)
+        else:
+            recommended = configured_size  # No evidence found, keep configured
 
-        if configured_size < inferred_min:
+        # Determine if confirmation is needed
+        needs_confirm = False
+        if configured_size == 0:
+            # Auto-detect mode: always confirm with inferred size
+            needs_confirm = inferred_min > 0
+        elif configured_size < inferred_min:
+            # Configured size is undersized
+            needs_confirm = True
+
+        if needs_confirm:
             # Build evidence context
             context_lines = []
             if max_literal > 0:
@@ -691,17 +774,28 @@ def infer_assumed_size_arrays(
                 for bc in bounds_checks:
                     context_lines.append(f"  - {bc}")
             context_lines.append(f"Inferred minimum index: {inferred_min}")
-            context_lines.append(f"Configured size: {configured_size}")
-            context_lines.append(
-                f"WARNING: Configured size ({configured_size}) is less than the "
-                f"inferred minimum ({inferred_min}). Undersizing causes silent heap "
-                f"corruption — Fortran cannot bounds-check assumed-size arrays."
-            )
+
+            if configured_size == 0:
+                summary = (f"Detected assumed-size array {varname}(*). "
+                           f"Inferred size {recommended} from source evidence.")
+                context_lines.append(
+                    f"VIT detected {varname} as an assumed-size (*) array and scanned "
+                    f"source for index accesses. The recommended size is {recommended} "
+                    f"(inferred minimum {inferred_min} + safety margin)."
+                )
+            else:
+                summary = (f"assumed_size_arrays.{varname} ({configured_size}) "
+                           f"is less than inferred minimum ({inferred_min})")
+                context_lines.append(f"Configured size: {configured_size}")
+                context_lines.append(
+                    f"WARNING: Configured size ({configured_size}) is less than the "
+                    f"inferred minimum ({inferred_min}). Undersizing causes silent heap "
+                    f"corruption — Fortran cannot bounds-check assumed-size arrays."
+                )
 
             assumptions.append(Assumption(
                 id=f"assumed_size_{varname}",
-                summary=f"assumed_size_arrays.{varname} ({configured_size}) "
-                        f"is less than inferred minimum ({inferred_min})",
+                summary=summary,
                 assumed_value=str(recommended),
                 inferred_from="; ".join(bounds_checks[:3]) if bounds_checks
                               else f"max literal index {max_literal} at {literal_loc}",

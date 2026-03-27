@@ -202,6 +202,28 @@ END SUBROUTINE mixed
         assert args_by_name["c"].is_assumed_shape is True
         assert args_by_name["c"].is_array is True
 
+    def test_assumed_size_array(self):
+        """Detect assumed-size (*) arrays and distinguish from assumed-shape (:)."""
+        source = """\
+SUBROUTINE handler(swap, data, n)
+    REAL, INTENT(INOUT) :: swap(*)
+    REAL(8), DIMENSION(:), INTENT(IN) :: data
+    INTEGER, INTENT(IN) :: n
+END SUBROUTINE handler
+"""
+        sig = parse_signature_from_source(source, "handler")
+        args_by_name = {a.name.lower(): a for a in sig.args}
+
+        assert args_by_name["swap"].is_assumed_size is True
+        assert args_by_name["swap"].is_assumed_shape is False
+        assert args_by_name["swap"].is_array is True
+
+        assert args_by_name["data"].is_assumed_size is False
+        assert args_by_name["data"].is_assumed_shape is True
+
+        assert args_by_name["n"].is_assumed_size is False
+        assert args_by_name["n"].is_array is False
+
 
 class TestFindFunctionInFile:
 

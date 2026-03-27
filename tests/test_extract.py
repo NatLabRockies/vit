@@ -16,6 +16,8 @@ from vit.extract import (
     remove_kgen_pragma,
     count_kernel_cases,
     generate_include_ini,
+    detect_assumed_size_from_source,
+    infer_assumed_size_arrays,
 )
 
 
@@ -355,6 +357,112 @@ class TestInsertKgenPragmaEdgeCases:
         assert "begin_callsite" in result
         assert "end_callsite" in result
         assert "y = 2" in result
+
+
+# === detect_assumed_size_from_source tests ===
+
+class TestDetectAssumedSizeFromSource:
+
+    def test_detects_inline_star(self, tmp_path):
+        """Detects assumed-size array declared with inline (*)."""
+        src = tmp_path / "test.f90"
+        src.write_text(
+            "SUBROUTINE DISCON(avrSWAP, aviFAIL)\n"
+            "    REAL, INTENT(INOUT) :: avrSWAP(*)\n"
+            "    INTEGER, INTENT(INOUT) :: aviFAIL\n"
+            "    avrSWAP(1) = 0.0\n"
+            "END SUBROUTINE DISCON\n"
+        )
+        result = detect_assumed_size_from_source(str(src), 4)
+        assert "avrSWAP" in result
+        assert "aviFAIL" not in result
+
+    def test_detects_dimension_star(self, tmp_path):
+        """Detects assumed-size array declared with DIMENSION(*)."""
+        src = tmp_path / "test.f90"
+        src.write_text(
+            "SUBROUTINE handler(buf)\n"
+            "    REAL, DIMENSION(*), INTENT(INOUT) :: buf\n"
+            "    buf(1) = 1.0\n"
+            "END SUBROUTINE handler\n"
+        )
+        result = detect_assumed_size_from_source(str(src), 3)
+        assert "buf" in result
+
+    def test_no_assumed_size(self, tmp_path):
+        """Returns empty list when no assumed-size arrays exist."""
+        src = tmp_path / "test.f90"
+        src.write_text(
+            "SUBROUTINE foo(x, y)\n"
+            "    REAL, INTENT(IN) :: x\n"
+            "    REAL, INTENT(OUT) :: y\n"
+            "    y = x * 2\n"
+            "END SUBROUTINE foo\n"
+        )
+        result = detect_assumed_size_from_source(str(src), 4)
+        assert result == []
+
+    def test_ignores_character_star(self, tmp_path):
+        """Does not mistake CHARACTER(*) for an assumed-size array."""
+        src = tmp_path / "test.f90"
+        src.write_text(
+            "SUBROUTINE greet(msg)\n"
+            "    CHARACTER(*), INTENT(IN) :: msg\n"
+            "    PRINT *, msg\n"
+            "END SUBROUTINE greet\n"
+        )
+        result = detect_assumed_size_from_source(str(src), 3)
+        assert result == []
+
+
+# === infer_assumed_size_arrays tests ===
+
+class TestInferAssumedSizeArrays:
+
+    def test_adequate_size_returns_empty(self, tmp_path):
+        """Returns empty list when configured size is adequate."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "Controllers.f90").write_text(
+            "    avrSWAP(100) = 1.0\n"
+            "    avrSWAP(200) = 2.0\n"
+        )
+        result = infer_assumed_size_arrays(str(src), {"avrSWAP": 3000})
+        assert result == []
+
+    def test_undersized_returns_assumption(self, tmp_path):
+        """Returns Assumption when configured size < inferred minimum."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "Controllers.f90").write_text(
+            "    avrSWAP(2601) = CC_length\n"
+            "    avrSWAP(2801) = StC_input\n"
+        )
+        result = infer_assumed_size_arrays(str(src), {"avrSWAP": 2000})
+        assert len(result) == 1
+        assert "2801" in result[0].context or "2801" in result[0].summary
+        assert int(result[0].assumed_value) > 2801
+
+    def test_zero_size_triggers_inference(self, tmp_path):
+        """Size 0 means auto-detect — always returns Assumption with inferred size."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "Controllers.f90").write_text(
+            "    avrSWAP(500) = torque\n"
+            "    avrSWAP(1018) = platform\n"
+        )
+        result = infer_assumed_size_arrays(str(src), {"avrSWAP": 0})
+        assert len(result) == 1
+        assert "Detected" in result[0].summary
+        assert int(result[0].assumed_value) > 1018
+
+    def test_zero_size_no_evidence(self, tmp_path):
+        """Size 0 with no index evidence returns empty (nothing to infer)."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "Empty.f90").write_text("    x = 1.0\n")
+        result = infer_assumed_size_arrays(str(src), {"avrSWAP": 0})
+        assert result == []
 
 
 if __name__ == "__main__":

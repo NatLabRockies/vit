@@ -303,19 +303,33 @@ def cmd_extract(args, config):
         if hasattr(args, 'run_args') and args.run_args:
             run_cmd = f"{run_cmd} {args.run_args}"
 
-        # Build effective assumed_size_arrays: config + CLI overrides
+        # Build effective assumed_size_arrays: config + CLI overrides + auto-detect
         assumed_size = dict(config.assumed_size_arrays or {})
+
+        # CLI overrides (user explicitly confirmed — skip validation for these)
+        cli_overridden = set()
         if hasattr(args, 'assumed_size') and args.assumed_size:
             for override in args.assumed_size:
                 if "=" in override:
                     name, val = override.split("=", 1)
                     assumed_size[name.strip()] = int(val.strip())
+                    cli_overridden.add(name.strip())
 
-        # Validate assumed-size array sizes against source evidence
-        if assumed_size and config.abs_source_dir:
+        # Auto-detect assumed-size (*) arrays from the enclosing subroutine
+        if config.abs_source_dir:
+            from .extract import detect_assumed_size_from_source
+            detected = detect_assumed_size_from_source(file_path, actual_line)
+            for varname in detected:
+                if varname not in assumed_size:
+                    assumed_size[varname] = 0  # Mark as "needs inference"
+
+        # Validate/infer sizes for arrays not explicitly overridden on CLI
+        arrays_to_validate = {k: v for k, v in assumed_size.items()
+                              if k not in cli_overridden}
+        if arrays_to_validate and config.abs_source_dir:
             from .extract import infer_assumed_size_arrays
             size_assumptions = infer_assumed_size_arrays(
-                config.abs_source_dir, assumed_size
+                config.abs_source_dir, arrays_to_validate
             )
             if size_assumptions:
                 for assumption in size_assumptions:
