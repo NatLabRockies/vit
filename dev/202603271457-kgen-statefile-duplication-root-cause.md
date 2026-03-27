@@ -64,7 +64,7 @@ This confirmed: the 40/40 is an artifact of duplicate entries in `kgen_statefile
 
 KGen extraction runs in two sequential phases within a single invocation (`kgen.py:61-76`):
 
-1. **ElapsedTime phase**: Instruments the source with timing probes, builds, runs the simulation. Profiles ~40,000 invocations of the target function across all scenarios. Selects `ndata` (default: 20) representative invocations via bin-stratified sampling. Writes results to `model.ini`.
+1. **ElapsedTime phase**: Instruments the source with timing probes, builds, runs the simulation. Profiles all invocations of the target function (~80,000 for saturate across all scenarios). Selects `ndata` (default: 20) representative invocations via bin-stratified sampling. Writes results to `model.ini`.
 
 2. **Extractor phase**: Generates the kernel and instrumented source for state capture. Builds, runs the simulation. Captures input/output state at the selected invocations.
 
@@ -72,7 +72,7 @@ KGen extraction runs in two sequential phases within a single invocation (`kgen.
 
 **Step 1 — CLI parsing** (`kgconfig.py:821-842`): The `--invocation 0:0:1-20` argument is parsed into one triple: `[('0','0'), ('0','0'), ('1','20')]`. This represents a **range** — MPI rank 0, OpenMP thread 0, invocations 1 through 20. Appended to `Config.invocation['triples']`.
 
-**Step 2 — ElapsedTime profiling** (`elapsedtime/main.py:428-473`): After profiling, ElapsedTime distributes ~40,000 observed invocations into `nbins=5` time-based bins and selects ~20 representative invocations. For each selected invocation, it creates an individual triple like `[('0','0'), ('0','0'), ('5','5')]` (a single invocation, not a range). These are **appended** to `Config.invocation['triples']`:
+**Step 2 — ElapsedTime profiling** (`elapsedtime/main.py:428-473`): After profiling, ElapsedTime distributes the observed invocations into `nbins=5` time-based bins and selects ~20 representative invocations. For each selected invocation, it creates an individual triple like `[('0','0'), ('0','0'), ('5','5')]` (a single invocation, not a range). These are **appended** to `Config.invocation['triples']`:
 
 ```python
 # elapsedtime/main.py:471-473 — THE BUG
@@ -82,6 +82,36 @@ for ranknum, threadnum, invokenum in triples:
 ```
 
 After this, `Config.invocation['triples']` contains **21 entries**: the original CLI range triple (covering invocations 1-20) plus 20 individual triples from profiling.
+
+### Confirmed by Instrumentation
+
+Added a debug write to `gen_state_callsite_file.py:create_callsite_parts1()` to dump the triples list at code generation time. Fresh extraction of `saturate` produced:
+
+```
+create_callsite_parts1 called with 21 triples:
+  triple: [('0', '0'), ('0', '0'), ['1', '20']]        ← CLI range
+  triple: (('0', '0'), ('0', '0'), ('1', '1'))          ← ElapsedTime individual
+  triple: (('0', '0'), ('0', '0'), ('2', '2'))
+  triple: (('0', '0'), ('0', '0'), ('3', '3'))
+  ...
+  triple: (('0', '0'), ('0', '0'), ('20', '20'))
+```
+
+### Why ElapsedTime Selects Invocations 1-20 (Not High-Numbered Ones)
+
+Despite having ~80,000 profiled invocations to choose from, ElapsedTime always selects invocations 1 through 20. This is because the selection algorithm at `elapsedtime/main.py:451` iterates each bin's invocations in **sorted ascending order**:
+
+```python
+for invokenum in sorted(etimebin.keys()):
+    if len(bin_triples) >= datacollect[binnum]: break
+    ...
+```
+
+With `ndata=20` distributed across 5 bins (~4 per bin), each bin picks its lowest-numbered invocations first. Since invocations 1-20 are the first controller calls in the simulation — spanning the timing range because the controller initializes differently on the first call vs steady state — they are distributed across the timing bins and consistently win the "lowest first" selection.
+
+The result: ElapsedTime independently selects the exact same invocations (1-20) that the CLI already specified. This would be true even for complex functions like PitchControl or FlapControl — confirmed by checking all 28 golden fixtures, every one has cases 1-20 doubled with no high-numbered invocations.
+
+This `sorted()` bias arguably defeats the purpose of ElapsedTime's bin-stratified sampling. The intent is to select invocations representative of different execution profiles (fast calls, slow calls), but by always picking the lowest-numbered from each bin, it misses the invocations with the most interesting timing characteristics deeper in the simulation.
 
 ### How Code Generation Creates Duplicates
 
@@ -115,9 +145,9 @@ END DO
 For the range triple `(mpi=0-0, omp=0-0, invoke=1-20)`: 1 * 1 * 20 = 20 entries.
 For each individual triple `(mpi=0-0, omp=0-0, invoke=N-N)`: 1 * 1 * 1 = 1 entry.
 
-### Why the Entries Are Identical
+### Note on `model/` Directory Persistence
 
-The range triple covers invocations 1-20. The 20 individual triples selected by ElapsedTime are also from the 1-20 range (since we specified `0:0:1-20` as the capture window). So both sets of writes produce the same 20 entries, just in different order. The result: cases 1-20 listed twice, exactly matching what we observed.
+VIT's pre-extraction cleanup (`extract.py:239-251`) deletes `model.ini`, `kgen.log`, `strace.log`, and the `elapsedtime/` directory. However, it does NOT delete the `model/` directory, which contains ElapsedTime's raw profiling data at `model/__data__/1/0.0`. KGen's ElapsedTime phase detects this existing data and reuses it ("Reusing elapsedtime raw data" in kgen.log), skipping the profiling simulation run but still reading the data, writing `model.ini`, and selecting invocation triples. This means the profiling data from the **first** extraction persists across all subsequent extractions, and the `sorted()` bias produces the same 1-20 selection every time.
 
 ## Impact Assessment
 
@@ -151,6 +181,7 @@ With the duplication understood, here is the accurate picture:
 | File | Role |
 |------|------|
 | `KGen/kgen/kgconfig.py:821-842` | CLI `--invocation` parsing, initial triple creation |
+| `KGen/kgen/elapsedtime/main.py:451` | `sorted()` bias: always picks lowest-numbered invocations from each bin |
 | `KGen/kgen/elapsedtime/main.py:471-473` | **The bug**: appends profiling triples instead of replacing |
 | `KGen/kgen/kggenfile.py:326` | `getinfo('invocations')` returns the combined triples list |
 | `KGen/kgen/extractor/plugins/gencore/gen_state_callsite_file.py:1001-1005` | Code gen loop: one `CALL kgen_write_list` per triple |
