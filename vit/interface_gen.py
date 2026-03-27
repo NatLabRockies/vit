@@ -23,7 +23,7 @@ Handles derived types, assumed-shape arrays, and OPTIONAL arguments:
 from pathlib import Path
 from typing import Optional
 
-from .fortran_parser import FortranSignature, SubprogramKind, IntentKind, FortranArg
+from .fortran_parser import FortranSignature, IntentKind, FortranArg
 from .type_map import get_type_mapping, TypeMapping
 
 

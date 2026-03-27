@@ -27,7 +27,6 @@ VIT uses structured output blocks and exit codes to signal the caller
 
 import re
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 EXIT_CONFIRM = 10

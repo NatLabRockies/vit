@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from .fortran_parser import FortranSignature, IntentKind
+from .fortran_parser import FortranSignature
 from .interface_gen import (
     generate_cpp_wrapper,
     generate_fortran_interface_block,
@@ -762,14 +762,6 @@ def detect_callees(source: str, target_name: str,
                 and not c.lower().startswith('vit_')}
 
     return sorted(callees, key=str.upper)
-
-
-# Keep backwards compatibility
-def detect_translated_callees(source: str, target_name: str,
-                               translations: dict) -> list[str]:
-    """Backwards-compatible wrapper — detects only translated callees."""
-    return detect_callees(source, target_name,
-                           known_functions=set(translations.keys()))
 
 
 def _generate_callee_bridges(

@@ -10,7 +10,6 @@ The populator lives in a Fortran MODULE that also contains a BIND(C)
 mirror type matching the C view struct layout exactly.
 """
 
-import re
 from typing import Optional
 
 from .derived_type_parser import DerivedTypeInfo, DerivedTypeField

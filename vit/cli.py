@@ -19,11 +19,10 @@ import shutil
 import sys
 from pathlib import Path
 
-from .config import load_config, init_config, save_config, record_translation
+from .config import load_config, init_config, record_translation
 from .derived_type_parser import build_derived_type_registry
 from .fortran_parser import find_function_in_file, FortranSignature
 from .interface_gen import (
-    generate_cpp_wrapper,
     generate_fortran_interface_block,
     generate_fortran_wrapper,
 )
