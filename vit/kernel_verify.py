@@ -68,32 +68,41 @@ class VerifyResult:
 
 def _backup_or_restore_kgen_originals(kernel: Path) -> None:
     """
-    Ensure the kernel directory is in its original KGen state before patching.
+    Restore the kernel directory to its original KGen state before patching.
 
-    On FIRST run (no backups exist): saves Makefile and .f90 files as .kgen backups.
-    On SUBSEQUENT runs (backups exist): restores originals from .kgen backups,
-    then VIT's patching pipeline runs fresh on clean KGen output.
+    .kgen backups are created during extraction (extract.py:_create_kgen_backups)
+    when source files are guaranteed clean. This function ONLY restores from
+    existing backups — it never creates new ones. If backups don't exist,
+    it raises an error directing the user to re-extract.
 
     This makes vit verify idempotent — safe to run multiple times on the same kernel.
     """
     makefile = kernel / "Makefile"
     makefile_backup = kernel / "Makefile.kgen"
 
+    # Check that backups exist
+    has_backups = makefile_backup.exists() or any(
+        f.with_suffix(".f90.kgen").exists()
+        for f in kernel.glob("*.f90")
+        if not f.name.startswith("vit_")
+    )
+    if not has_backups:
+        raise FileNotFoundError(
+            f"No .kgen backups found in {kernel}. "
+            f"Re-run 'vit extract' to create them. "
+            f"(.kgen backups are created during extraction when source is clean.)"
+        )
+
     # Makefile
-    if makefile.exists() and not makefile_backup.exists():
-        shutil.copy2(makefile, makefile_backup)
-    elif makefile_backup.exists():
+    if makefile_backup.exists():
         shutil.copy2(makefile_backup, makefile)
 
     # Fortran source files
     for f90_file in sorted(kernel.glob("*.f90")):
-        # Skip VIT-generated files (bridges, populators) — no backup needed
         if f90_file.name.startswith("vit_"):
             continue
         backup = f90_file.with_suffix(".f90.kgen")
-        if not backup.exists():
-            shutil.copy2(f90_file, backup)
-        else:
+        if backup.exists():
             shutil.copy2(backup, f90_file)
 
 

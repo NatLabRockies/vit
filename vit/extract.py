@@ -38,6 +38,25 @@ from typing import Optional
 from vit.confirm import Assumption, print_assumption
 
 
+def _create_kgen_backups(kernel: Path) -> None:
+    """Create .kgen backups of clean kernel files after extraction.
+
+    Called immediately after successful KGen extraction, when kernel .f90
+    files are guaranteed clean (no VIT patches applied). These backups are
+    the authoritative clean state used by vit verify to restore files
+    between verification runs.
+    """
+    for f90_file in sorted(kernel.glob("*.f90")):
+        if f90_file.name.startswith("vit_"):
+            continue
+        backup = f90_file.with_suffix(".f90.kgen")
+        shutil.copy2(f90_file, backup)
+
+    makefile = kernel / "Makefile"
+    if makefile.exists():
+        shutil.copy2(makefile, kernel / "Makefile.kgen")
+
+
 def find_call_sites(source_dir: str, function_name: str,
                     file_pattern: str = "*.f90") -> list[tuple[str, int, str]]:
     """
@@ -967,6 +986,12 @@ def run_kgen_extract(
         if result["kernel_dir"]:
             result["state_cases"] = count_kernel_cases(result["kernel_dir"])
             result["success"] = True
+
+            # Create .kgen backups of clean kernel files.
+            # These are the ONLY safe point to create backups — source is
+            # guaranteed clean (fresh from KGen, no VIT patches applied yet).
+            # vit verify will restore from these backups, never create new ones.
+            _create_kgen_backups(Path(result["kernel_dir"]))
 
             if result["state_cases"] == 0:
                 result["output"] += (
