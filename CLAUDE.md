@@ -221,10 +221,10 @@ This instruments the Fortran code, rebuilds the library, runs the simulation, an
 
 ```bash
 rm -rf kernel/ state/ model.ini include.ini kgen.log
-vit extract saturate -f rosco/controller/src/Controllers.f90 -l 102
+vit extract saturate -f rosco/controller/src/Controllers.f90 -l 102 --run-args '--scenario 3'
 ```
 
-Expected: `✓ Extraction successful` with `Cases: 20`.
+Expected: `✓ Extraction successful` with `Cases: 20` (may be 20-23 due to KGen's ElapsedTime phase selecting additional invocations beyond the CLI range).
 
 The `--file` flag takes the file with the **call site** (Controllers.f90), not the definition.
 
@@ -236,7 +236,7 @@ vit verify saturate saturate.cpp \
   --kernel-dir kernel/
 ```
 
-Expected: `✓ VERIFICATION PASSED: 40/40 passed`
+Expected: `✓ VERIFICATION PASSED: 20/20 passed` (case count matches the extraction)
 
 The `--file` flag takes the file with the function **definition** (Functions.f90).
 
@@ -397,7 +397,7 @@ Before extracting, prepare the source tree:
 1. **Reset integrated source files** — use commits that have all bug fixes but NO integration wrappers.
 2. **Keep Phase 4C ROSCO_Types.f90** — KGen's BIND(C) parser bug is fixed, so Phase 4C types (with `BIND(C)`, `INTEGER(C_INT) restart`) are parseable.
 3. **Create C++ stubs** for the `*_cpp.cpp` files referenced in CMakeLists.txt.
-4. **For DISCON.F90 extractions:** use `--run-args '--scenario 3'` to run only the scenario with all modes enabled.
+4. **Use explicit `--run-args '--scenario N'`** for each function — see the extraction parameters table above for the correct scenario.
 
 ```bash
 cd vit_translation/ROSCO
@@ -429,7 +429,7 @@ for f in rosco/controller/src/*_cpp.cpp; do echo "// stub" > "$f"; done
 
 Then rebuild clean Fortran before running `vit extract`.
 
-**Note on PIIController extraction:** PIIController (line 682, Flp_Mode=2) requires two ROSCO bug fixes committed to our fork: uninitialized K in FlapControl init (Controllers.f90:669) and uninitialized n in the Flp_Mode==2 notch filter branch (Filters.f90:412). These are defects in ROSCO's untested Flp_Mode=2 research code (BAR turbine), introduced in v2.9.0. Without the fixes, the 1-DOF sim segfaults before FlapControl is entered. With the fixes, PIIController extracts and verifies 40/40. See dev note `202603201150`. Both fixes are included in the commits used by `scripts/reset_to_clean.sh` — no manual patching needed.
+**Note on PIIController extraction:** PIIController (line 682, Flp_Mode=2) requires two ROSCO bug fixes committed to our fork: uninitialized K in FlapControl init (Controllers.f90:669) and uninitialized n in the Flp_Mode==2 notch filter branch (Filters.f90:412). These are defects in ROSCO's untested Flp_Mode=2 research code (BAR turbine), introduced in v2.9.0. Without the fixes, the 1-DOF sim segfaults before FlapControl is entered. With the fixes, PIIController extracts and verifies successfully. See dev note `202603201150`. Both fixes are included in the commits used by `scripts/reset_to_clean.sh` — no manual patching needed.
 
 **Source reset shortcut:** Instead of the manual git checkout commands above, use `bash scripts/reset_to_clean.sh` from the ROSCO repo root. It performs all resets, applies bug fixes, and creates C++ stubs in one step.
 
