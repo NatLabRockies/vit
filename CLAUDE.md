@@ -355,38 +355,38 @@ Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful ex
 
 | Function | Call site file | Line | Command |
 |----------|---------------|------|---------|
-| `saturate` | `Controllers.f90` | 102 | `vit extract saturate -f rosco/controller/src/Controllers.f90 -l 102` |
-| `wrap_180` | `Filters.f90` | 432 | `vit extract wrap_180 -f rosco/controller/src/Filters.f90 -l 432` |
-| `wrap_360` | `Controllers.f90` | 517 | `vit extract wrap_360 -f rosco/controller/src/Controllers.f90 -l 517` |
-| `ColemanTransform` | `Controllers.f90` | 510 | `vit extract ColemanTransform -f rosco/controller/src/Controllers.f90 -l 510` |
-| `ColemanTransformInverse` | `Controllers.f90` | 561 | `vit extract ColemanTransformInverse -f rosco/controller/src/Controllers.f90 -l 561` |
-| `identity` | `ControllerBlocks.f90` | 454 | `vit extract identity -f rosco/controller/src/ControllerBlocks.f90 -l 454` |
-| `ratelimit` | `Controllers.f90` | 103 | `vit extract ratelimit -f rosco/controller/src/Controllers.f90 -l 103` |
-| `interp1d` | `Controllers.f90` | 62 | `vit extract interp1d -f rosco/controller/src/Controllers.f90 -l 62` |
-| `sigma` | `Controllers.f90` | 528 | `vit extract sigma -f rosco/controller/src/Controllers.f90 -l 528` |
-| `LPFilter` | `Filters.f90` | 347 | `vit extract LPFilter -f rosco/controller/src/Filters.f90 -l 347` |
-| `HPFilter` | `Filters.f90` | 375 | `vit extract HPFilter -f rosco/controller/src/Filters.f90 -l 375` |
-| `SecLPFilter` | `Filters.f90` | 371 | `vit extract SecLPFilter -f rosco/controller/src/Filters.f90 -l 371` |
-| `NotchFilter` | `Filters.f90` | 356 | `vit extract NotchFilter -f rosco/controller/src/Filters.f90 -l 356` |
+| `saturate` | `Controllers.f90` | 102 | `vit extract saturate -f rosco/controller/src/Controllers.f90 -l 102 --run-args '--scenario 3'` |
+| `wrap_180` | `Filters.f90` | 432 | `vit extract wrap_180 -f rosco/controller/src/Filters.f90 -l 432 --run-args '--scenario 3'` |
+| `wrap_360` | `Controllers.f90` | 517 | `vit extract wrap_360 -f rosco/controller/src/Controllers.f90 -l 517 --run-args '--scenario 2'` |
+| `ColemanTransform` | `Controllers.f90` | 510 | `vit extract ColemanTransform -f rosco/controller/src/Controllers.f90 -l 510 --run-args '--scenario 8'` |
+| `ColemanTransformInverse` | `Controllers.f90` | 561 | `vit extract ColemanTransformInverse -f rosco/controller/src/Controllers.f90 -l 561 --run-args '--scenario 8'` |
+| `identity` | `ControllerBlocks.f90` | 454 | `vit extract identity -f rosco/controller/src/ControllerBlocks.f90 -l 454 --run-args '--scenario 3'` |
+| `ratelimit` | `Controllers.f90` | 103 | `vit extract ratelimit -f rosco/controller/src/Controllers.f90 -l 103 --run-args '--scenario 3'` |
+| `interp1d` | `Controllers.f90` | 62 | `vit extract interp1d -f rosco/controller/src/Controllers.f90 -l 62 --run-args '--scenario 3'` |
+| `sigma` | `Controllers.f90` | 528 | `vit extract sigma -f rosco/controller/src/Controllers.f90 -l 528 --run-args '--scenario 8'` |
+| `LPFilter` | `Filters.f90` | 347 | `vit extract LPFilter -f rosco/controller/src/Filters.f90 -l 347 --run-args '--scenario 3'` |
+| `HPFilter` | `Filters.f90` | 375 | `vit extract HPFilter -f rosco/controller/src/Filters.f90 -l 375 --run-args '--scenario 3'` |
+| `SecLPFilter` | `Filters.f90` | 371 | `vit extract SecLPFilter -f rosco/controller/src/Filters.f90 -l 371 --run-args '--scenario 3'` |
+| `NotchFilter` | `Filters.f90` | 356 | `vit extract NotchFilter -f rosco/controller/src/Filters.f90 -l 356 --run-args '--scenario 3'` |
 | `NotchFilterSlopes` | `Filters.f90` | 405 | `vit extract NotchFilterSlopes -f rosco/controller/src/Filters.f90 -l 405 --run-args '--scenario 6'` |
-| `SecLPFilter_Vel` | `Controllers.f90` | 941 | `vit extract SecLPFilter_Vel -f rosco/controller/src/Controllers.f90 -l 941` |
-| `PIController` | `Controllers.f90` | 68 | `vit extract PIController -f rosco/controller/src/Controllers.f90 -l 68` |
+| `SecLPFilter_Vel` | `Controllers.f90` | 941 | `vit extract SecLPFilter_Vel -f rosco/controller/src/Controllers.f90 -l 941 --run-args '--scenario 3'` |
+| `PIController` | `Controllers.f90` | 68 | `vit extract PIController -f rosco/controller/src/Controllers.f90 -l 68 --run-args '--scenario 3'` |
 | `PIIController` | `Controllers.f90` | 682 | `vit extract PIIController -f rosco/controller/src/Controllers.f90 -l 682 --run-args '--scenario 4'` |
-| `ResController` | `Controllers.f90` | 813 | `vit extract ResController -f rosco/controller/src/Controllers.f90 -l 813` |
-| `ForeAftDamping` | `Controllers.f90` | 80 | `vit extract ForeAftDamping -f rosco/controller/src/Controllers.f90 -l 80` |
-| `IPC` | `Controllers.f90` | 73 | `vit extract IPC -f rosco/controller/src/Controllers.f90 -l 73` |
-| `FloatingFeedback` | `Controllers.f90` | 96 | `vit extract FloatingFeedback -f rosco/controller/src/Controllers.f90 -l 96 --run-args '--scenario 3'` |
-| `ActiveWakeControl` | `Controllers.f90` | 144 | `vit extract ActiveWakeControl -f rosco/controller/src/Controllers.f90 -l 144` |
-| `VariableSpeedControl` | `DISCON.F90` | 117 | `vit extract VariableSpeedControl -f rosco/controller/src/DISCON.F90 -l 117` |
-| `PitchControl` | `DISCON.F90` | 119 | `vit extract PitchControl -f rosco/controller/src/DISCON.F90 -l 119` |
-| `YawRateControl` | `DISCON.F90` | 123 | `vit extract YawRateControl -f rosco/controller/src/DISCON.F90 -l 123` |
-| `FlapControl` | `DISCON.F90` | 127 | `vit extract FlapControl -f rosco/controller/src/DISCON.F90 -l 127 --run-args '--scenario 3'` |
-| `CableControl` | `DISCON.F90` | 132 | `vit extract CableControl -f rosco/controller/src/DISCON.F90 -l 132 --run-args '--scenario 3'` |
-| `StructuralControl` | `DISCON.F90` | 137 | `vit extract StructuralControl -f rosco/controller/src/DISCON.F90 -l 137 --run-args '--scenario 3'` |
+| `ResController` | `Controllers.f90` | 813 | `vit extract ResController -f rosco/controller/src/Controllers.f90 -l 813 --run-args '--scenario 8'` |
+| `ForeAftDamping` | `Controllers.f90` | 80 | `vit extract ForeAftDamping -f rosco/controller/src/Controllers.f90 -l 80 --run-args '--scenario 7'` |
+| `IPC` | `Controllers.f90` | 73 | `vit extract IPC -f rosco/controller/src/Controllers.f90 -l 73 --run-args '--scenario 8'` |
+| `FloatingFeedback` | `Controllers.f90` | 96 | `vit extract FloatingFeedback -f rosco/controller/src/Controllers.f90 -l 96 --run-args '--scenario 7'` |
+| `ActiveWakeControl` | `Controllers.f90` | 144 | `vit extract ActiveWakeControl -f rosco/controller/src/Controllers.f90 -l 144 --run-args '--scenario 8'` |
+| `VariableSpeedControl` | `DISCON.F90` | 117 | `vit extract VariableSpeedControl -f rosco/controller/src/DISCON.F90 -l 117 --run-args '--scenario 3'` |
+| `PitchControl` | `DISCON.F90` | 119 | `vit extract PitchControl -f rosco/controller/src/DISCON.F90 -l 119 --run-args '--scenario 3'` |
+| `YawRateControl` | `DISCON.F90` | 123 | `vit extract YawRateControl -f rosco/controller/src/DISCON.F90 -l 123 --run-args '--scenario 7'` |
+| `FlapControl` | `DISCON.F90` | 127 | `vit extract FlapControl -f rosco/controller/src/DISCON.F90 -l 127 --run-args '--scenario 7'` |
+| `CableControl` | `DISCON.F90` | 132 | `vit extract CableControl -f rosco/controller/src/DISCON.F90 -l 132 --run-args '--scenario 7'` |
+| `StructuralControl` | `DISCON.F90` | 137 | `vit extract StructuralControl -f rosco/controller/src/DISCON.F90 -l 137 --run-args '--scenario 7'` |
 
 Each extraction deposits into `kernel/<function_name>/` and restores the source file automatically.
 
-**Note:** DISCON.F90 extractions require `--run-args '--scenario 3'` when the target function is gated by a mode flag (CC_Mode, StC_Mode, Fl_Mode, Flp_Mode) to ensure only the scenario with all modes enabled runs. This avoids DLL SAVE persistence issues across multi-scenario runs. See `kgen.dll_persistence` in vit.yaml.
+**Note:** Every extraction uses an explicit `--run-args '--scenario N'` to run only the scenario needed for that function. This avoids wastefully running all 8 scenarios. Scenario 3 is the default for most functions (all mode flags enabled, all code paths reachable). Functions that receive zero inputs in Scenario 3 use Scenario 7 (synthetic non-zero inputs for YawRateControl, ForeAftDamping, FloatingFeedback, StructuralControl, CableControl, FlapControl) or Scenario 8 (non-zero blade root moments and IPC gains for IPC, ActiveWakeControl). Without the correct scenario, KGen verification only proves plumbing (zero in → zero out), not arithmetic correctness.
 
 **Note:** SecLPFilter_Vel requires `CC_Mode=1` in Scenario 3 of vit_sim.py (so CableControl is actually called). This was fixed — the `CALL CableControl` in DISCON.F90 is gated by `CC_Mode > 0`.
 
@@ -456,50 +456,30 @@ After every feature implementation, run:
 
 2. **Verification regression (fast, uses golden fixtures):**
    ```bash
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify saturate translations/Functions/saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/saturate 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify wrap_180 translations/Functions/wrap_180.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_180 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify wrap_360 translations/Functions/wrap_360.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_360 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify ratelimit translations/Functions/ratelimit.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ratelimit 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify sigma translations/Functions/sigma.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/sigma 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify interp1d translations/Functions/interp1d.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/interp1d 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify ColemanTransform translations/Functions/colemantransform.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ColemanTransform 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify ColemanTransformInverse translations/Functions/colemantransforminverse.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ColemanTransformInverse 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify identity translations/Functions/identity.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/identity 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify LPFilter translations/Filters/lpfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/LPFilter 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify HPFilter translations/Filters/hpfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/HPFilter 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify SecLPFilter translations/Filters/seclpfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/SecLPFilter 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify NotchFilter translations/Filters/notchfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/NotchFilter 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify NotchFilterSlopes translations/Filters/notchfilterslopes.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/NotchFilterSlopes 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify SecLPFilter_Vel translations/Filters/seclpfilter_vel.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/SecLPFilter_Vel 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify PIController translations/Controllers/picontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/PIController 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify PIIController translations/Controllers/piicontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/PIIController 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify ResController translations/Controllers/rescontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ResController 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify ForeAftDamping translations/Controllers/foreaftdamping.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ForeAftDamping 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify FloatingFeedback translations/Controllers/floatingfeedback.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/FloatingFeedback 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify StructuralControl translations/Controllers/structuralcontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/StructuralControl 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify CableControl translations/Controllers/cablecontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/CableControl 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify FlapControl translations/Controllers/flapcontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/FlapControl 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify YawRateControl translations/Controllers/yawratecontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/YawRateControl 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify VariableSpeedControl translations/Controllers/variablespeedcontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/VariableSpeedControl 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify IPC translations/Controllers/ipc.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/IPC 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify ActiveWakeControl translations/Controllers/activewakecontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ActiveWakeControl 2>&1 | tail -3"
-   docker exec vit-dev bash -c "cd /workspace/ROSCO && vit verify PitchControl translations/Controllers/pitchcontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/PitchControl 2>&1 | tail -3"
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && bash scripts/verify_all.sh"
    ```
-   Must show: `40/40 passed` for each function.
+   Must show: `28/28 passed`. Each function should report `N/N passed` where N is the number of cases in its golden fixture (typically 20-23).
 
-3. **Determinism stress test (when touching NaN handling or comparison logic):**
+3. **Full re-extraction (when extraction logic changes):**
+   ```bash
+   # Reset source, rebuild, then:
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && rm -rf kernel/ && bash scripts/extract_all.sh"
+   ```
+   Must show: `28/28 passed` with `Cases: 20` or more for each function.
+
+4. **Determinism stress test (when touching NaN handling or comparison logic):**
    ```bash
    docker exec vit-dev bash -c "
      cd /workspace/ROSCO &&
      for run in \$(seq 1 5); do
        rm -rf kernel/ state/ model.ini include.ini kgen.log
-       vit extract saturate -f rosco/controller/src/Controllers.f90 -l 102 2>&1 > /dev/null
-       result=\$(vit verify saturate saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ 2>&1 | grep -oP '\d+/\d+ passed')
+       vit extract saturate -f rosco/controller/src/Controllers.f90 -l 102 --run-args '--scenario 3' 2>&1 > /dev/null
+       result=\$(vit verify saturate translations/Functions/saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/saturate 2>&1 | grep -oP '\d+/\d+ passed')
        echo \"Run \$run: \$result\"
      done
    "
    ```
-   Must show: `40/40 passed` every run with zero variation.
+   Must show: `20/20 passed` every run with zero variation.
 
 ### Clean Build Test (Full End-to-End)
 
@@ -539,62 +519,18 @@ If the turbine model pickle doesn't exist yet, run `python3 01_turbine_model.py`
 Each extraction instruments the source, rebuilds, runs the simulation, captures runtime state, and deposits the kernel into `kernel/<function_name>/`. The source file is restored automatically between runs.
 
 ```bash
-vit extract saturate -f rosco/controller/src/Controllers.f90 -l 102
-vit extract wrap_180 -f rosco/controller/src/Filters.f90 -l 432
-vit extract wrap_360 -f rosco/controller/src/Controllers.f90 -l 517
-vit extract ratelimit -f rosco/controller/src/Controllers.f90 -l 103
-vit extract ColemanTransform -f rosco/controller/src/Controllers.f90 -l 510
-vit extract ColemanTransformInverse -f rosco/controller/src/Controllers.f90 -l 561
-vit extract identity -f rosco/controller/src/ControllerBlocks.f90 -l 454
-vit extract sigma -f rosco/controller/src/Controllers.f90 -l 528
-vit extract interp1d -f rosco/controller/src/Controllers.f90 -l 62
-vit extract LPFilter -f rosco/controller/src/Filters.f90 -l 347
-vit extract HPFilter -f rosco/controller/src/Filters.f90 -l 375
-vit extract SecLPFilter -f rosco/controller/src/Filters.f90 -l 371
-vit extract NotchFilter -f rosco/controller/src/Filters.f90 -l 356
-vit extract NotchFilterSlopes -f rosco/controller/src/Filters.f90 -l 405 --run-args '--scenario 6'
-vit extract SecLPFilter_Vel -f rosco/controller/src/Controllers.f90 -l 941
-vit extract PIController -f rosco/controller/src/Controllers.f90 -l 68
-vit extract PIIController -f rosco/controller/src/Controllers.f90 -l 682 --run-args '--scenario 4'
-vit extract ResController -f rosco/controller/src/Controllers.f90 -l 813
-vit extract ForeAftDamping -f rosco/controller/src/Controllers.f90 -l 80
+bash scripts/extract_all.sh
 ```
 
-Each must show `Extraction successful` with `Cases: 20`.
+Must show `28/28 passed` with `Cases: 20` or more for each function. See `scripts/extract_all.sh` for the per-function scenario assignments.
 
 **Step 4 — Verify C++ translations against extracted kernels (in container):**
 
 ```bash
-vit verify saturate translations/Functions/saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/saturate
-vit verify wrap_180 translations/Functions/wrap_180.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_180
-vit verify wrap_360 translations/Functions/wrap_360.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/wrap_360
-vit verify ratelimit translations/Functions/ratelimit.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ratelimit
-vit verify ColemanTransform translations/Functions/colemantransform.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ColemanTransform
-vit verify ColemanTransformInverse translations/Functions/colemantransforminverse.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/ColemanTransformInverse
-vit verify identity translations/Functions/identity.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/identity
-vit verify sigma translations/Functions/sigma.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/sigma
-vit verify interp1d translations/Functions/interp1d.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/interp1d
-vit verify LPFilter translations/Filters/lpfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/LPFilter
-vit verify HPFilter translations/Filters/hpfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/HPFilter
-vit verify SecLPFilter translations/Filters/seclpfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/SecLPFilter
-vit verify NotchFilter translations/Filters/notchfilter.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/NotchFilter
-vit verify NotchFilterSlopes translations/Filters/notchfilterslopes.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/NotchFilterSlopes
-vit verify SecLPFilter_Vel translations/Filters/seclpfilter_vel.cpp -f rosco/controller/src/Filters.f90 --kernel-dir kernel/SecLPFilter_Vel
-vit verify PIController translations/Controllers/picontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/PIController
-vit verify PIIController translations/Controllers/piicontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/PIIController
-vit verify ResController translations/Controllers/rescontroller.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ResController
-vit verify ForeAftDamping translations/Controllers/foreaftdamping.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ForeAftDamping
-vit verify FloatingFeedback translations/Controllers/floatingfeedback.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/FloatingFeedback
-vit verify StructuralControl translations/Controllers/structuralcontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/StructuralControl
-vit verify CableControl translations/Controllers/cablecontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/CableControl
-vit verify FlapControl translations/Controllers/flapcontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/FlapControl
-vit verify YawRateControl translations/Controllers/yawratecontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/YawRateControl
-vit verify VariableSpeedControl translations/Controllers/variablespeedcontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/VariableSpeedControl
-vit verify IPC translations/Controllers/ipc.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/IPC
-vit verify ActiveWakeControl translations/Controllers/activewakecontrol.cpp -f rosco/controller/src/Controllers.f90 --kernel-dir kernel/ActiveWakeControl
+bash scripts/verify_all.sh
 ```
 
-Each must show `40/40 passed`.
+Must show `28/28 passed`.
 
 **Note:** PitchControl is excluded from the clean build test. It depends on PitchSaturation (ControllerBlocks.f90, Phase 8), which is not yet translated. PitchControl's C++ calls `pitchsaturation_c()` — an undefined symbol without the translation. PitchControl joins the clean build test once PitchSaturation is translated in Phase 8.
 
