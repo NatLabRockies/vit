@@ -675,12 +675,12 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
                 content_joined = content_joined.replace(old_rule, new_rule, 1)
         lines = content_joined.split("\n")
 
-    # 4. Add -lstdc++ to link flags
+    # 4. Add -lstdc++ to link flags (must be AFTER object files for gfortran)
     content_joined = "\n".join(lines)
     if "-lstdc++" not in content_joined:
         for i, line in enumerate(lines):
-            if "-o kernel.exe" in line or "-o\tkernel.exe" in line:
-                lines[i] = line.replace("-o kernel.exe", "-o kernel.exe -lstdc++")
+            if ("-o kernel.exe" in line or "-o\tkernel.exe" in line) and "rm " not in line and "./" not in line:
+                lines[i] = line.rstrip() + " -lstdc++"
                 break
 
     makefile.write_text("\n".join(lines))
