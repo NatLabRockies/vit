@@ -525,7 +525,13 @@ def build_c_params(sig: FortranSignature,
             elif arg.is_array:
                 params.append((f"{mapping.c_type}*", arg.name))
                 if arg.is_assumed_shape:
-                    params.append(("int", f"n_{arg.name}"))
+                    if arg.array_rank == 1:
+                        params.append(("int", f"n_{arg.name}"))
+                    elif arg.array_rank == 2:
+                        params.append(("int", f"n_{arg.name}_rows"))
+                        params.append(("int", f"n_{arg.name}_cols"))
+                    else:
+                        raise ValueError(f"Unsupported array rank {arg.array_rank} for {arg.name}")
             else:
                 params.append((mapping.c_type, arg.name))
             continue
@@ -538,9 +544,15 @@ def build_c_params(sig: FortranSignature,
 
         if arg.is_array:
             params.append((f"{mapping.c_type}*", arg.name))
-            # Add size parameter for assumed-shape arrays
+            # Add size parameter(s) for assumed-shape arrays
             if arg.is_assumed_shape:
-                params.append(("int", f"n_{arg.name}"))
+                if arg.array_rank == 1:
+                    params.append(("int", f"n_{arg.name}"))
+                elif arg.array_rank == 2:
+                    params.append(("int", f"n_{arg.name}_rows"))
+                    params.append(("int", f"n_{arg.name}_cols"))
+                else:
+                    raise ValueError(f"Unsupported array rank {arg.array_rank} for {arg.name}")
         else:
             # Scalar INTENT(OUT/INOUT) args must be pointers —
             # the Fortran BIND(C) interface passes them by reference (no VALUE).
@@ -631,12 +643,22 @@ def _build_interface_args(sig: FortranSignature,
                 "iface_name": arg.name,
                 "iface_decl": f"{mapping.iso_c_type}, INTENT({intent_str}) :: {arg.name}(*)",
             })
-            # Add size parameter for assumed-shape arrays
+            # Add size parameter(s) for assumed-shape arrays
             if arg.is_assumed_shape:
-                args.append({
-                    "iface_name": f"n_{arg.name}",
-                    "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}",
-                })
+                if arg.array_rank == 1:
+                    args.append({
+                        "iface_name": f"n_{arg.name}",
+                        "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}",
+                    })
+                elif arg.array_rank == 2:
+                    args.append({
+                        "iface_name": f"n_{arg.name}_rows",
+                        "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}_rows",
+                    })
+                    args.append({
+                        "iface_name": f"n_{arg.name}_cols",
+                        "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}_cols",
+                    })
         else:
             # Scalar INTENT(OUT/INOUT) → by reference (no VALUE)
             if arg.intent in (IntentKind.OUT, IntentKind.INOUT):
@@ -695,7 +717,11 @@ def _build_wrapper_call_args(sig: FortranSignature,
             elif arg.is_array:
                 call_args.append(arg.name)
                 if arg.is_assumed_shape:
-                    call_args.append(f"SIZE({arg.name})")
+                    if arg.array_rank == 1:
+                        call_args.append(f"SIZE({arg.name})")
+                    elif arg.array_rank == 2:
+                        call_args.append(f"SIZE({arg.name}, 1)")
+                        call_args.append(f"SIZE({arg.name}, 2)")
             else:
                 call_args.append(f"{arg.name}_val")
             continue
@@ -714,7 +740,11 @@ def _build_wrapper_call_args(sig: FortranSignature,
             call_args.append(arg.name)
             # Pass SIZE for assumed-shape arrays
             if arg.is_assumed_shape:
-                call_args.append(f"SIZE({arg.name})")
+                if arg.array_rank == 1:
+                    call_args.append(f"SIZE({arg.name})")
+                elif arg.array_rank == 2:
+                    call_args.append(f"SIZE({arg.name}, 1)")
+                    call_args.append(f"SIZE({arg.name}, 2)")
         elif arg.intent in (IntentKind.OUT, IntentKind.INOUT):
             # INOUT/OUT scalars passed by reference (no conversion needed)
             call_args.append(arg.name)
@@ -999,11 +1029,17 @@ def _build_bridge_call_args(sig: FortranSignature,
         if arg.is_array:
             if arg.is_assumed_shape:
                 # The bridge receives assumed-size (*) arrays from C, but the
-                # Fortran callee expects assumed-shape (:). Passing (*) to (:)
-                # is illegal. Use an explicit section: arg(1:n_arg) which
-                # creates a temporary that's compatible with (:).
-                call_args.append(f"{arg.name}(1:n_{arg.name})")
-                # Skip the synthetic size param (Fortran original doesn't expect it)
+                # Fortran callee expects assumed-shape (:) or (:,:). Passing
+                # (*) to (:) is illegal. Use explicit sections which create
+                # temporaries compatible with assumed-shape.
+                if arg.array_rank == 1:
+                    call_args.append(f"{arg.name}(1:n_{arg.name})")
+                elif arg.array_rank == 2:
+                    call_args.append(
+                        f"RESHAPE({arg.name}(1:n_{arg.name}_rows*n_{arg.name}_cols), "
+                        f"(/ n_{arg.name}_rows, n_{arg.name}_cols /))"
+                    )
+                # Skip the synthetic size param(s) (Fortran original doesn't expect them)
             else:
                 # Fixed-size arrays: pass directly (no size mismatch)
                 call_args.append(arg.name)

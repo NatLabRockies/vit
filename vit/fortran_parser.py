@@ -55,6 +55,14 @@ class FortranArg:
         return self.is_array and self.array_dims is not None and ":" in self.array_dims
 
     @property
+    def array_rank(self) -> int:
+        """Number of dimensions (0 for scalars, 1 for (:), 2 for (:,:), etc.)."""
+        if not self.is_array or self.array_dims is None:
+            return 0
+        # Count comma-separated dimensions: "(:)" → 1, "(:,:)" → 2, "(3,3)" → 2
+        return self.array_dims.count(",") + 1
+
+    @property
     def is_assumed_size(self) -> bool:
         """True if this is an assumed-size array (declared with *)."""
         return self.is_array and self.array_dims is not None and "*" in self.array_dims
