@@ -589,22 +589,35 @@ All main control subroutines take ControlParameters (ALLOCATABLE arrays, needs p
 **New functions unlocked**: 10 main controller subroutines
 
 ### Phase 8: ControllerBlocks Module
-**Target: All of ControllerBlocks.f90**
+**Target: All of ControllerBlocks.f90 + Functions.f90 dependencies (interp2d, AeroDynTorque)**
 
 With Phase 4 complete, `WE` nested struct is accessible through `LocalVariables`. WindSpeedEstimator can read/write `LocalVar.WE.P[3][3]`, `LocalVar.WE.xh[3]`, etc.
 
-- [ ] Kalman filter support — `WindSpeedEstimator` uses 3×3 matrix operations via the WE derived type. By this phase, matinv3 and identity are already translated. C++ accesses `WE` fields through the LocalVariables struct pointer.
-- [ ] State machine support — `StateMachine`, `Startup`, `Shutdown` have multi-stage sequential logic with persistent state stored in LocalVariables fields.
-- [ ] Translate + verify + integrate `WindSpeedEstimator`
-- [ ] Translate + verify + integrate `StateMachine`
-- [ ] Translate + verify + integrate `ComputeVariablesSetpoints`
-- [ ] Translate + verify + integrate `Startup`
-- [ ] Translate + verify + integrate `Shutdown`
-- [ ] Translate + verify + integrate `PowerControlSetpoints`
-- [ ] Translate + verify + integrate `SetpointSmoother`
-- [ ] Translate + verify + integrate `RefSpeedExclusion`
+**Note:** matinv3 is NOT needed despite original plan — WindSpeedEstimator's Kalman filter uses 1×1 innovation covariance S, so inversion is scalar division. matinv3 is dead code (defined in Functions.f90 but never called).
 
-**New functions unlocked**: All 8 ControllerBlocks.f90 subroutines
+#### Phase 8A: PitchSaturation + PitchControl Unblock
+- [x] Translate + verify + integrate `PitchSaturation` — 21/21 PASSED. Peak shaving min pitch via interp1d lookup.
+- [x] Integrate `PitchControl` — was verified in Phase 7B, blocked on PitchSaturation. Now unblocked.
+- [x] Integration test — 29 functions integrated, 612,000 values ALL IDENTICAL across 8 scenarios.
+- [x] Parallel verification (`verify_all.sh -j 8`) — all 29 functions verified.
+
+#### Phase 8B: Seven Independent ControllerBlocks Functions
+- [ ] Scenario 9 setup in vit_sim.py — SU_Mode=1, SD_Mode=1, TRA_Mode=1
+- [ ] Translate + verify + integrate `StateMachine` — pure conditional logic, 2 args, no callees
+- [ ] Translate + verify + integrate `SetpointSmoother` — LPFilter callee
+- [ ] Translate + verify + integrate `PowerControlSetpoints` — interp1d callee
+- [ ] Translate + verify + integrate `RefSpeedExclusion` — ratelimit callee, Scenario 9
+- [ ] Translate + verify + integrate `ComputeVariablesSetpoints` — LPFilter + interp1d + saturate + RefSpeedExclusion callees
+- [ ] Translate + verify + integrate `Shutdown` — LPFilter + wrap_180, Scenario 9
+- [ ] Translate + verify + integrate `Startup` — LPFilter + sigma, Scenario 9
+
+#### Phase 8C: WindSpeedEstimator + Dependencies
+- [ ] VIT 2D assumed-shape array support — interface_gen.py, fortran_parser.py, kernel_verify.py
+- [ ] Translate + verify + integrate `interp2d` (Functions.f90) — 2D bilinear interpolation, first rank-2 array function
+- [ ] Translate + verify + integrate `AeroDynTorque` (Functions.f90) — first PerformanceData view type function
+- [ ] Translate + verify + integrate `WindSpeedEstimator` — EKF with 3×3 matrices, 6 type args
+
+**New functions unlocked**: All 9 ControllerBlocks.f90 functions + 2 Functions.f90 dependencies
 
 ### Phase 9: Type Ownership Transfer
 **Target: C++ becomes source of truth for all types**

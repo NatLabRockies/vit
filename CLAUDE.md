@@ -349,7 +349,7 @@ docker exec -it vit-dev bash -c "cd /workspace/vit && python3 -m pytest tests/ -
 
 ### Golden Test Fixtures
 
-Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/sigma/`, `kernel/LPFilter/`, `kernel/HPFilter/`, `kernel/SecLPFilter/`, `kernel/NotchFilter/`, `kernel/NotchFilterSlopes/`, `kernel/SecLPFilter_Vel/`, `kernel/PIController/`, `kernel/PIIController/`, `kernel/ResController/`, `kernel/ForeAftDamping/`, `kernel/IPC/`, `kernel/FloatingFeedback/`, `kernel/ActiveWakeControl/`, `kernel/VariableSpeedControl/`, `kernel/PitchControl/`, `kernel/YawRateControl/`, `kernel/FlapControl/`, `kernel/CableControl/`, `kernel/StructuralControl/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
+Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (`kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/sigma/`, `kernel/LPFilter/`, `kernel/HPFilter/`, `kernel/SecLPFilter/`, `kernel/NotchFilter/`, `kernel/NotchFilterSlopes/`, `kernel/SecLPFilter_Vel/`, `kernel/PIController/`, `kernel/PIIController/`, `kernel/ResController/`, `kernel/ForeAftDamping/`, `kernel/IPC/`, `kernel/FloatingFeedback/`, `kernel/ActiveWakeControl/`, `kernel/VariableSpeedControl/`, `kernel/PitchControl/`, `kernel/YawRateControl/`, `kernel/FlapControl/`, `kernel/CableControl/`, `kernel/StructuralControl/`, `kernel/PitchSaturation/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
 
 **Extraction parameters (for regenerating golden fixtures):**
 
@@ -383,6 +383,7 @@ Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful ex
 | `FlapControl` | `DISCON.F90` | 127 | `vit extract FlapControl -f rosco/controller/src/DISCON.F90 -l 127 --run-args '--scenario 7'` |
 | `CableControl` | `DISCON.F90` | 132 | `vit extract CableControl -f rosco/controller/src/DISCON.F90 -l 132 --run-args '--scenario 7'` |
 | `StructuralControl` | `DISCON.F90` | 137 | `vit extract StructuralControl -f rosco/controller/src/DISCON.F90 -l 137 --run-args '--scenario 7'` |
+| `PitchSaturation` | `Controllers.f90` | 87 | `vit extract PitchSaturation -f rosco/controller/src/Controllers.f90 -l 87 --run-args '--scenario 3'` |
 
 Each extraction deposits into `kernel/<function_name>/` and restores the source file automatically.
 
@@ -455,10 +456,17 @@ After every feature implementation, run:
    ```
 
 2. **Verification regression (fast, uses golden fixtures):**
+   **Requires clean source** — run `bash scripts/reset_to_clean.sh` from the Mac first if source has integration wrappers. `vit verify` scans source files to detect translated callees for bridge generation; integrated source has `_c()` wrappers that break callee detection.
    ```bash
    docker exec vit-dev bash -c "cd /workspace/ROSCO && bash scripts/verify_all.sh"
    ```
-   Must show: `28/28 passed`. Each function should report `N/N passed` where N is the number of cases in its golden fixture (typically 20-23).
+   Must show: `29/29 passed`. Each function should report `N/N passed` where N is the number of cases in its golden fixture (typically 20-23). For parallel execution, launch 3 batches via separate docker exec calls:
+   ```bash
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && bash scripts/verify_all.sh 1" &
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && bash scripts/verify_all.sh 2" &
+   docker exec vit-dev bash -c "cd /workspace/ROSCO && bash scripts/verify_all.sh 3" &
+   wait
+   ```
 
 3. **Full re-extraction (when extraction logic changes):**
    ```bash
@@ -522,7 +530,7 @@ Each extraction instruments the source, rebuilds, runs the simulation, captures 
 bash scripts/extract_all.sh
 ```
 
-Must show `28/28 passed` with `Cases: 20` or more for each function. See `scripts/extract_all.sh` for the per-function scenario assignments.
+Must show `29/29 passed` with `Cases: 20` or more for each function. See `scripts/extract_all.sh` for the per-function scenario assignments.
 
 **Step 4 — Verify C++ translations against extracted kernels (in container):**
 
@@ -530,9 +538,9 @@ Must show `28/28 passed` with `Cases: 20` or more for each function. See `script
 bash scripts/verify_all.sh
 ```
 
-Must show `28/28 passed`.
+Must show `29/29 passed`.
 
-**Note:** PitchControl is excluded from the clean build test. It depends on PitchSaturation (ControllerBlocks.f90, Phase 8), which is not yet translated. PitchControl's C++ calls `pitchsaturation_c()` — an undefined symbol without the translation. PitchControl joins the clean build test once PitchSaturation is translated in Phase 8.
+**Note:** PitchControl depends on PitchSaturation (callee dependency). PitchSaturation must integrate before PitchControl in `integrate_all.sh`.
 
 **Step 5 — Integrate all functions (in container):**
 
@@ -540,7 +548,7 @@ Must show `28/28 passed`.
 bash scripts/integrate_all.sh
 ```
 
-Must show `27/27 passed`. Each `--apply` reads the current file state and generates correct patches, skipping items already present (e.g., `enable_language(CXX)`, `stdc++` link, `USE ISO_C_BINDING`). See `scripts/integrate_all.sh` for the full function list.
+Must show `29/29 passed`. Each `--apply` reads the current file state and generates correct patches, skipping items already present (e.g., `enable_language(CXX)`, `stdc++` link, `USE ISO_C_BINDING`). See `scripts/integrate_all.sh` for the full function list.
 
 **Step 6 — Rebuild with C++ and compare simulation arrays against baseline (in container):**
 
@@ -661,6 +669,7 @@ Verified C++ translations live in `ROSCO/translations/Functions/` and `ROSCO/tra
 | `translations/Controllers/ipc.cpp` | `IPC` in Controllers.f90 | Verified (Phase 7B) — 1P/2P Individual Pitch Control, Coleman transforms |
 | `translations/Controllers/activewakecontrol.cpp` | `ActiveWakeControl` in Controllers.f90 | Verified (Phase 7B) — 5 AWC modes, complex decomposition |
 | `translations/Controllers/pitchcontrol.cpp` | `PitchControl` in Controllers.f90 | Verified (Phase 7B) — master pitch orchestrator, 185 lines, 11+ callees |
+| `translations/ControllerBlocks/pitchsaturation.cpp` | `PitchSaturation` in ControllerBlocks.f90 | Verified (Phase 8A) — peak shaving minimum pitch, interp1d lookup |
 
 Each translation file has a metadata header (source file, function name, MD5 hash, VIT version, verification status) generated by `vit translate`.
 
