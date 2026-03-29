@@ -6,10 +6,10 @@
 
 Fully translate the ROSCO wind turbine controller from Fortran to C++, producing a drop-in replacement `libdiscon.so` that is pure C++ and produces byte-identical simulation output to the Fortran original. VIT orchestrates the verification and integration. Claude (AI) writes the C++ translations, scaffolded by the `vit translate` command (see Section 4a).
 
-### Current State (2026-03-27)
+### Current State (2026-03-29)
 
-- **Verified translations**: 28 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, and Controllers.f90 — all 28 KGen-verified (20-23 cases each, IDENTICAL). Golden fixtures re-extracted with per-function scenario mapping ensuring non-zero inputs for all functions. Phase 7B translation complete: all 10 main controller subroutines (PitchControl, VariableSpeedControl, YawRateControl, IPC, ForeAftDamping, FloatingFeedback, FlapControl, ActiveWakeControl, CableControl, StructuralControl) verified.
-- **Integrated (27 of 28)**: 27 translations produce byte-identical simulation output across 8 scenarios (612,000 float64 values). PitchControl is KGen-verified but excluded from integration testing until PitchSaturation (ControllerBlocks.f90, Phase 8) is translated.
+- **Verified translations**: 39 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, and Controllers.f90 — all 39 KGen-verified (20-23 cases each, IDENTICAL). Phase 8 complete: all ControllerBlocks functions (PitchSaturation, StateMachine, SetpointSmoother, PowerControlSetpoints, RefSpeedExclusion, ComputeVariablesSetpoints, Shutdown, Startup, WindSpeedEstimator) plus interp2d and AeroDynTorque.
+- **Integrated (39 of 39)**: All 39 translations produce byte-identical simulation output across 9 scenarios (672,000 float64 values). Pure C++ — no Fortran bridges. All translations use Fortran source casing.
 - **Scenario 3 FITPACK fix**: scipy's FITPACK `bispev` reads an uninitialized stack variable, causing non-deterministic Cp interpolation. Fixed with a stack scrubber + cached RectBivariateSpline in vit_sim.py (dev note `202603261539`).
 - **Scenario 8 NotchFilterSlopes fix**: Fortran `**` precedence grouping mismatch in coefficient computation caused 1-ULP errors that accumulated over 14,791 timesteps. Fixed by parenthesizing C++ to match Fortran grouping (dev note `202603261747`).
 - **Phase 7B complete**: All 10 functions extracted (20-23 cases each) and translated to C++. Required 10 VIT infrastructure fixes (bridge assumed-size arrays, DISCON.F90 kernel patches, avrSWAP kind mismatch, OPTIONAL bridge handling, view-type stash for callee bridges). See dev notes 202603241408, 202603241444.
