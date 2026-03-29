@@ -204,7 +204,7 @@ class TestGenerateCmakePatches:
             ")\n"
             "add_library(discon SHARED ${SOURCES})\n"
         )
-        patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
+        patches = _generate_cmake_patches(cmake, "saturate.cpp", "discon")
         descriptions = [p.description for p in patches]
         assert any("CXX" in d for d in descriptions)
 
@@ -214,7 +214,7 @@ class TestGenerateCmakePatches:
             "enable_language(CXX)\n"
             "add_library(discon SHARED ${SOURCES})\n"
         )
-        patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
+        patches = _generate_cmake_patches(cmake, "saturate.cpp", "discon")
         descriptions = [p.description for p in patches]
         assert not any("Enable CXX" in d for d in descriptions)
 
@@ -227,22 +227,22 @@ class TestGenerateCmakePatches:
             ")\n"
             "add_library(discon SHARED ${SOURCES})\n"
         )
-        patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
-        cpp_patch = [p for p in patches if "saturate_cpp.cpp" in p.description]
+        patches = _generate_cmake_patches(cmake, "saturate.cpp", "discon")
+        cpp_patch = [p for p in patches if "saturate.cpp" in p.description]
         assert len(cpp_patch) == 1
         assert cpp_patch[0].action == "modify"
         assert cpp_patch[0].original_snippet is not None
-        assert "saturate_cpp.cpp" in cpp_patch[0].replacement_snippet
+        assert "saturate.cpp" in cpp_patch[0].replacement_snippet
 
     def test_skips_cpp_source_if_present(self, tmp_path):
         cmake = self._write_cmake(tmp_path,
             "project(ROSCO LANGUAGES Fortran C)\n"
-            "set(SOURCES src/saturate_cpp.cpp)\n"
+            "set(SOURCES src/saturate.cpp)\n"
             "add_library(discon SHARED ${SOURCES})\n"
         )
-        patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
+        patches = _generate_cmake_patches(cmake, "saturate.cpp", "discon")
         descriptions = [p.description for p in patches]
-        assert not any("saturate_cpp.cpp" in d for d in descriptions)
+        assert not any("saturate.cpp" in d for d in descriptions)
 
     def test_adds_stdc_link(self, tmp_path):
         cmake = self._write_cmake(tmp_path,
@@ -252,7 +252,7 @@ class TestGenerateCmakePatches:
             ")\n"
             "add_library(discon SHARED ${SOURCES})\n"
         )
-        patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
+        patches = _generate_cmake_patches(cmake, "saturate.cpp", "discon")
         stdc_patch = [p for p in patches if "stdc++" in p.description]
         assert len(stdc_patch) == 1
         assert stdc_patch[0].action == "modify"
@@ -265,7 +265,7 @@ class TestGenerateCmakePatches:
             "add_library(discon SHARED ${SOURCES})\n"
             "target_link_libraries(discon PRIVATE stdc++)\n"
         )
-        patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
+        patches = _generate_cmake_patches(cmake, "saturate.cpp", "discon")
         descriptions = [p.description for p in patches]
         assert not any("stdc++" in d for d in descriptions)
 
@@ -273,11 +273,11 @@ class TestGenerateCmakePatches:
         cmake = self._write_cmake(tmp_path,
             "project(ROSCO LANGUAGES Fortran C)\n"
             "enable_language(CXX)\n"
-            "set(SOURCES src/saturate_cpp.cpp)\n"
+            "set(SOURCES src/saturate.cpp)\n"
             "add_library(discon SHARED ${SOURCES})\n"
             "target_link_libraries(discon PRIVATE stdc++)\n"
         )
-        patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
+        patches = _generate_cmake_patches(cmake, "saturate.cpp", "discon")
         assert len(patches) == 0
 
 
@@ -434,14 +434,14 @@ class TestMultiFunctionCmakePatches:
 
     def test_first_function_cpp_patch_is_modify(self, tmp_path):
         cmake = self._write_cmake(tmp_path, MULTI_SOURCE_CMAKE)
-        patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
-        cpp_patch = [p for p in patches if "saturate_cpp.cpp" in p.description]
+        patches = _generate_cmake_patches(cmake, "saturate.cpp", "discon")
+        cpp_patch = [p for p in patches if "saturate.cpp" in p.description]
         assert len(cpp_patch) == 1
         assert cpp_patch[0].action == "modify"
 
     def test_stdc_patch_is_modify(self, tmp_path):
         cmake = self._write_cmake(tmp_path, MULTI_SOURCE_CMAKE)
-        patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
+        patches = _generate_cmake_patches(cmake, "saturate.cpp", "discon")
         stdc_patch = [p for p in patches if "stdc++" in p.description]
         assert len(stdc_patch) == 1
         assert stdc_patch[0].action == "modify"
@@ -450,31 +450,31 @@ class TestMultiFunctionCmakePatches:
         cmake_path = self._write_cmake(tmp_path, MULTI_SOURCE_CMAKE)
 
         # Apply first function's patches
-        patches1 = _generate_cmake_patches(cmake_path, "saturate_cpp.cpp", "discon")
+        patches1 = _generate_cmake_patches(cmake_path, "saturate.cpp", "discon")
         plan1 = IntegrationPlan("saturate", patches1, "")
         result1 = apply_integration_plan(plan1)
         assert result1["success"]
 
         # Apply second function's patches (re-reads file)
-        patches2 = _generate_cmake_patches(cmake_path, "wrap_180_cpp.cpp", "discon")
+        patches2 = _generate_cmake_patches(cmake_path, "wrap_180.cpp", "discon")
         plan2 = IntegrationPlan("wrap_180", patches2, "")
         result2 = apply_integration_plan(plan2)
         assert result2["success"]
 
         content = (tmp_path / "CMakeLists.txt").read_text()
-        assert "saturate_cpp.cpp" in content
-        assert "wrap_180_cpp.cpp" in content
+        assert "saturate.cpp" in content
+        assert "wrap_180.cpp" in content
 
     def test_second_function_skips_stdc(self, tmp_path):
         cmake_path = self._write_cmake(tmp_path, MULTI_SOURCE_CMAKE)
 
         # Apply first function
-        patches1 = _generate_cmake_patches(cmake_path, "saturate_cpp.cpp", "discon")
+        patches1 = _generate_cmake_patches(cmake_path, "saturate.cpp", "discon")
         plan1 = IntegrationPlan("saturate", patches1, "")
         apply_integration_plan(plan1)
 
         # Second function should not re-add stdc++
-        patches2 = _generate_cmake_patches(cmake_path, "wrap_180_cpp.cpp", "discon")
+        patches2 = _generate_cmake_patches(cmake_path, "wrap_180.cpp", "discon")
         stdc_patches = [p for p in patches2 if "stdc++" in p.description]
         assert len(stdc_patches) == 0
 
@@ -482,24 +482,24 @@ class TestMultiFunctionCmakePatches:
         cmake_path = self._write_cmake(tmp_path, MULTI_SOURCE_CMAKE)
 
         # Apply first function
-        patches1 = _generate_cmake_patches(cmake_path, "saturate_cpp.cpp", "discon")
+        patches1 = _generate_cmake_patches(cmake_path, "saturate.cpp", "discon")
         plan1 = IntegrationPlan("saturate", patches1, "")
         apply_integration_plan(plan1)
 
         # Second function should not re-add enable_language(CXX)
-        patches2 = _generate_cmake_patches(cmake_path, "wrap_180_cpp.cpp", "discon")
+        patches2 = _generate_cmake_patches(cmake_path, "wrap_180.cpp", "discon")
         cxx_patches = [p for p in patches2 if "CXX" in p.description]
         assert len(cxx_patches) == 0
 
     def test_cpp_file_positioned_before_closing_paren(self, tmp_path):
         cmake_path = self._write_cmake(tmp_path, MULTI_SOURCE_CMAKE)
-        patches = _generate_cmake_patches(cmake_path, "saturate_cpp.cpp", "discon")
-        cpp_patch = [p for p in patches if "saturate_cpp.cpp" in p.description][0]
+        patches = _generate_cmake_patches(cmake_path, "saturate.cpp", "discon")
+        cpp_patch = [p for p in patches if "saturate.cpp" in p.description][0]
 
         # The original snippet should be the last source entry
         assert "ExtControl.f90" in cpp_patch.original_snippet
         # The replacement appends the new file after it
-        assert cpp_patch.replacement_snippet.endswith("src/saturate_cpp.cpp")
+        assert cpp_patch.replacement_snippet.endswith("src/saturate.cpp")
 
     def test_no_patch_without_sources_block(self, tmp_path):
         """If CMakeLists.txt has no set(SOURCES ...) block, no cpp source patch is generated."""
@@ -507,8 +507,8 @@ class TestMultiFunctionCmakePatches:
             "project(ROSCO LANGUAGES Fortran C)\n"
             "add_library(discon SHARED ${SOURCES})\n"
         )
-        patches = _generate_cmake_patches(cmake, "saturate_cpp.cpp", "discon")
-        cpp_patches = [p for p in patches if "saturate_cpp.cpp" in p.description]
+        patches = _generate_cmake_patches(cmake, "saturate.cpp", "discon")
+        cpp_patches = [p for p in patches if "saturate.cpp" in p.description]
         assert len(cpp_patches) == 0
 
 

@@ -148,7 +148,7 @@ def setup_kernel_cpp(
     _backup_or_restore_kgen_originals(kernel)
 
     # --- Step 1: Copy C++ implementation ---
-    impl_filename = f"{sig.name.lower()}_impl.hpp"
+    impl_filename = f"{sig.name.lower()}.hpp"
     impl_dest = kernel / impl_filename
     shutil.copy2(cpp_impl_path, impl_dest)
     result["files_modified"].append(str(impl_dest))
@@ -207,8 +207,8 @@ def setup_kernel_cpp(
                 result["files_modified"].append(str(header_path))
 
     # --- Step 2: Generate C wrapper ---
-    wrapper_filename = f"{sig.name.lower()}_cpp.cpp"
-    wrapper_source = generate_cpp_wrapper(sig, impl_filename, kind_aliases,
+    wrapper_filename = f"{sig.name.lower()}.cpp"
+    wrapper_source = generate_cpp_wrapper(sig, str(impl_dest), kind_aliases,
                                            derived_types, struct_headers)
     wrapper_dest = kernel / wrapper_filename
     wrapper_dest.write_text(wrapper_source)
@@ -906,7 +906,7 @@ def _generate_callee_bridges(
         result["files_modified"].append(str(header_path))
 
         # Patch the C++ wrapper to include the callee header
-        wrapper_cpp = kernel / f"{sig.name.lower()}_cpp.cpp"
+        wrapper_cpp = kernel / f"{sig.name.lower()}.cpp"
         if wrapper_cpp.exists():
             content = wrapper_cpp.read_text()
             if "vit_kernel_callees.h" not in content:

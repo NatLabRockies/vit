@@ -457,13 +457,13 @@ class TestPassthroughInterface:
     def test_cpp_wrapper_excludes_passthrough(self):
         """C++ wrapper doesn't include passthrough args."""
         sig = self._get_interp1d_sig()
-        cpp = generate_cpp_wrapper(sig, "interp1d_impl.hpp")
+        cpp = generate_cpp_wrapper(sig, "interp1d.hpp")
         assert "ErrVar" not in cpp
 
     def test_cpp_wrapper_has_size_params(self):
         """C++ wrapper has size params for assumed-shape arrays."""
         sig = self._get_interp1d_sig()
-        cpp = generate_cpp_wrapper(sig, "interp1d_impl.hpp")
+        cpp = generate_cpp_wrapper(sig, "interp1d.hpp")
         assert "n_xData" in cpp
         assert "n_yData" in cpp
 

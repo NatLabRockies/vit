@@ -111,9 +111,9 @@ def generate_integration_plan(
     src_dir = src_dir or os.path.dirname(source_file)
 
     # 1. Create the C++ wrapper source file
-    cpp_wrapper_name = f"{sig.name.lower()}_cpp.cpp"
+    cpp_wrapper_name = f"{sig.name.lower()}.cpp"
     cpp_wrapper_path = os.path.join(src_dir, cpp_wrapper_name)
-    impl_filename = f"{sig.name.lower()}_impl.hpp"
+    impl_filename = f"{sig.name.lower()}.hpp"
 
     # Read user's C++ implementation
     cpp_impl_content = Path(cpp_impl_path).read_text()

@@ -879,7 +879,7 @@ Controllers.o: Controllers.f90 ROSCO_Types.o
             args=[], result_name="test_func_result",
             result_type="REAL(8)", source_file="test.f90", line_number=1,
         )
-        _patch_kernel_makefile(kernel, sig, "test_cpp.cpp",
+        _patch_kernel_makefile(kernel, sig, "test.cpp",
                                fortran_flags="-fdefault-real-8 -fdefault-double-8")
         content = (kernel / "Makefile").read_text()
         assert "-fdefault-real-8" in content
@@ -901,7 +901,7 @@ Controllers.o: Controllers.f90 ROSCO_Types.o
             args=[], result_name="test_func_result",
             result_type="REAL(8)", source_file="test.f90", line_number=1,
         )
-        _patch_kernel_makefile(kernel, sig, "test_cpp.cpp")
+        _patch_kernel_makefile(kernel, sig, "test.cpp")
         content = (kernel / "Makefile").read_text()
         assert "-fdefault-real-8" not in content
         for line in content.split("\n"):
@@ -919,9 +919,9 @@ Controllers.o: Controllers.f90 ROSCO_Types.o
             result_type="REAL(8)", source_file="test.f90", line_number=1,
         )
         # First run without flags
-        _patch_kernel_makefile(kernel, sig, "test_cpp.cpp")
+        _patch_kernel_makefile(kernel, sig, "test.cpp")
         # Second run with flags
-        _patch_kernel_makefile(kernel, sig, "test_cpp.cpp",
+        _patch_kernel_makefile(kernel, sig, "test.cpp",
                                fortran_flags="-fdefault-real-8")
         content = (kernel / "Makefile").read_text()
         for line in content.split("\n"):

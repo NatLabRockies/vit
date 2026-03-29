@@ -198,18 +198,18 @@ class TestInterfaceGeneration:
 
     def test_cpp_wrapper_contains_extern_c(self):
         sig = self._get_saturate_sig()
-        cpp = generate_cpp_wrapper(sig, "saturate_impl.hpp", ROSCO_KIND_ALIASES)
+        cpp = generate_cpp_wrapper(sig, "saturate.hpp", ROSCO_KIND_ALIASES)
         assert 'extern "C"' in cpp
 
     def test_cpp_wrapper_function_name(self):
         sig = self._get_saturate_sig()
-        cpp = generate_cpp_wrapper(sig, "saturate_impl.hpp", ROSCO_KIND_ALIASES)
+        cpp = generate_cpp_wrapper(sig, "saturate.hpp", ROSCO_KIND_ALIASES)
         assert "saturate_c" in cpp
 
     def test_cpp_wrapper_uses_double(self):
         """ReKi args should map to double in C++."""
         sig = self._get_saturate_sig()
-        cpp = generate_cpp_wrapper(sig, "saturate_impl.hpp", ROSCO_KIND_ALIASES)
+        cpp = generate_cpp_wrapper(sig, "saturate.hpp", ROSCO_KIND_ALIASES)
         assert "double" in cpp
 
     def test_fortran_interface_has_bind_c(self):
@@ -407,7 +407,7 @@ class TestSubroutineFixedArrays:
 
     def test_cpp_wrapper_void_for_subroutine(self):
         sig = parse_signature_from_source(COLEMAN_SOURCE, "ColemanTransform")
-        cpp = generate_cpp_wrapper(sig, "coleman_impl.hpp", ROSCO_KIND_ALIASES)
+        cpp = generate_cpp_wrapper(sig, "coleman.hpp", ROSCO_KIND_ALIASES)
         assert "void " in cpp
         assert 'extern "C"' in cpp
 
@@ -502,7 +502,7 @@ class TestArrayValuedResult:
 
     def test_cpp_wrapper_void_for_array_result(self):
         sig = parse_signature_from_source(IDENTITY_SOURCE, "identity")
-        cpp = generate_cpp_wrapper(sig, "identity_impl.hpp", ROSCO_KIND_ALIASES)
+        cpp = generate_cpp_wrapper(sig, "identity.hpp", ROSCO_KIND_ALIASES)
         assert "void " in cpp
         assert "identity_result" in cpp
 
