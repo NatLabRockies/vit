@@ -63,9 +63,9 @@ All translations start from a clean ROSCO (nothing integrated). Integration happ
 | `ratelimit` | 37 | Rate limiter with state (8 args including `rlP` TYPE(rlParams) INOUT + OPTIONAL arg → scalar) | Load-bearing derived type: writes `rlP%LastSignal(inst)`. C++ must access fields. Also has OPTIONAL argument. Requires derived type struct mapping and OPTIONAL support |
 | `interp1d` | 58 | 1D linear interpolation (2 arrays + scalar + ErrVar → scalar) | **Verified (Phase 5A)**: arrays + ErrorVariables struct pointer. Error checks + interpolation + error message chaining |
 | `sigma` | 34 | Sigmoid/cubic ramp (5 scalars + ErrVar → scalar) | **Verified (Phase 5A)**: first ErrorVariables function. Scalars + struct pointer, error message chaining |
-| `unwrap` | 40 | Phase unwrapping (assumed-shape `x(:)` + ErrVar → array `DIMENSION(SIZE(x))`) | Blocked by ErrorVariables (Phase 4) + array-valued return where result size depends on input array |
-| `interp2d` | 172 | 2D bilinear interpolation (3 arrays including `zData(:,:)` + 2 scalars + ErrVar → scalar) | Blocked by ErrorVariables (Phase 4) + 2D assumed-shape `DIMENSION(:,:)` (Phase 5). Calls `interp1d`, uses `ieee_arithmetic` |
-| `AeroDynTorque` | 39 | Aerodynamic torque (2 scalars + 4 derived types → scalar) | Four derived type args: `LocalVariables`, `ControlParameters`, `PerformanceData` (all become C structs in Phase 4), `ErrorVariables` (BIND(C) struct in Phase 4). Calls `interp2d` |
+| `unwrap` | 40 | Phase unwrapping (assumed-shape `x(:)` + ErrVar → array `DIMENSION(SIZE(x))`) | Not yet translated — unused in simulation. Blocked by array-valued return where result size depends on input array |
+| `interp2d` | 172 | 2D bilinear interpolation (3 arrays including `zData(:,:)` + 2 scalars + ErrVar → scalar) | **Verified (Phase 8C)**: 2D assumed-shape arrays, column-major Z macro, bilinear interpolation |
+| `AeroDynTorque` | 39 | Aerodynamic torque (2 scalars + 4 derived types → scalar) | **Verified (Phase 8C)**: first PerformanceData view type function, calls `interp2d` |
 
 ---
 
@@ -741,34 +741,3 @@ Issues that should be addressed during the enhancement roadmap. Resolved items m
 | No warning for ALLOCATABLE/POINTER args | User doesn't know VIT is generating wrong code | Phase 3 | Open |
 | No detection of inter-function dependencies | Translated function calling untranslated function | Phase 7 | Open |
 
----
-
-## 7. Meeting Preparation
-
-### What to Demo
-
-The existing interp1d demo (validated 2026-03-17) shows the complete VIT pipeline:
-1. Read Fortran source → understand the function
-2. Write C++ translation
-3. Extract runtime state from a real wind turbine simulation (20+ calls captured)
-4. Verify bit-identical output (all cases passed)
-5. Integrate into the codebase (patch Fortran + CMake)
-6. Rebuild and confirm byte-identical simulation output
-
-### Key Talking Points
-
-- **VIT verifies, it doesn't translate.** Humans or LLMs write the C++; VIT proves it's correct against real runtime data and integrates it into the build.
-- **Current coverage**: 3/14 Functions.f90 functions verified (ErrVar-free). These 3 are ready to integrate in Phase 1.
-- **Clear phased roadmap**: 3 → 7 → 8 → 13 Functions.f90 functions (1 dead code), then Filters, Controllers, ControllerBlocks, I/O, and finally the entry point.
-- **Verification against reality**: Not synthetic test cases — actual runtime data from the NREL 5MW reference turbine simulation.
-- **Incremental and reversible**: Each function is verified and integrated independently. The mixed Fortran/C++ codebase works at every step.
-- **Full ROSCO is the goal**: Every module, every function, culminating in a pure C++ `libdiscon.so`.
-
-### Questions to Expect
-
-| Question | Answer |
-|----------|--------|
-| "How long to translate all of ROSCO?" | Functions.f90 (14 functions) could be complete in weeks. Full ROSCO depends on type system work — months, not years. |
-| "What about numerical precision?" | VIT verifies to 1e-14 tolerance (effectively bit-identical for double precision). Every translated function is proven against real simulation data. |
-| "Can it handle our other Fortran codes?" | VIT is designed to generalize. ROSCO is the first target; Phase 12 addresses other codebases. The core pipeline (extract → verify → integrate) is codebase-agnostic. |
-| "Why not just use an AI to auto-translate?" | LLMs can write the C++ (and often do). VIT's value is *proving* the translation is correct — which no LLM can guarantee — and automating the integration into the build. |

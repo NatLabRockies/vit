@@ -8,7 +8,7 @@ This workspace contains three tools that work together to enable verified Fortra
 
 **KGen** (NCAR) is an existing third-party tool that instruments Fortran code to capture function inputs and outputs during a simulation run, then generates a standalone "kernel" that can replay those calls. VIT wraps KGen and patches its generated code. KGen requires Python 2.7.
 
-**ROSCO** is a wind turbine controller written in Fortran. It is the test case for VIT. ROSCO's Python simulation loads a compiled Fortran shared library (`libdiscon.so`) and runs a controller loop. The target function for our proof-of-concept is `saturate` — a simple min/max clamp in `rosco/controller/src/Functions.f90`, called from `rosco/controller/src/Controllers.f90` at line 102.
+**ROSCO** is a wind turbine controller written in Fortran. It is the test case for VIT. ROSCO's Python simulation loads a compiled Fortran shared library (`libdiscon.so`) and runs a controller loop. VIT has verified and integrated 39 ROSCO functions — from simple math (`saturate`, `wrap_180`) through filters (`LPFilter`, `NotchFilter`) to complex controllers (`PitchControl`, `WindSpeedEstimator`) — producing byte-identical output across 9 simulation scenarios (672,000 values).
 
 ## Development Environment
 
@@ -270,6 +270,29 @@ diff baseline_output.txt integrated_output.txt
 
 Empty diff = the C++ translation produces byte-identical simulation output.
 
+### Batch Workflow (All Functions)
+
+For production integration of all 39 functions, use the batch scripts instead of repeating the single-function workflow:
+
+```bash
+# 1. Reset to clean Fortran (run on Mac, not in container)
+bash scripts/reset_to_clean.sh
+
+# 2. Build clean baseline + capture arrays (in container)
+cd rosco/controller/build && rm -rf * && cmake .. -DCMAKE_INSTALL_PREFIX=install && cmake --build . && cp libdiscon.so ../../lib/libdiscon.so && cd /workspace/ROSCO
+mkdir -p baseline_arrays && cd Examples && python3 vit_sim.py --output-dir /workspace/ROSCO/baseline_arrays && cd /workspace/ROSCO
+
+# 3. Verify all translations against golden kernels
+bash scripts/verify_all.sh    # 39/39 passed
+
+# 4. Integrate all functions
+bash scripts/integrate_all.sh  # 39/39 passed
+
+# 5. Rebuild and compare all 9 scenarios
+cd rosco/controller/build && rm -rf * && cmake .. -DCMAKE_INSTALL_PREFIX=install && cmake --build . && cp libdiscon.so ../../lib/libdiscon.so && cd /workspace/ROSCO
+# Compare arrays (see Clean Build Test → Step 6 for the comparison script)
+```
+
 ## VIT Configuration
 
 The file `/workspace/ROSCO/vit.yaml` configures the pipeline. All paths must be absolute container paths (starting with `/workspace/`).
@@ -503,7 +526,7 @@ After every feature implementation, run:
 
 This is the definitive test of the entire VIT pipeline: start from a completely clean ROSCO, build a pure-Fortran baseline, extract kernels for all functions, verify the C++ translations, integrate them into the codebase, rebuild, and confirm byte-identical simulation output.
 
-The functions included in the clean build test expand as phases complete. Initially only ErrVar-free functions are tested.
+The clean build test covers all 39 integrated functions across 9 scenarios.
 
 **Step 1 — Reset ROSCO to clean state (runs on Mac, not in container):**
 
@@ -713,7 +736,15 @@ Note: `interp1d.cpp` uses VIT's per-array size parameter convention (`n_xData`, 
 
 `ROSCO/TRANSLATION_TIPS.md` is a living document that captures lessons learned from translation failures. When a translation fails verification and the fix reveals a generalizable lesson, add it to this file. The `vit translate` command includes its contents in the translation prompt automatically, so the prompt gets smarter over time.
 
-## Known Limitations and Future Work
+### Translation Conventions
+
+**Source casing preservation:** VIT extracts the function name casing from the Fortran source declaration (`SUBROUTINE LPFilter(...)` → `LPFilter`, not `lpfilter`). The C++ translation must define the function with the same casing. The `_c` wrapper name is always lowercase (`lpfilter_c`) for BIND(C) compatibility.
+
+**POSIX collision guard:** If a function's exact name (case-sensitive) exists as a libc symbol, VIT appends `_impl` to avoid PLT interposition in shared libraries. This only triggers for all-lowercase names that match libc symbols (e.g., a hypothetical Fortran `FUNCTION shutdown(...)` → C++ `shutdown_impl()`). PascalCase names like `Shutdown` don't collide because libc's `shutdown` is lowercase.
+
+**Kernel file naming:** During kernel verification, VIT generates two files: `{name}.hpp` (user's translation, included via `#include`) and `{name}.cpp` (wrapper with `extern "C"` entry point). Both use lowercase names.
+
+## Known Limitations
 
 ### Derived types
 
@@ -730,8 +761,6 @@ VIT handles derived types with two strategies, configured per type in `vit.yaml`
 ### Assumed-shape arrays
 
 - **Per-array size params**: VIT generates a separate `n_<name>` size parameter for every assumed-shape array arg, even when arrays are semantically the same length (e.g., `xData` and `yData`). The user's C++ must accept per-array sizes. A future improvement could coalesce size params when arrays share the same rank, but that requires inference VIT currently avoids.
-
-- **No multi-dimensional assumed-shape handling**: `DIMENSION(:,:)` arrays would get a single `n_` size param via the same `:` detection, which is wrong for 2-D. There is no guard or warning — it would silently generate broken code. Add an error or proper handling when a multi-dimensional assumed-shape is encountered. Fixed in Phase 5.
 
 ### C++ → C++ call path
 
@@ -758,19 +787,19 @@ VIT detects translated callees by scanning the target function's original source
 
 **View-type stash for callee bridges:** When a callee bridge needs a view-type argument (like `ControlParameters`), it cannot use `C_F_POINTER` on the view pointer — the view struct has a completely different memory layout than the original Fortran type. Instead, the kernel wrapper "stashes" a pointer to the original Fortran type in a module-level SAVE variable (`vit_original_controlparameters`) before calling C++. Callee bridges USE this variable to get the original type directly. The stash is set in the view populator module and valid for the entire wrapper call duration.
 
-### KGen extraction limitations
+### KGen extraction
 
-- **Call site must be reachable at runtime**: KGen generates the kernel and instrumented code regardless, but zero state files are produced if the call site is never executed during the simulation. This was the original SecLPFilter_Vel issue — the `CALL CableControl` in DISCON.F90 is gated by `IF (CntrPar%CC_Mode > 0)`, and Scenario 3 originally had `CC_Mode=0`. Fixed by setting `CC_Mode=1` in vit_sim.py. KGen handles DO loops with derived-type iteration bounds correctly — the instrumented code is placed inside the loop body.
+- **Call site must be reachable at runtime**: KGen produces zero state files if the call site is never executed. Each extraction uses `--run-args '--scenario N'` to run the specific scenario that exercises the target function. Call sites gated by mode flags (e.g., `IF (CntrPar%CC_Mode > 0)`) need the corresponding mode enabled in the scenario config.
 
-- **Invocation ordering across scenarios**: KGen counts invocations per enclosing subroutine. When `vit_sim.py` runs multiple scenarios, Scenario 1's invocations consume the `0:0:1-20` capture range. Code paths only active in later scenarios (e.g., Scenario 3's IPC/notch/cable control) are never captured. Fix: Scenario 3 runs first in `vit_sim.py` so its invocations fall within the capture range.
+- **Invocation ordering**: KGen counts invocations per enclosing subroutine. When running multiple scenarios, earlier scenarios consume the capture range. VIT addresses this by running the target scenario first in `vit_sim.py` and by using `--run-args '--scenario N'` for per-scenario extraction.
 
-- **Kernel Makefile missing project Fortran flags**: KGen-generated kernel Makefiles don't include project-specific compiler flags like `-fdefault-real-8`. Without these, Fortran literal constants (e.g., `PI = 3.14159265359`) are evaluated as single-precision, causing coefficient mismatches. VIT's `fortran.flags` config field propagates these flags to the kernel Makefile.
+- **Project Fortran flags**: KGen-generated kernel Makefiles don't inherit project-specific compiler flags. VIT's `fortran.flags` config field in `vit.yaml` propagates flags like `-fdefault-real-8` and `-ffp-contract=off` to the kernel Makefile.
 
-- **PROCEDURE POINTER declarations** (fixed in our KGen fork): KGen's parser couldn't handle `PROCEDURE(...), POINTER` declarations (Fortran 2003+). Fixed by uncommenting and completing the `Procedure` class in KGen's parser (commit `31d653c`). Users of unpatched KGen will hit `'Line' object has no attribute 'analyze'` when extracting from files that USE modules with procedure pointers.
+- **Assumed-size arrays**: KGen generates state capture functions with `DIMENSION(:)` parameters. Fortran forbids passing assumed-size `(*)` arrays to assumed-shape parameters. VIT auto-detects assumed-size arrays, scans source for index evidence, and proposes sizes via the confirm protocol (exit code 10). Pre-configure `kgen.assumed_size_arrays` in `vit.yaml` to skip confirmation. **The size must cover ALL indices the function writes to** — undersizing causes silent heap corruption.
 
-- **Assumed-size arrays in state capture**: KGen generates state capture write functions with `DIMENSION(:)` (assumed-shape) parameters. Fortran forbids passing assumed-size `(*)` arrays to assumed-shape parameters. VIT auto-detects assumed-size arrays from the enclosing subroutine's signature, scans source for index access evidence, and proposes an appropriate size via the confirm protocol (exit code 10). The user confirms with `--assumed-size NAME=SIZE`. Optionally, pre-configure `kgen.assumed_size_arrays` in vit.yaml to skip confirmation. **The size must cover ALL indices the function writes to** — undersizing causes silent heap corruption because Fortran cannot bounds-check assumed-size `(*)` arrays.
+- **DLL SAVE variable persistence**: Fortran SAVE variables may persist across scenarios within a single `vit_sim.py` run (ctypes `dlclose()` may not truly unload the library). VIT's `kgen.dll_persistence.resets` config patches the instrumented source to reset project-specific guard variables (e.g., ROSCO's `AlreadyInitialized`) on each call. Note: with per-scenario extraction (`--run-args '--scenario N'`), only one scenario runs per process, so this reset may be unnecessary in practice — but the config provides a safety net for multi-scenario extraction.
 
-- **DLL SAVE variable persistence**: Within a single `vit_sim.py` run, Fortran SAVE variables may persist across scenarios (ctypes `dlclose()` may not truly unload the library). Project-specific guard variables (e.g., ROSCO's `AlreadyInitialized`) need resetting between scenarios so the controller re-initializes. Workaround: configure `kgen.dll_persistence.resets` in vit.yaml with anchor patterns and reset code. VIT patches the instrumented source via `sed` with `!VIT_DLL_RESET` tags (cleaned up after build). KGen's own SAVE arrays (`kgen_isstop`, `kgen_invoke`) do NOT need resetting — each extraction phase (elapsedtime, state capture) is a separate subprocess with fresh SAVE variables, and within a single run the invocation counters naturally exceed the capture range after the first scenario. Use `--run-args '--scenario N'` to limit extraction to a single scenario when the target function is gated by a mode flag.
+- **PROCEDURE POINTER declarations**: KGen's original parser couldn't handle `PROCEDURE(...), POINTER` (Fortran 2003+). Fixed in our KGen fork (commit `31d653c`).
 
 ## Development Notes Convention
 
