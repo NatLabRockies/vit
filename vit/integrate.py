@@ -407,16 +407,7 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
     lines.append(impl_content.rstrip())
     lines.append("")
 
-    # Detect the actual implementation function name from the content.
-    # Existing translations may use lowercase (e.g., colemantransform),
-    # while new ones use source casing (e.g., ColemanTransform).
-    impl_func_name = sig.cpp_impl_name  # default: source-cased
-    impl_name_match = re.search(
-        rf'\b(?:void|double|int|float)\s+({re.escape(sig.name)}(?:_impl)?)\s*\(',
-        impl_content, re.IGNORECASE
-    )
-    if impl_name_match:
-        impl_func_name = impl_name_match.group(1)
+    impl_func_name = sig.cpp_impl_name
 
     # Generate extern "C" wrapper using shared param builder
     lines.append("// --- Fortran-callable C wrapper ---")
