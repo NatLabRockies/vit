@@ -634,6 +634,8 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 transfers owners
 ### Phase 10: I/O and Platform Modules
 **Target: ReadSetParameters, ROSCO_Helpers, ROSCO_IO, SysSubs, ExtControl, ZeroMQInterface**
 
+**Note:** VIT currently has no I/O verification capability — file readers/writers/diagnostics cannot be verified through the existing function-level pipeline. This phase must build new verification machinery (file pre-staging, file trace capture) before translations can be verified.
+
 Investigation (2026-03-17) classified every I/O function into four categories, each with a distinct VIT verification strategy. The verification capabilities are built at the start of this phase, then used to verify each translation.
 
 **Category 1 — Pure transformers (standard VIT pipeline):**
@@ -707,37 +709,4 @@ A generality audit (2026-03-19) confirmed VIT has no ROSCO-specific logic in pro
 - [ ] Packaging — PyPI distribution, Docker image, CI/CD
 - [ ] Test on another codebase — validate VIT on a second Fortran project to prove generality
 
----
-
-## 6. VIT Technical Debt
-
-Issues that should be addressed during the enhancement roadmap. Resolved items marked with ✓.
-
-### Silent Breakage Risks
-
-| Issue | Impact | Fix Phase | Status |
-|-------|--------|-----------|--------|
-| 2D assumed-shape arrays generate single `n_` size param | Wrong C interface for DIMENSION(:,:) | Phase 5 | ✓ Fixed (multi-dim guard added) |
-| ALLOCATABLE args parsed as regular arrays | Wrong size semantics | Phase 4 | Open |
-| CHARACTER function results assume numeric kind conversion | Would generate broken wrapper | Phase 4 | Open |
-| ELEMENTAL/PURE/RECURSIVE prefixes not recognized | Function declaration not matched by parser | Phase 7 | Open |
-| Fortran/C struct memory layout mismatch | Fields at wrong offsets if compiler pads differently | Phase 4 | Low risk — BIND(C) guarantees C-compatible layout, simulation diffs prove correctness |
-| Column-major arrays passed to C++ without transposition | C++ computes wrong results with Fortran-layout matrices | Phase 4 | ✓ Documented (column-major note in struct headers) |
-| No I/O verification capability | File readers/writers/diagnostics cannot be verified through existing pipeline | Phase 10 | Open |
-
-### Correctness Issues
-
-| Issue | Impact | Fix Phase | Status |
-|-------|--------|-----------|--------|
-| INTENT(OUT) arrays in subroutines may get wrong intent in interface | Could generate read-only when write is needed | Phase 2 | ✓ Fixed |
-| Derived type registry not wired into CLI | All TYPE(...) defaults to passthrough — wrong for BIND(C) types | Phase 3/4 | ✓ Fixed (registry threaded through all callers) |
-| Subroutine codepath untested end-to-end | Latent bugs in subroutine interface/verify/integrate | Phase 2 | ✓ Fixed (ColemanTransform was first subroutine) |
-
-### Missing Guards
-
-| Issue | Impact | Fix Phase | Status |
-|-------|--------|-----------|--------|
-| No error on unsupported array ranks | Silent wrong code generation | Phase 5 | ✓ Fixed |
-| No warning for ALLOCATABLE/POINTER args | User doesn't know VIT is generating wrong code | Phase 3 | Open |
-| No detection of inter-function dependencies | Translated function calling untranslated function | Phase 7 | Open |
 
