@@ -183,8 +183,9 @@ class TestFortranParser:
             parse_signature_from_source(ROSCO_FUNCTIONS_SOURCE, "nonexistent")
 
     def test_case_insensitive(self):
+        # CLI arg is PascalCase but Fortran source is lowercase — source wins
         sig = parse_signature_from_source(ROSCO_FUNCTIONS_SOURCE, "Saturate")
-        assert sig.name == "Saturate"
+        assert sig.name == "saturate"  # preserves source casing, not CLI arg
         assert sig.kind == SubprogramKind.FUNCTION
 
 

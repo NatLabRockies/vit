@@ -8,11 +8,26 @@ Extracts the information needed for deterministic interface generation:
 - INTENT attributes
 """
 
+import ctypes
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+
+
+def _is_libc_symbol(name: str) -> bool:
+    """Check if name is an exported symbol in the C library.
+
+    Uses the dynamic linker's own resolution — catches exactly the
+    symbols that would collide via PLT in a -fPIC shared library.
+    """
+    try:
+        libc = ctypes.CDLL(None)  # default handle = all loaded libs
+        getattr(libc, name)
+        return True
+    except (OSError, AttributeError):
+        return False
 
 
 class SubprogramKind(Enum):
@@ -89,6 +104,18 @@ class FortranSignature:
         return f"{self.name.lower()}_c"
 
     @property
+    def cpp_impl_name(self) -> str:
+        """C++ implementation function name.
+
+        Preserves source casing from the Fortran declaration.
+        Appends _impl if the exact name collides with a libc symbol
+        (prevents PLT interposition in -fPIC shared libraries).
+        """
+        if _is_libc_symbol(self.name):
+            return f"{self.name}_impl"
+        return self.name
+
+    @property
     def is_function(self) -> bool:
         return self.kind == SubprogramKind.FUNCTION
 
@@ -157,6 +184,12 @@ def parse_signature_from_source(source: str, function_name: str) -> FortranSigna
 
     if kind is None:
         raise ValueError(f"Could not find FUNCTION or SUBROUTINE '{function_name}' in source")
+
+    # Extract actual function name casing from the source (not from CLI arg)
+    source_name_match = re.search(
+        r'(?:FUNCTION|SUBROUTINE)\s+(\w+)\s*\(', sig_line, re.IGNORECASE
+    )
+    source_name = source_name_match.group(1) if source_name_match else function_name
 
     # Parse argument list from signature line
     sig_upper = sig_line.upper()
@@ -253,7 +286,7 @@ def parse_signature_from_source(source: str, function_name: str) -> FortranSigna
             result_type = sig_line[prefix_match.start(1):prefix_match.end(1)].strip()
 
     return FortranSignature(
-        name=function_name,
+        name=source_name,
         kind=kind,
         args=ordered_args,
         result_name=result_name,

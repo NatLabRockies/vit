@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from vit.fortran_parser import (
     parse_signature_from_source,
     find_function_in_file,
+    _is_libc_symbol,
     FortranSignature,
     FortranArg,
     SubprogramKind,
@@ -284,3 +285,77 @@ END SUBROUTINE reset
         assert len(sig.args) == 2
         assert sig.args[0].intent == IntentKind.OUT
         assert sig.args[1].intent == IntentKind.IN
+
+
+class TestSourceCasingAndLibcCollision:
+    """Test that VIT preserves Fortran source casing and detects libc collisions."""
+
+    def test_preserves_pascal_case_from_source(self):
+        """Function name casing comes from the Fortran source, not CLI arg."""
+        source = """\
+SUBROUTINE Shutdown(LocalVar, CntrPar)
+    INTEGER, INTENT(INOUT) :: LocalVar
+    INTEGER, INTENT(IN) :: CntrPar
+END SUBROUTINE Shutdown
+"""
+        # CLI arg is lowercase, but source has PascalCase
+        sig = parse_signature_from_source(source, "shutdown")
+        assert sig.name == "Shutdown"
+
+    def test_preserves_lowercase_from_source(self):
+        """All-lowercase source names are preserved as-is."""
+        source = """\
+REAL(8) FUNCTION saturate(inputSignal, minValue, maxValue)
+    REAL(8), INTENT(IN) :: inputSignal, minValue, maxValue
+    saturate = MAX(minValue, MIN(inputSignal, maxValue))
+END FUNCTION saturate
+"""
+        sig = parse_signature_from_source(source, "saturate")
+        assert sig.name == "saturate"
+
+    def test_c_func_name_always_lowercase(self):
+        """The _c wrapper name is always lowercase for backward compatibility."""
+        source = """\
+SUBROUTINE WindSpeedEstimator(x)
+    INTEGER, INTENT(INOUT) :: x
+END SUBROUTINE WindSpeedEstimator
+"""
+        sig = parse_signature_from_source(source, "WindSpeedEstimator")
+        assert sig.c_func_name == "windspeedestimator_c"
+
+    def test_is_libc_symbol_detects_shutdown(self):
+        """shutdown is a POSIX system call and should be detected."""
+        assert _is_libc_symbol("shutdown") is True
+
+    def test_is_libc_symbol_case_sensitive(self):
+        """PascalCase names don't collide with lowercase libc symbols."""
+        assert _is_libc_symbol("Shutdown") is False
+
+    def test_is_libc_symbol_non_posix(self):
+        """Application-specific names aren't in libc."""
+        assert _is_libc_symbol("saturate") is False
+        assert _is_libc_symbol("WindSpeedEstimator") is False
+
+    def test_cpp_impl_name_pascal_case_no_suffix(self):
+        """PascalCase names don't get _impl suffix even if lowercase form is in libc."""
+        sig = FortranSignature(
+            name="Shutdown", kind=SubprogramKind.SUBROUTINE,
+            args=[], line_number=1,
+        )
+        assert sig.cpp_impl_name == "Shutdown"
+
+    def test_cpp_impl_name_lowercase_libc_gets_suffix(self):
+        """All-lowercase names that match libc symbols get _impl suffix."""
+        sig = FortranSignature(
+            name="shutdown", kind=SubprogramKind.SUBROUTINE,
+            args=[], line_number=1,
+        )
+        assert sig.cpp_impl_name == "shutdown_impl"
+
+    def test_cpp_impl_name_non_libc_no_suffix(self):
+        """Names not in libc are returned as-is."""
+        sig = FortranSignature(
+            name="saturate", kind=SubprogramKind.FUNCTION,
+            args=[], line_number=1,
+        )
+        assert sig.cpp_impl_name == "saturate"

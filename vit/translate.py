@@ -71,7 +71,7 @@ def generate_translation_scaffold(
     # Generate C++ signature
     params = build_c_params(sig, kind_aliases, derived_types)
     ret_type = _get_c_return_type(sig, kind_aliases)
-    func_name = sig.name.lower()
+    func_name = sig.cpp_impl_name
 
     param_str = ", ".join(f"{p[0]} {p[1]}" for p in params)
     lines.append(f"{ret_type} {func_name}({param_str}) {{")

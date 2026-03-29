@@ -407,6 +407,17 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
     lines.append(impl_content.rstrip())
     lines.append("")
 
+    # Detect the actual implementation function name from the content.
+    # Existing translations may use lowercase (e.g., colemantransform),
+    # while new ones use source casing (e.g., ColemanTransform).
+    impl_func_name = sig.cpp_impl_name  # default: source-cased
+    impl_name_match = re.search(
+        rf'\b(?:void|double|int|float)\s+({re.escape(sig.name)}(?:_impl)?)\s*\(',
+        impl_content, re.IGNORECASE
+    )
+    if impl_name_match:
+        impl_func_name = impl_name_match.group(1)
+
     # Generate extern "C" wrapper using shared param builder
     lines.append("// --- Fortran-callable C wrapper ---")
     c_func_name = sig.c_func_name
@@ -420,13 +431,13 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
 
         lines.append(f'extern "C" {{')
         lines.append(f"    {ret_mapping.c_type} {c_func_name}({param_str}) {{")
-        lines.append(f"        return {sig.name.lower()}({arg_str});")
+        lines.append(f"        return {impl_func_name}({arg_str});")
         lines.append(f"    }}")
         lines.append(f"}}")
     else:  # Subroutine or array-valued function
         lines.append(f'extern "C" {{')
         lines.append(f"    void {c_func_name}({param_str}) {{")
-        lines.append(f"        {sig.name.lower()}({arg_str});")
+        lines.append(f"        {impl_func_name}({arg_str});")
         lines.append(f"    }}")
         lines.append(f"}}")
 
