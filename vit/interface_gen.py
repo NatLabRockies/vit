@@ -20,6 +20,7 @@ Handles derived types, assumed-shape arrays, and OPTIONAL arguments:
   whether the subprogram is a function or subroutine.
 """
 
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -72,7 +73,20 @@ def generate_cpp_wrapper(sig: FortranSignature, cpp_impl_file: str,
             lines.append(f'#include "{h}"')
         lines.append("")
 
-    impl_name = sig.name.lower()
+    # Detect actual implementation function name from the file content.
+    # Existing translations may use lowercase, new ones use source casing.
+    impl_name = sig.cpp_impl_name  # default: source-cased with libc guard
+    try:
+        impl_content = Path(cpp_impl_file).read_text()
+        impl_match = re.search(
+            rf'\b(?:void|double|int|float)\s+({re.escape(sig.name)}(?:_impl)?)\s*\(',
+            impl_content, re.IGNORECASE
+        )
+        if impl_match:
+            impl_name = impl_match.group(1)
+    except (OSError, IOError):
+        pass  # File not readable; use default
+
     c_func_name = sig.c_func_name
 
     # Include the user's implementation inline

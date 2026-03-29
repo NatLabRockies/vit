@@ -598,26 +598,27 @@ With Phase 4 complete, `WE` nested struct is accessible through `LocalVariables`
 #### Phase 8A: PitchSaturation + PitchControl Unblock
 - [x] Translate + verify + integrate `PitchSaturation` — 21/21 PASSED. Peak shaving min pitch via interp1d lookup.
 - [x] Integrate `PitchControl` — was verified in Phase 7B, blocked on PitchSaturation. Now unblocked.
-- [x] Integration test — 29 functions integrated, 612,000 values ALL IDENTICAL across 8 scenarios.
-- [x] Parallel verification (`verify_all.sh -j 8`) — all 29 functions verified.
+- [x] Integration test — 29 functions integrated, 612,000 values ALL IDENTICAL across 8 scenarios (later expanded to 39 functions / 9 scenarios in Phase 8C).
+- [x] Parallel verification (`verify_all.sh`) — all 29 functions verified (later expanded to 39).
 
 #### Phase 8B: Seven Independent ControllerBlocks Functions
-- [ ] Scenario 9 setup in vit_sim.py — SU_Mode=1, SD_Mode=1, TRA_Mode=1
-- [ ] Translate + verify + integrate `StateMachine` — pure conditional logic, 2 args, no callees
-- [ ] Translate + verify + integrate `SetpointSmoother` — LPFilter callee
-- [ ] Translate + verify + integrate `PowerControlSetpoints` — interp1d callee
-- [ ] Translate + verify + integrate `RefSpeedExclusion` — ratelimit callee, Scenario 9
-- [ ] Translate + verify + integrate `ComputeVariablesSetpoints` — LPFilter + interp1d + saturate + RefSpeedExclusion callees
-- [ ] Translate + verify + integrate `Shutdown` — LPFilter + wrap_180, Scenario 9
-- [ ] Translate + verify + integrate `Startup` — LPFilter + sigma, Scenario 9
+- [x] Scenario 9 setup in vit_sim.py — SU_Mode=1, SD_Mode=1, TRA_Mode=1. Added `run_scenario_9()`.
+- [x] Translate + verify + integrate `StateMachine` — pure conditional logic, 2 args, no callees
+- [x] Translate + verify + integrate `SetpointSmoother` — LPFilter callee
+- [x] Translate + verify + integrate `PowerControlSetpoints` — interp1d callee
+- [x] Translate + verify + integrate `RefSpeedExclusion` — ratelimit callee
+- [x] Translate + verify + integrate `ComputeVariablesSetpoints` — LPFilter + interp1d + saturate + RefSpeedExclusion callees
+- [x] Translate + verify + integrate `Shutdown` — LPFilter + wrap_180. Required renaming C++ function to avoid POSIX `shutdown(2)` PLT collision.
+- [x] Translate + verify + integrate `Startup` — LPFilter + sigma
 
 #### Phase 8C: WindSpeedEstimator + Dependencies
-- [ ] VIT 2D assumed-shape array support — interface_gen.py, fortran_parser.py, kernel_verify.py
-- [ ] Translate + verify + integrate `interp2d` (Functions.f90) — 2D bilinear interpolation, first rank-2 array function
-- [ ] Translate + verify + integrate `AeroDynTorque` (Functions.f90) — first PerformanceData view type function
-- [ ] Translate + verify + integrate `WindSpeedEstimator` — EKF with 3×3 matrices, 6 type args
+- [x] VIT 2D assumed-shape array support — interface_gen.py, fortran_parser.py, kernel_verify.py
+- [x] Translate + verify + integrate `interp2d` (Functions.f90) — 2D bilinear interpolation, first rank-2 array function
+- [x] Translate + verify + integrate `AeroDynTorque` (Functions.f90) — first PerformanceData view type function
+- [x] Translate + verify + integrate `WindSpeedEstimator` — EKF with 3×3 matrices, 6 type args. Required `std::pow(v_m, 3.0)` fix and Fortran MATMUL bridge (`vit_ekf_update`).
+- [x] Integration test — 39 functions integrated, 672,000 values ALL IDENTICAL across 9 scenarios.
 
-**New functions unlocked**: All 9 ControllerBlocks.f90 functions + 2 Functions.f90 dependencies
+**Phase 8 complete.** All 39 ROSCO functions translated to C++ and verified bit-identical. See dev notes `202603282007` for full investigation details.
 
 ### Phase 9: Type Ownership Transfer
 **Target: C++ becomes source of truth for all types**
