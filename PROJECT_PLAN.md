@@ -463,7 +463,6 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 - [x] Kernel callee bridges — auto-generated BIND(C) bridges for translated callees (e.g., PIController) so C++ can call them in kernel context.
 - [x] ForeAftDamping verified 40/40 — first ControlParameters view type function. Byte-identical simulation output.
 - [x] 501 tests (50 view type tests covering scanner, struct gen, populator, registry, interface gen, callee detection).
-- [ ] Ownership tracking in `vit.yaml`: types tagged as "bind_c" or "view". When all Fortran consumers are translated, VIT flags ownership transfer eligibility. (Deferred to Phase 9)
 
 **Types usable after:** ControlParameters, PerformanceData, ExtControlType
 **Unblocks:** Phase 5 AeroDynTorque (all 4 type args ready), Phases 7-8 full ControlParameters field access. **Now unblocked.**
@@ -618,13 +617,16 @@ With Phase 4 complete, `WE` nested struct is accessible through `LocalVariables`
 ### Phase 9: Type Ownership Transfer
 **Target: C++ becomes source of truth for all types**
 
-Phase 4 created BIND(C) structs and pointer+size views. Phase 9 transfers ownership: C++ allocates and manages all data, Fortran wrappers become thin shims.
+Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively transfers ownership to C++ as the remaining Fortran infrastructure is translated. The transfer has a dependency chain: C++ can't own allocations until the allocating code (ReadSetParameters) is translated (Phase 10), and struct definitions can't move to C++ headers until DISCON.F90 is translated (Phase 11).
 
-- [ ] Transfer ALLOCATABLE types to C++ ownership — ControlParameters and PerformanceData pointer+size views become C++ structs with `std::vector<double>`. C++ ReadSetParameters (translated in Phase 10) allocates directly.
-- [ ] Move struct definitions from Fortran to C++ headers — C++ structs become the canonical definitions. Fortran types become thin `BIND(C)` wrappers that mirror the C++ layout.
-- [ ] C++ constants header — `constexpr double PI = ...`, `using DbKi = double`, etc. Replace Constants.f90 as the source of truth.
-- [ ] VIT ownership tracker confirms all types are now "owned" by C++.
-- [ ] Verify mixed Fortran/C++ build still produces byte-identical simulation output.
+**Actionable now (no Phase 10 dependency):**
+- [ ] C++ constants header — consolidate `PI`, `D2R`, `R2D`, `RPS2RPM` from Constants.f90 into a shared C++ header. Replace the copy-pasted constants across 9+ translation files. Update `vit translate` to include it in scaffolds.
+
+**After Phase 10 (ReadSetParameters translated to C++):**
+- [ ] Transfer ALLOCATABLE types to C++ ownership — C++ ReadSetParameters allocates ControlParameters and PerformanceData arrays via `std::vector<double>`. View populators reverse direction: C++ owns the data, Fortran accesses through pointers.
+
+**After Phase 11 (DISCON.F90 translated to C++):**
+- [ ] Move struct definitions from Fortran to C++ headers — C++ structs become the canonical definitions. ROSCO_Types.f90 becomes dead code.
 
 ### Phase 10: I/O and Platform Modules
 **Target: ReadSetParameters, ROSCO_Helpers, ROSCO_IO, SysSubs, ExtControl, ZeroMQInterface**
