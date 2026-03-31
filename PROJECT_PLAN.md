@@ -471,14 +471,13 @@ Deep investigation (2026-03-17) found that **every ROSCO type can become a C str
 #### Phase 4 Dependency Graph and Execution Order
 
 ```
-4A (ErrorVariables) ✅ ──→ Phase 5A (sigma, interp1d) ✅ ──→ Phase 5B (unwrap, interp2d)
+4A (ErrorVariables) ✅ ──→ Phase 5A (sigma, interp1d) ✅ ──→ Phase 5B (interp2d, AeroDynTorque) ✅
 4B (Simple structs)  ✅ ──→ Phase 6A (LPFilter, HPFilter, SecLPFilter) ✅
                         ──→ Phase 6B (NotchFilter, NotchFilterSlopes, SecLPFilter_Vel) ✅
-4C (LocalVariables)  ✅ ──→ Phase 7A Controllers (PI/PID/PII/Res — no CntrPar needed)
-4D (View structs)       ──→ Phase 7B Controllers (main subroutines — need CntrPar)
-                        ──→ Phase 8 ControllerBlocks (need CntrPar)
-                        ──→ Phase 5B AeroDynTorque (needs CntrPar + PerformanceData)
-                        ──→ PreFilterMeasuredSignals (needs CntrPar + LocalVariables)
+4C (LocalVariables)  ✅ ──→ Phase 7A Controllers (PI/PID/PII/Res) ✅
+4D (View structs)    ✅ ──→ Phase 7B Controllers (main subroutines) ✅
+                        ──→ Phase 8 ControllerBlocks ✅
+                        ──→ PreFilterMeasuredSignals (Phase 10)
 ```
 
 4A, 4B, 4C all complete. 4D (pointer+size views for ALLOCATABLE types) is the remaining type system work.
@@ -499,17 +498,13 @@ Validates the ErrorVariables struct pointer pipeline end-to-end with the two sim
 - [x] Full integration test: 9 C++ translations produce byte-identical simulation output
 
 ### Phase 5B: Remaining Functions.f90 (unwrap, interp2d, AeroDynTorque)
-**Target: 13/14 Functions.f90 (CPfunction skipped — dead code)**
+**Status: Complete (interp2d + AeroDynTorque done in Phase 8C; unwrap deferred — unused in simulation)**
 
-Requires VIT enhancements for array-valued returns and 2D assumed-shape arrays. AeroDynTorque additionally requires Phase 4D (ControlParameters/PerformanceData view structs).
-
-- [ ] Multi-dimensional assumed-shape — `DIMENSION(:,:)` must generate two size params (`n_rows`, `n_cols`), not one. Current code silently generates broken interfaces for 2D. Add rank detection and per-dimension size params.
-- [ ] Guard against unsupported ranks — add explicit error for `DIMENSION(:,:,:)` and higher until supported.
-- [ ] Array-valued return where result size depends on input array — needed by `unwrap`
-- [ ] Translate + verify + integrate `unwrap` (after array-valued return enhancement)
-- [ ] Translate + verify + integrate `interp2d` (after 2D assumed-shape enhancement)
-- [ ] Translate + verify + integrate `AeroDynTorque` (after 4D) — first function using the complete type system: ControlParameters (view struct), PerformanceData (view struct), LocalVariables (BIND(C) struct), ErrorVariables (BIND(C) struct)
-- [ ] Run full verification regression (all 13 translated functions pass)
+- [x] Multi-dimensional assumed-shape — `DIMENSION(:,:)` generates two size params (`n_rows`, `n_cols`). Rank detection and per-dimension size params implemented in Phase 5.
+- [x] Guard against unsupported ranks — explicit error for `DIMENSION(:,:,:)` and higher.
+- [x] Translate + verify + integrate `interp2d` — 21/21 passed. 2D bilinear interpolation with column-major Z macro. Done in Phase 8C.
+- [x] Translate + verify + integrate `AeroDynTorque` — 20/20 passed. First function using complete type system (ControlParameters + PerformanceData view structs + LocalVariables + ErrorVariables). Done in Phase 8C.
+- [ ] ~~Translate + verify + integrate `unwrap`~~ — **deferred**. `unwrap` is defined in Functions.f90 but never called from any integrated function or DISCON.F90. Not exercised by any simulation scenario. Requires array-valued return where result size depends on input (`DIMENSION(SIZE(x))`), which VIT doesn't support yet. Address if/when the function is needed.
 
 ### Phase 6A: Filters Module — Active Filters ✅
 **Status: Complete**
