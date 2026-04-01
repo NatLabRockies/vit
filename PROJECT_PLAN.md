@@ -6,10 +6,10 @@
 
 Fully translate the ROSCO wind turbine controller from Fortran to C++, producing a drop-in replacement `libdiscon.so` that is pure C++ and produces byte-identical simulation output to the Fortran original. VIT orchestrates the verification and integration. Claude (AI) writes the C++ translations, scaffolded by the `vit translate` command (see Section 4a).
 
-### Current State (2026-03-29)
+### Current State (2026-04-01)
 
-- **Verified translations**: 39 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, and Controllers.f90 — all 39 KGen-verified (20-23 cases each, IDENTICAL). Phase 8 complete: all ControllerBlocks functions (PitchSaturation, StateMachine, SetpointSmoother, PowerControlSetpoints, RefSpeedExclusion, ComputeVariablesSetpoints, Shutdown, Startup, WindSpeedEstimator) plus interp2d and AeroDynTorque.
-- **Integrated (39 of 39)**: All 39 translations produce byte-identical simulation output across 9 scenarios (672,000 float64 values). Pure C++ — no Fortran bridges. All translations use Fortran source casing.
+- **Verified translations**: 41 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, Controllers.f90, and ReadSetParameters.f90 — all 41 KGen-verified (20-23 cases each, IDENTICAL). Phase 10A complete: ReadAvrSWAP (avrSWAP array unpacking) and PIDController (OL_Mode=2 azimuth tracking).
+- **Integrated (41 of 41)**: All 41 translations produce byte-identical simulation output across 10 scenarios (692,000 float64 values). Pure C++ — no Fortran bridges. All translations use Fortran source casing.
 - **Scenario 3 FITPACK fix**: scipy's FITPACK `bispev` reads an uninitialized stack variable, causing non-deterministic Cp interpolation. Fixed with a stack scrubber + cached RectBivariateSpline in vit_sim.py (dev note `202603261539`).
 - **Scenario 8 NotchFilterSlopes fix**: Fortran `**` precedence grouping mismatch in coefficient computation caused 1-ULP errors that accumulated over 14,791 timesteps. Fixed by parenthesizing C++ to match Fortran grouping (dev note `202603261747`).
 - **Phase 7B complete**: All 10 functions extracted (20-23 cases each) and translated to C++. Required 10 VIT infrastructure fixes (bridge assumed-size arrays, DISCON.F90 kernel patches, avrSWAP kind mismatch, OPTIONAL bridge handling, view-type stash for callee bridges). See dev notes 202603241408, 202603241444.
@@ -632,7 +632,7 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
 ### Phase 10: I/O and Platform Modules
 **Target: ReadSetParameters, ROSCO_Helpers, ROSCO_IO, SysSubs, ExtControl, ZeroMQInterface**
 
-**Strategic shift (2026-04-01):** Consultation with the ROSCO developer and three software engineers established a new approach for Phase 10. KGen cannot verify file I/O, platform wrappers, or stateful diagnostics. Rather than building elaborate new VIT verification infrastructure (file pre-staging, `--io` mode, `--diagnostic` mode) to mirror-translate I/O code line-by-line, Phase 10 writes **idiomatic C++** for non-KGen functions and verifies at the simulation level (9 scenarios, 672,000 values). KGen is still used for pure transformer functions.
+**Strategic shift (2026-04-01):** Consultation with the ROSCO developer and three software engineers established a new approach for Phase 10. KGen cannot verify file I/O, platform wrappers, or stateful diagnostics. Rather than building elaborate new VIT verification infrastructure (file pre-staging, `--io` mode, `--diagnostic` mode) to mirror-translate I/O code line-by-line, Phase 10 writes **idiomatic C++** for non-KGen functions and verifies at the simulation level (10 scenarios, 692,000 values). KGen is still used for pure transformer functions.
 
 **Two tracks:**
 - **Track A (KGen, mirror Fortran):** Pure transformers with no file I/O — standard VIT extract → verify → integrate pipeline
@@ -648,8 +648,8 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
 `ParseDbAry`, `ParseInAry`, `FindLine`, `GetWords`, `ChkParseData`, `ParseInput` variants, `Read_OL_Input` — these all exist solely to parse DISCON.IN's positional text format. The idiomatic C++ config reader replaces all of them. Utility functions (`Conv2UC`, `Int2LStr`, `GetPath`, `GetRoot`, `PathIsRelative`) are trivially replaced with `<algorithm>`, `std::to_string`, and `<filesystem>`. `GetNewUnit` is not needed in C++ (uses `std::ofstream`).
 
 **Stage A — KGen functions (standard pipeline):**
-- [ ] `ReadAvrSWAP` — unpacks avrSWAP array into LocalVar fields (140 lines of pure assignment). Extract, translate (mirror), verify bit-identical, integrate.
-- [ ] `PIDController` — PI + derivative term, requires OL_Mode=2 with open-loop CSV for extraction. Structurally similar to PIController (already translated). Moved from Phase 7A.
+- [x] `ReadAvrSWAP` — unpacks avrSWAP array into LocalVar fields (140 lines of pure assignment). Extracted (21 cases, Scenario 3), verified 21/21, integrated. Required ROSCO_Helpers.f90 backslash patch for KGen parser.
+- [x] `PIDController` — PI + derivative term. Extracted (22 cases, Scenario 10 / OL_Mode=2), verified 22/22, integrated. Added Scenario 10 to vit_sim.py. Updated VariableSpeedControl translation with OL_Mode=2 code path (inline UNWRAP + PIDController call).
 
 **Stage B — Configuration loading (idiomatic C++):**
 - [ ] `ReadCpFile` → `translations/IO/cp_reader.cpp` — Clean C++ CSV reader for Cp/Ct/Cq performance tables. Simplest idiomatic file reader, proves the pattern.
@@ -669,12 +669,12 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
 - [ ] `SetParameters` → `translations/IO/set_parameters.cpp` — Calls config_reader, cp_reader, check_inputs. Initializes LocalVar fields, filter instances. Calls existing translated C++ functions (interp1d_c, lpfilter_c) via `vit_translated.h`. Depends on Stages A-D.
 
 **Interface: idiomatic I/O ↔ existing C structs:**
-All new C++ I/O code populates the same types from `vit_types.h` that the 39 algorithm functions use. All functions exposed to Fortran (during the mixed phase) use `extern "C"` with C struct pointers. The `controlparameters_view_t` transitions from "view into Fortran data" to "primary data owner" — see derived type ownership notes above.
+All new C++ I/O code populates the same types from `vit_types.h` that the 41 algorithm functions use. All functions exposed to Fortran (during the mixed phase) use `extern "C"` with C struct pointers. The `controlparameters_view_t` transitions from "view into Fortran data" to "primary data owner" — see derived type ownership notes above.
 
 **Verification (three tiers):**
 1. **KGen (Track A):** Bit-identical function-level verification for ReadAvrSWAP, PIDController
 2. **Unit tests (Track B):** Each idiomatic module gets standalone tests (load DISCON.IN/YAML → verify all 225+ fields; roundtrip restart; format debug output)
-3. **Simulation (gate):** After each stage, 9-scenario comparison (672,000 values, must be identical with `-ffp-contract=off`)
+3. **Simulation (gate):** After each stage, 10-scenario comparison (692,000 values, must be identical with `-ffp-contract=off`)
 
 **Build system changes:**
 - [ ] Add yaml-cpp dependency to CMakeLists.txt and Docker container
