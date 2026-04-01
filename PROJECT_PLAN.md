@@ -620,7 +620,7 @@ With Phase 4 complete, `WE` nested struct is accessible through `LocalVariables`
 Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively transfers ownership to C++ as the remaining Fortran infrastructure is translated. The transfer has a dependency chain: C++ can't own allocations until the allocating code (ReadSetParameters) is translated (Phase 10), and struct definitions can't move to C++ headers until DISCON.F90 is translated (Phase 11).
 
 **Actionable now (no Phase 10 dependency):**
-- [ ] C++ constants header — consolidate `PI`, `D2R`, `R2D`, `RPS2RPM` from Constants.f90 into a shared C++ header. Replace the copy-pasted constants across 9+ translation files. Update `vit translate` to include it in scaffolds.
+- [x] C++ constants header — created `translations/rosco_constants.h` with all Constants.f90 values. 17 translations updated to use it. Documented in TRANSLATION_TIPS.md (included in translation prompts automatically). Translations are self-contained — each includes only what it uses.
 
 **After Phase 10 (ReadSetParameters translated to C++):**
 - [ ] Transfer ALLOCATABLE types to C++ ownership — C++ ReadSetParameters allocates ControlParameters and PerformanceData arrays via `std::vector<double>`. View populators reverse direction: C++ owns the data, Fortran accesses through pointers.
