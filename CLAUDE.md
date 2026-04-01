@@ -736,6 +736,8 @@ Note: `interp1d.cpp` uses VIT's per-array size parameter convention (`n_xData`, 
 
 `ROSCO/TRANSLATION_TIPS.md` is a living document that captures lessons learned from translation failures. When a translation fails verification and the fix reveals a generalizable lesson, add it to this file. The `vit translate` command includes its contents in the translation prompt automatically, so the prompt gets smarter over time.
 
+TRANSLATION_TIPS.md is also the place to document project-specific resources available to translators — shared headers, constants, utility functions. For example, ROSCO's `rosco_constants.h` is documented there so translators know to use `PI` from the header instead of defining it inline. Any shared resource that a translator should know about belongs in this file.
+
 ### Translation Conventions
 
 **Source casing preservation:** VIT extracts the function name casing from the Fortran source declaration (`SUBROUTINE LPFilter(...)` → `LPFilter`, not `lpfilter`). The C++ translation must define the function with the same casing. The `_c` wrapper name is always lowercase (`lpfilter_c`) for BIND(C) compatibility.

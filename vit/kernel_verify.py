@@ -153,6 +153,15 @@ def setup_kernel_cpp(
     shutil.copy2(cpp_impl_path, impl_dest)
     result["files_modified"].append(str(impl_dest))
 
+    # --- Step 1a: Copy shared constants header (if found near the impl file) ---
+    for parent in [Path(cpp_impl_path).parent] + list(Path(cpp_impl_path).parent.parents):
+        candidate = parent / "rosco_constants.h"
+        if candidate.exists():
+            constants_dest = kernel / "rosco_constants.h"
+            shutil.copy2(str(candidate), str(constants_dest))
+            result["files_modified"].append(str(constants_dest))
+            break
+
     # --- Step 1b: Generate struct headers for C-compatible derived types ---
     struct_headers = []
     view_populator_sources = []
