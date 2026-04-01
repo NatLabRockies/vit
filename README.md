@@ -109,11 +109,11 @@ VIT then:
    - Fortran `INTERFACE` block with `BIND(C)` and `ISO_C_BINDING`
    - Fortran wrapper that calls `saturate_c` with type conversions
 
-2. **Verifies against KGen kernel**: 40/40 cases PASSED, bit-identical at 1E-14
+2. **Verifies against KGen kernel**: 20/20 cases PASSED, bit-identical at 1E-14
    - KGen captures state for all invocations including initialization calls with uninitialized struct fields (NaN heap residue). Cases where all reference data is NaN are automatically skipped rather than counted as failures.
 
 3. **Generates integration patches** for ROSCO:
-   - New file: `saturate_cpp.cpp`
+   - New file: `saturate.cpp`
    - Modify: `Functions.f90` (add interface + wrapper)
    - Modify: `CMakeLists.txt` (enable CXX, add source, link stdc++)
 
@@ -121,18 +121,16 @@ VIT then:
 
 ## Current Status
 
-VIT has been validated on **28 functions** across 4 Fortran modules in the ROSCO wind turbine controller, all KGen-verified 40/40 IDENTICAL (501 unit tests):
+VIT has been validated on **39 functions** across 4 Fortran modules in the ROSCO wind turbine controller, all KGen-verified (20-23 cases each, IDENTICAL). 573 unit tests. Byte-identical simulation output across 9 scenarios (672,000 float64 values).
 
 | Module | Functions | Complexity |
 |--------|-----------|------------|
-| **Functions.f90** | `saturate`, `wrap_180`, `wrap_360`, `ratelimit`, `ColemanTransform`, `ColemanTransformInverse`, `identity`, `sigma`, `interp1d` | Scalars, arrays, `ErrorVariables` struct, trig |
+| **Functions.f90** | `saturate`, `wrap_180`, `wrap_360`, `ratelimit`, `ColemanTransform`, `ColemanTransformInverse`, `sigma`, `interp1d`, `interp2d`, `AeroDynTorque` | Scalars, arrays, `ErrorVariables` struct, trig, bilinear interpolation, Cp lookup |
 | **Filters.f90** | `LPFilter`, `HPFilter`, `SecLPFilter`, `NotchFilter`, `NotchFilterSlopes`, `SecLPFilter_Vel` | `FilterParameters` struct pointer, instance-indexed state, OPTIONAL args |
 | **Controllers.f90** | `PIController`, `PIIController`, `ResController`, `ForeAftDamping`, `FloatingFeedback`, `StructuralControl`, `CableControl`, `FlapControl`, `YawRateControl`, `VariableSpeedControl`, `IPC`, `ActiveWakeControl`, `PitchControl` | `piParams`/`resParams` struct R/W, ControlParameters view type, callee bridges, SAVE variables, avrSWAP array, 5 AWC modes, master pitch orchestrator |
-| **ControllerBlocks.f90** | `identity` | Cross-module integration |
+| **ControllerBlocks.f90** | `identity`, `PitchSaturation`, `StateMachine`, `SetpointSmoother`, `PowerControlSetpoints`, `RefSpeedExclusion`, `ComputeVariablesSetpoints`, `Shutdown`, `Startup`, `WindSpeedEstimator` | State machines, EKF wind estimator, setpoint computation, peak shaving, startup/shutdown staging |
 
-**Phase 7B complete**: All 10 main controller subroutines extracted (20 cases each) and translated to C++, KGen-verified 40/40.
-
-With the first 19 functions integrated and rebuilt, the ROSCO simulation produces **byte-identical output** across 5 scenarios (with `-ffp-contract=off` for deterministic FP). Phase 7B integration test pending.
+All 39 translations integrated and rebuilt — ROSCO simulation produces **byte-identical output** across 9 scenarios (with `-ffp-contract=off` for deterministic FP).
 
 ## Configuration (vit.yaml)
 
@@ -162,7 +160,7 @@ fortran:
     SiKi: "REAL(4)"
     IntKi: "INTEGER(4)"
   compiler: gfortran
-  flags: "-fdefault-real-8 -fdefault-double-8"  # Propagated to kernel Makefile
+  flags: "-fdefault-real-8 -fdefault-double-8 -ffp-contract=off"  # Propagated to kernel Makefile
 
 verification:
   tolerance: 1.0e-14                  # Maximum acceptable floating-point difference
