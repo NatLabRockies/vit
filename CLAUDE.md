@@ -291,6 +291,11 @@ bash scripts/integrate_all.sh  # 41/41 passed
 # 5. Rebuild and compare all 10 scenarios
 cd rosco/controller/build && rm -rf * && cmake .. -DCMAKE_INSTALL_PREFIX=install && cmake --build . && cp libdiscon.so ../../lib/libdiscon.so && cd /workspace/ROSCO
 # Compare arrays (see Clean Build Test → Step 6 for the comparison script)
+
+# 6. Prepare for commit (run on Mac, not in container)
+bash scripts/prepare_commit.sh
+# Restores .f90 to clean, src/*.cpp to committed state, removes artifacts.
+# Only genuinely new/changed files remain in git status.
 ```
 
 ## VIT Configuration
