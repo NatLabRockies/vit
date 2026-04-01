@@ -429,8 +429,6 @@ Each extraction deposits into `kernel/<function_name>/` and restores the source 
 
 **Note:** Every extraction uses an explicit `--run-args '--scenario N'` to run only the scenario needed for that function. This avoids wastefully running all 10 scenarios. Scenario 3 is the default for most functions (all mode flags enabled, all code paths reachable). Functions that receive zero inputs in Scenario 3 use Scenario 7 (synthetic non-zero inputs for YawRateControl, ForeAftDamping, FloatingFeedback, StructuralControl, CableControl, FlapControl), Scenario 8 (non-zero blade root moments and IPC gains for IPC, ActiveWakeControl), Scenario 9 (SD_Mode=1, SU_Mode=1 for Shutdown, Startup), or Scenario 10 (OL_Mode=2 azimuth tracking for PIDController). Without the correct scenario, KGen verification only proves plumbing (zero in → zero out), not arithmetic correctness.
 
-**Note:** ReadAvrSWAP extraction requires temporarily patching ROSCO_Helpers.f90 to replace backslash characters in `GetPath` and `PathIsRelative` functions. KGen's Python 2.7 parser cannot handle backslashes in string literals. The `scripts/extract_all.sh` script handles this automatically (patch before, restore after).
-
 **Note:** SecLPFilter_Vel requires `CC_Mode=1` in Scenario 3 of vit_sim.py (so CableControl is actually called). This was fixed — the `CALL CableControl` in DISCON.F90 is gated by `CC_Mode > 0`.
 
 **IMPORTANT:** Extraction requires clean (pre-integration) source files. If ROSCO source has already-integrated C++ wrappers, the kernel will contain unresolved `_c` function calls.
