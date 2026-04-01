@@ -444,17 +444,18 @@ def cmd_translate(args, config):
         out_dir = Path("translations") / module_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate shared type headers in translations/types/
+    # Generate/update consolidated types header
     struct_header_names = []
     if derived_types:
-        from .derived_type_parser import generate_type_headers
-        types_dir = Path("translations") / "types"
-        types_dir.mkdir(parents=True, exist_ok=True)
-        type_headers = generate_type_headers(derived_types, config.kind_aliases)
-        for filename, content in type_headers:
-            header_path = types_dir / filename
-            header_path.write_text(content)
-            struct_header_names.append(filename)
+        from .derived_type_parser import generate_consolidated_types_header
+        types_path = Path("translations") / "vit_types.h"
+        existing = types_path.read_text() if types_path.exists() else ""
+        new_content = generate_consolidated_types_header(
+            derived_types, config.kind_aliases, existing)
+        if new_content != existing:
+            types_path.parent.mkdir(parents=True, exist_ok=True)
+            types_path.write_text(new_content)
+        struct_header_names = ["vit_types.h"]
 
     # Generate scaffold
     scaffold = generate_translation_scaffold(

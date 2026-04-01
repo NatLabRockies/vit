@@ -118,21 +118,24 @@ def generate_integration_plan(
     # Read user's C++ implementation
     cpp_impl_content = Path(cpp_impl_path).read_text()
 
-    # Generate shared type headers and copy to src/ (idempotent)
+    # Copy consolidated types header to src/ (find from translations/)
     struct_header_names = []
     if derived_types:
-        from .derived_type_parser import generate_type_headers
-        type_headers = generate_type_headers(derived_types, kind_aliases)
-        for filename, content in type_headers:
-            struct_header_names.append(filename)
-            dest = os.path.join(src_dir, filename)
-            if not os.path.exists(dest):
-                patches.append(IntegrationPatch(
-                    filepath=dest,
-                    description=f"Create shared type header {filename}",
-                    action="create",
-                    content=content,
-                ))
+        # Walk up from implementation file to find vit_types.h
+        impl_parent = Path(cpp_impl_path).parent
+        for parent in [impl_parent] + list(impl_parent.parents):
+            candidate = parent / "vit_types.h"
+            if candidate.exists():
+                dest = Path(src_dir) / "vit_types.h"
+                if not dest.exists():
+                    patches.append(IntegrationPatch(
+                        filepath=str(dest),
+                        description="Copy consolidated types header",
+                        action="create",
+                        content=candidate.read_text(),
+                    ))
+                struct_header_names = ["vit_types.h"]
+                break
 
     # Generate the complete C++ file (impl + wrapper)
     cpp_complete = _generate_standalone_cpp(sig, cpp_impl_content, kind_aliases,

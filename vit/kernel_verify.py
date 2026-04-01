@@ -162,20 +162,19 @@ def setup_kernel_cpp(
             result["files_modified"].append(str(constants_dest))
             break
 
-    # --- Step 1b: Generate struct headers for C-compatible derived types ---
+    # --- Step 1b: Generate consolidated type header ---
     struct_headers = []
     view_populator_sources = []
     if derived_types:
-        from .derived_type_parser import generate_type_headers
+        from .derived_type_parser import generate_consolidated_types_header
         from .view_populator import generate_view_populator
 
-        # Generate all type headers using the shared function
-        type_headers = generate_type_headers(derived_types, kind_aliases)
-        for filename, content in type_headers:
-            header_path = kernel / filename
-            header_path.write_text(content)
-            struct_headers.append(filename)
-            result["files_modified"].append(str(header_path))
+        # Generate single vit_types.h with all types in dependency order
+        consolidated = generate_consolidated_types_header(derived_types, kind_aliases)
+        vit_types_path = kernel / "vit_types.h"
+        vit_types_path.write_text(consolidated)
+        struct_headers = ["vit_types.h"]
+        result["files_modified"].append(str(vit_types_path))
 
         # Generate view populator Fortran modules (kernel-specific)
         for type_name, type_info in derived_types.items():
@@ -791,7 +790,7 @@ def _generate_callee_bridges(
         generate_callee_declarations_header,
         build_c_params,
     )
-    from .derived_type_parser import build_derived_type_registry, generate_type_headers
+    from .derived_type_parser import build_derived_type_registry, generate_consolidated_types_header
 
     # Read the ORIGINAL source file (not the patched kernel — the kernel has
     # the function body replaced with a wrapper, so callees won't be found there)
@@ -844,14 +843,13 @@ def _generate_callee_bridges(
         try:
             callee_registry = build_derived_type_registry(callee_sig, source_dir)
 
-            # Generate any needed struct headers for the callee's types
-            # (that aren't already generated for the target function)
-            callee_headers = generate_type_headers(callee_registry, kind_aliases)
-            for filename, content in callee_headers:
-                header_path = kernel / filename
-                if not header_path.exists():
-                    header_path.write_text(content)
-                    result["files_modified"].append(str(header_path))
+            # Update vit_types.h with any callee types not already present
+            vit_types_path = kernel / "vit_types.h"
+            existing = vit_types_path.read_text() if vit_types_path.exists() else ""
+            updated = generate_consolidated_types_header(
+                callee_registry, kind_aliases, existing_content=existing)
+            if updated != existing:
+                vit_types_path.write_text(updated)
 
             # Skip array-returning functions — bridges for these require
             # allocatable temporaries that we can't generate reliably.

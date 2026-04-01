@@ -782,42 +782,46 @@ class TestDerivedTypeParser:
     def test_c_compatible(self):
         assert RLPARAMS_INFO.is_c_compatible
 
-    def test_generate_type_headers_single(self):
-        from vit.derived_type_parser import generate_type_headers
+    def test_consolidated_header_create(self):
+        """Consolidated header creates a complete file from scratch."""
+        from vit.derived_type_parser import generate_consolidated_types_header
         registry = {"rlParams": RLPARAMS_INFO}
-        headers = generate_type_headers(registry, ROSCO_KIND_ALIASES)
-        assert len(headers) == 1
-        filename, content = headers[0]
-        assert filename == "rlparams_t.h"
+        content = generate_consolidated_types_header(registry, ROSCO_KIND_ALIASES)
+        assert "#ifndef VIT_TYPES_H" in content
+        assert "#endif // VIT_TYPES_H" in content
         assert "typedef struct" in content
-        assert "#ifndef RLPARAMS_T_H" in content
+        assert "rlparams_t" in content
 
-    def test_generate_type_headers_with_nested(self):
-        """Types with nested TYPE(X) fields generate #include for the dependency."""
-        from vit.derived_type_parser import generate_type_headers
-        inner = DerivedTypeInfo(
-            name="InnerType",
-            fields=[DerivedTypeField(name="value", fortran_type="REAL(8)")],
-            source_module="TestModule",
+    def test_consolidated_header_append(self):
+        """Consolidated header appends new types to existing content."""
+        from vit.derived_type_parser import generate_consolidated_types_header
+        # Create with rlParams
+        registry1 = {"rlParams": RLPARAMS_INFO}
+        content1 = generate_consolidated_types_header(registry1, ROSCO_KIND_ALIASES)
+        assert "rlparams_t" in content1
+        # Append piParams
+        pi_info = DerivedTypeInfo(
+            name="piParams",
+            fields=[DerivedTypeField(name="ITerm", fortran_type="REAL(DbKi)",
+                                     is_array=True, array_dims="1024")],
+            source_module="ROSCO_Types",
         )
-        outer = DerivedTypeInfo(
-            name="OuterType",
-            fields=[DerivedTypeField(name="inner", fortran_type="TYPE(InnerType)")],
-            source_module="TestModule",
-        )
-        registry = {"InnerType": inner, "OuterType": outer}
-        headers = generate_type_headers(registry, ROSCO_KIND_ALIASES)
-        assert len(headers) == 2
-        # Inner should come first (dependency order)
-        assert headers[0][0] == "innertype_t.h"
-        assert headers[1][0] == "outertype_t.h"
-        # Outer header should #include inner (emit_includes=True)
-        assert '#include "innertype_t.h"' in headers[1][1]
+        registry2 = {"rlParams": RLPARAMS_INFO, "piParams": pi_info}
+        content2 = generate_consolidated_types_header(
+            registry2, ROSCO_KIND_ALIASES, existing_content=content1)
+        assert "rlparams_t" in content2
+        assert "piparams_t" in content2
+        # Only one VIT_TYPES_H guard
+        assert content2.count("#ifndef VIT_TYPES_H") == 1
 
-    def test_generate_type_headers_empty_registry(self):
-        from vit.derived_type_parser import generate_type_headers
-        headers = generate_type_headers({}, ROSCO_KIND_ALIASES)
-        assert headers == []
+    def test_consolidated_header_idempotent(self):
+        """Calling with same types twice returns same content."""
+        from vit.derived_type_parser import generate_consolidated_types_header
+        registry = {"rlParams": RLPARAMS_INFO}
+        content1 = generate_consolidated_types_header(registry, ROSCO_KIND_ALIASES)
+        content2 = generate_consolidated_types_header(
+            registry, ROSCO_KIND_ALIASES, existing_content=content1)
+        assert content1 == content2
 
     def test_parse_derived_type(self):
         from vit.derived_type_parser import parse_derived_type

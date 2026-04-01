@@ -185,9 +185,8 @@ class TestScaffoldWithStructHeaders:
         """Scaffold with struct_headers emits #include directives."""
         sig = parse_signature_from_source(SATURATE_SOURCE, "saturate")
         scaffold = generate_translation_scaffold(
-            sig, struct_headers=["errorvariables_t.h", "localvariables_t.h"])
-        assert '#include "errorvariables_t.h"' in scaffold
-        assert '#include "localvariables_t.h"' in scaffold
+            sig, struct_headers=["vit_types.h"])
+        assert '#include "vit_types.h"' in scaffold
 
     def test_scaffold_no_struct_headers(self):
         """Without struct_headers, no type #include directives."""

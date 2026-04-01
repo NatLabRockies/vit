@@ -190,10 +190,8 @@ class TestGenerateStandaloneCpp:
         """When struct_headers is provided, they appear as #include directives."""
         sig = self._make_sig()
         result = _generate_standalone_cpp(sig, CPP_IMPL,
-                                           struct_headers=["localvariables_t.h",
-                                                           "piparams_t.h"])
-        assert '#include "localvariables_t.h"' in result
-        assert '#include "piparams_t.h"' in result
+                                           struct_headers=["vit_types.h"])
+        assert '#include "vit_types.h"' in result
 
     def test_no_struct_headers_no_includes(self):
         """Without struct_headers, no #include for type headers."""
