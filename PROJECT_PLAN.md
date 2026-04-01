@@ -623,8 +623,8 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
 - [x] C++ constants header — created `translations/rosco_constants.h` with all Constants.f90 values. 17 translations updated to use it. Documented in TRANSLATION_TIPS.md (included in translation prompts automatically). Translations are self-contained — each includes only what it uses.
 - [x] Extract struct typedefs into consolidated `vit_types.h` — all 11 C struct definitions consolidated into a single `translations/vit_types.h`, auto-generated incrementally by `generate_consolidated_types_header()` in `derived_type_parser.py`. `vit translate` creates/updates the file as new types are discovered. `vit integrate --apply` copies it to `src/`. Every translation uses `#include "vit_types.h"` (one include). Kernel verification generates the same consolidated `vit_types.h` via `generate_consolidated_types_header()`. 39 translation files use the consolidated header (16,009 → 3,399 lines from inline embedding, then further simplified to one include per file).
 
-**After Phase 10 (ReadSetParameters translated to C++):**
-- [ ] Transfer ALLOCATABLE types to C++ ownership — C++ ReadSetParameters allocates ControlParameters and PerformanceData arrays via `std::vector<double>`. View populators reverse direction: C++ owns the data, Fortran accesses through pointers.
+**After Phase 10 (I/O translated to idiomatic C++):**
+- [ ] Transfer ALLOCATABLE types to C++ ownership — C++ config reader allocates ControlParameters and PerformanceData arrays. View struct transitions from "view into Fortran data" to "primary data owner." During the mixed phase, DISCON.F90 reads scalar mode flags from the view struct via a thin Fortran bridge; ALLOCATABLE arrays are only accessed by C++ algorithm functions through the view struct (no bridge needed). Memory allocated with `malloc()` for C_PTR compatibility.
 
 **After Phase 11 (DISCON.F90 translated to C++):**
 - [ ] Move struct definitions from Fortran to C++ headers — C++ structs become the canonical definitions. ROSCO_Types.f90 becomes dead code.
@@ -632,60 +632,56 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
 ### Phase 10: I/O and Platform Modules
 **Target: ReadSetParameters, ROSCO_Helpers, ROSCO_IO, SysSubs, ExtControl, ZeroMQInterface**
 
-**Note:** VIT currently has no I/O verification capability — file readers/writers/diagnostics cannot be verified through the existing function-level pipeline. This phase must build new verification machinery (file pre-staging, file trace capture) before translations can be verified.
+**Strategic shift (2026-04-01):** Consultation with the ROSCO developer and three software engineers established a new approach for Phase 10. KGen cannot verify file I/O, platform wrappers, or stateful diagnostics. Rather than building elaborate new VIT verification infrastructure (file pre-staging, `--io` mode, `--diagnostic` mode) to mirror-translate I/O code line-by-line, Phase 10 writes **idiomatic C++** for non-KGen functions and verifies at the simulation level (9 scenarios, 672,000 values). KGen is still used for pure transformer functions.
 
-Investigation (2026-03-17) classified every I/O function into four categories, each with a distinct VIT verification strategy. The verification capabilities are built at the start of this phase, then used to verify each translation.
+**Two tracks:**
+- **Track A (KGen, mirror Fortran):** Pure transformers with no file I/O — standard VIT extract → verify → integrate pipeline
+- **Track B (Idiomatic C++):** Config loading, restart I/O, debug logging, platform modules — verified via 9-scenario simulation comparison
 
-**Category 1 — Pure transformers (standard VIT pipeline):**
-Functions with no file I/O — pure input→output transformations. Verified using the existing extract → verify pipeline.
+**Design decisions:**
+- **Config format:** Both YAML (yaml-cpp, primary) and DISCON.IN (clean C++ parser, backwards compatibility). Auto-detect at runtime.
+- **Restart format:** New self-describing C++ binary format. No Fortran UNFORMATTED compatibility needed (controller will be fully C++ after Phase 10+11).
+- **VIT changes:** Minimal — `vit.yaml` adds `strategy: idiomatic` for Track B translations. No new VIT verification modes.
+- **C++ standard:** C++17 (for `<filesystem>` path operations)
 
-- `ReadAvrSWAP` — unpacks avrSWAP array into LocalVar fields
-- Helper functions: `ParseDbAry`, `ParseInAry`, `FindLine`, `GetWords`, `Conv2UC`, `GetPath`, `GetRoot`, `PathIsRelative`, `Int2LStr`
+**Fortran text-parsing helpers — dead code, not ported:**
+`ParseDbAry`, `ParseInAry`, `FindLine`, `GetWords`, `ChkParseData`, `ParseInput` variants, `Read_OL_Input` — these all exist solely to parse DISCON.IN's positional text format. The idiomatic C++ config reader replaces all of them. Utility functions (`Conv2UC`, `Int2LStr`, `GetPath`, `GetRoot`, `PathIsRelative`) are trivially replaced with `<algorithm>`, `std::to_string`, and `<filesystem>`. `GetNewUnit` is not needed in C++ (uses `std::ofstream`).
 
-**Category 2 — File readers (VIT pipeline + file pre-staging):**
-Functions that read files and populate structs. Deterministic: same input file → same output struct. VIT enhancement: `vit extract` captures file dependencies (which files the function opens) and copies them into the kernel directory. Verification compares the populated struct between Fortran and C++ given the same input file.
+**Stage A — KGen functions (standard pipeline):**
+- [ ] `ReadAvrSWAP` — unpacks avrSWAP array into LocalVar fields (140 lines of pure assignment). Extract, translate (mirror), verify bit-identical, integrate.
+- [ ] `PIDController` — PI + derivative term, requires OL_Mode=2 with open-loop CSV for extraction. Structurally similar to PIController (already translated). Moved from Phase 7A.
 
-- `ReadControlParameterFileSub` — reads DISCON.in → populates ControlParameters
-- `ReadCpFile` — reads Cp_Ct_Cq CSV → populates PerformanceData
-- `ReadRestartFile` — reads binary checkpoint → populates LocalVar
+**Stage B — Configuration loading (idiomatic C++):**
+- [ ] `ReadCpFile` → `translations/IO/cp_reader.cpp` — Clean C++ CSV reader for Cp/Ct/Cq performance tables. Simplest idiomatic file reader, proves the pattern.
+- [ ] Config reader → `translations/IO/config_reader.cpp` — Replaces `ReadControlParameterFileSub` (560 lines). YAML parser (yaml-cpp, keys match DISCON.IN parameter names) + DISCON.IN parser (clean C++ line scanner). Populates `controlparameters_view_t` with all 225+ fields. Handles array allocation, computed constants, path resolution, open-loop CSV, echo file output. **Largest piece of work in Phase 10.**
+- [ ] `CheckInputs` → `translations/IO/check_inputs.cpp` — Parameter validation (range checks, cross-parameter consistency). Pure logic, unit-testable.
 
-**Category 3 — File writers (VIT `--io` mode with output file comparison):**
-Functions whose output is a file on disk, not a Fortran argument. KGen cannot capture file system side effects. VIT enhancement: `vit verify --io` captures input struct state, runs both Fortran and C++ with those inputs, byte-compares the output files.
+**Stage C — Restart and debug (idiomatic C++):**
+- [ ] `WriteRestartFile` + `ReadRestartFile` → `translations/IO/restart.cpp` — New binary format with version header. Roundtrip test: write → read → compare struct contents.
+- [ ] `Debug` → `translations/IO/debug_logger.cpp` — Static local state (matching Fortran SAVE semantics). Opens debug files on first call, writes tabulated data per timestep.
 
-- `WriteRestartFile` — serializes LocalVar → binary checkpoint file
+**Stage D — Platform modules (idiomatic C++):**
+- [ ] `ExtControl` → `translations/IO/ext_control.cpp` — C++ `dlopen`/`dlsym` wrapper. Absorbs LoadDynamicLib/FreeDynamicLib from SysSubs.
+- [ ] `ZeroMQInterface` → `translations/IO/zmq_interface.cpp` — Wraps existing C `zmq_client()` function directly.
+- [ ] `SysSubs` — absorbed into other modules. Dynamic library ops → ext_control.cpp. `GetNewUnit` → not needed. `CurDate`/`CurTime` → `<chrono>`. Path utilities → `<filesystem>`.
 
-**Category 4 — Diagnostic/logging (VIT `--diagnostic` mode with structured diff):**
-Functions with side effects only, stateful (SAVE variables), non-deterministic elements (timestamps). Correctness means "equivalent information," not "identical bytes." This pattern recurs across Fortran codebases. VIT enhancement: `vit verify --diagnostic` uses a configurable comparison spec (which columns to compare, which to ignore, tolerance for numeric fields, format-agnostic whitespace handling).
+**Stage E — SetParameters orchestrator (idiomatic C++):**
+- [ ] `SetParameters` → `translations/IO/set_parameters.cpp` — Calls config_reader, cp_reader, check_inputs. Initializes LocalVar fields, filter instances. Calls existing translated C++ functions (interp1d_c, lpfilter_c) via `vit_translated.h`. Depends on Stages A-D.
 
-- `Debug` — formatted text output to debug files
+**Interface: idiomatic I/O ↔ existing C structs:**
+All new C++ I/O code populates the same types from `vit_types.h` that the 39 algorithm functions use. All functions exposed to Fortran (during the mixed phase) use `extern "C"` with C struct pointers. The `controlparameters_view_t` transitions from "view into Fortran data" to "primary data owner" — see derived type ownership notes above.
 
-**Platform modules (direct translation + simulation regression):**
+**Verification (three tiers):**
+1. **KGen (Track A):** Bit-identical function-level verification for ReadAvrSWAP, PIDController
+2. **Unit tests (Track B):** Each idiomatic module gets standalone tests (load DISCON.IN/YAML → verify all 225+ fields; roundtrip restart; format debug output)
+3. **Simulation (gate):** After each stage, 9-scenario comparison (672,000 values, must be identical with `-ffp-contract=off`)
 
-| Module | Lines | C++ Approach |
-|--------|-------|-------------|
-| SysSubs | ~100 | `dlopen`/`dlsym` on Linux, `LoadLibrary`/`GetProcAddress` on Windows |
-| ExtControl | 137 | Thin wrapper around dlopen |
-| ZeroMQInterface | 84 | Direct C++ ZMQ bindings (libzmq or cppzmq) |
+**Build system changes:**
+- [ ] Add yaml-cpp dependency to CMakeLists.txt and Docker container
+- [ ] Set C++17 standard flag
+- [ ] Add new C++ source files to SOURCES list
 
-**VIT I/O verification capabilities (build first, then use):**
-- [ ] File pre-staging in `vit extract` — capture file dependencies alongside function state
-- [ ] `vit verify --io` mode — output file comparison for file writers
-- [ ] `vit verify --diagnostic` mode — structured diff with configurable comparison spec (columns to compare/ignore, numeric tolerance, whitespace handling)
-- [ ] `vit.yaml` configuration for I/O modes (`io_mode: file_reader | file_writer | diagnostic`, `file_dependencies`, `output_files`, `comparison_spec`)
-
-**Translations:**
-- [ ] Translate + verify + integrate `PIDController` — requires OL_Mode=2 with open-loop CSV file for extraction. Only called in `VariableSpeedControl` when `OL_Mode==2` (azimuth tracking). Structurally similar to PIController with an added derivative term (LPFilter on error). Moved from Phase 7A.
-- [ ] Translate `ReadAvrSWAP` (Category 1 — standard pipeline)
-- [ ] Translate helper functions: `ParseDbAry`, `ParseInAry`, `FindLine`, `GetWords`, etc. (Category 1)
-- [ ] Translate `ReadControlParameterFileSub` (Category 2 — file pre-staging)
-- [ ] Translate `ReadCpFile` (Category 2)
-- [ ] Translate `ReadRestartFile` (Category 2)
-- [ ] Translate `WriteRestartFile` (Category 3 — output file comparison)
-- [ ] Translate `Debug` (Category 4 — structured diff)
-- [ ] Translate `SysSubs` (platform — simulation regression)
-- [ ] Translate `ExtControl` (platform — simulation regression)
-- [ ] Translate `ZeroMQInterface` (platform — simulation regression)
-- [ ] Full simulation regression after each module
+- [ ] Full clean build test after all stages complete
 
 ### Phase 11: Entry Point and Final Assembly
 **Target: DISCON.F90 → pure C++ libdiscon.so**
