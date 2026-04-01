@@ -621,6 +621,7 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
 
 **Actionable now (no Phase 10 dependency):**
 - [x] C++ constants header — created `translations/rosco_constants.h` with all Constants.f90 values. 17 translations updated to use it. Documented in TRANSLATION_TIPS.md (included in translation prompts automatically). Translations are self-contained — each includes only what it uses.
+- [ ] Extract embedded struct typedefs into shared headers — VIT currently inlines the full struct definition (e.g., `localvariables_t`, `controlparameters_view_t`) into every generated `.cpp` file. Move these to shared `.h` files (one per type) and `#include` them instead. Reduces duplication across 39 files and prepares for Phase 11 ownership transfer. Update `integrate.py` `_generate_standalone_cpp()` and `translate.py` scaffold generation accordingly.
 
 **After Phase 10 (ReadSetParameters translated to C++):**
 - [ ] Transfer ALLOCATABLE types to C++ ownership — C++ ReadSetParameters allocates ControlParameters and PerformanceData arrays via `std::vector<double>`. View populators reverse direction: C++ owns the data, Fortran accesses through pointers.
