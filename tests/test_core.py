@@ -782,6 +782,43 @@ class TestDerivedTypeParser:
     def test_c_compatible(self):
         assert RLPARAMS_INFO.is_c_compatible
 
+    def test_generate_type_headers_single(self):
+        from vit.derived_type_parser import generate_type_headers
+        registry = {"rlParams": RLPARAMS_INFO}
+        headers = generate_type_headers(registry, ROSCO_KIND_ALIASES)
+        assert len(headers) == 1
+        filename, content = headers[0]
+        assert filename == "rlparams_t.h"
+        assert "typedef struct" in content
+        assert "#ifndef RLPARAMS_T_H" in content
+
+    def test_generate_type_headers_with_nested(self):
+        """Types with nested TYPE(X) fields generate #include for the dependency."""
+        from vit.derived_type_parser import generate_type_headers
+        inner = DerivedTypeInfo(
+            name="InnerType",
+            fields=[DerivedTypeField(name="value", fortran_type="REAL(8)")],
+            source_module="TestModule",
+        )
+        outer = DerivedTypeInfo(
+            name="OuterType",
+            fields=[DerivedTypeField(name="inner", fortran_type="TYPE(InnerType)")],
+            source_module="TestModule",
+        )
+        registry = {"InnerType": inner, "OuterType": outer}
+        headers = generate_type_headers(registry, ROSCO_KIND_ALIASES)
+        assert len(headers) == 2
+        # Inner should come first (dependency order)
+        assert headers[0][0] == "innertype_t.h"
+        assert headers[1][0] == "outertype_t.h"
+        # Outer header should #include inner (emit_includes=True)
+        assert '#include "innertype_t.h"' in headers[1][1]
+
+    def test_generate_type_headers_empty_registry(self):
+        from vit.derived_type_parser import generate_type_headers
+        headers = generate_type_headers({}, ROSCO_KIND_ALIASES)
+        assert headers == []
+
     def test_parse_derived_type(self):
         from vit.derived_type_parser import parse_derived_type
         source = """\

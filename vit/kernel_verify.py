@@ -166,54 +166,38 @@ def setup_kernel_cpp(
     struct_headers = []
     view_populator_sources = []
     if derived_types:
-        from .derived_type_parser import (
-            generate_c_struct_header, generate_view_struct_header,
-        )
+        from .derived_type_parser import generate_type_headers
         from .view_populator import generate_view_populator
 
+        # Generate all type headers using the shared function
+        type_headers = generate_type_headers(derived_types, kind_aliases)
+        for filename, content in type_headers:
+            header_path = kernel / filename
+            header_path.write_text(content)
+            struct_headers.append(filename)
+            result["files_modified"].append(str(header_path))
+
+        # Generate view populator Fortran modules (kernel-specific)
         for type_name, type_info in derived_types.items():
-            is_view = getattr(type_info, 'view_strategy', None) == 'view'
-
-            if is_view:
-                # View type: use pre-computed field mappings from registry
-                mappings = getattr(type_info, 'field_mappings', None) or []
-
-                header_filename = f"{type_name.lower()}_view_t.h"
-                header_content = generate_view_struct_header(
-                    type_info, mappings, kind_aliases
+            if getattr(type_info, 'view_strategy', None) != 'view':
+                continue
+            mappings = getattr(type_info, 'field_mappings', None) or []
+            source_module = type_info.source_module
+            if not source_module:
+                result["errors"].append(
+                    f"Cannot generate view populator for {type_name}: "
+                    f"source module unknown. Ensure the TYPE definition is "
+                    f"inside a MODULE block in the Fortran source."
                 )
-                header_path = kernel / header_filename
-                header_path.write_text(header_content)
-                struct_headers.append(header_filename)
-                result["files_modified"].append(str(header_path))
-
-                # Generate populator Fortran module
-                source_module = type_info.source_module
-                if not source_module:
-                    result["errors"].append(
-                        f"Cannot generate view populator for {type_name}: "
-                        f"source module unknown. Ensure the TYPE definition is "
-                        f"inside a MODULE block in the Fortran source."
-                    )
-                    return result
-                populator_content = generate_view_populator(
-                    type_info, mappings, kind_aliases, source_module=source_module
-                )
-                populator_filename = f"vit_{type_name.lower()}_view.f90"
-                populator_path = kernel / populator_filename
-                populator_path.write_text(populator_content)
-                view_populator_sources.append((populator_filename, source_module))
-                result["files_modified"].append(str(populator_path))
-
-            elif type_info.is_c_compatible:
-                # Regular BIND(C) type: generate standard struct header
-                header_filename = f"{type_name.lower()}_t.h"
-                header_content = generate_c_struct_header(type_info, kind_aliases,
-                                                          registry=derived_types)
-                header_path = kernel / header_filename
-                header_path.write_text(header_content)
-                struct_headers.append(header_filename)
-                result["files_modified"].append(str(header_path))
+                return result
+            populator_content = generate_view_populator(
+                type_info, mappings, kind_aliases, source_module=source_module
+            )
+            populator_filename = f"vit_{type_name.lower()}_view.f90"
+            populator_path = kernel / populator_filename
+            populator_path.write_text(populator_content)
+            view_populator_sources.append((populator_filename, source_module))
+            result["files_modified"].append(str(populator_path))
 
     # --- Step 2: Generate C wrapper ---
     wrapper_filename = f"{sig.name.lower()}.cpp"
@@ -807,7 +791,7 @@ def _generate_callee_bridges(
         generate_callee_declarations_header,
         build_c_params,
     )
-    from .derived_type_parser import build_derived_type_registry, generate_c_struct_header
+    from .derived_type_parser import build_derived_type_registry, generate_type_headers
 
     # Read the ORIGINAL source file (not the patched kernel — the kernel has
     # the function body replaced with a wrapper, so callees won't be found there)
@@ -862,14 +846,11 @@ def _generate_callee_bridges(
 
             # Generate any needed struct headers for the callee's types
             # (that aren't already generated for the target function)
-            for type_name, type_info in callee_registry.items():
-                header_filename = f"{type_name.lower()}_t.h"
-                header_path = kernel / header_filename
-                if not header_path.exists() and type_info.is_c_compatible:
-                    header_content = generate_c_struct_header(
-                        type_info, kind_aliases, registry=callee_registry
-                    )
-                    header_path.write_text(header_content)
+            callee_headers = generate_type_headers(callee_registry, kind_aliases)
+            for filename, content in callee_headers:
+                header_path = kernel / filename
+                if not header_path.exists():
+                    header_path.write_text(content)
                     result["files_modified"].append(str(header_path))
 
             # Skip array-returning functions — bridges for these require

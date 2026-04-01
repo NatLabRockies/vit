@@ -830,3 +830,45 @@ def order_types_by_dependency(types: list[DerivedTypeInfo]) -> list[DerivedTypeI
         raise ValueError(f"Dependency cycle detected among types: {cycle_types}")
 
     return result
+
+
+def generate_type_headers(
+    derived_types: dict,
+    kind_aliases: Optional[dict] = None,
+) -> list[tuple[str, str]]:
+    """
+    Generate type header files for all C-compatible and view types in a registry.
+
+    Each header is self-contained: nested TYPE(X) dependencies are resolved via
+    #include directives, protected by #ifndef guards.
+
+    Args:
+        derived_types: Registry mapping type_name → DerivedTypeInfo
+        kind_aliases: Project-specific kind aliases for type resolution
+
+    Returns:
+        List of (filename, content) pairs in dependency order.
+    """
+    compatible = [
+        info for info in derived_types.values()
+        if info.is_c_compatible_recursive(derived_types)
+        or getattr(info, 'view_strategy', None) == 'view'
+    ]
+
+    result = []
+    for type_info in order_types_by_dependency(compatible):
+        is_view = getattr(type_info, 'view_strategy', None) == 'view'
+        if is_view:
+            filename = f"{type_info.name.lower()}_view_t.h"
+            mappings = getattr(type_info, 'field_mappings', None) or []
+            content = generate_view_struct_header(type_info, mappings, kind_aliases)
+        else:
+            filename = f"{type_info.name.lower()}_t.h"
+            content = generate_c_struct_header(
+                type_info, kind_aliases,
+                registry=derived_types,
+                emit_includes=True,
+            )
+        result.append((filename, content))
+
+    return result

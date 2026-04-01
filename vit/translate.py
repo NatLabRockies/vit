@@ -24,6 +24,7 @@ def generate_translation_scaffold(
     kind_aliases: Optional[dict] = None,
     source_file: Optional[str] = None,
     vit_version: str = "0.1.0",
+    struct_headers: Optional[list[str]] = None,
     derived_types: Optional[dict] = None,
 ) -> str:
     """
@@ -31,6 +32,7 @@ def generate_translation_scaffold(
 
     The scaffold has:
     - A metadata comment block (source file, function name, hash, version, status)
+    - #include directives for shared type headers
     - The correct C++ function signature (from build_c_params)
     - A placeholder body with TODO comment
 
@@ -39,6 +41,7 @@ def generate_translation_scaffold(
         kind_aliases: Project-specific kind aliases (e.g., ReKi → REAL(8))
         source_file: Path to the Fortran source file containing the function
         vit_version: VIT version string for metadata
+        struct_headers: List of type header filenames to #include
 
     Returns:
         Complete C++ scaffold file as a string
@@ -49,24 +52,11 @@ def generate_translation_scaffold(
     lines.append(_generate_metadata_header(sig, kind_aliases, source_file, vit_version))
     lines.append("")
 
-    # Include struct typedefs for C-compatible derived types (in dependency order)
-    if derived_types:
-        from .derived_type_parser import (
-            generate_c_struct_header, generate_view_struct_header,
-            order_types_by_dependency,
-        )
-        compatible = [info for info in derived_types.values()
-                      if info.is_c_compatible or getattr(info, 'view_strategy', None) == 'view']
-        for type_info in order_types_by_dependency(compatible):
-            if getattr(type_info, 'view_strategy', None) == 'view':
-                mappings = getattr(type_info, 'field_mappings', None) or []
-                header = generate_view_struct_header(type_info, mappings, kind_aliases)
-            else:
-                header = generate_c_struct_header(type_info, kind_aliases,
-                                                   registry=derived_types,
-                                                   emit_includes=False)
-            lines.append(header.rstrip())
-            lines.append("")
+    # Include shared type headers
+    if struct_headers:
+        for h in struct_headers:
+            lines.append(f'#include "{h}"')
+        lines.append("")
 
     # Generate C++ signature
     params = build_c_params(sig, kind_aliases, derived_types)

@@ -179,6 +179,23 @@ class TestScaffoldMetadata:
         assert "// Module: Functions" in scaffold
 
 
+class TestScaffoldWithStructHeaders:
+
+    def test_scaffold_includes_type_headers(self):
+        """Scaffold with struct_headers emits #include directives."""
+        sig = parse_signature_from_source(SATURATE_SOURCE, "saturate")
+        scaffold = generate_translation_scaffold(
+            sig, struct_headers=["errorvariables_t.h", "localvariables_t.h"])
+        assert '#include "errorvariables_t.h"' in scaffold
+        assert '#include "localvariables_t.h"' in scaffold
+
+    def test_scaffold_no_struct_headers(self):
+        """Without struct_headers, no type #include directives."""
+        sig = parse_signature_from_source(SATURATE_SOURCE, "saturate")
+        scaffold = generate_translation_scaffold(sig)
+        assert '#include "' not in scaffold
+
+
 class TestModuleDetection:
 
     def test_module_from_signature(self):

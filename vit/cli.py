@@ -444,12 +444,25 @@ def cmd_translate(args, config):
         out_dir = Path("translations") / module_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Generate shared type headers in translations/types/
+    struct_header_names = []
+    if derived_types:
+        from .derived_type_parser import generate_type_headers
+        types_dir = Path("translations") / "types"
+        types_dir.mkdir(parents=True, exist_ok=True)
+        type_headers = generate_type_headers(derived_types, config.kind_aliases)
+        for filename, content in type_headers:
+            header_path = types_dir / filename
+            header_path.write_text(content)
+            struct_header_names.append(filename)
+
     # Generate scaffold
     scaffold = generate_translation_scaffold(
         sig=sig,
         kind_aliases=config.kind_aliases,
         source_file=args.file,
         vit_version=__version__,
+        struct_headers=struct_header_names,
         derived_types=derived_types,
     )
 
