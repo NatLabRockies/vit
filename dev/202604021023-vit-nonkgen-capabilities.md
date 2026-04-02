@@ -170,9 +170,36 @@ cli.py: cmd_integrate()
 
 **Smart filtering:** Only adds reverse-copy calls for view-type arguments with `INTENT(INOUT)` or `INTENT(OUT)`. `INTENT(IN)` arguments are not reverse-copied (C++ shouldn't be modifying them, and the Fortran type is read-only).
 
-### 4. ALLOCATABLE Field Hints (Deferred)
+### 4. ALLOCATABLE Field Hints in Translation Prompt
 
-This would add comments in the generated wrapper listing ALLOCATABLE fields from view types, giving the translator a TODO list for pre-allocation. Deferred because it requires threading `DerivedTypeInfo` (the full field list) through `interface_gen.py`, which currently only has `TypeMapping` (a lighter summary). The refactor is straightforward but invasive — not worth it for the immediate benefit.
+**Modified file:** `vit/vit/translate.py` (+24 lines)
+
+Initially planned as comments in the generated wrapper (`interface_gen.py`), which would have required threading `DerivedTypeInfo` through four function calls. A review of alternatives identified a cleaner approach: emit the hints in the **translation prompt** (`vit translate`), where the type registry is already available and the translator sees the information when they're writing the C++ implementation — which is when the allocation decision is made.
+
+In `generate_translation_prompt()`, after the "C Struct Definitions" section, a new "ALLOCATABLE Fields" section lists all ALLOCATABLE fields from view-type arguments:
+
+```markdown
+## ALLOCATABLE Fields (may need pre-allocation)
+
+If this function allocates or populates arrays in these types,
+the Fortran wrapper will need ALLOCATE statements before calling C++.
+The view struct exposes these as pointer+size pairs.
+
+**ControlParameters** (view type — ALLOCATABLE fields):
+- `F_NotchFreqs` — `REAL(DbKi), DIMENSION(:)`
+- `PC_GS_angles` — `REAL(DbKi), DIMENSION(:)`
+- `VS_KP` — `REAL(DbKi), DIMENSION(:)`
+...
+
+**PerformanceData** (view type — ALLOCATABLE fields):
+- `TSR_vec` — `REAL(DbKi), DIMENSION(:)`
+- `Cp_mat` — `REAL(DbKi), DIMENSION(:,:)`
+...
+```
+
+The implementation iterates over `derived_types.values()`, filters for `view_strategy == 'view'`, then lists fields where `f.is_allocatable == True`. No changes to the integration pipeline needed — the information is already where the translator needs it.
+
+**Verified with real data:** `vit translate ReadCpFile -f ReadSetParameters.f90 --module ReadSetParameters` now shows all ALLOCATABLE fields from ControlParameters and PerformanceData in the prompt output.
 
 ### 5. vit.yaml Verification Method Tracking
 
@@ -231,6 +258,7 @@ The manual work is reduced to: writing the C++ implementation and adding any ALL
 | `vit/vit/view_populator.py` | +89 | Reverse-copy subroutine generation + _reverse_scalar_assignment + _extract_kind |
 | `vit/vit/interface_gen.py` | +21 | Reverse-copy calls in wrapper + USE import updates |
 | `vit/vit/integrate.py` | +4 | Thread reverse_copy parameter through |
+| `vit/vit/translate.py` | +24 | ALLOCATABLE field hints in translation prompt |
 | `vit/tests/test_sim_compare.py` | +115 (new) | 8 unit tests for sim-compare |
 
 ## Test Results
@@ -245,3 +273,4 @@ The manual work is reduced to: writing the C++ implementation and adding any ALL
 | `b9134e8` | Auto-generate reverse-copy in view populator modules |
 | `df54f68` | `--reverse-copy` flag threaded through cli → integrate → interface_gen |
 | `ebdee5d` | vit.yaml `verification: simulation` tracking |
+| `73a2911` | ALLOCATABLE field hints in `vit translate` prompt |
