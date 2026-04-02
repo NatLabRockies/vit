@@ -682,9 +682,10 @@ def cmd_integrate(args, config):
 
         if result["success"]:
             print("\n✓ Integration applied successfully")
-            record_translation(config, args.function_name, "integrated", {
-                "cpp_file": args.cpp_file,
-            })
+            extras = {"cpp_file": args.cpp_file}
+            if reverse_copy:
+                extras["verification"] = "simulation"
+            record_translation(config, args.function_name, "integrated", extras)
         else:
             print("\n✗ Some patches could not be applied. Review manually.")
 
