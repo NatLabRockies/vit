@@ -656,39 +656,87 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
 - [x] Config reader → `translations/ReadSetParameters/readcontrolparameterfilesub.cpp` — Replaces `ReadControlParameterFileSub` (560 lines). DISCON.IN parser only (YAML deferred to Phase 11 — doesn't advance migration, requires Python toolbox changes). Two-pass protocol for ALLOCATABLE allocation: first pass parses scalars, second pass allocates and fills arrays. Populates `controlparameters_view_t` with all 225+ fields. Handles array allocation, computed constants, path resolution, open-loop CSV, echo file output. **Largest piece of work in Phase 10.** Simulation-verified (10 scenarios, 692,000 values identical).
 - [x] `CheckInputs` → `translations/ReadSetParameters/checkinputs.cpp` — Parameter validation (range checks, cross-parameter consistency). Pure logic. Simulation-verified (10 scenarios, 692,000 values identical).
 
-**Stage C — Restart and debug (idiomatic C++):**
-- [ ] `WriteRestartFile` + `ReadRestartFile` → `translations/IO/restart.cpp` — New binary format with version header. Roundtrip test: write → read → compare struct contents.
-- [ ] `Debug` → `translations/IO/debug_logger.cpp` — Static local state (matching Fortran SAVE semantics). Opens debug files on first call, writes tabulated data per timestep.
+**Stage C — Restart I/O + Debug (idiomatic C++):**
+
+- [ ] `WriteRestartFile` + `ReadRestartFile` → `translations/IO/restart.cpp` (combined — exact mirror pair)
+  - ROSCO_IO.f90:14-355 (342 lines) + ROSCO_IO.f90:358-707 (350 lines)
+  - 310 binary WRITE/READ statements each: ~130 LocalVar scalars, ~84 manually-unrolled array elements (rootMOOP(1..3), BlPitch(1..3), etc.), 9 objInst fields, nested WE/FP/piP/resP/rlP fields (including 46 DIMENSION(1024) FilterParameters arrays at 8 KB each)
+  - C++ uses `std::ofstream`/`std::ifstream` with `std::ios::binary` — direct `write()`/`read()` of raw bytes matches Fortran UNFORMATTED/STREAM exactly
+  - New binary format with `uint8_t version` header (version 1). No backward compatibility with old Fortran checkpoint files needed — controller will be fully C++ after Phase 11
+  - ReadRestartFile calls `readcontrolparameterfilesub_pass1_c`/`_pass2_c` and `readcpfile_c` after reading checkpoint (all Stage B, already translated)
+  - No SAVE variables, no ALLOCATE
+  - **Risk:** Field ordering — if a single field is written out of order relative to the read, the checkpoint is silently corrupted. Mitigate by generating both Write/Read from the same field list or careful parallel editing
+  - **Verification:** Restart I/O is only triggered by iStatus==-8/-9 (not exercised in standard 10-scenario sim-compare). Verified indirectly: if ReadRestartFile produces incorrect state, downstream controller outputs would diverge. Optional: add a restart scenario to vit_sim.py for direct verification
+
+- [ ] `Debug` → `translations/IO/debug_logger.cpp`
+  - ROSCO_IO.f90:710-1203 (494 lines) — largest remaining function
+  - 3 SAVE variables (file handles → `static std::ofstream`), 1 SAVE ALLOCATABLE (avrIndices → `static std::vector<int>`)
+  - 3 output files controlled by `CntrPar%LoggingLevel`:
+    - `.RO.dbg`: 26 DebugVar fields (always)
+    - `.RO.dbg2`: 159 LocalVar fields (LoggingLevel > 1)
+    - `.RO.dbg3`: avrSWAP indices — base 85 + CC_GroupIndex + StC_GroupIndex (LoggingLevel > 2)
+  - Lifecycle: opens files + writes headers on first call (iStatus==0 or -9), writes data every `n_DT_Out` steps with value clamping [1E-99, 1E+99], console output every 10 seconds, closes files on iStatus < 0
+  - Replaces ROSCO_Helpers consumed: GetNewUnit → `std::ofstream`, CurDate/CurTime → `<chrono>/<ctime>`, AddToList → `std::vector::push_back`, Int2LStr → `std::to_string`
+  - **Verification:** Debug does NOT affect simulation output arrays. 10-scenario sim-compare proves controller logic is correct. Debug output can be spot-checked by diffing `.RO.dbg` files between baseline and integrated builds. Minor formatting differences acceptable
 
 **Stage D — Platform modules (idiomatic C++):**
-- [ ] `ExtControl` → `translations/IO/ext_control.cpp` — C++ `dlopen`/`dlsym` wrapper. Absorbs LoadDynamicLib/FreeDynamicLib from SysSubs.
-- [ ] `ZeroMQInterface` → `translations/IO/zmq_interface.cpp` — Wraps existing C `zmq_client()` function directly.
-- [ ] `SysSubs` — absorbed into other modules. Dynamic library ops → ext_control.cpp. `GetNewUnit` → not needed. `CurDate`/`CurTime` → `<chrono>`. Path utilities → `<filesystem>`.
+
+- [ ] `UpdateZeroMQ` → `translations/IO/zmq_interface.cpp`
+  - ZeroMQInterface.f90:7-83 (77 lines) — simplest remaining function
+  - Sends 17 turbine measurements to ZeroMQ server, receives 8 setpoints
+  - Conditional on `ZMQ_CLIENT` compile flag (C++ uses `#ifdef ZMQ_CLIENT` identically)
+  - Calls `zmq_client()` — already a C function with BIND(C), trivially callable from C++
+  - No SAVE, no ALLOCATE, no file I/O (other than ZMQ socket)
+  - **Verification:** ZMQ_Mode=0 in all test scenarios — function never entered. sim-compare verifies no regression from wrapper plumbing
+
+- [ ] `ExtController` → `translations/IO/ext_control.cpp`
+  - ExtControl.f90:52-129 (78 lines)
+  - Loads and calls an external controller DLL via dlopen/dlsym
+  - SAVE variable: `DLL_Ext` (library handle + proc address) → `static void*` + `static` function pointer
+  - Absorbs LoadDynamicLib/LoadDynamicLibProc/FreeDynamicLib from SysSubs — replaced by direct `<dlfcn.h>` calls (`dlopen`, `dlsym`, `dlclose`)
+  - BladedDLL_Legacy_Procedure (abstract interface) → C++ function pointer typedef
+  - Must link with `-ldl` on Linux
+  - **Verification:** Ext_Mode=0 in all test scenarios — function never entered. sim-compare verifies no regression
+
+- `SysSubs` — fully absorbed after ExtController translation. LoadDynamicLib/LoadDynamicLibProc/FreeDynamicLib → inlined as dlopen/dlsym/dlclose. GetNewUnit → std::ofstream. CurDate/CurTime → `<chrono>`. Path utilities → `<filesystem>`. No separate translation file.
 - `ROSCO_Helpers.f90` (~20 functions) — No individual translation needed. All functionality absorbed into idiomatic C++ equivalents: DisconParser replaces all ParseInput/ParseAry/FindLine/GetWords/ChkParseData variants, `<filesystem>` replaces GetPath/GetRoot/PathIsRelative, `std::fstream` replaces GetNewUnit, `std::vector::push_back` replaces AddToList, `std::toupper` replaces Conv2UC, `std::to_string` replaces Int2LStr, `<chrono>`/`<ctime>` replaces CurTime/CurDate, NonDecreasing inlined in checkinputs.cpp, Read_OL_Input inlined in readcontrolparameterfilesub.cpp. Fully accounted for via Stage B translations.
 - `BladedDLL_Legacy_Procedure` (ExtControl.f90) — Abstract interface definition, not a function body. Becomes a C++ function pointer typedef in Stage D's ExtControl translation.
 
 **Stage E — Orchestrators (idiomatic C++):**
-- [ ] `SetParameters` → `translations/IO/set_parameters.cpp` — Calls config_reader, cp_reader, check_inputs. Initializes LocalVar fields, filter instances. Calls existing translated C++ functions (interp1d_c, lpfilter_c) via `vit_translated.h`. Depends on Stages A-D.
-- [ ] `PreFilterMeasuredSignals` → `translations/Filters/prefiltermeasuredsignals.cpp` — Orchestrator (~115 lines) that applies all signal pre-filtering (LPFilter, SecLPFilter, HPFilter, NotchFilter, NotchFilterSlopes, wrap_180) to measured signals. All callees already translated. Called from DISCON.F90:96. No file I/O, no ALLOCATE.
+
+- [ ] `PreFilterMeasuredSignals` → `translations/Filters/prefiltermeasuredsignals.cpp`
+  - Filters.f90:325-439 (115 lines) — pure filter orchestrator
+  - Calls LPFilter (5x), SecLPFilter (6x), HPFilter (4x), NotchFilter (in loops), NotchFilterSlopes (1x), wrap_180 (1x) — all already translated, called via `_c` entry points
+  - No file I/O, no ALLOCATE, no SAVE
+  - Control flow: conditional filtering based on F_LPFType, IPC_ControlMode, Flp_Mode, TD_Mode; loops over F_GenSpdNotch_N and F_TwrTopNotch_N notch filters; blade loop (K=1..NumBl)
+  - CntrPar ALLOCATABLE array access requires 1-based → 0-based index adjustment (F_NotchFreqs, F_GenSpdNotch_Ind, etc.)
+  - **Verification:** Called every timestep, directly affects all downstream controllers. 10-scenario sim-compare provides strong coverage
+
+- [ ] `SetParameters` → `translations/IO/set_parameters.cpp`
+  - ReadSetParameters.f90:143-298 (156 lines) — initialization + per-timestep orchestrator
+  - **Per-timestep (every call):** initializes objInst counters, sets avrSWAP defaults (indices 35-81), initializes ErrVar, computes OL_Index (OL_BP_Mode breakpoint)
+  - **First call (iStatus==0):** prints ROSCO banner, saves ACC_INFILE string, calls readcontrolparameterfilesub (two-pass protocol), conditionally calls readcpfile_c, initializes ~25 LocalVar fields (PitCom, WE_Vw, WE_VwI, VS_LastGenTrq, VS_MaxTq, CC_DesiredL, ZMQ fields), calls checkinputs_c
+  - Callees: readcontrolparameterfilesub_pass1_c/pass2_c (Stage B), readcpfile_c (Stage B), checkinputs_c (Stage B), interp1d_c (Phase 5A), lpfilter_c (Phase 6) — all translated
+  - **Risk:** Two-pass ReadControlParameterFileSub protocol must be replicated correctly (pass1 → Fortran allocates → pass2). The Fortran wrapper handles the ALLOCATE sequence between passes
+  - **Verification:** Called every timestep, initialization affects all downstream behavior. 10-scenario sim-compare is comprehensive
 
 **Dead code (not translated):**
 - `matinv3` (Functions.f90) — 3x3 matrix inverse. Zero call sites in entire codebase. Dropped.
 - `CPfunction` (Functions.f90) — Parameterized Cp(lambda) function. Zero call sites; superseded by interp2d table-lookup approach. Dropped.
 
 **Interface: idiomatic I/O ↔ existing C structs:**
-All new C++ I/O code populates the same types from `vit_types.h` that the 41 algorithm functions use. All functions exposed to Fortran (during the mixed phase) use `extern "C"` with C struct pointers. The `controlparameters_view_t` transitions from "view into Fortran data" to "primary data owner" — see derived type ownership notes above.
+All new C++ I/O code populates the same types from `vit_types.h` that the 45 algorithm functions use. All functions exposed to Fortran (during the mixed phase) use `extern "C"` with C struct pointers. The `controlparameters_view_t` transitions from "view into Fortran data" to "primary data owner" — see derived type ownership notes above.
 
 **Verification (three tiers):**
-1. **KGen (Track A):** Bit-identical function-level verification for ReadAvrSWAP, PIDController
-2. **Unit tests (Track B):** Each idiomatic module gets standalone tests (load DISCON.IN/YAML → verify all 225+ fields; roundtrip restart; format debug output)
-3. **Simulation (gate):** After each stage, 10-scenario comparison (692,000 values, must be identical with `-ffp-contract=off`)
+1. **KGen (Stages A + unwrap):** Bit-identical function-level verification for ReadAvrSWAP, PIDController, unwrap (42 functions total)
+2. **Unit tests (Track B):** Each idiomatic module gets standalone tests where applicable (roundtrip restart, format debug output)
+3. **Simulation gate (all stages):** After each stage, 10-scenario sim-compare (692,000 values, must be identical with `-ffp-contract=off`). Stage D and C functions are mostly not exercised by test scenarios — gate verifies wrapper plumbing. Stage E functions ARE exercised every timestep — gate provides full coverage
 
 **Build system changes:**
 - [x] Add `target_include_directories` for `translations/` — C++ translations can `#include` headers from the translations tree
-- [ ] Add yaml-cpp dependency to CMakeLists.txt and Docker container — deferred to Phase 11 (YAML support not yet needed)
-- [ ] Set C++17 standard flag — not yet needed (no `<filesystem>` usage without yaml-cpp)
+- [ ] Add `-ldl` to link flags — needed for ExtController's dlopen/dlsym (Stage D)
+- [ ] Set C++17 standard flag — needed for `<filesystem>` if used in path handling (optional, `<cstring>` path ops work without it)
 - [x] Add new C++ source files to SOURCES list
-
 - [ ] Full clean build test after all stages complete
 
 ### Phase 11: Entry Point and Final Assembly
