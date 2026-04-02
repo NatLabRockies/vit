@@ -8,8 +8,8 @@ Fully translate the ROSCO wind turbine controller from Fortran to C++, producing
 
 ### Current State (2026-04-01)
 
-- **Verified translations**: 41 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, Controllers.f90, and ReadSetParameters.f90 — all 41 KGen-verified (20-23 cases each, IDENTICAL). Phase 10A complete: ReadAvrSWAP (avrSWAP array unpacking) and PIDController (OL_Mode=2 azimuth tracking).
-- **Integrated (41 of 41)**: All 41 translations produce byte-identical simulation output across 10 scenarios (692,000 float64 values). Pure C++ — no Fortran bridges. All translations use Fortran source casing.
+- **Verified translations**: 44 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, Controllers.f90, and ReadSetParameters.f90 — 41 KGen-verified (20-23 cases each, IDENTICAL) + 3 Stage B simulation-verified (ReadCpFile, ReadControlParameterFileSub, CheckInputs). Phase 10A complete: ReadAvrSWAP and PIDController. Phase 10B Stage B complete: DISCON.IN config loading pipeline.
+- **Integrated (44 of 44)**: All 44 translations produce byte-identical simulation output across 10 scenarios (692,000 float64 values). Pure C++ — no Fortran bridges. All translations use Fortran source casing.
 - **Scenario 3 FITPACK fix**: scipy's FITPACK `bispev` reads an uninitialized stack variable, causing non-deterministic Cp interpolation. Fixed with a stack scrubber + cached RectBivariateSpline in vit_sim.py (dev note `202603261539`).
 - **Scenario 8 NotchFilterSlopes fix**: Fortran `**` precedence grouping mismatch in coefficient computation caused 1-ULP errors that accumulated over 14,791 timesteps. Fixed by parenthesizing C++ to match Fortran grouping (dev note `202603261747`).
 - **Phase 7B complete**: All 10 functions extracted (20-23 cases each) and translated to C++. Required 10 VIT infrastructure fixes (bridge assumed-size arrays, DISCON.F90 kernel patches, avrSWAP kind mismatch, OPTIONAL bridge handling, view-type stash for callee bridges). See dev notes 202603241408, 202603241444.
@@ -639,7 +639,7 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
 - **Track B (Idiomatic C++):** Config loading, restart I/O, debug logging, platform modules — verified via 9-scenario simulation comparison
 
 **Design decisions:**
-- **Config format:** Both YAML (yaml-cpp, primary) and DISCON.IN (clean C++ parser, backwards compatibility). Auto-detect at runtime.
+- **Config format:** DISCON.IN parser complete. YAML format deferred to Phase 11 (doesn't advance migration, requires Python toolbox changes).
 - **Restart format:** New self-describing C++ binary format. No Fortran UNFORMATTED compatibility needed (controller will be fully C++ after Phase 10+11).
 - **VIT changes:** Minimal — `vit.yaml` adds `strategy: idiomatic` for Track B translations. No new VIT verification modes.
 - **C++ standard:** C++17 (for `<filesystem>` path operations)
@@ -652,9 +652,9 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
 - [x] `PIDController` — PI + derivative term. Extracted (22 cases, Scenario 10 / OL_Mode=2), verified 22/22, integrated. Added Scenario 10 to vit_sim.py. Updated VariableSpeedControl translation with OL_Mode=2 code path (inline UNWRAP + PIDController call).
 
 **Stage B — Configuration loading (idiomatic C++):**
-- [ ] `ReadCpFile` → `translations/IO/cp_reader.cpp` — Clean C++ CSV reader for Cp/Ct/Cq performance tables. Simplest idiomatic file reader, proves the pattern.
-- [ ] Config reader → `translations/IO/config_reader.cpp` — Replaces `ReadControlParameterFileSub` (560 lines). YAML parser (yaml-cpp, keys match DISCON.IN parameter names) + DISCON.IN parser (clean C++ line scanner). Populates `controlparameters_view_t` with all 225+ fields. Handles array allocation, computed constants, path resolution, open-loop CSV, echo file output. **Largest piece of work in Phase 10.**
-- [ ] `CheckInputs` → `translations/IO/check_inputs.cpp` — Parameter validation (range checks, cross-parameter consistency). Pure logic, unit-testable.
+- [x] `ReadCpFile` → `translations/ReadSetParameters/readcpfile.cpp` — Clean C++ CSV reader for Cp/Ct/Cq performance tables. Simplest idiomatic file reader, proved the pattern. Simulation-verified (10 scenarios, 692,000 values identical).
+- [x] Config reader → `translations/ReadSetParameters/readcontrolparameterfilesub.cpp` — Replaces `ReadControlParameterFileSub` (560 lines). DISCON.IN parser only (YAML deferred to Phase 11 — doesn't advance migration, requires Python toolbox changes). Two-pass protocol for ALLOCATABLE allocation: first pass parses scalars, second pass allocates and fills arrays. Populates `controlparameters_view_t` with all 225+ fields. Handles array allocation, computed constants, path resolution, open-loop CSV, echo file output. **Largest piece of work in Phase 10.** Simulation-verified (10 scenarios, 692,000 values identical).
+- [x] `CheckInputs` → `translations/ReadSetParameters/checkinputs.cpp` — Parameter validation (range checks, cross-parameter consistency). Pure logic. Simulation-verified (10 scenarios, 692,000 values identical).
 
 **Stage C — Restart and debug (idiomatic C++):**
 - [ ] `WriteRestartFile` + `ReadRestartFile` → `translations/IO/restart.cpp` — New binary format with version header. Roundtrip test: write → read → compare struct contents.
@@ -677,9 +677,10 @@ All new C++ I/O code populates the same types from `vit_types.h` that the 41 alg
 3. **Simulation (gate):** After each stage, 10-scenario comparison (692,000 values, must be identical with `-ffp-contract=off`)
 
 **Build system changes:**
-- [ ] Add yaml-cpp dependency to CMakeLists.txt and Docker container
-- [ ] Set C++17 standard flag
-- [ ] Add new C++ source files to SOURCES list
+- [x] Add `target_include_directories` for `translations/` — C++ translations can `#include` headers from the translations tree
+- [ ] Add yaml-cpp dependency to CMakeLists.txt and Docker container — deferred to Phase 11 (YAML support not yet needed)
+- [ ] Set C++17 standard flag — not yet needed (no `<filesystem>` usage without yaml-cpp)
+- [x] Add new C++ source files to SOURCES list
 
 - [ ] Full clean build test after all stages complete
 
