@@ -92,6 +92,8 @@ def generate_integration_plan(
     kind_aliases: Optional[dict] = None,
     derived_types: Optional[dict] = None,
     reverse_copy: bool = False,
+    auto_allocate: bool = False,
+    allocatable_helpers: Optional[list] = None,
 ) -> IntegrationPlan:
     """
     Generate a complete integration plan for a verified C++ function.
@@ -208,10 +210,22 @@ def generate_integration_plan(
             ))
             view_populator_names.append(populator_name)
 
+    # Extract allocations from Fortran source if requested
+    allocations = []
+    if auto_allocate:
+        from .allocate_extract import extract_allocations
+        source_text = Path(source_file).read_text()
+        arg_names = [a.name for a in sig.args]
+        allocations = extract_allocations(
+            sig.name, source_text, arg_names,
+            allocatable_helpers or [],
+        )
+
     # 2. Modify the Fortran source file
     fortran_patches = _generate_fortran_patches(
         sig, source_file, kind_aliases, derived_types,
         reverse_copy=reverse_copy,
+        allocations=allocations,
     )
     patches.extend(fortran_patches)
 
@@ -464,6 +478,7 @@ def _generate_fortran_patches(sig: FortranSignature, source_file: str,
                                kind_aliases: Optional[dict] = None,
                                derived_types: Optional[dict] = None,
                                reverse_copy: bool = False,
+                               allocations: Optional[list] = None,
                                ) -> list[IntegrationPatch]:
     """Generate patches for the Fortran source file."""
     patches = []
@@ -502,7 +517,8 @@ def _generate_fortran_patches(sig: FortranSignature, source_file: str,
 
     # Patch 3: Replace function body with wrapper
     wrapper = generate_fortran_wrapper(sig, kind_aliases, derived_types,
-                                       reverse_copy=reverse_copy)
+                                       reverse_copy=reverse_copy,
+                                       allocations=allocations)
     end_keyword = "FUNCTION" if sig.is_function else "SUBROUTINE"
 
     # Find the original function body

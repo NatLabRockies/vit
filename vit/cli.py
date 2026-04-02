@@ -113,6 +113,8 @@ def main():
     p_integrate.add_argument("--dry-run", action="store_true")
     p_integrate.add_argument("--reverse-copy", action="store_true",
                              help="Add reverse-copy calls after C++ call (for functions that modify view-type scalars)")
+    p_integrate.add_argument("--auto-allocate", action="store_true",
+                             help="Auto-extract ALLOCATE statements from Fortran source into wrapper")
 
     # --- sim-compare ---
     p_simcmp = subparsers.add_parser("sim-compare",
@@ -658,6 +660,7 @@ def cmd_integrate(args, config):
     derived_types = _build_registry(sig, config)
     cmake_file = config.abs_cmake_file if config.build_type == "cmake" else None
     reverse_copy = getattr(args, 'reverse_copy', False)
+    auto_allocate = getattr(args, 'auto_allocate', False)
 
     plan = generate_integration_plan(
         sig=sig,
@@ -668,6 +671,8 @@ def cmd_integrate(args, config):
         kind_aliases=config.kind_aliases,
         derived_types=derived_types,
         reverse_copy=reverse_copy,
+        auto_allocate=auto_allocate,
+        allocatable_helpers=config.allocatable_helpers,
     )
 
     print(plan.to_markdown())

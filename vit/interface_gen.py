@@ -171,7 +171,8 @@ def generate_fortran_wrapper(sig: FortranSignature,
                              kind_aliases: Optional[dict] = None,
                              derived_types: Optional[dict] = None,
                              is_kernel: bool = False,
-                             reverse_copy: bool = False) -> str:
+                             reverse_copy: bool = False,
+                             allocations: Optional[list] = None) -> str:
     """
     Generate the Fortran wrapper function that replaces the original.
 
@@ -207,7 +208,7 @@ def generate_fortran_wrapper(sig: FortranSignature,
     else:
         lines.extend(_generate_wrapper_subroutine(
             sig, c_func_name, kind_aliases, derived_types, optional_forwarded,
-            view_args, is_kernel, reverse_copy
+            view_args, is_kernel, reverse_copy, allocations
         ))
 
     return "\n".join(lines)
@@ -298,7 +299,8 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
 
 def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
                                   optional_forwarded, view_args=None,
-                                  is_kernel=False, reverse_copy=False):
+                                  is_kernel=False, reverse_copy=False,
+                                  allocations=None):
     """Generate wrapper body for a SUBROUTINE."""
     view_args = view_args or []
     lines = []
@@ -328,6 +330,25 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     # OPTIONAL preamble
     if optional_forwarded:
         lines.extend(_generate_optional_preamble(optional_forwarded, kind_aliases, derived_types))
+
+    # Auto-extracted ALLOCATE statements (before view preamble, so C_LOC has valid memory)
+    if allocations:
+        safe_allocs = [a for a in allocations if a.category == "safe"]
+        unsafe_allocs = [a for a in allocations if a.category != "safe"]
+        if safe_allocs:
+            lines.append(f"        ! --- Pre-allocate arrays (auto-extracted from Fortran source) ---")
+            for a in safe_allocs:
+                dims = ", ".join(a.size_exprs)
+                lines.append(f"        ALLOCATE({a.target_arg}%{a.field_name}({dims}))")
+                if a.init_value:
+                    lines.append(f"        {a.target_arg}%{a.field_name} = {a.init_value}")
+        if unsafe_allocs:
+            lines.append(f"        ! WARNING: These allocations could not be auto-extracted safely.")
+            lines.append(f"        ! Review and add ALLOCATE statements manually if needed:")
+            for a in unsafe_allocs:
+                dims = ", ".join(a.size_exprs)
+                reason = "same argument" if a.category == "same_arg" else "local/computed size"
+                lines.append(f"        !   {a.target_arg}%{a.field_name}({dims}) — {reason} [{a.source}]")
 
     # View type preamble: local view structs + populator calls
     if view_args:
