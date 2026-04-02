@@ -91,6 +91,7 @@ def generate_integration_plan(
     target_name: str = "discon",
     kind_aliases: Optional[dict] = None,
     derived_types: Optional[dict] = None,
+    reverse_copy: bool = False,
 ) -> IntegrationPlan:
     """
     Generate a complete integration plan for a verified C++ function.
@@ -209,7 +210,8 @@ def generate_integration_plan(
 
     # 2. Modify the Fortran source file
     fortran_patches = _generate_fortran_patches(
-        sig, source_file, kind_aliases, derived_types
+        sig, source_file, kind_aliases, derived_types,
+        reverse_copy=reverse_copy,
     )
     patches.extend(fortran_patches)
 
@@ -461,6 +463,7 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
 def _generate_fortran_patches(sig: FortranSignature, source_file: str,
                                kind_aliases: Optional[dict] = None,
                                derived_types: Optional[dict] = None,
+                               reverse_copy: bool = False,
                                ) -> list[IntegrationPatch]:
     """Generate patches for the Fortran source file."""
     patches = []
@@ -498,7 +501,8 @@ def _generate_fortran_patches(sig: FortranSignature, source_file: str,
             break
 
     # Patch 3: Replace function body with wrapper
-    wrapper = generate_fortran_wrapper(sig, kind_aliases, derived_types)
+    wrapper = generate_fortran_wrapper(sig, kind_aliases, derived_types,
+                                       reverse_copy=reverse_copy)
     end_keyword = "FUNCTION" if sig.is_function else "SUBROUTINE"
 
     # Find the original function body
