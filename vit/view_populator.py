@@ -67,7 +67,8 @@ def generate_view_populator(
     lines.append(f"    IMPLICIT NONE")
     lines.append(f"    PRIVATE")
     stash_name = f"vit_original_{name_lower}"
-    lines.append(f"    PUBLIC :: {view_type_name}, {sub_name}, {stash_name}")
+    reverse_name = f"vit_copy_scalars_to_{name_lower}"
+    lines.append(f"    PUBLIC :: {view_type_name}, {sub_name}, {reverse_name}, {stash_name}")
     lines.append(f"")
     lines.append(f"    ! Kernel stash: pointer to original Fortran type, set by wrapper before calling C++.")
     lines.append(f"    ! Callee bridges USE this to pass the original type to Fortran callees.")
@@ -153,6 +154,38 @@ def generate_view_populator(
     lines.append(f"")
     lines.append(f"    END SUBROUTINE {sub_name}")
     lines.append(f"")
+
+    # --- Reverse-copy subroutine (view → Fortran TYPE, scalars only) ---
+    lines.append(f"    SUBROUTINE {reverse_name}(view, dest)")
+    lines.append(f"        TYPE({view_type_name}), INTENT(IN) :: view")
+    lines.append(f"        TYPE({name}), INTENT(INOUT) :: dest")
+
+    # Check if CHARACTER fields exist (need a loop variable)
+    has_chars = any(
+        not f.is_allocatable and not f.is_pointer
+        and not f.fortran_type.upper().startswith("TYPE(")
+        and get_type_mapping(f.fortran_type, kind_aliases).character_length
+        for f in type_info.fields
+    )
+    if has_chars:
+        lines.append(f"        INTEGER :: i")
+
+    lines.append(f"")
+    lines.append(f"        ! --- Scalars (reverse of populator) ---")
+
+    for f in type_info.fields:
+        if f.is_allocatable or f.is_pointer:
+            continue
+        if f.fortran_type.upper().startswith("TYPE("):
+            continue
+        reverse = _reverse_scalar_assignment(f, kind_aliases)
+        if reverse:
+            for line in reverse:
+                lines.append(f"        {line}")
+
+    lines.append(f"")
+    lines.append(f"    END SUBROUTINE {reverse_name}")
+    lines.append(f"")
     lines.append(f"END MODULE {module_name}")
     lines.append(f"")
 
@@ -202,3 +235,58 @@ def _scalar_assignment(f: DerivedTypeField, kind_aliases: Optional[dict]) -> Opt
 
     # Fallback: direct copy
     return f"view%{f.name} = src%{f.name}"
+
+
+def _reverse_scalar_assignment(f: DerivedTypeField, kind_aliases: Optional[dict]) -> Optional[list[str]]:
+    """Generate reverse scalar copy: dest%field = convert(view%field).
+
+    Returns a list of lines (CHARACTER fields need DO loops).
+    """
+    mapping = get_type_mapping(f.fortran_type, kind_aliases)
+
+    if mapping.character_length:
+        # CHARACTER → copy char-by-char from C_CHAR array
+        n = mapping.character_length
+        return [
+            f"DO i = 1, {n}",
+            f"    dest%{f.name}(i:i) = view%{f.name}(i)",
+            f"END DO",
+        ]
+
+    if f.is_array and f.array_dims:
+        # Fixed-size array — direct copy
+        return [f"dest%{f.name} = view%{f.name}"]
+
+    # Scalar with kind conversion (reverse direction)
+    iso_type = mapping.iso_c_type
+    if iso_type.startswith("REAL("):
+        # Use project kind (DbKi/ReKi) if available, else C_DOUBLE
+        fortran_kind = _extract_kind(f.fortran_type, kind_aliases)
+        return [f"dest%{f.name} = REAL(view%{f.name}, {fortran_kind})"]
+    elif iso_type.startswith("INTEGER("):
+        fortran_kind = _extract_kind(f.fortran_type, kind_aliases)
+        return [f"dest%{f.name} = INT(view%{f.name}, {fortran_kind})"]
+    elif iso_type.startswith("LOGICAL("):
+        return [f"dest%{f.name} = view%{f.name}"]
+
+    # Fallback: direct copy
+    return [f"dest%{f.name} = view%{f.name}"]
+
+
+def _extract_kind(fortran_type: str, kind_aliases: Optional[dict]) -> str:
+    """Extract the Fortran kind from a type declaration, resolving aliases.
+
+    E.g., 'REAL(DbKi)' → 'DbKi' (keep alias name for readability).
+    'REAL(8)' → '8'.
+    'INTEGER' → 'KIND(0)' (default kind).
+    """
+    import re
+    m = re.match(r'(?:REAL|INTEGER|LOGICAL)\s*\(\s*(\w+)\s*\)', fortran_type, re.I)
+    if m:
+        return m.group(1)
+    # No explicit kind — use default
+    if fortran_type.upper().startswith("REAL"):
+        return "KIND(0.0D0)"
+    elif fortran_type.upper().startswith("INTEGER"):
+        return "KIND(0)"
+    return "KIND(0)"
