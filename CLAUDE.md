@@ -301,6 +301,25 @@ bash scripts/prepare_commit.sh
 
 Baseline simulation arrays (`baseline_arrays/`) are committed to ROSCO as canonical references for Stage B simulation-level verification. Stage B functions (CheckInputs, ReadCpFile, ReadControlParameterFileSub) do not use KGen extraction — they are verified by comparing 10-scenario simulation output against these baseline arrays. `prepare_commit.sh` preserves `baseline_arrays/`.
 
+### Non-KGen Verification (Stage B Functions)
+
+Functions that cannot use KGen (file I/O, config parsing, functions with complex runtime dependencies) use simulation-level verification instead of kernel-level verification:
+
+1. **Translate:** `vit translate FunctionName -f source.f90 --module ModuleName`
+   - The translation prompt now includes ALLOCATABLE field hints for view types, listing which arrays may need pre-allocation in the wrapper. This helps translators understand which ALLOCATABLE fields in view-type arguments (e.g., ControlParameters) the function reads from, so the C++ translation can expect populated pointer+size pairs.
+
+2. **Integrate:** `vit integrate FunctionName cpp_file -f source.f90 --apply --reverse-copy --auto-allocate`
+   - `--reverse-copy`: Adds `vit_copy_scalars_to_<type>(view, original)` calls after the C++ function returns, for each view-type INOUT argument. This is needed when the C++ translation modifies scalar fields in the view struct that Fortran code downstream needs to see — the reverse-copy writes the updated scalar values back from the view into the original Fortran derived type. Without this flag, scalar modifications made by C++ are invisible to subsequent Fortran callers.
+   - `--auto-allocate`: Scans the original Fortran source for `ALLOCATE` statements and emits corresponding allocation calls in the generated Fortran wrapper, before the view populator runs (so that `C_LOC()` sees allocated arrays). Safe allocations (size depends on other arguments or constants) are emitted directly. Unsafe allocations (circular same-argument dependency, sizes from local variables) are emitted as commented-out code with warnings for manual review.
+
+3. **Verify:** `vit sim-compare baseline_arrays/ integrated_arrays/ [--tolerance 0.0]`
+   - Compares `.npz` simulation output arrays between a baseline (pure Fortran) build and an integrated (C++) build across all scenarios.
+   - Reports per-scenario, per-array results (IDENTICAL or MISMATCH with max difference). Exit code 0 if all arrays match, exit code 1 if any differ.
+   - `--tolerance 0.0` (the default) requires exact bit-identical match. A non-zero tolerance allows bounded floating-point differences (useful for FMA sanity checks).
+   - This replaces the inline Python comparison script for Stage B verification, providing a proper CLI command with structured output.
+
+4. **View populator reverse-copy subroutine:** `vit analyze-types --scan-allocatable` now auto-generates a `vit_copy_scalars_to_<type>` subroutine alongside the forward `vit_populate_<type>_view` populator in each view populator module. The reverse-copy subroutine copies all non-ALLOCATABLE (scalar) fields from the C view struct back into the original Fortran derived type. This is the mechanism that `--reverse-copy` relies on — the integration wrapper calls this subroutine after the C++ function returns.
+
 ## VIT Configuration
 
 The file `/workspace/ROSCO/vit.yaml` configures the pipeline. All paths must be absolute container paths (starting with `/workspace/`).

@@ -121,16 +121,17 @@ VIT then:
 
 ## Current Status
 
-VIT has been validated on **39 functions** across 4 Fortran modules in the ROSCO wind turbine controller, all KGen-verified (20-23 cases each, IDENTICAL). 573 unit tests. Byte-identical simulation output across 9 scenarios (672,000 float64 values).
+VIT has been validated on **44 functions** across 5 Fortran modules in the ROSCO wind turbine controller — 41 KGen-verified (20-23 cases each, IDENTICAL) + 3 simulation-verified (Stage B idiomatic C++). 594 unit tests. Byte-identical simulation output across 10 scenarios (692,000 float64 values).
 
 | Module | Functions | Complexity |
 |--------|-----------|------------|
 | **Functions.f90** | `saturate`, `wrap_180`, `wrap_360`, `ratelimit`, `ColemanTransform`, `ColemanTransformInverse`, `sigma`, `interp1d`, `interp2d`, `AeroDynTorque` | Scalars, arrays, `ErrorVariables` struct, trig, bilinear interpolation, Cp lookup |
 | **Filters.f90** | `LPFilter`, `HPFilter`, `SecLPFilter`, `NotchFilter`, `NotchFilterSlopes`, `SecLPFilter_Vel` | `FilterParameters` struct pointer, instance-indexed state, OPTIONAL args |
-| **Controllers.f90** | `PIController`, `PIIController`, `ResController`, `ForeAftDamping`, `FloatingFeedback`, `StructuralControl`, `CableControl`, `FlapControl`, `YawRateControl`, `VariableSpeedControl`, `IPC`, `ActiveWakeControl`, `PitchControl` | `piParams`/`resParams` struct R/W, ControlParameters view type, callee bridges, SAVE variables, avrSWAP array, 5 AWC modes, master pitch orchestrator |
+| **Controllers.f90** | `PIController`, `PIIController`, `PIDController`, `ResController`, `ForeAftDamping`, `FloatingFeedback`, `StructuralControl`, `CableControl`, `FlapControl`, `YawRateControl`, `VariableSpeedControl`, `IPC`, `ActiveWakeControl`, `PitchControl` | `piParams`/`resParams` struct R/W, ControlParameters view type, callee bridges, SAVE variables, avrSWAP array, 5 AWC modes, master pitch orchestrator, PID with derivative filtering |
 | **ControllerBlocks.f90** | `identity`, `PitchSaturation`, `StateMachine`, `SetpointSmoother`, `PowerControlSetpoints`, `RefSpeedExclusion`, `ComputeVariablesSetpoints`, `Shutdown`, `Startup`, `WindSpeedEstimator` | State machines, EKF wind estimator, setpoint computation, peak shaving, startup/shutdown staging |
+| **ReadSetParameters.f90** | `ReadAvrSWAP`, `CheckInputs`\*, `ReadCpFile`\*, `ReadControlParameterFileSub`\* | avrSWAP unpacking, parameter validation, Cp/Ct/Cq table reading, DISCON.IN config parsing. \*Simulation-verified (not KGen) |
 
-All 39 translations integrated and rebuilt — ROSCO simulation produces **byte-identical output** across 9 scenarios (with `-ffp-contract=off` for deterministic FP).
+All 44 translations integrated and rebuilt — ROSCO simulation produces **byte-identical output** across 10 scenarios (with `-ffp-contract=off` for deterministic FP).
 
 ## Configuration (vit.yaml)
 
@@ -208,8 +209,9 @@ allocatable:                          # Configurable allocation helper patterns
 | `extract` | `vit extract <function> [-f FILE] [-l LINE] [--dry-run]` | Instrument code with KGen, run simulation, capture runtime state |
 | `translate` | `vit translate <function> -f FILE [-o DIR] [--module NAME]` | Generate C++ scaffold (correct signature) and LLM translation prompt |
 | `verify` | `vit verify <function> <cpp_file> [-f FILE] [--kernel-dir DIR] [--no-field-log]` | Wire C++ into KGen kernel, build, and verify against captured state |
-| `integrate` | `vit integrate <function> <cpp_file> [-f FILE] [--apply] [--dry-run]` | Generate (and optionally apply) codebase integration patches |
-| `run` | `vit run <function> <cpp_file> [-f FILE] [--kernel-dir DIR] [--apply] [--skip-verify] [--no-field-log]` | Full pipeline: verify → integrate in one command |
+| `integrate` | `vit integrate <function> <cpp_file> [-f FILE] [--apply] [--dry-run]` | Generate (and optionally apply) codebase integration patches. Flags: `--reverse-copy` (add view->type scalar writeback), `--auto-allocate` (extract ALLOCATEs from source) |
+| `run` | `vit run <function> <cpp_file> [-f FILE] [--kernel-dir DIR] [--apply] [--skip-verify] [--no-field-log]` | Full pipeline: verify -> integrate in one command |
+| `sim-compare` | `vit sim-compare <baseline_dir> <integrated_dir> [--tolerance N]` | Compare simulation output arrays (.npz) between baseline and integrated builds. Non-KGen verification for Stage B functions. |
 | `interface` | `vit interface <function> [-f FILE] [-o DIR]` | Generate Fortran↔C interface files (used internally by verify/integrate) |
 | `analyze-types` | `vit analyze-types [--fix character\|logical\|complex\|bind_c] [--scan-allocatable] [--type TYPE] [--field FIELD] [--apply]` | Analyze derived type C-compatibility; apply fixes; scan ALLOCATABLE sizes |
 | `status` | `vit status` | Show translation status for all functions tracked in vit.yaml |
@@ -239,6 +241,7 @@ allocatable:                          # Configurable allocation helper patterns
 
 ```
 vit/
+  allocate_extract.py  # Extract ALLOCATE patterns from Fortran source
   cli.py              # CLI with subcommands
   config.py           # YAML project configuration
   type_map.py         # Deterministic Fortran↔C type mapping
@@ -246,6 +249,7 @@ vit/
   interface_gen.py    # Generate extern "C" + ISO_C_BINDING interfaces
   extract.py          # KGen extraction orchestration
   kernel_verify.py    # Wire C++ into kernel, build, verify
+  sim_compare.py      # Simulation-level array comparison (non-KGen verification)
   integrate.py        # Generate codebase integration patches
   translate.py        # Generate translation scaffolds + prompts
   confirm.py          # Assumption confirmation protocol (exit code 10)
