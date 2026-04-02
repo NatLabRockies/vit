@@ -8,6 +8,7 @@ Usage:
     vit interface <function> <cpp>  Generate Fortran↔C interface
     vit verify <function>           Build and run KGen kernel verification
     vit integrate <function>        Generate codebase integration plan
+    vit sim-compare <base> <int>    Compare simulation arrays (non-KGen verification)
     vit run <function> <cpp_file>   Full pipeline (interface → verify → integrate)
     vit analyze-types               Analyze derived types for C compatibility
 """
@@ -29,6 +30,7 @@ from .interface_gen import (
 from .extract import find_call_sites, insert_kgen_pragma, remove_kgen_pragma, run_kgen_extract
 from .kernel_verify import setup_kernel_cpp, run_kernel_verify
 from .integrate import generate_integration_plan, apply_integration_plan
+from .sim_compare import compare_arrays, format_result
 from .translate import generate_translation_scaffold, generate_translation_prompt
 from .analyze_types import (
     analyze_all_types, format_analysis_report, fix_character_allocatable,
@@ -110,6 +112,14 @@ def main():
     p_integrate.add_argument("--apply", action="store_true", help="Apply changes")
     p_integrate.add_argument("--dry-run", action="store_true")
 
+    # --- sim-compare ---
+    p_simcmp = subparsers.add_parser("sim-compare",
+                                      help="Compare simulation output arrays (non-KGen verification)")
+    p_simcmp.add_argument("baseline_dir", help="Directory with baseline .npz files")
+    p_simcmp.add_argument("integrated_dir", help="Directory with integrated .npz files")
+    p_simcmp.add_argument("--tolerance", type=float, default=0.0,
+                          help="Max allowed absolute difference (0.0 = exact match)")
+
     # --- run (full pipeline) ---
     p_run = subparsers.add_parser("run", help="Full pipeline: interface → verify → integrate")
     p_run.add_argument("function_name", help="Function to translate")
@@ -172,6 +182,8 @@ def main():
             return cmd_verify(args, config)
         elif args.command == "integrate":
             return cmd_integrate(args, config)
+        elif args.command == "sim-compare":
+            return cmd_sim_compare(args, config)
         elif args.command == "run":
             return cmd_run(args, config)
         elif args.command == "status":
@@ -673,6 +685,17 @@ def cmd_integrate(args, config):
             print("\n✗ Some patches could not be applied. Review manually.")
 
     return 0
+
+
+def cmd_sim_compare(args, config):
+    """Compare simulation output arrays between baseline and integrated builds."""
+    result = compare_arrays(
+        baseline_dir=args.baseline_dir,
+        integrated_dir=args.integrated_dir,
+        tolerance=args.tolerance,
+    )
+    print(format_result(result))
+    return 0 if result.passed else 1
 
 
 def cmd_run(args, config):
