@@ -8,8 +8,8 @@ Fully translate the ROSCO wind turbine controller from Fortran to C++, producing
 
 ### Current State (2026-04-01)
 
-- **Verified translations**: 44 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, Controllers.f90, and ReadSetParameters.f90 — 41 KGen-verified (20-23 cases each, IDENTICAL) + 3 Stage B simulation-verified (ReadCpFile, ReadControlParameterFileSub, CheckInputs). Phase 10A complete: ReadAvrSWAP and PIDController. Phase 10B Stage B complete: DISCON.IN config loading pipeline.
-- **Integrated (44 of 44)**: All 44 translations produce byte-identical simulation output across 10 scenarios (692,000 float64 values). Pure C++ — no Fortran bridges. All translations use Fortran source casing.
+- **Verified translations**: 45 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, Controllers.f90, and ReadSetParameters.f90 — 42 KGen-verified (20-25 cases each, IDENTICAL) + 3 Stage B simulation-verified (ReadCpFile, ReadControlParameterFileSub, CheckInputs). Phase 10A complete: ReadAvrSWAP and PIDController. Phase 10B Stage B complete: DISCON.IN config loading pipeline. unwrap translated and verified (parser fix for nested DIMENSION parens).
+- **Integrated (45 of 45)**: All 45 translations produce byte-identical simulation output across 10 scenarios (692,000 float64 values). Pure C++ — no Fortran bridges. All translations use Fortran source casing.
 - **Scenario 3 FITPACK fix**: scipy's FITPACK `bispev` reads an uninitialized stack variable, causing non-deterministic Cp interpolation. Fixed with a stack scrubber + cached RectBivariateSpline in vit_sim.py (dev note `202603261539`).
 - **Scenario 8 NotchFilterSlopes fix**: Fortran `**` precedence grouping mismatch in coefficient computation caused 1-ULP errors that accumulated over 14,791 timesteps. Fixed by parenthesizing C++ to match Fortran grouping (dev note `202603261747`).
 - **Phase 7B complete**: All 10 functions extracted (20-23 cases each) and translated to C++. Required 10 VIT infrastructure fixes (bridge assumed-size arrays, DISCON.F90 kernel patches, avrSWAP kind mismatch, OPTIONAL bridge handling, view-type stash for callee bridges). See dev notes 202603241408, 202603241444.
@@ -63,7 +63,7 @@ All translations start from a clean ROSCO (nothing integrated). Integration happ
 | `ratelimit` | 37 | Rate limiter with state (8 args including `rlP` TYPE(rlParams) INOUT + OPTIONAL arg → scalar) | Load-bearing derived type: writes `rlP%LastSignal(inst)`. C++ must access fields. Also has OPTIONAL argument. Requires derived type struct mapping and OPTIONAL support |
 | `interp1d` | 58 | 1D linear interpolation (2 arrays + scalar + ErrVar → scalar) | **Verified (Phase 5A)**: arrays + ErrorVariables struct pointer. Error checks + interpolation + error message chaining |
 | `sigma` | 34 | Sigmoid/cubic ramp (5 scalars + ErrVar → scalar) | **Verified (Phase 5A)**: first ErrorVariables function. Scalars + struct pointer, error message chaining |
-| `unwrap` | 40 | Phase unwrapping (assumed-shape `x(:)` + ErrVar → array `DIMENSION(SIZE(x))`) | Not yet translated — unused in simulation. Blocked by array-valued return where result size depends on input array |
+| `unwrap` | 40 | Phase unwrapping (assumed-shape `x(:)` + ErrVar → array `DIMENSION(SIZE(x))`) | **Verified (Phase 10)**: KGen-verified 25/25 (Scenario 10). Required parser fix for nested DIMENSION parens. Inline implementations in variablespeedcontrol.cpp and readcontrolparameterfilesub.cpp reverted to shared `unwrap_c()` calls |
 | `interp2d` | 172 | 2D bilinear interpolation (3 arrays including `zData(:,:)` + 2 scalars + ErrVar → scalar) | **Verified (Phase 8C)**: 2D assumed-shape arrays, column-major Z macro, bilinear interpolation |
 | `AeroDynTorque` | 39 | Aerodynamic torque (2 scalars + 4 derived types → scalar) | **Verified (Phase 8C)**: first PerformanceData view type function, calls `interp2d` |
 
@@ -497,13 +497,13 @@ Validates the ErrorVariables struct pointer pipeline end-to-end with the two sim
 - [x] Full integration test: 9 C++ translations produce byte-identical simulation output
 
 ### Phase 5B: Remaining Functions.f90 (unwrap, interp2d, AeroDynTorque)
-**Status: Complete (interp2d + AeroDynTorque done in Phase 8C; unwrap deferred — unused in simulation)**
+**Status: Complete (interp2d + AeroDynTorque done in Phase 8C; unwrap done in Phase 10)**
 
 - [x] Multi-dimensional assumed-shape — `DIMENSION(:,:)` generates two size params (`n_rows`, `n_cols`). Rank detection and per-dimension size params implemented in Phase 5.
 - [x] Guard against unsupported ranks — explicit error for `DIMENSION(:,:,:)` and higher.
 - [x] Translate + verify + integrate `interp2d` — 21/21 passed. 2D bilinear interpolation with column-major Z macro. Done in Phase 8C.
 - [x] Translate + verify + integrate `AeroDynTorque` — 20/20 passed. First function using complete type system (ControlParameters + PerformanceData view structs + LocalVariables + ErrorVariables). Done in Phase 8C.
-- [ ] ~~Translate + verify + integrate `unwrap`~~ — **deferred**. `unwrap` is defined in Functions.f90 but never called from any integrated function or DISCON.F90. Not exercised by any simulation scenario. Requires array-valued return where result size depends on input (`DIMENSION(SIZE(x))`), which VIT doesn't support yet. Address if/when the function is needed.
+- [x] Translate + verify + integrate `unwrap` — 25/25 passed (Scenario 10). Array-returning FUNCTION with `DIMENSION(SIZE(x))` result. VIT already supported array-valued returns (identity proved it); the original deferral was incorrect. Required a parser fix: `DIMENSION` extraction used `[^)]*` regex which broke on nested parens like `SIZE(x)`. Fixed with balanced-paren counting + case preservation. Reverted inline unwrap implementations in variablespeedcontrol.cpp and readcontrolparameterfilesub.cpp to shared `unwrap_c()` calls. 10-scenario sim-compare verified (692,000 values identical).
 
 ### Phase 6A: Filters Module — Active Filters ✅
 **Status: Complete**
@@ -664,9 +664,16 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
 - [ ] `ExtControl` → `translations/IO/ext_control.cpp` — C++ `dlopen`/`dlsym` wrapper. Absorbs LoadDynamicLib/FreeDynamicLib from SysSubs.
 - [ ] `ZeroMQInterface` → `translations/IO/zmq_interface.cpp` — Wraps existing C `zmq_client()` function directly.
 - [ ] `SysSubs` — absorbed into other modules. Dynamic library ops → ext_control.cpp. `GetNewUnit` → not needed. `CurDate`/`CurTime` → `<chrono>`. Path utilities → `<filesystem>`.
+- `ROSCO_Helpers.f90` (~20 functions) — No individual translation needed. All functionality absorbed into idiomatic C++ equivalents: DisconParser replaces all ParseInput/ParseAry/FindLine/GetWords/ChkParseData variants, `<filesystem>` replaces GetPath/GetRoot/PathIsRelative, `std::fstream` replaces GetNewUnit, `std::vector::push_back` replaces AddToList, `std::toupper` replaces Conv2UC, `std::to_string` replaces Int2LStr, `<chrono>`/`<ctime>` replaces CurTime/CurDate, NonDecreasing inlined in checkinputs.cpp, Read_OL_Input inlined in readcontrolparameterfilesub.cpp. Fully accounted for via Stage B translations.
+- `BladedDLL_Legacy_Procedure` (ExtControl.f90) — Abstract interface definition, not a function body. Becomes a C++ function pointer typedef in Stage D's ExtControl translation.
 
-**Stage E — SetParameters orchestrator (idiomatic C++):**
+**Stage E — Orchestrators (idiomatic C++):**
 - [ ] `SetParameters` → `translations/IO/set_parameters.cpp` — Calls config_reader, cp_reader, check_inputs. Initializes LocalVar fields, filter instances. Calls existing translated C++ functions (interp1d_c, lpfilter_c) via `vit_translated.h`. Depends on Stages A-D.
+- [ ] `PreFilterMeasuredSignals` → `translations/Filters/prefiltermeasuredsignals.cpp` — Orchestrator (~115 lines) that applies all signal pre-filtering (LPFilter, SecLPFilter, HPFilter, NotchFilter, NotchFilterSlopes, wrap_180) to measured signals. All callees already translated. Called from DISCON.F90:96. No file I/O, no ALLOCATE.
+
+**Dead code (not translated):**
+- `matinv3` (Functions.f90) — 3x3 matrix inverse. Zero call sites in entire codebase. Dropped.
+- `CPfunction` (Functions.f90) — Parameterized Cp(lambda) function. Zero call sites; superseded by interp2d table-lookup approach. Dropped.
 
 **Interface: idiomatic I/O ↔ existing C structs:**
 All new C++ I/O code populates the same types from `vit_types.h` that the 41 algorithm functions use. All functions exposed to Fortran (during the mixed phase) use `extern "C"` with C struct pointers. The `controlparameters_view_t` transitions from "view into Fortran data" to "primary data owner" — see derived type ownership notes above.
