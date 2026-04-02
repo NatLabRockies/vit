@@ -818,12 +818,18 @@ def _get_use_statements_for_derived_types(sig: FortranSignature) -> list[str]:
         return use_stmts
 
     # Search the function's USE statements for ones that import these types
+    seen_use = set()
     for use_stmt in sig.use_statements:
         use_upper = use_stmt.upper()
+        # Skip VIT-generated view module USE statements — _get_view_use_statements handles those
+        if "VIT_" in use_upper and "_VIEW" in use_upper:
+            continue
         # Check if this USE imports any of our derived types
         for type_name in derived_type_names:
             if type_name in use_upper:
-                use_stmts.append(use_stmt)
+                if use_upper not in seen_use:
+                    use_stmts.append(use_stmt)
+                    seen_use.add(use_upper)
                 break
         else:
             # Also include "USE Module" without ONLY if the module name

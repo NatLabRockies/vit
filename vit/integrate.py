@@ -130,12 +130,14 @@ def generate_integration_plan(
             candidate = parent / "vit_types.h"
             if candidate.exists():
                 dest = Path(src_dir) / "vit_types.h"
-                if not dest.exists():
+                new_content = candidate.read_text()
+                old_content = dest.read_text() if dest.exists() else ""
+                if new_content != old_content:
                     patches.append(IntegrationPatch(
                         filepath=str(dest),
-                        description="Copy consolidated types header",
+                        description="Copy/update consolidated types header",
                         action="create",
-                        content=candidate.read_text(),
+                        content=new_content,
                     ))
                 struct_header_names = ["vit_types.h"]
                 break
@@ -501,19 +503,24 @@ def _generate_fortran_patches(sig: FortranSignature, source_file: str,
                 ))
                 break
 
-    # Patch 2: Add INTERFACE block above CONTAINS
+    # Patch 2: Add INTERFACE block above CONTAINS (idempotent)
     interface_block = generate_fortran_interface_block(sig, kind_aliases, derived_types)
-    for i, line in enumerate(lines):
-        if line.strip().upper() == "CONTAINS":
-            patches.append(IntegrationPatch(
-                filepath=source_file,
-                description=f"Add INTERFACE block for {sig.c_func_name} above CONTAINS",
-                action="modify",
-                content=interface_block,
-                original_snippet=line,
-                replacement_snippet=f"\n{interface_block}\n\n{line}",
-            ))
-            break
+    already_has_interface = any(
+        f"NAME='{sig.c_func_name}'" in line or f'NAME="{sig.c_func_name}"' in line
+        for line in lines
+    )
+    if not already_has_interface:
+        for i, line in enumerate(lines):
+            if line.strip().upper() == "CONTAINS":
+                patches.append(IntegrationPatch(
+                    filepath=source_file,
+                    description=f"Add INTERFACE block for {sig.c_func_name} above CONTAINS",
+                    action="modify",
+                    content=interface_block,
+                    original_snippet=line,
+                    replacement_snippet=f"\n{interface_block}\n\n{line}",
+                ))
+                break
 
     # Patch 3: Replace function body with wrapper
     wrapper = generate_fortran_wrapper(sig, kind_aliases, derived_types,
