@@ -318,6 +318,7 @@ def _parse_type_declaration(line: str, line_upper: str, names_to_find: set):
 
     type_str = None
     rest = None
+    rest_original = None
 
     for pattern in type_patterns:
         m = re.match(pattern, line_upper)
@@ -325,6 +326,7 @@ def _parse_type_declaration(line: str, line_upper: str, names_to_find: set):
             # Extract type string from ORIGINAL line to preserve case (e.g., DbKi not DBKI)
             type_str = line.strip()[m.start(1):m.end(1)].strip()
             rest = line_upper[m.end():].strip()
+            rest_original = line.strip()[m.end():].strip()
             break
 
     if type_str is None:
@@ -338,13 +340,16 @@ def _parse_type_declaration(line: str, line_upper: str, names_to_find: set):
 
     if "::" in rest:
         attr_part, var_part = rest.split("::", 1)
+        attr_part_original = rest_original.split("::", 1)[0]
     else:
         # No :: — the rest is variable names (older Fortran style)
         attr_part = ""
+        attr_part_original = ""
         var_part = rest
 
-    # Parse attributes
+    # Parse attributes (use uppercase for matching, original case for extraction)
     attr_part = attr_part.strip().lstrip(",").strip()
+    attr_part_original = attr_part_original.strip().lstrip(",").strip()
     if attr_part:
         attrs = attr_part.upper()
         intent_match = re.search(r'INTENT\s*\(\s*(IN|OUT|INOUT)\s*\)', attrs)
@@ -352,10 +357,21 @@ def _parse_type_declaration(line: str, line_upper: str, names_to_find: set):
             intent = IntentKind(intent_match.group(1))
         if "OPTIONAL" in attrs:
             is_optional = True
-        dim_match = re.search(r'DIMENSION\s*\(([^)]*)\)', attrs)
-        if dim_match:
+        dim_start = re.search(r'DIMENSION\s*\(', attrs)
+        if dim_start:
             has_dimension = True
-            dim_spec = dim_match.group(1)
+            # Balanced-paren extraction: find content between DIMENSION( and its matching )
+            open_pos = dim_start.end() - 1  # position of the '('
+            depth = 0
+            for k in range(open_pos, len(attrs)):
+                if attrs[k] == '(':
+                    depth += 1
+                elif attrs[k] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        # Extract from original-case attr_part to preserve variable casing
+                        dim_spec = attr_part_original[open_pos + 1:k]
+                        break
 
     # Parse variable names
     results = []
