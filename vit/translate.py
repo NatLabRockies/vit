@@ -153,6 +153,30 @@ def generate_translation_prompt(
             sections.append("\n\n".join(d.strip() for d in struct_defs))
             sections.append("```\n")
 
+    # ALLOCATABLE field hints for view types
+    if derived_types:
+        alloc_hints = []
+        for type_info in derived_types.values():
+            if getattr(type_info, 'view_strategy', None) != 'view':
+                continue
+            alloc_fields = [f for f in type_info.fields if f.is_allocatable]
+            if not alloc_fields:
+                continue
+            type_lines = [f"**{type_info.name}** (view type — ALLOCATABLE fields):"]
+            for f in alloc_fields:
+                dims = f"DIMENSION({f.array_dims})" if f.array_dims else "DIMENSION(:)"
+                type_lines.append(f"- `{f.name}` — `{f.fortran_type}, {dims}`")
+            alloc_hints.append("\n".join(type_lines))
+        if alloc_hints:
+            sections.append("## ALLOCATABLE Fields (may need pre-allocation)\n")
+            sections.append(
+                "If this function allocates or populates arrays in these types, "
+                "the Fortran wrapper will need ALLOCATE statements before calling C++. "
+                "The view struct exposes these as pointer+size pairs.\n"
+            )
+            sections.append("\n\n".join(alloc_hints))
+            sections.append("")
+
     # Translation tips
     if tips_text and tips_text.strip():
         sections.append("## Translation Tips (lessons from previous translations)\n")
