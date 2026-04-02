@@ -8,8 +8,8 @@ Fully translate the ROSCO wind turbine controller from Fortran to C++, producing
 
 ### Current State (2026-04-01)
 
-- **Verified translations**: 45 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, Controllers.f90, and ReadSetParameters.f90 — 42 KGen-verified (20-25 cases each, IDENTICAL) + 3 Stage B simulation-verified (ReadCpFile, ReadControlParameterFileSub, CheckInputs). Phase 10A complete: ReadAvrSWAP and PIDController. Phase 10B Stage B complete: DISCON.IN config loading pipeline. unwrap translated and verified (parser fix for nested DIMENSION parens).
-- **Integrated (45 of 45)**: All 45 translations produce byte-identical simulation output across 10 scenarios (692,000 float64 values). Pure C++ — no Fortran bridges. All translations use Fortran source casing.
+- **Verified translations**: 47 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, Controllers.f90, ReadSetParameters.f90, ZeroMQInterface.f90, and ExtControl.f90 — 42 KGen-verified (20-25 cases each, IDENTICAL) + 5 simulation-verified (3 Stage B + 2 Stage D). Phase 10 Stages A, B, D complete. unwrap translated and verified (parser fix for nested DIMENSION parens).
+- **Integrated (47 of 47)**: All 47 translations produce byte-identical simulation output across 10 scenarios (692,000 float64 values). Pure C++ — no Fortran bridges. All translations use Fortran source casing.
 - **Scenario 3 FITPACK fix**: scipy's FITPACK `bispev` reads an uninitialized stack variable, causing non-deterministic Cp interpolation. Fixed with a stack scrubber + cached RectBivariateSpline in vit_sim.py (dev note `202603261539`).
 - **Scenario 8 NotchFilterSlopes fix**: Fortran `**` precedence grouping mismatch in coefficient computation caused 1-ULP errors that accumulated over 14,791 timesteps. Fixed by parenthesizing C++ to match Fortran grouping (dev note `202603261747`).
 - **Phase 7B complete**: All 10 functions extracted (20-23 cases each) and translated to C++. Required 10 VIT infrastructure fixes (bridge assumed-size arrays, DISCON.F90 kernel patches, avrSWAP kind mismatch, OPTIONAL bridge handling, view-type stash for callee bridges). See dev notes 202603241408, 202603241444.
@@ -681,7 +681,7 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
 
 **Stage D — Platform modules (idiomatic C++):**
 
-- [ ] `UpdateZeroMQ` → `translations/IO/zmq_interface.cpp`
+- [x] `UpdateZeroMQ` → `translations/IO/zmq_interface.cpp` — Simulation-verified (10 scenarios, 692,000 values identical). Manual Fortran wrapper required (VIT cannot parse #ifdef preprocessor directives in ZeroMQInterface.f90).
   - ZeroMQInterface.f90:7-83 (77 lines) — simplest remaining function
   - Sends 17 turbine measurements to ZeroMQ server, receives 8 setpoints
   - Conditional on `ZMQ_CLIENT` compile flag (C++ uses `#ifdef ZMQ_CLIENT` identically)
@@ -689,7 +689,7 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
   - No SAVE, no ALLOCATE, no file I/O (other than ZMQ socket)
   - **Verification:** ZMQ_Mode=0 in all test scenarios — function never entered. sim-compare verifies no regression from wrapper plumbing
 
-- [ ] `ExtController` → `translations/IO/ext_control.cpp`
+- [x] `ExtController` → `translations/IO/ext_control.cpp` — Simulation-verified. C++ uses direct dlopen/dlsym (absorbs SysSubs). Guarded ALLOCATE for ExtDLL%avrSWAP (conditional, added manually to wrapper). New extcontroltype_view_t for ALLOCATABLE field.
   - ExtControl.f90:52-129 (78 lines)
   - Loads and calls an external controller DLL via dlopen/dlsym
   - SAVE variable: `DLL_Ext` (library handle + proc address) → `static void*` + `static` function pointer
@@ -734,7 +734,7 @@ All new C++ I/O code populates the same types from `vit_types.h` that the 45 alg
 
 **Build system changes:**
 - [x] Add `target_include_directories` for `translations/` — C++ translations can `#include` headers from the translations tree
-- [ ] Add `-ldl` to link flags — needed for ExtController's dlopen/dlsym (Stage D)
+- [x] Add `-ldl` to link flags — needed for ExtController's dlopen/dlsym (Stage D)
 - [ ] Set C++17 standard flag — needed for `<filesystem>` if used in path handling (optional, `<cstring>` path ops work without it)
 - [x] Add new C++ source files to SOURCES list
 - [ ] Full clean build test after all stages complete
