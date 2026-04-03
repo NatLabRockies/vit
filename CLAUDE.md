@@ -320,6 +320,30 @@ Functions that cannot use KGen (file I/O, config parsing, functions with complex
 
 4. **View populator reverse-copy subroutine:** `vit analyze-types --scan-allocatable` now auto-generates a `vit_copy_scalars_to_<type>` subroutine alongside the forward `vit_populate_<type>_view` populator in each view populator module. The reverse-copy subroutine copies all non-ALLOCATABLE (scalar) fields from the C view struct back into the original Fortran derived type. This is the mechanism that `--reverse-copy` relies on — the integration wrapper calls this subroutine after the C++ function returns.
 
+### Non-KGen Verification (Stage C Functions)
+
+Stage C functions (WriteRestartFile, ReadRestartFile, Debug) in ROSCO_IO.f90 use manual integration in `integrate_all.sh` because their `CHARACTER(size_avcOUTNAME)` argument type is not supported by `vit translate` or `vit integrate`. They follow the same simulation-level verification as Stage B.
+
+- **WriteRestartFile + ReadRestartFile**: Only triggered by `iStatus==-8/-9` (not exercised in standard 10-scenario sim-compare). Verified indirectly: sim-compare proves no regression from wrapper plumbing. Both share a C++ file (`translations/IO/restart.cpp`) with a common `checkpoint_fields` template to guarantee identical field ordering.
+- **ReadRestartFile wrapper**: The Fortran wrapper handles callee dispatch — after `readrestartfile_c` reads the checkpoint, the wrapper calls `ReadControlParameterFileSub` and `ReadCpFile` (already-translated Stage B functions) from the Fortran side. This avoids the C++ needing to handle the two-pass ALLOCATE protocol.
+- **Debug**: Does not affect simulation output arrays. Verified via `scripts/debug_test.sh` which compares `.RO.dbg` data rows between baseline and integrated builds. Header formatting differs (Fortran `CHARACTER(15)` truncates column names; C++ does not) — only data rows are compared.
+
+**Debug verification:**
+
+```bash
+# After building clean baseline:
+bash scripts/debug_test.sh baseline
+
+# After integrate_all.sh + rebuild:
+bash scripts/debug_test.sh integrated
+
+# Compare data rows:
+bash scripts/debug_test.sh compare
+# OK vit_sim3.RO.dbg: 15999 data rows IDENTICAL
+```
+
+Or run all steps: `bash scripts/debug_test.sh all`
+
 ## VIT Configuration
 
 The file `/workspace/ROSCO/vit.yaml` configures the pipeline. All paths must be absolute container paths (starting with `/workspace/`).
@@ -401,7 +425,7 @@ docker exec -it vit-dev bash -c "cd /workspace/vit && python3 -m pytest tests/ -
 
 Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (41 total: `kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/interp2d/`, `kernel/sigma/`, `kernel/LPFilter/`, `kernel/HPFilter/`, `kernel/SecLPFilter/`, `kernel/NotchFilter/`, `kernel/NotchFilterSlopes/`, `kernel/SecLPFilter_Vel/`, `kernel/PIController/`, `kernel/PIIController/`, `kernel/ResController/`, `kernel/ForeAftDamping/`, `kernel/IPC/`, `kernel/FloatingFeedback/`, `kernel/ActiveWakeControl/`, `kernel/VariableSpeedControl/`, `kernel/PitchControl/`, `kernel/YawRateControl/`, `kernel/FlapControl/`, `kernel/CableControl/`, `kernel/StructuralControl/`, `kernel/PitchSaturation/`, `kernel/AeroDynTorque/`, `kernel/WindSpeedEstimator/`, `kernel/PowerControlSetpoints/`, `kernel/ComputeVariablesSetpoints/`, `kernel/StateMachine/`, `kernel/SetpointSmoother/`, `kernel/RefSpeedExclusion/`, `kernel/Shutdown/`, `kernel/Startup/`, `kernel/ReadAvrSWAP/`, `kernel/PIDController/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
 
-Note: Stage B functions (CheckInputs, ReadCpFile, ReadControlParameterFileSub) do not have KGen golden fixtures — they are verified via 10-scenario simulation comparison (`baseline_arrays/`).
+Note: Stage B functions (CheckInputs, ReadCpFile, ReadControlParameterFileSub) and Stage C functions (WriteRestartFile, ReadRestartFile, Debug) do not have KGen golden fixtures — they are verified via 10-scenario simulation comparison (`baseline_arrays/`). Debug output is additionally verified via `scripts/debug_test.sh`.
 
 **Extraction parameters (for regenerating golden fixtures):**
 
@@ -749,6 +773,8 @@ Verified C++ translations live in `ROSCO/translations/Functions/` and `ROSCO/tra
 | `translations/ReadSetParameters/checkinputs.cpp` | `CheckInputs` in ReadSetParameters.f90 | Verified (Phase 10B) — parameter validation, simulation-verified |
 | `translations/ReadSetParameters/readcpfile.cpp` | `ReadCpFile` in ReadSetParameters.f90 | Verified (Phase 10B) — Cp/Ct/Cq table reader, pre-allocation pattern |
 | `translations/ReadSetParameters/readcontrolparameterfilesub.cpp` | `ReadControlParameterFileSub` in ReadSetParameters.f90 | Verified (Phase 10B) — DISCON.IN parser, two-pass protocol |
+| `translations/IO/restart.cpp` | `WriteRestartFile` + `ReadRestartFile` in ROSCO_IO.f90 | Verified (Stage C) — binary checkpoint I/O, shared field-order template |
+| `translations/IO/debug_logger.cpp` | `Debug` in ROSCO_IO.f90 | Verified (Stage C) — debug file logging, static std::ofstream handles |
 
 Each translation file has a metadata header (source file, function name, MD5 hash, VIT version, verification status) generated by `vit translate`.
 

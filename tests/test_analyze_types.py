@@ -145,6 +145,25 @@ class TestCharacterNTypeMapping:
         assert mapping.character_length is None
         assert mapping.byte_size == 1
 
+    def test_character_parameterized_mapping(self):
+        """CHARACTER(variable_name) maps to char with len_param set."""
+        mapping = get_type_mapping("CHARACTER(size_avcOUTNAME)")
+        assert mapping.c_type == "char"
+        assert mapping.character_length is None
+        assert mapping.character_len_param == "size_avcoutname"
+
+    def test_character_parameterized_simple(self):
+        """CHARACTER(N) where N is a variable maps correctly."""
+        mapping = get_type_mapping("CHARACTER(N)")
+        assert mapping.c_type == "char"
+        assert mapping.character_len_param == "n"
+
+    def test_character_parameterized_with_underscore(self):
+        """CHARACTER(my_len) with underscored variable name."""
+        mapping = get_type_mapping("CHARACTER(my_len)")
+        assert mapping.c_type == "char"
+        assert mapping.character_len_param == "my_len"
+
     def test_character_deferred_raises(self):
         """CHARACTER(:) cannot be mapped — must raise with helpful message."""
         try:
@@ -153,6 +172,14 @@ class TestCharacterNTypeMapping:
         except ValueError as e:
             assert "CHARACTER(:)" in str(e)
             assert "analyze-types" in str(e)
+
+    def test_character_assumed_raises(self):
+        """CHARACTER(*) cannot be mapped — must raise."""
+        try:
+            get_type_mapping("CHARACTER(*)")
+            assert False, "Should have raised ValueError"
+        except ValueError as e:
+            assert "CHARACTER(*)" in str(e)
 
     def test_c_int_alias(self):
         """C_INT should resolve to INTEGER(4) via DEFAULT_KIND_ALIASES."""

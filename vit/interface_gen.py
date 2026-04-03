@@ -581,10 +581,13 @@ def build_c_params(sig: FortranSignature,
                 else:
                     raise ValueError(f"Unsupported array rank {arg.array_rank} for {arg.name}")
         else:
+            # CHARACTER with fixed length > 1 or parameterized length → always pointer
+            if (mapping.character_length and mapping.character_length > 1) or mapping.character_len_param:
+                params.append((f"{mapping.c_type}*", arg.name))
             # Scalar INTENT(OUT/INOUT) args must be pointers —
             # the Fortran BIND(C) interface passes them by reference (no VALUE).
             # This applies to both functions and subroutines.
-            if arg.intent in (IntentKind.OUT, IntentKind.INOUT):
+            elif arg.intent in (IntentKind.OUT, IntentKind.INOUT):
                 params.append((f"{mapping.c_type}*", arg.name))
             else:
                 params.append((mapping.c_type, arg.name))
@@ -687,8 +690,15 @@ def _build_interface_args(sig: FortranSignature,
                         "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}_cols",
                     })
         else:
+            # CHARACTER with fixed length > 1 or parameterized length → assumed-size array
+            if (mapping.character_length and mapping.character_length > 1) or mapping.character_len_param:
+                intent_str = arg.intent.value or "IN"
+                args.append({
+                    "iface_name": arg.name,
+                    "iface_decl": f"CHARACTER(KIND=C_CHAR), INTENT({intent_str}) :: {arg.name}(*)",
+                })
             # Scalar INTENT(OUT/INOUT) → by reference (no VALUE)
-            if arg.intent in (IntentKind.OUT, IntentKind.INOUT):
+            elif arg.intent in (IntentKind.OUT, IntentKind.INOUT):
                 intent_str = arg.intent.value
                 args.append({
                     "iface_name": arg.name,

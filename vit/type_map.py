@@ -22,6 +22,7 @@ class TypeMapping:
     is_c_compatible: bool = True  # False → passthrough (not included in C interface)
     is_view_type: bool = False   # True for pointer+size view pattern (ALLOCATABLE types)
     character_length: Optional[int] = None  # For CHARACTER(N), the fixed length N
+    character_len_param: Optional[str] = None  # For CHARACTER(var), the length parameter name
 
 
 # Standard Fortran kind → C mappings
@@ -153,6 +154,18 @@ def get_type_mapping(fortran_type: str, kind_aliases: Optional[dict] = None,
                 iso_c_type=f"CHARACTER(LEN={length})",
                 byte_size=length,
                 character_length=length,
+            )
+        # Parameterized length: CHARACTER(some_variable) where length comes
+        # from another function argument. Maps to char* in C.
+        if inner not in (':', '*') and not inner.startswith('LEN=') and inner.replace('_', '').isalnum():
+            return TypeMapping(
+                fortran_type=fortran_type.strip(),
+                fortran_kind=inner,
+                c_kind="C_CHAR",
+                c_type="char",
+                iso_c_type="CHARACTER(KIND=C_CHAR)",
+                byte_size=1,
+                character_len_param=inner.lower(),
             )
         # CHARACTER(:) or CHARACTER(*) — cannot map directly
         raise ValueError(

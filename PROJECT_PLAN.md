@@ -8,8 +8,8 @@ Fully translate the ROSCO wind turbine controller from Fortran to C++, producing
 
 ### Current State (2026-04-01)
 
-- **Verified translations**: 47 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, Controllers.f90, ReadSetParameters.f90, ZeroMQInterface.f90, and ExtControl.f90 — 42 KGen-verified (20-25 cases each, IDENTICAL) + 5 simulation-verified (3 Stage B + 2 Stage D). Phase 10 Stages A, B, D complete. unwrap translated and verified (parser fix for nested DIMENSION parens).
-- **Integrated (47 of 47)**: All 47 translations produce byte-identical simulation output across 10 scenarios (692,000 float64 values). Pure C++ — no Fortran bridges. All translations use Fortran source casing.
+- **Verified translations**: 50 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, Controllers.f90, ReadSetParameters.f90, ZeroMQInterface.f90, ExtControl.f90, and ROSCO_IO.f90 — 42 KGen-verified (20-25 cases each, IDENTICAL) + 8 simulation-verified (3 Stage B + 2 Stage D + 3 Stage C). Phase 10 Stages A-D complete. Stage C complete (WriteRestartFile, ReadRestartFile, Debug).
+- **Integrated (50 of 50)**: All 50 translations produce byte-identical simulation output across 10 scenarios (692,000 float64 values). Pure C++ — no Fortran bridges. All translations use Fortran source casing.
 - **Scenario 3 FITPACK fix**: scipy's FITPACK `bispev` reads an uninitialized stack variable, causing non-deterministic Cp interpolation. Fixed with a stack scrubber + cached RectBivariateSpline in vit_sim.py (dev note `202603261539`).
 - **Scenario 8 NotchFilterSlopes fix**: Fortran `**` precedence grouping mismatch in coefficient computation caused 1-ULP errors that accumulated over 14,791 timesteps. Fixed by parenthesizing C++ to match Fortran grouping (dev note `202603261747`).
 - **Phase 7B complete**: All 10 functions extracted (20-23 cases each) and translated to C++. Required 10 VIT infrastructure fixes (bridge assumed-size arrays, DISCON.F90 kernel patches, avrSWAP kind mismatch, OPTIONAL bridge handling, view-type stash for callee bridges). See dev notes 202603241408, 202603241444.
@@ -658,7 +658,7 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
 
 **Stage C — Restart I/O + Debug (idiomatic C++):**
 
-- [ ] `WriteRestartFile` + `ReadRestartFile` → `translations/IO/restart.cpp` (combined — exact mirror pair)
+- [x] `WriteRestartFile` + `ReadRestartFile` → `translations/IO/restart.cpp` (combined — exact mirror pair)
   - ROSCO_IO.f90:14-355 (342 lines) + ROSCO_IO.f90:358-707 (350 lines)
   - 310 binary WRITE/READ statements each: ~130 LocalVar scalars, ~84 manually-unrolled array elements (rootMOOP(1..3), BlPitch(1..3), etc.), 9 objInst fields, nested WE/FP/piP/resP/rlP fields (including 46 DIMENSION(1024) FilterParameters arrays at 8 KB each)
   - C++ uses `std::ofstream`/`std::ifstream` with `std::ios::binary` — direct `write()`/`read()` of raw bytes matches Fortran UNFORMATTED/STREAM exactly
@@ -668,7 +668,7 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
   - **Risk:** Field ordering — if a single field is written out of order relative to the read, the checkpoint is silently corrupted. Mitigate by generating both Write/Read from the same field list or careful parallel editing
   - **Verification:** Restart I/O is only triggered by iStatus==-8/-9 (not exercised in standard 10-scenario sim-compare). Verified indirectly: if ReadRestartFile produces incorrect state, downstream controller outputs would diverge. Optional: add a restart scenario to vit_sim.py for direct verification
 
-- [ ] `Debug` → `translations/IO/debug_logger.cpp`
+- [x] `Debug` → `translations/IO/debug_logger.cpp`
   - ROSCO_IO.f90:710-1203 (494 lines) — largest remaining function
   - 3 SAVE variables (file handles → `static std::ofstream`), 1 SAVE ALLOCATABLE (avrIndices → `static std::vector<int>`)
   - 3 output files controlled by `CntrPar%LoggingLevel`:
