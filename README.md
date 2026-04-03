@@ -121,17 +121,20 @@ VIT then:
 
 ## Current Status
 
-VIT has been validated on **44 functions** across 5 Fortran modules in the ROSCO wind turbine controller — 41 KGen-verified (20-23 cases each, IDENTICAL) + 3 simulation-verified (Stage B idiomatic C++). 594 unit tests. Byte-identical simulation output across 10 scenarios (692,000 float64 values).
+VIT has been validated on **52 functions** across 8 Fortran modules in the ROSCO wind turbine controller — 42 KGen-verified (20-25 cases each, IDENTICAL) + 10 simulation-verified (Stages B-E). 598 unit tests. Byte-identical simulation output across 10 scenarios (692,000 float64 values). **All non-DISCON functions are now C++.**
 
 | Module | Functions | Complexity |
 |--------|-----------|------------|
-| **Functions.f90** | `saturate`, `wrap_180`, `wrap_360`, `ratelimit`, `ColemanTransform`, `ColemanTransformInverse`, `sigma`, `interp1d`, `interp2d`, `AeroDynTorque` | Scalars, arrays, `ErrorVariables` struct, trig, bilinear interpolation, Cp lookup |
-| **Filters.f90** | `LPFilter`, `HPFilter`, `SecLPFilter`, `NotchFilter`, `NotchFilterSlopes`, `SecLPFilter_Vel` | `FilterParameters` struct pointer, instance-indexed state, OPTIONAL args |
+| **Functions.f90** | `saturate`, `wrap_180`, `wrap_360`, `ratelimit`, `unwrap`, `ColemanTransform`, `ColemanTransformInverse`, `sigma`, `interp1d`, `interp2d`, `AeroDynTorque` | Scalars, arrays, `ErrorVariables` struct, trig, bilinear interpolation, Cp lookup |
+| **Filters.f90** | `LPFilter`, `HPFilter`, `SecLPFilter`, `NotchFilter`, `NotchFilterSlopes`, `SecLPFilter_Vel`, `PreFilterMeasuredSignals`\* | `FilterParameters` struct pointer, instance-indexed state, OPTIONAL args, filter cascade orchestrator |
 | **Controllers.f90** | `PIController`, `PIIController`, `PIDController`, `ResController`, `ForeAftDamping`, `FloatingFeedback`, `StructuralControl`, `CableControl`, `FlapControl`, `YawRateControl`, `VariableSpeedControl`, `IPC`, `ActiveWakeControl`, `PitchControl` | `piParams`/`resParams` struct R/W, ControlParameters view type, callee bridges, SAVE variables, avrSWAP array, 5 AWC modes, master pitch orchestrator, PID with derivative filtering |
 | **ControllerBlocks.f90** | `identity`, `PitchSaturation`, `StateMachine`, `SetpointSmoother`, `PowerControlSetpoints`, `RefSpeedExclusion`, `ComputeVariablesSetpoints`, `Shutdown`, `Startup`, `WindSpeedEstimator` | State machines, EKF wind estimator, setpoint computation, peak shaving, startup/shutdown staging |
-| **ReadSetParameters.f90** | `ReadAvrSWAP`, `CheckInputs`\*, `ReadCpFile`\*, `ReadControlParameterFileSub`\* | avrSWAP unpacking, parameter validation, Cp/Ct/Cq table reading, DISCON.IN config parsing. \*Simulation-verified (not KGen) |
+| **ReadSetParameters.f90** | `ReadAvrSWAP`, `CheckInputs`\*, `ReadCpFile`\*, `ReadControlParameterFileSub`\*, `SetParameters`\* | avrSWAP unpacking, parameter validation, Cp/Ct/Cq table reading, DISCON.IN config parsing, initialization orchestrator. \*Simulation-verified (not KGen) |
+| **ROSCO_IO.f90** | `WriteRestartFile`\*, `ReadRestartFile`\*, `Debug`\* | Binary checkpoint I/O, debug file logging. \*Simulation-verified |
+| **ZeroMQInterface.f90** | `UpdateZeroMQ`\* | ZeroMQ platform interface. \*Simulation-verified |
+| **ExtControl.f90** | `ExtController`\* | External controller DLL loader. \*Simulation-verified |
 
-All 44 translations integrated and rebuilt — ROSCO simulation produces **byte-identical output** across 10 scenarios (with `-ffp-contract=off` for deterministic FP).
+All 52 translations integrated and rebuilt — ROSCO simulation produces **byte-identical output** across 10 scenarios (with `-ffp-contract=off` for deterministic FP).
 
 ## Configuration (vit.yaml)
 

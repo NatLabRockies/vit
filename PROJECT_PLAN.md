@@ -612,7 +612,7 @@ With Phase 4 complete, `WE` nested struct is accessible through `LocalVariables`
 - [x] Translate + verify + integrate `WindSpeedEstimator` — EKF with 3×3 matrices, 6 type args. Required `std::pow(v_m, 3.0)` fix and Fortran MATMUL bridge (`vit_ekf_update`).
 - [x] Integration test — 39 functions integrated, 672,000 values ALL IDENTICAL across 9 scenarios.
 
-**Phase 8 complete.** All 39 ROSCO functions translated to C++ and verified bit-identical. See dev notes `202603282007` for full investigation details.
+**Phase 8 complete.** All 39 algorithm functions (through Phase 8) translated to C++ and verified bit-identical. See dev notes `202603282007` for full investigation details.
 
 ### Phase 9: Type Ownership Transfer
 **Target: C++ becomes source of truth for all types**

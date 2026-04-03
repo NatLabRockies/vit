@@ -8,7 +8,7 @@ This workspace contains three tools that work together to enable verified Fortra
 
 **KGen** (NCAR) is an existing third-party tool that instruments Fortran code to capture function inputs and outputs during a simulation run, then generates a standalone "kernel" that can replay those calls. VIT wraps KGen and patches its generated code. KGen requires Python 2.7.
 
-**ROSCO** is a wind turbine controller written in Fortran. It is the test case for VIT. ROSCO's Python simulation loads a compiled Fortran shared library (`libdiscon.so`) and runs a controller loop. VIT has verified and integrated 44 ROSCO functions — from simple math (`saturate`, `wrap_180`) through filters (`LPFilter`, `NotchFilter`) to complex controllers (`PitchControl`, `WindSpeedEstimator`) and I/O (`ReadAvrSWAP`, `ReadControlParameterFileSub`) — producing byte-identical output across 10 simulation scenarios (692,000 values).
+**ROSCO** is a wind turbine controller written in Fortran. It is the test case for VIT. ROSCO's Python simulation loads a compiled Fortran shared library (`libdiscon.so`) and runs a controller loop. VIT has verified and integrated 52 ROSCO functions — from simple math (`saturate`, `wrap_180`) through filters (`LPFilter`, `NotchFilter`, `PreFilterMeasuredSignals`) to complex controllers (`PitchControl`, `WindSpeedEstimator`), I/O (`ReadAvrSWAP`, `ReadControlParameterFileSub`), and orchestrators (`SetParameters`) — producing byte-identical output across 10 simulation scenarios (692,000 values). All non-DISCON functions are now C++.
 
 ## Development Environment
 
@@ -272,7 +272,7 @@ Empty diff = the C++ translation produces byte-identical simulation output.
 
 ### Batch Workflow (All Functions)
 
-For production integration of all 44 functions, use the batch scripts instead of repeating the single-function workflow:
+For production integration of all 52 functions, use the batch scripts instead of repeating the single-function workflow:
 
 ```bash
 # 1. Reset to clean Fortran (run on Mac, not in container)
@@ -283,10 +283,10 @@ cd rosco/controller/build && rm -rf * && cmake .. -DCMAKE_INSTALL_PREFIX=install
 mkdir -p baseline_arrays && cd Examples && python3 vit_sim.py --output-dir /workspace/ROSCO/baseline_arrays && cd /workspace/ROSCO
 
 # 3. Verify all translations against golden kernels
-bash scripts/verify_all.sh    # 41/41 passed
+bash scripts/verify_all.sh    # 42/42 passed
 
 # 4. Integrate all functions
-bash scripts/integrate_all.sh  # 44/44 passed (41 Track A + 3 Stage B)
+bash scripts/integrate_all.sh  # 52/52 passed
 
 # 5. Rebuild and compare all 10 scenarios
 cd rosco/controller/build && rm -rf * && cmake .. -DCMAKE_INSTALL_PREFIX=install && cmake --build . && cp libdiscon.so ../../lib/libdiscon.so && cd /workspace/ROSCO
@@ -324,7 +324,7 @@ Functions that cannot use KGen (file I/O, config parsing, functions with complex
 
 Stage C functions (WriteRestartFile, ReadRestartFile, Debug) in ROSCO_IO.f90 use manual integration in `integrate_all.sh` because their `CHARACTER(size_avcOUTNAME)` argument type is not supported by `vit translate` or `vit integrate`. They follow the same simulation-level verification as Stage B.
 
-- **WriteRestartFile + ReadRestartFile**: Only triggered by `iStatus==-8/-9` (not exercised in standard 10-scenario sim-compare). Verified indirectly: sim-compare proves no regression from wrapper plumbing. Both share a C++ file (`translations/IO/restart.cpp`) with a common `checkpoint_fields` template to guarantee identical field ordering.
+- **WriteRestartFile + ReadRestartFile**: Only triggered by `iStatus==-8/-9` (not exercised in standard 10-scenario sim-compare). Verified indirectly: sim-compare proves no regression from wrapper plumbing. Split into separate files (`translations/IO/writerestartfile.cpp`, `translations/IO/readrestartfile.cpp`) with a shared header (`translations/IO/restart_fields.h`) containing a `checkpoint_fields` template to guarantee identical field ordering.
 - **ReadRestartFile wrapper**: The Fortran wrapper handles callee dispatch — after `readrestartfile_c` reads the checkpoint, the wrapper calls `ReadControlParameterFileSub` and `ReadCpFile` (already-translated Stage B functions) from the Fortran side. This avoids the C++ needing to handle the two-pass ALLOCATE protocol.
 - **Debug**: Does not affect simulation output arrays. Verified via `scripts/debug_test.sh` which compares `.RO.dbg` data rows between baseline and integrated builds. Header formatting differs (Fortran `CHARACTER(15)` truncates column names; C++ does not) — only data rows are compared.
 
@@ -343,6 +343,20 @@ bash scripts/debug_test.sh compare
 ```
 
 Or run all steps: `bash scripts/debug_test.sh all`
+
+### Non-KGen Verification (Stage D Functions)
+
+Stage D functions (UpdateZeroMQ, ExtController) use manual integration due to platform-specific constructs (`#ifdef` preprocessor directives, guarded `ALLOCATE`). Verified via 10-scenario sim-compare.
+
+- **UpdateZeroMQ**: ZeroMQInterface.f90 — ZeroMQ message interface. The original file has `#ifdef ZMQ_CLIENT` preprocessor directives that break VIT's Fortran parser. Manual integration replaces the entire module with a C++ wrapper. Since ZMQ is not active in the test scenarios, sim-compare verifies wrapper plumbing (no regression).
+- **ExtController**: ExtControl.f90 — External controller DLL loader. Uses standard `vit integrate` plus a guarded `ALLOCATE` for `ExtDLL%avrSWAP` (conditional, not auto-allocatable). Sim-compare verified.
+
+### Non-KGen Verification (Stage E Functions)
+
+Stage E functions (PreFilterMeasuredSignals, SetParameters) are the final two non-DISCON orchestrators. Both are called every timestep, so 10-scenario sim-compare provides full coverage.
+
+- **PreFilterMeasuredSignals**: Filters.f90 — filter cascade calling 6 already-translated filter `_c` entry points (LPFilter, SecLPFilter, HPFilter, NotchFilter, NotchFilterSlopes, wrap_180). Standard `vit integrate` with CntrPar view type. Double-indexed ALLOCATABLE array access (1-based → 0-based conversion).
+- **SetParameters**: ReadSetParameters.f90 — initialization + per-timestep orchestrator. Manual integration with callee dispatch: Fortran wrapper handles per-timestep init (ErrVar clear, objInst counters, avrSWAP defaults), banner print, accINFILE save, ReadControlParameterFileSub call (two-pass ALLOCATE protocol), and ReadCpFile call. C++ handles LocalVar initialization (~25 fields), CheckInputs call, and OL_Index computation.
 
 ## VIT Configuration
 
@@ -425,7 +439,7 @@ docker exec -it vit-dev bash -c "cd /workspace/vit && python3 -m pytest tests/ -
 
 Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (41 total: `kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/interp2d/`, `kernel/sigma/`, `kernel/LPFilter/`, `kernel/HPFilter/`, `kernel/SecLPFilter/`, `kernel/NotchFilter/`, `kernel/NotchFilterSlopes/`, `kernel/SecLPFilter_Vel/`, `kernel/PIController/`, `kernel/PIIController/`, `kernel/ResController/`, `kernel/ForeAftDamping/`, `kernel/IPC/`, `kernel/FloatingFeedback/`, `kernel/ActiveWakeControl/`, `kernel/VariableSpeedControl/`, `kernel/PitchControl/`, `kernel/YawRateControl/`, `kernel/FlapControl/`, `kernel/CableControl/`, `kernel/StructuralControl/`, `kernel/PitchSaturation/`, `kernel/AeroDynTorque/`, `kernel/WindSpeedEstimator/`, `kernel/PowerControlSetpoints/`, `kernel/ComputeVariablesSetpoints/`, `kernel/StateMachine/`, `kernel/SetpointSmoother/`, `kernel/RefSpeedExclusion/`, `kernel/Shutdown/`, `kernel/Startup/`, `kernel/ReadAvrSWAP/`, `kernel/PIDController/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
 
-Note: Stage B functions (CheckInputs, ReadCpFile, ReadControlParameterFileSub) and Stage C functions (WriteRestartFile, ReadRestartFile, Debug) do not have KGen golden fixtures — they are verified via 10-scenario simulation comparison (`baseline_arrays/`). Debug output is additionally verified via `scripts/debug_test.sh`.
+Note: Stage B functions (CheckInputs, ReadCpFile, ReadControlParameterFileSub), Stage C functions (WriteRestartFile, ReadRestartFile, Debug), Stage D functions (UpdateZeroMQ, ExtController), and Stage E functions (PreFilterMeasuredSignals, SetParameters) do not have KGen golden fixtures — they are verified via 10-scenario simulation comparison (`baseline_arrays/`). Debug output is additionally verified via `scripts/debug_test.sh`.
 
 **Extraction parameters (for regenerating golden fixtures):**
 
@@ -548,7 +562,7 @@ After every feature implementation, run:
    ```bash
    docker exec vit-dev bash -c "cd /workspace/ROSCO && bash scripts/verify_all.sh"
    ```
-   Must show: `41/41 passed` (KGen Track A functions only). Each function should report `N/N passed` where N is the number of cases in its golden fixture (typically 20-23). Stage B functions (CheckInputs, ReadCpFile, ReadControlParameterFileSub) are not included in `verify_all.sh` — they are verified via 10-scenario simulation comparison against `baseline_arrays/`. For parallel execution, launch 3 batches via separate docker exec calls:
+   Must show: `42/42 passed` (KGen-verified functions only). Each function should report `N/N passed` where N is the number of cases in its golden fixture (typically 20-23). Stage B/C/D/E functions are not included in `verify_all.sh` — they are verified via 10-scenario simulation comparison against `baseline_arrays/`. For parallel execution, launch 3 batches via separate docker exec calls:
    ```bash
    docker exec vit-dev bash -c "cd /workspace/ROSCO && bash scripts/verify_all.sh 1" &
    docker exec vit-dev bash -c "cd /workspace/ROSCO && bash scripts/verify_all.sh 2" &
@@ -561,7 +575,7 @@ After every feature implementation, run:
    # Reset source, rebuild, then:
    docker exec vit-dev bash -c "cd /workspace/ROSCO && rm -rf kernel/ && bash scripts/extract_all.sh"
    ```
-   Must show: `41/41 passed` with `Cases: 20` or more for each function.
+   Must show: `42/42 passed` with `Cases: 20` or more for each function.
 
 4. **Determinism stress test (when touching NaN handling or comparison logic):**
    ```bash
@@ -581,7 +595,7 @@ After every feature implementation, run:
 
 This is the definitive test of the entire VIT pipeline: start from a completely clean ROSCO, build a pure-Fortran baseline, extract kernels for all functions, verify the C++ translations, integrate them into the codebase, rebuild, and confirm byte-identical simulation output.
 
-The clean build test covers all 44 integrated functions across 10 scenarios.
+The clean build test covers all 52 integrated functions across 10 scenarios.
 
 **Step 1 — Reset ROSCO to clean state (runs on Mac, not in container):**
 
@@ -618,7 +632,7 @@ Each extraction instruments the source, rebuilds, runs the simulation, captures 
 bash scripts/extract_all.sh
 ```
 
-Must show `41/41 passed` with `Cases: 20` or more for each function. See `scripts/extract_all.sh` for the per-function scenario assignments.
+Must show `42/42 passed` with `Cases: 20` or more for each function. See `scripts/extract_all.sh` for the per-function scenario assignments.
 
 **Step 4 — Verify C++ translations against extracted kernels (in container):**
 
@@ -626,7 +640,7 @@ Must show `41/41 passed` with `Cases: 20` or more for each function. See `script
 bash scripts/verify_all.sh
 ```
 
-Must show `41/41 passed`.
+Must show `42/42 passed`.
 
 **Note:** PitchControl depends on PitchSaturation (callee dependency). PitchSaturation must integrate before PitchControl in `integrate_all.sh`.
 
@@ -636,7 +650,7 @@ Must show `41/41 passed`.
 bash scripts/integrate_all.sh
 ```
 
-Must show `44/44 passed` (41 Track A + 3 Stage B). Each `--apply` reads the current file state and generates correct patches, skipping items already present (e.g., `enable_language(CXX)`, `stdc++` link, `USE ISO_C_BINDING`). See `scripts/integrate_all.sh` for the full function list.
+Must show `52/52 passed`. Each `--apply` reads the current file state and generates correct patches, skipping items already present (e.g., `enable_language(CXX)`, `stdc++` link, `USE ISO_C_BINDING`). See `scripts/integrate_all.sh` for the full function list.
 
 **Step 6 — Rebuild with C++ and compare simulation arrays against baseline (in container):**
 
@@ -733,6 +747,7 @@ Verified C++ translations live in `ROSCO/translations/Functions/` and `ROSCO/tra
 | `translations/Functions/wrap_180.cpp` | `wrap_180` in Functions.f90 | Verified (Phase 1) |
 | `translations/Functions/wrap_360.cpp` | `wrap_360` in Functions.f90 | Verified (Phase 1) |
 | `translations/Functions/ratelimit.cpp` | `ratelimit` in Functions.f90 | Verified (Phase 3) |
+| `translations/Functions/unwrap.cpp` | `unwrap` in Functions.f90 | Verified (Phase 10A) — angle unwrapping utility |
 | `translations/Functions/colemantransform.cpp` | `ColemanTransform` in Functions.f90 | Verified (Phase 2) |
 | `translations/Functions/colemantransforminverse.cpp` | `ColemanTransformInverse` in Functions.f90 | Verified (Phase 2) |
 | `translations/Functions/identity.cpp` | `identity` in ControllerBlocks.f90 | Verified (Phase 2) |
@@ -744,6 +759,7 @@ Verified C++ translations live in `ROSCO/translations/Functions/` and `ROSCO/tra
 | `translations/Filters/seclpfilter_vel.cpp` | `SecLPFilter_Vel` in Filters.f90 | Verified (Phase 7) — was pattern-translated, now KGen-verified with CC_Mode=1 fix |
 | `translations/Filters/notchfilter.cpp` | `NotchFilter` in Filters.f90 | Verified (Phase 6B) — discrete notch, omega/betaNum/betaDen args |
 | `translations/Filters/notchfilterslopes.cpp` | `NotchFilterSlopes` in Filters.f90 | Verified (Phase 6B) — first function with two OPTIONAL args |
+| `translations/Filters/prefiltermeasuredsignals.cpp` | `PreFilterMeasuredSignals` in Filters.f90 | Verified (Stage E) — filter cascade orchestrator, 6 callee types |
 | `translations/Controllers/picontroller.cpp` | `PIController` in Controllers.f90 | Verified (Phase 7A) |
 | `translations/Controllers/piicontroller.cpp` | `PIIController` in Controllers.f90 | Verified (Phase 7A) — required ROSCO Flp_Mode=2 bug fixes |
 | `translations/Controllers/rescontroller.cpp` | `ResController` in Controllers.f90 | Verified (Phase 7A) |
@@ -773,8 +789,12 @@ Verified C++ translations live in `ROSCO/translations/Functions/` and `ROSCO/tra
 | `translations/ReadSetParameters/checkinputs.cpp` | `CheckInputs` in ReadSetParameters.f90 | Verified (Phase 10B) — parameter validation, simulation-verified |
 | `translations/ReadSetParameters/readcpfile.cpp` | `ReadCpFile` in ReadSetParameters.f90 | Verified (Phase 10B) — Cp/Ct/Cq table reader, pre-allocation pattern |
 | `translations/ReadSetParameters/readcontrolparameterfilesub.cpp` | `ReadControlParameterFileSub` in ReadSetParameters.f90 | Verified (Phase 10B) — DISCON.IN parser, two-pass protocol |
-| `translations/IO/restart.cpp` | `WriteRestartFile` + `ReadRestartFile` in ROSCO_IO.f90 | Verified (Stage C) — binary checkpoint I/O, shared field-order template |
+| `translations/ReadSetParameters/setparameters.cpp` | `SetParameters` in ReadSetParameters.f90 | Verified (Stage E) — orchestrator, manual integration with callee dispatch |
+| `translations/IO/writerestartfile.cpp` | `WriteRestartFile` in ROSCO_IO.f90 | Verified (Stage C) — binary checkpoint output |
+| `translations/IO/readrestartfile.cpp` | `ReadRestartFile` in ROSCO_IO.f90 | Verified (Stage C) — binary checkpoint input, callee dispatch |
 | `translations/IO/debug_logger.cpp` | `Debug` in ROSCO_IO.f90 | Verified (Stage C) — debug file logging, static std::ofstream handles |
+| `translations/IO/zmq_interface.cpp` | `UpdateZeroMQ` in ZeroMQInterface.f90 | Verified (Stage D) — ZeroMQ platform interface |
+| `translations/IO/ext_control.cpp` | `ExtController` in ExtControl.f90 | Verified (Stage D) — external controller DLL loader |
 
 Each translation file has a metadata header (source file, function name, MD5 hash, VIT version, verification status) generated by `vit translate`.
 
