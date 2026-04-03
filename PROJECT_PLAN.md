@@ -745,32 +745,24 @@ Phase 11 has two stages: (A) translate DISCON to C++ while keeping Fortran modul
 
 **Stage A — DISCON → C++ (Fortran still in build):**
 
-- [ ] Write C++ DISCON entry point → `translations/discon.cpp`
-  - `extern "C" void DISCON(float* avrSWAP, int* aviFAIL, char* accINFILE, char* avcOUTNAME, char* avcMSG)` — same Bladed DLL interface
-  - 8 SAVE variables → `static` local structs: `localvariables_t`, `controlparameters_view_t`, `objectinstances_t`, `performancedata_view_t`, `debugvariables_t`, `errorvariables_t`, `extcontroltype_view_t`, plus a static allocation owner for ALLOCATABLE fields
-  - String handling: accINFILE and avcOUTNAME are already `char*` — no TRANSFER needed. GetRoot (extracts filename root) replicated as simple C++ string operation. ErrMsg → avcMSG is a memcpy + null terminator
-  - iStatus-based control flow: exact replica of DISCON.F90 lines 73-159 — conditional calls gated by mode flags, already-translated functions called via `_c` entry points
+- [x] Write C++ DISCON entry point → `translations/discon.cpp`
+  - `extern "C" void DISCON(float* avrSWAP, int* aviFAIL, char* accINFILE, char* avcOUTNAME, char* avcMSG)` with `__attribute__((visibility("default")))` — same Bladed DLL interface
+  - 7 static structs (4 BIND(C) + 3 view types) + static AllocOwner with raw pointers for 50 ALLOCATABLE fields + 1 ExtDLL avrSWAP
+  - GetRoot replicated as C++ string operation. All string handling is native char* — no TRANSFER needed
+  - iStatus-based control flow: exact replica of DISCON.F90 lines 72-159
 
-- [ ] Unify SetParameters into C++ DISCON (absorb the Fortran wrapper logic)
-  - The current SetParameters Fortran wrapper handles per-timestep init, banner, accINFILE save, ReadControlParameterFileSub (two-pass ALLOCATE protocol), ReadCpFile, then delegates to setparameters_c. In Phase 11A, the C++ DISCON absorbs the wrapper responsibilities:
-  - **Per-timestep init:** ErrVar clear, 9 objInst counter resets, 11 avrSWAP defaults — trivial assignments
-  - **Banner + accINFILE save:** printf for banner (using ROSCO_VERSION constant), memcpy for ACC_INFILE
-  - **Two-pass ReadControlParameterFileSub with C++ allocation:**
-    1. Call `readcontrolparameterfilesub_pass1_c(view, ...)` — fills scalar fields, returns array counts
-    2. Read scalar fields from view to determine array sizes (F_NumNotchFilts, PC_GS_n, VS_n, etc.)
-    3. Allocate memory for all 44 ALLOCATABLE fields (malloc or std::vector) and set pointer+size in view
-    4. Call `readcontrolparameterfilesub_pass2_c(view, ...)` — fills array contents
-    - The ~80-line ALLOCATE section from readcontrolparameterfilesub_wrapper.f90 becomes C++ allocation calls
-  - **ReadCpFile:** Allocate PerformanceData arrays (5 ALLOCATABLE: Beta_vec, TSR_vec, Cp/Ct/Cq_mat), then call `readcpfile_c(view, ...)`
-  - **Remaining SetParameters logic:** Call existing setparameters_c (LocalVar init, CheckInputs, OL_Index)
-  - Error message prepend: snprintf "SetParameters:" prefix
+- [x] Unify SetParameters into C++ DISCON (absorb the Fortran wrapper logic)
+  - Per-timestep init, banner, accINFILE save all absorbed into DISCON function body
+  - Two-pass ALLOCATE protocol: `read_config_files()` helper factored out for reuse by both iStatus==0 and iStatus==-9 (restart) paths. Uses calloc + pointer/size assignment into view struct — 65 allocation calls matching readcontrolparameterfilesub_wrapper.f90 exactly
+  - ReadCpFile: 5 PerformanceData arrays allocated before readcpfile_c call
+  - ReadRestartFile callee dispatch: after readrestartfile_c, re-runs full read_config_files (same ALLOCATE + file-read sequence)
+  - setparameters_c called for LocalVar init (iStatus==0) and OL_Index (every call)
 
-- [ ] Replace DISCON.F90 with discon.cpp in CMakeLists.txt
-  - Remove DISCON.F90 from SOURCES, add src/discon.cpp
-  - Keep all other .f90 files temporarily (they compile but are dead code — no caller)
-  - DLL symbol export: `-DIMPLICIT_DLLEXPORT` + `__attribute__((visibility("default")))` on the extern "C" function
+- [x] Replace DISCON.F90 with discon.cpp in CMakeLists.txt
+  - integrate_all.sh swaps `src/DISCON.F90` → `src/discon.cpp` in SOURCES (53/53 integration steps)
+  - All .f90 modules remain as dead code (compiled but uncalled)
 
-- [ ] **Verification:** 10-scenario sim-compare (692,000 values IDENTICAL). This is the most critical verification gate — it proves the C++ DISCON orchestrates all 52 functions identically to the Fortran original. Debug test (15,999 data rows IDENTICAL).
+- [x] **Verification:** 10-scenario sim-compare: 692,000 values IDENTICAL. Debug test: 15,999 data rows IDENTICAL.
 
 **Stage B — Remove Fortran (pure C++ build):**
 
