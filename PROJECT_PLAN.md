@@ -8,7 +8,7 @@ Fully translate the ROSCO wind turbine controller from Fortran to C++, producing
 
 ### Current State (2026-04-01)
 
-- **Verified translations**: 50 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, Controllers.f90, ReadSetParameters.f90, ZeroMQInterface.f90, ExtControl.f90, and ROSCO_IO.f90 — 42 KGen-verified (20-25 cases each, IDENTICAL) + 8 simulation-verified (3 Stage B + 2 Stage D + 3 Stage C). Phase 10 Stages A-D complete. Stage C complete (WriteRestartFile, ReadRestartFile, Debug).
+- **Verified translations**: 52 functions across Functions.f90, Filters.f90, ControllerBlocks.f90, Controllers.f90, ReadSetParameters.f90, ZeroMQInterface.f90, ExtControl.f90, and ROSCO_IO.f90 — 42 KGen-verified (20-25 cases each, IDENTICAL) + 10 simulation-verified (3 Stage B + 2 Stage D + 3 Stage C + 2 Stage E). All non-DISCON functions translated. Stage E complete (PreFilterMeasuredSignals, SetParameters).
 - **Integrated (50 of 50)**: All 50 translations produce byte-identical simulation output across 10 scenarios (692,000 float64 values). Pure C++ — no Fortran bridges. All translations use Fortran source casing.
 - **Scenario 3 FITPACK fix**: scipy's FITPACK `bispev` reads an uninitialized stack variable, causing non-deterministic Cp interpolation. Fixed with a stack scrubber + cached RectBivariateSpline in vit_sim.py (dev note `202603261539`).
 - **Scenario 8 NotchFilterSlopes fix**: Fortran `**` precedence grouping mismatch in coefficient computation caused 1-ULP errors that accumulated over 14,791 timesteps. Fixed by parenthesizing C++ to match Fortran grouping (dev note `202603261747`).
@@ -704,21 +704,18 @@ Phase 4 created BIND(C) structs and pointer+size views. Phase 9 progressively tr
 
 **Stage E — Orchestrators (idiomatic C++):**
 
-- [ ] `PreFilterMeasuredSignals` → `translations/Filters/prefiltermeasuredsignals.cpp`
+- [x] `PreFilterMeasuredSignals` → `translations/Filters/prefiltermeasuredsignals.cpp`
   - Filters.f90:325-439 (115 lines) — pure filter orchestrator
-  - Calls LPFilter (5x), SecLPFilter (6x), HPFilter (4x), NotchFilter (in loops), NotchFilterSlopes (1x), wrap_180 (1x) — all already translated, called via `_c` entry points
-  - No file I/O, no ALLOCATE, no SAVE
-  - Control flow: conditional filtering based on F_LPFType, IPC_ControlMode, Flp_Mode, TD_Mode; loops over F_GenSpdNotch_N and F_TwrTopNotch_N notch filters; blade loop (K=1..NumBl)
-  - CntrPar ALLOCATABLE array access requires 1-based → 0-based index adjustment (F_NotchFreqs, F_GenSpdNotch_Ind, etc.)
-  - **Verification:** Called every timestep, directly affects all downstream controllers. 10-scenario sim-compare provides strong coverage
+  - Standard `vit integrate` (CntrPar view, all other types bind_c). Called via _c entry points: lpfilter_c (5x), seclpfilter_c (6x), hpfilter_c (4x), notchfilter_c (loops), notchfilterslopes_c (1x), wrap_180_c (1x)
+  - Double-indexed CntrPar ALLOCATABLE arrays: `F_NotchFreqs[F_GenSpdNotch_Ind[n-1] - 1]` (1-based → 0-based conversion at both levels)
+  - Field name case trap: LocalVar has `NACIMU_FA_AccF` (all caps) vs DebugVar has `NacIMU_FA_AccF` (mixed case) — Fortran case-insensitive, C++ must match TYPE definition
+  - **Verification:** 10-scenario sim-compare, 692,000 values IDENTICAL
 
-- [ ] `SetParameters` → `translations/IO/set_parameters.cpp`
+- [x] `SetParameters` → `translations/ReadSetParameters/setparameters.cpp`
   - ReadSetParameters.f90:143-298 (156 lines) — initialization + per-timestep orchestrator
-  - **Per-timestep (every call):** initializes objInst counters, sets avrSWAP defaults (indices 35-81), initializes ErrVar, computes OL_Index (OL_BP_Mode breakpoint)
-  - **First call (iStatus==0):** prints ROSCO banner, saves ACC_INFILE string, calls readcontrolparameterfilesub (two-pass protocol), conditionally calls readcpfile_c, initializes ~25 LocalVar fields (PitCom, WE_Vw, WE_VwI, VS_LastGenTrq, VS_MaxTq, CC_DesiredL, ZMQ fields), calls checkinputs_c
-  - Callees: readcontrolparameterfilesub_pass1_c/pass2_c (Stage B), readcpfile_c (Stage B), checkinputs_c (Stage B), interp1d_c (Phase 5A), lpfilter_c (Phase 6) — all translated
-  - **Risk:** Two-pass ReadControlParameterFileSub protocol must be replicated correctly (pass1 → Fortran allocates → pass2). The Fortran wrapper handles the ALLOCATE sequence between passes
-  - **Verification:** Called every timestep, initialization affects all downstream behavior. 10-scenario sim-compare is comprehensive
+  - **Manual integration with callee dispatch:** Fortran wrapper handles per-timestep init (ErrVar clear, objInst counters, avrSWAP defaults), banner print, accINFILE save, ReadControlParameterFileSub call (two-pass ALLOCATE protocol), ReadCpFile call, view population, error prepend. C++ handles LocalVar initialization (~25 fields), CheckInputs call, OL_Index computation
+  - C++ signature omits accINFILE and RootName (wrapper handles them): `setparameters_c(CntrPar_view, LocalVar, avrSWAP, objInst, ErrVar, size_avcMSG)`
+  - **Verification:** 10-scenario sim-compare, 692,000 values IDENTICAL
 
 **Dead code (not translated):**
 - `matinv3` (Functions.f90) — 3x3 matrix inverse. Zero call sites in entire codebase. Dropped.
