@@ -40,6 +40,16 @@ docker exec -it vit-dev bash -c "
 "
 ```
 
+**WARNING: Never chain build and simulation in one `docker exec` command.** The build step `cd rosco/controller/build` changes the working directory. Subsequent commands like `cd Examples` will fail with `No such file or directory` because the CWD is still inside the build directory. Use separate `docker exec` calls:
+
+```bash
+# Build (changes CWD to build/)
+docker exec vit-dev bash -c "cd /workspace/ROSCO/rosco/controller/build && rm -rf * && cmake .. -DCMAKE_INSTALL_PREFIX=install && cmake --build . && cp libdiscon.so ../../lib/libdiscon.so"
+
+# Simulate (separate call, starts at /workspace/ROSCO)
+docker exec vit-dev bash -c "cd /workspace/ROSCO/Examples && python3 vit_sim.py"
+```
+
 **Start the container if it is stopped:**
 
 ```bash
