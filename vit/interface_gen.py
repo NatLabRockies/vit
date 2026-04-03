@@ -236,8 +236,14 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
 
     lines.append(f"        IMPLICIT NONE")
 
-    # Declare arguments with original types
+    # Declare arguments — non-CHARACTER first so INTEGER length params are
+    # declared before CHARACTER(len_param) args that depend on them.
+    char_args = []
     for arg in sig.args:
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+        if mapping.character_len_param or (mapping.character_length and mapping.character_length > 1):
+            char_args.append(arg)
+            continue
         intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ", INTENT(IN)"
         optional_str = ", OPTIONAL" if arg.is_optional else ""
         target_str = _get_target_attr(arg, kind_aliases, derived_types)
@@ -245,6 +251,9 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
             lines.append(f"        {arg.fortran_type}{intent_str}{optional_str}{target_str} :: {arg.name}{_format_dims(arg)}")
         else:
             lines.append(f"        {arg.fortran_type}{intent_str}{optional_str}{target_str} :: {arg.name}")
+    for arg in char_args:
+        intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ", INTENT(IN)"
+        lines.append(f"        {arg.fortran_type}{intent_str} :: {arg.name}")
 
     # Declare result with original type
     if sig.result_type:
@@ -261,6 +270,9 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     else:
         lines.append(f"        {ret_type} :: {result_name}")
 
+    # CHARACTER local var declarations (before any executable statements)
+    lines.extend(_generate_character_declarations(sig, kind_aliases, derived_types))
+
     # OPTIONAL preamble: local variables, PRESENT() checks
     if optional_forwarded:
         lines.extend(_generate_optional_preamble(optional_forwarded, kind_aliases, derived_types))
@@ -268,6 +280,9 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     # View type preamble: local view structs + populator calls
     if view_args:
         lines.extend(_generate_view_preamble(view_args, is_kernel))
+
+    # CHARACTER copy loops (executable, before the C call)
+    lines.extend(_generate_character_copy_loops(sig, kind_aliases, derived_types))
 
     # Build the C function call (only non-passthrough args, with size params for arrays)
     ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
@@ -318,7 +333,14 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
 
     lines.append(f"        IMPLICIT NONE")
 
+    # Declare arguments — non-CHARACTER first so INTEGER length params are
+    # declared before CHARACTER(len_param) args that depend on them.
+    char_args = []
     for arg in sig.args:
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+        if mapping.character_len_param or (mapping.character_length and mapping.character_length > 1):
+            char_args.append(arg)
+            continue
         intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ""
         optional_str = ", OPTIONAL" if arg.is_optional else ""
         target_str = _get_target_attr(arg, kind_aliases, derived_types)
@@ -326,6 +348,12 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
             lines.append(f"        {arg.fortran_type}{intent_str}{optional_str}{target_str} :: {arg.name}{_format_dims(arg)}")
         else:
             lines.append(f"        {arg.fortran_type}{intent_str}{optional_str}{target_str} :: {arg.name}")
+    for arg in char_args:
+        intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ""
+        lines.append(f"        {arg.fortran_type}{intent_str} :: {arg.name}")
+
+    # CHARACTER local var declarations (before any executable statements)
+    lines.extend(_generate_character_declarations(sig, kind_aliases, derived_types))
 
     # OPTIONAL preamble
     if optional_forwarded:
@@ -354,6 +382,9 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     if view_args:
         lines.extend(_generate_view_preamble(view_args, is_kernel))
 
+    # CHARACTER copy loops (executable, before the C call)
+    lines.extend(_generate_character_copy_loops(sig, kind_aliases, derived_types))
+
     # Build call with conversions (only non-passthrough args)
     call_args = _build_wrapper_call_args(sig, kind_aliases, derived_types)
     call_str = ", ".join(call_args)
@@ -369,6 +400,49 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
                 lines.append(f"        CALL vit_copy_scalars_to_{type_lower}({arg.name}_view, {arg.name})")
 
     lines.append(f"    END SUBROUTINE {sig.name}")
+    return lines
+
+
+def _get_char_len_expr(arg, mapping, sig):
+    """Get the length expression for a CHARACTER argument, using original case."""
+    if mapping.character_len_param:
+        for a in sig.args:
+            if a.name.lower() == mapping.character_len_param.lower():
+                return a.name
+        return mapping.character_len_param
+    elif mapping.character_length and mapping.character_length > 1:
+        return str(mapping.character_length)
+    return None
+
+
+def _generate_character_declarations(sig, kind_aliases, derived_types):
+    """Emit local variable declarations for CHARACTER→C_CHAR conversion.
+    Must be in the declaration section (before any executable statements)."""
+    lines = []
+    for arg in sig.args:
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+        len_expr = _get_char_len_expr(arg, mapping, sig)
+        if len_expr:
+            lines.append(f"        CHARACTER(KIND=C_CHAR) :: {arg.name}_c({len_expr})")
+            lines.append(f"        INTEGER :: vit_i_{arg.name}")
+    return lines
+
+
+def _generate_character_copy_loops(sig, kind_aliases, derived_types):
+    """Emit copy loops for CHARACTER→C_CHAR conversion.
+    Must be in the executable section (before the C call)."""
+    lines = []
+    has_any = False
+    for arg in sig.args:
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+        len_expr = _get_char_len_expr(arg, mapping, sig)
+        if len_expr:
+            if not has_any:
+                lines.append(f"        ! Convert CHARACTER args to C_CHAR arrays")
+                has_any = True
+            lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
+            lines.append(f"            {arg.name}_c(vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
+            lines.append(f"        END DO")
     return lines
 
 
@@ -782,6 +856,9 @@ def _build_wrapper_call_args(sig: FortranSignature,
                 elif arg.array_rank == 2:
                     call_args.append(f"SIZE({arg.name}, 1)")
                     call_args.append(f"SIZE({arg.name}, 2)")
+        elif (mapping.character_length and mapping.character_length > 1) or mapping.character_len_param:
+            # CHARACTER with fixed/parameterized length: pass local C_CHAR array
+            call_args.append(f"{arg.name}_c")
         elif arg.intent in (IntentKind.OUT, IntentKind.INOUT):
             # INOUT/OUT scalars passed by reference (no conversion needed)
             call_args.append(arg.name)
