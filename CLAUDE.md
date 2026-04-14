@@ -8,28 +8,50 @@ This workspace contains three tools that work together to enable verified Fortra
 
 **KGen** (NCAR) is an existing third-party tool that instruments Fortran code to capture function inputs and outputs during a simulation run, then generates a standalone "kernel" that can replay those calls. VIT wraps KGen and patches its generated code. KGen requires Python 2.7.
 
-**ROSCO** is a wind turbine controller written in Fortran. It is the test case for VIT. ROSCO's Python simulation loads a compiled Fortran shared library (`libdiscon.so`) and runs a controller loop. VIT has verified and integrated 52 ROSCO functions plus a C++ DISCON entry point — from simple math (`saturate`, `wrap_180`) through filters (`LPFilter`, `NotchFilter`, `PreFilterMeasuredSignals`) to complex controllers (`PitchControl`, `WindSpeedEstimator`), I/O (`ReadAvrSWAP`, `ReadControlParameterFileSub`), and orchestrators (`SetParameters`). Verification covers **27 simulation scenarios × 13 output arrays per scenario ≈ 5.25M values compared** (~2.56M non-trivial) across a three-build chain (**upstream Fortran ≡ modified Fortran ≡ pure C++**, three distinct `libdiscon.so` binaries). On the `integrated` branch, ROSCO is a **pure C++ shared library** — all 16 Fortran source files removed from the build, no libgfortran dependency. C++ runs ~25% faster than Fortran on ARM64. One known tolerated difference: 3 values at Scenario 16 `bld_pitch*` index 4444 differ by `8.47e-22 rad` (single-root-cause gfortran code-generation artifact, not a translation bug).
+**ROSCO (completed, April 2026)** was the first test case for VIT. It is a wind turbine controller written in Fortran; ROSCO's Python simulation loads a compiled Fortran shared library (`libdiscon.so`) and runs a controller loop. VIT verified and integrated 52 ROSCO functions plus a C++ DISCON entry point — from simple math (`saturate`, `wrap_180`) through filters (`LPFilter`, `NotchFilter`, `PreFilterMeasuredSignals`) to complex controllers (`PitchControl`, `WindSpeedEstimator`), I/O (`ReadAvrSWAP`, `ReadControlParameterFileSub`), and orchestrators (`SetParameters`). Verification covers **27 simulation scenarios × 13 output arrays per scenario ≈ 5.25M values compared** (~2.56M non-trivial) across a three-build chain (**upstream Fortran ≡ modified Fortran ≡ pure C++**, three distinct `libdiscon.so` binaries). On the `integrated` branch, ROSCO is a **pure C++ shared library** — all 16 Fortran source files removed from the build, no libgfortran dependency. C++ runs ~25% faster than Fortran on ARM64. One known tolerated difference: 3 values at Scenario 16 `bld_pitch*` index 4444 differ by `8.47e-22 rad` (single-root-cause gfortran code-generation artifact, not a translation bug). The ROSCO workspace is at `vit_translation/`; `PROJECT_PLAN_ROSCO.md` captures the full phase history.
 
-## Phase Status
+**OpenFAST / AeroDyn (active, April 2026–)** is the current translation target. AeroDyn is the aerodynamics module of OpenFAST (NREL's wind turbine simulation framework): 42 Fortran source files totaling ~75,000 lines, roughly 9× ROSCO's scope. Work happens in the sibling workspace `vit_translation_openfast/`, which has its own independent clones of VIT, KGen, and OpenFAST — separate from the ROSCO workspace so experimental VIT changes for AeroDyn cannot contaminate the completed ROSCO work. The translation plan (`PROJECT_PLAN_AERODYN.md`) has not yet been drafted; when it is, it will follow the methodology in `CREATING_PROJECT_PLANS.md`, starting with an `fparser2`-backed structural inventory of `modules/aerodyn/` and `modules/nwtc-library/`. See dev note `202604140013-openfast-aerodyn-phase-start.md` for the kickoff record.
+
+## Project Status
+
+### ROSCO — complete (April 2026)
 
 - **Phase 11 complete** on the `integrated` branch: pure C++ `libdiscon.so`, all 16 Fortran source files removed from `CMakeLists.txt`, confirmed by `ldd libdiscon.so` (no `libgfortran.so` — only `libstdc++`, `libm`, `libgcc_s`, `libc`).
 - **All 52 translatable functions verified and integrated.** 42 via KGen kernel verification at float64. 10 Stage B/C/D/E functions (file I/O, config parsing, platform modules, orchestrators) verified via 27-scenario simulation comparison at float32 (the avrSWAP deployment precision).
-- The `main` branch intentionally keeps Fortran source files on disk so extract/verify/integrate cycles remain reproducible (`reset_to_clean.sh` checks them out of git for each cycle). See **Git → Branches** below for how `main` and `integrated` relate.
-- `PROJECT_PLAN_ROSCO.md` in the VIT repo has phase-by-phase detail with completed checkboxes. See `CREATING_PROJECT_PLANS.md` for the methodology future plans should follow.
+- The ROSCO workspace's `main` branch intentionally keeps Fortran source files on disk so extract/verify/integrate cycles remain reproducible (`reset_to_clean.sh` checks them out of git for each cycle). See **Git → ROSCO branches (historical reference)** below for how `main` and `integrated` relate.
+- `PROJECT_PLAN_ROSCO.md` in the VIT repo has phase-by-phase detail with completed checkboxes.
+
+### OpenFAST / AeroDyn — active (April 2026–)
+
+- **Workspace:** `vit_translation_openfast/` — sibling to the ROSCO workspace, with independent git clones of VIT, KGen, and OpenFAST (no symlinks). Both workspace VIT clones share the same `main` branch on the `NatLabRockies/vit` remote.
+- **Target:** translate AeroDyn, the aerodynamics module of OpenFAST. 42 Fortran source files, ~75,000 lines, approximately 9× ROSCO's scope. Linear scaling from ROSCO's 38-day timeline suggests 10–12 months, with significant uncertainty.
+- **Current stage:** **kickoff complete, planning not yet started.** OpenFAST, VIT, and KGen cloned into the new workspace. Initial structural recon done (AeroDyn 42 files/75,430 lines; NWTC Library 53 files/52,688 lines). Three challenges vs ROSCO identified: NWTC Framework interface semantics (state-type zoo instead of flat Bladed DLL), Registry-generated `_Types.f90` files with POINTER and ALLOCATABLE-of-derived-type fields (new territory for `vit analyze-types`), and a heavier build/extraction chain than ROSCO's DLL + ctypes harness.
+- **Next step:** draft `PROJECT_PLAN_AERODYN.md` using the methodology in `CREATING_PROJECT_PLANS.md`, starting with an `fparser2`-backed structural inventory of `modules/aerodyn/` and `modules/nwtc-library/`. Plan text is not written until the inventory is in hand.
+- **Blocker:** the `vit-dev` Docker container currently mounts only the ROSCO workspace. No VIT command can run against OpenFAST source until the mount is extended or a second container is created. See the Docker Container section below.
+- **Dev note marking the kickoff:** `202604140013-openfast-aerodyn-phase-start.md`.
+- **Methodology reference:** `CREATING_PROJECT_PLANS.md` — read this before drafting `PROJECT_PLAN_AERODYN.md`. It is derived from a rigorous retrospective of the ROSCO plan drift and prescribes research-before-prescription, explicit confidence labels, first-class open questions, and named revisit triggers.
 
 ## Development Environment
 
 ### Docker Container
 
-All building, extraction, simulation, and testing happens inside a Docker container. **Never run VIT commands, ROSCO builds, or KGen directly on the Mac** — KGen's Fortran parser does not work on macOS.
+All building, extraction, simulation, and testing happens inside a Docker container. **Never run VIT commands, ROSCO/OpenFAST builds, or KGen directly on the Mac** — KGen's Fortran parser does not work on macOS.
 
-The container is named `vit-dev` and mounts the workspace:
+The container is named `vit-dev` and was set up during ROSCO development. It currently mounts only the ROSCO workspace:
 
 | Mac path | Container path |
 |----------|----------------|
 | `vit_translation/` | `/workspace/` |
 
 Files edited on the Mac are immediately visible inside the container and vice versa.
+
+**Blocker for OpenFAST/AeroDyn work:** the current mount does not cover `vit_translation_openfast/`, so the new workspace is invisible from inside `vit-dev`. This must be resolved before any VIT command can run against OpenFAST source. Three options:
+
+1. **Extend the mount to ` → /workspace/`** (parent directory). Both sibling workspaces become visible as `/workspace/vit_translation/` and `/workspace/vit_translation_openfast/`. Requires container recreation and Python 2.7 rebuild (tarball at `/workspace/Python-2.7.18.tar.xz`, rebuild commands in "If the Container Is Destroyed" below). Cleanest long-term, highest setup cost.
+2. **Create a second container `vit-dev-openfast`** dedicated to OpenFAST work, with its own mount pointing at `vit_translation_openfast/`. Full duplication of the container setup but isolates ROSCO and OpenFAST toolchains completely.
+3. **Add a second bind mount to the existing container** for `vit_translation_openfast/` → `/workspace/openfast_workspace/`. Also requires container recreation (Docker does not allow adding mounts to a running container).
+
+See dev note `202604140013-openfast-aerodyn-phase-start.md` for the full discussion and the decision rationale. Resolving this is a prerequisite to any actual AeroDyn work.
 
 **Run commands inside the container like this:**
 
@@ -974,7 +996,9 @@ Two real caveats should be stated alongside the headline verification numbers so
 
 ## Development Notes Convention
 
-Development notes live in `vit/dev/` (the VIT repo) and are named with a datetime tag: `YYYYMMDDHHMM-descriptor.md` (e.g., `202603101739-project-inception.md`). Dev notes are committed to the VIT repo, not ROSCO.
+Development notes live in `vit/dev/` (the VIT repo) and are named with a datetime tag: `YYYYMMDDHHMM-descriptor.md` (e.g., `202603101739-project-inception.md`). Dev notes are committed to the VIT repo, not to ROSCO or OpenFAST.
+
+**Workspace note:** the ROSCO workspace (`vit_translation/vit/dev/`) and the OpenFAST workspace (`vit_translation_openfast/vit/dev/`) have their own independent VIT clones, but both share the same `main` branch on the `NatLabRockies/vit` remote. A dev note written in one workspace propagates to the other via `git push` (in the writing workspace) followed by `git pull` (in the other). **Active work is now in the OpenFAST workspace — new dev notes should be written there.** The ROSCO workspace is kept in sync via `git pull` only when convenient (it is currently several commits behind and does not need active maintenance).
 
 When the user says "add this to development notes", "make a dev note", or similar:
 1. Get the current time by running `date '+%Y%m%d%H%M'` — do NOT guess or invent timestamps
@@ -1015,16 +1039,31 @@ Plan documents use checkboxes (`- [ ]` / `- [x]`) for phases and sub-items so pr
 
 ## Git
 
-There are two repos in this workspace:
+The project now has **two sibling workspaces** on disk, each with its own independent git clones. **Active work is in the OpenFAST workspace;** the ROSCO workspace is historical and only needs to be synced when the user returns to ROSCO-specific work.
+
+### ROSCO workspace (completed) — `vit_translation/`
 
 | Repo | Path | Remote | What goes here |
 |------|------|--------|---------------|
-| **VIT** | `vit_translation/vit/` | `origin` (private) | VIT tool code, tests, dev notes, plan docs (`PROJECT_PLAN_*.md`), `CREATING_PROJECT_PLANS.md`, `CLAUDE.md` |
-| **ROSCO** | `vit_translation/ROSCO/` | `git@github.com:kevinmenear/ROSCO.git` | Forked from NREL/ROSCO. Translations, vit.yaml, TRANSLATION_TIPS.md, golden kernel fixtures |
+| **VIT** | `vit_translation/vit/` | `git@github.com:NatLabRockies/vit.git` (private) | VIT tool code, tests, dev notes, plan docs (`PROJECT_PLAN_*.md`), `CREATING_PROJECT_PLANS.md`, `CLAUDE.md` |
+| **KGen** | `vit_translation/KGen/` | `git@github.com:kevinmenear/KGen.git` | Forked from NCAR/KGen with our parser fixes (PROCEDURE POINTER, BIND(C), backslash escape) |
+| **ROSCO** | `vit_translation/ROSCO/` | `git@github.com:kevinmenear/ROSCO.git` | Forked from NREL/ROSCO. Translations, `vit.yaml`, `TRANSLATION_TIPS.md`, golden kernel fixtures, `baseline_arrays/`, `upstream_arrays/` |
 
-ROSCO is a fork of the upstream NREL/ROSCO repo. VIT-specific files (translations, config, kernel fixtures) are committed and pushed to the fork. Changes to translations, vit.yaml, and kernel fixtures go in the ROSCO repo. Changes to VIT tool code, tests, dev notes, and planning docs go in the VIT repo.
+### OpenFAST workspace (active) — `vit_translation_openfast/`
 
-### Branches
+| Repo | Path | Remote | What goes here |
+|------|------|--------|---------------|
+| **VIT** | `vit_translation_openfast/vit/` | `git@github.com:NatLabRockies/vit.git` (**same remote** as ROSCO workspace) | Independent clone, same `main` branch — commits converge via push/pull |
+| **KGen** | `vit_translation_openfast/KGen/` | `git@github.com:kevinmenear/KGen.git` (same remote) | Independent clone, same `master` branch |
+| **OpenFAST** | `vit_translation_openfast/openfast/` | `https://github.com/OpenFAST/openfast.git` (**upstream NREL**) | Fresh clone, **not yet forked**. If we need to commit changes to OpenFAST source during translation, we fork at that point |
+
+Both workspace VIT clones share the same `main` branch on the same remote. A commit made in one workspace is synced to the other via `git push` (in the committing workspace) followed by `git pull` (in the other). Dev notes, plan documents, `CREATING_PROJECT_PLANS.md`, `CLAUDE.md`, and all tool changes for the AeroDyn effort happen in the OpenFAST workspace. The ROSCO workspace only needs syncing when the user goes back to ROSCO work.
+
+ROSCO and KGen are forks. VIT-specific ROSCO files (translations, config, kernel fixtures) were committed to the ROSCO fork during the ROSCO project; that work is complete. Changes to VIT tool code, tests, dev notes, and planning docs go in the VIT repo (either workspace; they converge on the remote). Changes to OpenFAST source (if any become necessary) will happen in an OpenFAST fork to be created later.
+
+### ROSCO branches (historical reference)
+
+Applies to the ROSCO fork only. OpenFAST's branch story has not been written yet — for now, `main` is the only branch of the OpenFAST clone.
 
 The ROSCO fork has two meaningful branches:
 
