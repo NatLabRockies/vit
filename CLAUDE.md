@@ -33,25 +33,50 @@ This workspace contains three tools that work together to enable verified Fortra
 
 ## Development Environment
 
-### Docker Container
+### Docker Containers (two, one per project)
 
-All building, extraction, simulation, and testing happens inside a Docker container. **Never run VIT commands, ROSCO/OpenFAST builds, or KGen directly on the Mac** — KGen's Fortran parser does not work on macOS.
+All building, extraction, simulation, and testing happens inside a Docker container. **Never run VIT commands, ROSCO/OpenFAST builds, or KGen directly on the Mac** — KGen's Fortran parser does not work on macOS. The project now has two containers, one per target codebase, with separate mount points:
 
-The container is named `vit-dev` and was set up during ROSCO development. It currently mounts only the ROSCO workspace:
+| Container | Mac path mounted | Container path | Project | How it was built |
+|-----------|-----------------|----------------|---------|------------------|
+| **`vit-dev`** | `vit_translation/` | `/workspace/` | ROSCO (completed) | Interactively, on `ubuntu:24.04`, with Python 2.7 compiled from source inside the container. Committed and exported as `vit-dev-image.tar.gz`. See dev note `202603231054`. |
+| **`vit-dev-openfast`** | `vit_translation_openfast/` | `/workspace/` | OpenFAST / AeroDyn (active) | From `vit/docker/Dockerfile.openfast`, which FROMs `vit-dev-image` and adds OpenFAST-specific dependencies (LAPACK/BLAS, yaml-cpp, Python 2.7 rebuilt, fparser, vtk/Bokeh/nptdms). Built and verified 2026-04-14. See dev note `202604140204`. |
 
-| Mac path | Container path |
-|----------|----------------|
-| `vit_translation/` | `/workspace/` |
+Files edited on the Mac are immediately visible inside the corresponding container. **Use the right container for the right project** — `vit-dev` cannot see the OpenFAST workspace, and `vit-dev-openfast` cannot see the ROSCO workspace. If you're doing AeroDyn work, you want `vit-dev-openfast`; if you're back on ROSCO for something, you want `vit-dev`.
 
-Files edited on the Mac are immediately visible inside the container and vice versa.
+**Running commands in the OpenFAST container:**
 
-**Blocker for OpenFAST/AeroDyn work:** the current mount does not cover `vit_translation_openfast/`, so the new workspace is invisible from inside `vit-dev`. This must be resolved before any VIT command can run against OpenFAST source. Three options:
+```bash
+# Start if stopped:
+docker start vit-dev-openfast
 
-1. **Extend the mount to ` → /workspace/`** (parent directory). Both sibling workspaces become visible as `/workspace/vit_translation/` and `/workspace/vit_translation_openfast/`. Requires container recreation and Python 2.7 rebuild (tarball at `/workspace/Python-2.7.18.tar.xz`, rebuild commands in "If the Container Is Destroyed" below). Cleanest long-term, highest setup cost.
-2. **Create a second container `vit-dev-openfast`** dedicated to OpenFAST work, with its own mount pointing at `vit_translation_openfast/`. Full duplication of the container setup but isolates ROSCO and OpenFAST toolchains completely.
-3. **Add a second bind mount to the existing container** for `vit_translation_openfast/` → `/workspace/openfast_workspace/`. Also requires container recreation (Docker does not allow adding mounts to a running container).
+# Or recreate from the built image:
+docker run -d --name vit-dev-openfast \
+    -v ~/vit_translation_openfast:/workspace \
+    vit-dev-openfast:latest
 
-See dev note `202604140013-openfast-aerodyn-phase-start.md` for the full discussion and the decision rationale. Resolving this is a prerequisite to any actual AeroDyn work.
+# After mounting a fresh workspace, re-install VIT as an editable package
+# (needed because the inherited install from vit-dev-image points at the ROSCO workspace):
+docker exec vit-dev-openfast pip3 install -e /workspace/vit --break-system-packages
+
+# Run VIT commands:
+docker exec -it vit-dev-openfast bash -c "cd /workspace/openfast && vit --help"
+```
+
+**Rebuilding `vit-dev-openfast` from scratch** (if the container is destroyed or corrupted):
+
+```bash
+# Load the base image if not already loaded:
+docker load < vit-dev-image.tar.gz
+
+# Build:
+cd vit_translation_openfast/vit/docker
+docker build -f Dockerfile.openfast -t vit-dev-openfast ..
+```
+
+The Dockerfile is self-documenting and records all the setup steps. Building from scratch takes ~10-15 minutes (most of which is the Python 2.7 source compile).
+
+**The "Never chain build and simulation in one `docker exec` command" warning applies to both containers** — the build step changes the working directory to `rosco/controller/build/` (or equivalent) and the next command's `cd` will fail. Use separate `docker exec` calls.
 
 **Run commands inside the container like this:**
 
