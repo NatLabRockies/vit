@@ -8,7 +8,14 @@ This workspace contains three tools that work together to enable verified Fortra
 
 **KGen** (NCAR) is an existing third-party tool that instruments Fortran code to capture function inputs and outputs during a simulation run, then generates a standalone "kernel" that can replay those calls. VIT wraps KGen and patches its generated code. KGen requires Python 2.7.
 
-**ROSCO** is a wind turbine controller written in Fortran. It is the test case for VIT. ROSCO's Python simulation loads a compiled Fortran shared library (`libdiscon.so`) and runs a controller loop. VIT has verified and integrated 52 ROSCO functions — from simple math (`saturate`, `wrap_180`) through filters (`LPFilter`, `NotchFilter`, `PreFilterMeasuredSignals`) to complex controllers (`PitchControl`, `WindSpeedEstimator`), I/O (`ReadAvrSWAP`, `ReadControlParameterFileSub`), and orchestrators (`SetParameters`) — producing byte-identical output across 10 simulation scenarios (692,000 values). All non-DISCON functions are now C++.
+**ROSCO** is a wind turbine controller written in Fortran. It is the test case for VIT. ROSCO's Python simulation loads a compiled Fortran shared library (`libdiscon.so`) and runs a controller loop. VIT has verified and integrated 52 ROSCO functions plus a C++ DISCON entry point — from simple math (`saturate`, `wrap_180`) through filters (`LPFilter`, `NotchFilter`, `PreFilterMeasuredSignals`) to complex controllers (`PitchControl`, `WindSpeedEstimator`), I/O (`ReadAvrSWAP`, `ReadControlParameterFileSub`), and orchestrators (`SetParameters`). Verification covers **27 simulation scenarios × 13 output arrays per scenario ≈ 5.25M values compared** (~2.56M non-trivial) across a three-build chain (**upstream Fortran ≡ modified Fortran ≡ pure C++**, three distinct `libdiscon.so` binaries). On the `integrated` branch, ROSCO is a **pure C++ shared library** — all 16 Fortran source files removed from the build, no libgfortran dependency. C++ runs ~25% faster than Fortran on ARM64. One known tolerated difference: 3 values at Scenario 16 `bld_pitch*` index 4444 differ by `8.47e-22 rad` (single-root-cause gfortran code-generation artifact, not a translation bug).
+
+## Phase Status
+
+- **Phase 11 complete** on the `integrated` branch: pure C++ `libdiscon.so`, all 16 Fortran source files removed from `CMakeLists.txt`, confirmed by `ldd libdiscon.so` (no `libgfortran.so` — only `libstdc++`, `libm`, `libgcc_s`, `libc`).
+- **All 52 translatable functions verified and integrated.** 42 via KGen kernel verification at float64. 10 Stage B/C/D/E functions (file I/O, config parsing, platform modules, orchestrators) verified via 27-scenario simulation comparison at float32 (the avrSWAP deployment precision).
+- The `main` branch intentionally keeps Fortran source files on disk so extract/verify/integrate cycles remain reproducible (`reset_to_clean.sh` checks them out of git for each cycle). See **Git → Branches** below for how `main` and `integrated` relate.
+- `PROJECT_PLAN.md` in the VIT repo has phase-by-phase detail with completed checkboxes.
 
 ## Development Environment
 
@@ -298,7 +305,7 @@ bash scripts/verify_all.sh    # 42/42 passed
 # 4. Integrate all functions
 bash scripts/integrate_all.sh  # 52/52 passed
 
-# 5. Rebuild and compare all 10 scenarios
+# 5. Rebuild and compare all 27 scenarios
 cd rosco/controller/build && rm -rf * && cmake .. -DCMAKE_INSTALL_PREFIX=install && cmake --build . && cp libdiscon.so ../../lib/libdiscon.so && cd /workspace/ROSCO
 # Compare arrays (see Clean Build Test → Step 6 for the comparison script)
 
@@ -309,7 +316,7 @@ bash scripts/prepare_commit.sh
 # Only genuinely new/changed files remain in git status.
 ```
 
-Baseline simulation arrays (`baseline_arrays/`) are committed to ROSCO as canonical references for Stage B simulation-level verification. Stage B functions (CheckInputs, ReadCpFile, ReadControlParameterFileSub) do not use KGen extraction — they are verified by comparing 10-scenario simulation output against these baseline arrays. `prepare_commit.sh` preserves `baseline_arrays/`.
+Baseline simulation arrays (`baseline_arrays/`, 27 `.npz` files) are committed to ROSCO as canonical references for Stage B/C/D/E simulation-level verification. These Stage functions do not use KGen extraction — they are verified by comparing 27-scenario × 13-array simulation output against these baseline arrays. An `upstream_arrays/` directory (26 `.npz` files, skipping Scenario 4 where upstream ROSCO segfaults on the Flp_Mode=2 uninitialized-K bug) is also committed and used by `reset_to_upstream.sh` to prove that the type modifications in the fork (BIND(C), `INTEGER restart`, REAL AWC_complexangle pair) are behaviorally neutral vs upstream. `prepare_commit.sh` preserves `baseline_arrays/`.
 
 ### Non-KGen Verification (Stage B Functions)
 
@@ -334,7 +341,7 @@ Functions that cannot use KGen (file I/O, config parsing, functions with complex
 
 Stage C functions (WriteRestartFile, ReadRestartFile, Debug) in ROSCO_IO.f90 use manual integration in `integrate_all.sh` because their `CHARACTER(size_avcOUTNAME)` argument type is not supported by `vit translate` or `vit integrate`. They follow the same simulation-level verification as Stage B.
 
-- **WriteRestartFile + ReadRestartFile**: Only triggered by `iStatus==-8/-9` (not exercised in standard 10-scenario sim-compare). Verified indirectly: sim-compare proves no regression from wrapper plumbing. Split into separate files (`translations/IO/writerestartfile.cpp`, `translations/IO/readrestartfile.cpp`) with a shared header (`translations/IO/restart_fields.h`) containing a `checkpoint_fields` template to guarantee identical field ordering.
+- **WriteRestartFile + ReadRestartFile**: Only triggered by `iStatus==-8/-9` (not exercised in standard 27-scenario sim-compare). Verified indirectly: sim-compare proves no regression from wrapper plumbing. Split into separate files (`translations/IO/writerestartfile.cpp`, `translations/IO/readrestartfile.cpp`) with a shared header (`translations/IO/restart_fields.h`) containing a `checkpoint_fields` template to guarantee identical field ordering.
 - **ReadRestartFile wrapper**: The Fortran wrapper handles callee dispatch — after `readrestartfile_c` reads the checkpoint, the wrapper calls `ReadControlParameterFileSub` and `ReadCpFile` (already-translated Stage B functions) from the Fortran side. This avoids the C++ needing to handle the two-pass ALLOCATE protocol.
 - **Debug**: Does not affect simulation output arrays. Verified via `scripts/debug_test.sh` which compares `.RO.dbg` data rows between baseline and integrated builds. Header formatting differs (Fortran `CHARACTER(15)` truncates column names; C++ does not) — only data rows are compared.
 
@@ -356,14 +363,14 @@ Or run all steps: `bash scripts/debug_test.sh all`
 
 ### Non-KGen Verification (Stage D Functions)
 
-Stage D functions (UpdateZeroMQ, ExtController) use manual integration due to platform-specific constructs (`#ifdef` preprocessor directives, guarded `ALLOCATE`). Verified via 10-scenario sim-compare.
+Stage D functions (UpdateZeroMQ, ExtController) use manual integration due to platform-specific constructs (`#ifdef` preprocessor directives, guarded `ALLOCATE`). Verified via 27-scenario sim-compare.
 
 - **UpdateZeroMQ**: ZeroMQInterface.f90 — ZeroMQ message interface. The original file has `#ifdef ZMQ_CLIENT` preprocessor directives that break VIT's Fortran parser. Manual integration replaces the entire module with a C++ wrapper. Since ZMQ is not active in the test scenarios, sim-compare verifies wrapper plumbing (no regression).
 - **ExtController**: ExtControl.f90 — External controller DLL loader. Uses standard `vit integrate` plus a guarded `ALLOCATE` for `ExtDLL%avrSWAP` (conditional, not auto-allocatable). Sim-compare verified.
 
 ### Non-KGen Verification (Stage E Functions)
 
-Stage E functions (PreFilterMeasuredSignals, SetParameters) are the final two non-DISCON orchestrators. Both are called every timestep, so 10-scenario sim-compare provides full coverage.
+Stage E functions (PreFilterMeasuredSignals, SetParameters) are the final two non-DISCON orchestrators. Both are called every timestep, so 27-scenario sim-compare provides full coverage.
 
 - **PreFilterMeasuredSignals**: Filters.f90 — filter cascade calling 6 already-translated filter `_c` entry points (LPFilter, SecLPFilter, HPFilter, NotchFilter, NotchFilterSlopes, wrap_180). Standard `vit integrate` with CntrPar view type. Double-indexed ALLOCATABLE array access (1-based → 0-based conversion).
 - **SetParameters**: ReadSetParameters.f90 — initialization + per-timestep orchestrator. Manual integration with callee dispatch: Fortran wrapper handles per-timestep init (ErrVar clear, objInst counters, avrSWAP defaults), banner print, accINFILE save, ReadControlParameterFileSub call (two-pass ALLOCATE protocol), and ReadCpFile call. C++ handles LocalVar initialization (~25 fields), CheckInputs call, and OL_Index computation.
@@ -435,6 +442,34 @@ Key fields:
 - `kgen.assumed_size_arrays`: (optional) maps assumed-size array parameter names to explicit sizes. VIT auto-detects assumed-size `(*)` arrays from the function signature and infers sizes from source evidence. If configured, these values are used as known-good overrides that skip confirmation. If not configured, VIT proposes sizes via `EXIT_CONFIRM`. KGen generates `DIMENSION(:)` write functions that can't accept `(*)` arrays — VIT patches the call sites to use explicit sections (e.g., `avrswap(1:3000)` instead of `avrswap`).
 - `kgen.dll_persistence`: workaround for Fortran SAVE variables persisting across scenario boundaries within a single simulation run. `resets` is a list of project-specific SAVE variable resets (each with a sed `anchor` pattern and `code` to insert before it). VIT patches the instrumented source to reset these on every call, ensuring each scenario re-initializes. Note: KGen's own SAVE arrays (kgen_isstop, kgen_invoke) do NOT need resetting — each extraction phase is a separate subprocess, and within a single run the counters naturally exceed the capture range after the first scenario.
 
+## VIT CLI Commands Reference
+
+VIT ships 12 subcommands. The six primary commands (`extract`, `verify`, `integrate`, `translate`, `sim-compare`, `analyze-types`) are covered in detail above under "Full Workflow" and the Stage sections. This section lists the full surface so nothing is hidden.
+
+**Global flags** (accepted by every subcommand, must appear before the subcommand name):
+- `--config PATH` / `-c PATH` — use a non-default `vit.yaml` location.
+- `--verbose` / `-v` — verbose logging (stacktraces on error, extra progress detail).
+
+**Primary commands** (already documented above):
+| Command | Purpose | Notable flags |
+|---------|---------|---------------|
+| `vit extract` | Instrument Fortran + capture KGen state | `-f FILE`, `-l LINE`, `--run-args`, `--dry-run`, `--assumed-size NAME=SIZE` (repeatable — CLI equivalent of `kgen.assumed_size_arrays` config; use to override or supplement) |
+| `vit verify` | Run kernel verification of C++ against captured state | `-f FILE`, `--kernel-dir DIR`, `--no-field-log` (suppress per-field float comparison output — useful for CI/batch runs) |
+| `vit integrate` | Generate/apply integration patches | `-f FILE`, `--apply`, `--reverse-copy`, `--auto-allocate`, `--dry-run` |
+| `vit translate` | Generate C++ scaffold + translation prompt | `-f FILE`, `--module NAME` |
+| `vit sim-compare` | Compare two directories of `.npz` simulation arrays | `--tolerance FLOAT` |
+| `vit analyze-types` | Scan/fix derived types for C interop | `--fix {character,logical,complex,bind_c}`, `--scan-allocatable`, `--apply`, `--type`, `--field`, `--length`, `--rewrite` |
+
+**Utility and advanced commands** (less commonly used; full details via `vit <cmd> --help`):
+| Command | Purpose |
+|---------|---------|
+| `vit init` | Initialize a `vit.yaml` template in the current directory |
+| `vit find` | Locate call sites for a function across the source tree |
+| `vit parse` | Parse a Fortran function signature and print extracted types/args (debug/inspect tool) |
+| `vit interface` | Generate Fortran↔C interface files for a function (intermediate step used internally by `integrate`) |
+| `vit run` | Full pipeline wrapper: interface → verify → integrate (`--file`, `--kernel-dir`, `--skip-verify`, `--no-field-log`, `--apply`) |
+| `vit status` | Show translation status from `vit.yaml` (which functions are stub/translated/verified/integrated) |
+
 ## Testing and Development Process
 
 ### Test Structure
@@ -447,9 +482,9 @@ docker exec -it vit-dev bash -c "cd /workspace/vit && python3 -m pytest tests/ -
 
 ### Golden Test Fixtures
 
-Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (41 total: `kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/interp2d/`, `kernel/sigma/`, `kernel/LPFilter/`, `kernel/HPFilter/`, `kernel/SecLPFilter/`, `kernel/NotchFilter/`, `kernel/NotchFilterSlopes/`, `kernel/SecLPFilter_Vel/`, `kernel/PIController/`, `kernel/PIIController/`, `kernel/ResController/`, `kernel/ForeAftDamping/`, `kernel/IPC/`, `kernel/FloatingFeedback/`, `kernel/ActiveWakeControl/`, `kernel/VariableSpeedControl/`, `kernel/PitchControl/`, `kernel/YawRateControl/`, `kernel/FlapControl/`, `kernel/CableControl/`, `kernel/StructuralControl/`, `kernel/PitchSaturation/`, `kernel/AeroDynTorque/`, `kernel/WindSpeedEstimator/`, `kernel/PowerControlSetpoints/`, `kernel/ComputeVariablesSetpoints/`, `kernel/StateMachine/`, `kernel/SetpointSmoother/`, `kernel/RefSpeedExclusion/`, `kernel/Shutdown/`, `kernel/Startup/`, `kernel/ReadAvrSWAP/`, `kernel/PIDController/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
+Golden kernel directories exist in `/workspace/ROSCO/kernel/` from successful extractions, one per function (42 total: `kernel/saturate/`, `kernel/wrap_180/`, `kernel/wrap_360/`, `kernel/ratelimit/`, `kernel/ColemanTransform/`, `kernel/ColemanTransformInverse/`, `kernel/identity/`, `kernel/interp1d/`, `kernel/interp2d/`, `kernel/sigma/`, `kernel/LPFilter/`, `kernel/HPFilter/`, `kernel/SecLPFilter/`, `kernel/NotchFilter/`, `kernel/NotchFilterSlopes/`, `kernel/SecLPFilter_Vel/`, `kernel/PIController/`, `kernel/PIIController/`, `kernel/ResController/`, `kernel/ForeAftDamping/`, `kernel/IPC/`, `kernel/FloatingFeedback/`, `kernel/ActiveWakeControl/`, `kernel/VariableSpeedControl/`, `kernel/PitchControl/`, `kernel/YawRateControl/`, `kernel/FlapControl/`, `kernel/CableControl/`, `kernel/StructuralControl/`, `kernel/PitchSaturation/`, `kernel/AeroDynTorque/`, `kernel/WindSpeedEstimator/`, `kernel/PowerControlSetpoints/`, `kernel/ComputeVariablesSetpoints/`, `kernel/StateMachine/`, `kernel/SetpointSmoother/`, `kernel/RefSpeedExclusion/`, `kernel/Shutdown/`, `kernel/Startup/`, `kernel/ReadAvrSWAP/`, `kernel/PIDController/`, `kernel/unwrap/`). Use these for fast verification regression during development — there is no need to re-extract unless the extraction logic itself has changed, or the golden fixtures are missing or corrupted.
 
-Note: Stage B functions (CheckInputs, ReadCpFile, ReadControlParameterFileSub), Stage C functions (WriteRestartFile, ReadRestartFile, Debug), Stage D functions (UpdateZeroMQ, ExtController), and Stage E functions (PreFilterMeasuredSignals, SetParameters) do not have KGen golden fixtures — they are verified via 10-scenario simulation comparison (`baseline_arrays/`). Debug output is additionally verified via `scripts/debug_test.sh`.
+Note: Stage B functions (CheckInputs, ReadCpFile, ReadControlParameterFileSub), Stage C functions (WriteRestartFile, ReadRestartFile, Debug), Stage D functions (UpdateZeroMQ, ExtController), and Stage E functions (PreFilterMeasuredSignals, SetParameters) do not have KGen golden fixtures — they are verified via 27-scenario simulation comparison (`baseline_arrays/`). Debug output is additionally verified via `scripts/debug_test.sh`.
 
 **Extraction parameters (for regenerating golden fixtures):**
 
@@ -499,7 +534,7 @@ Note: Stage B functions (CheckInputs, ReadCpFile, ReadControlParameterFileSub), 
 
 Each extraction deposits into `kernel/<function_name>/` and restores the source file automatically.
 
-**Note:** Every extraction uses an explicit `--run-args '--scenario N'` to run only the scenario needed for that function. This avoids wastefully running all 10 scenarios. Scenario 3 is the default for most functions (all mode flags enabled, all code paths reachable). Functions that receive zero inputs in Scenario 3 use Scenario 7 (synthetic non-zero inputs for YawRateControl, ForeAftDamping, FloatingFeedback, StructuralControl, CableControl, FlapControl), Scenario 8 (non-zero blade root moments and IPC gains for IPC, ActiveWakeControl), Scenario 9 (SD_Mode=1, SU_Mode=1 for Shutdown, Startup), or Scenario 10 (OL_Mode=2 azimuth tracking for PIDController). Without the correct scenario, KGen verification only proves plumbing (zero in → zero out), not arithmetic correctness.
+**Note:** Every extraction uses an explicit `--run-args '--scenario N'` to run only the scenario needed for that function. This avoids wastefully running all 27 scenarios. Scenario 3 is the default for most functions (all mode flags enabled, all code paths reachable). Functions that receive zero inputs in Scenario 3 use Scenario 7 (synthetic non-zero inputs for YawRateControl, ForeAftDamping, FloatingFeedback, StructuralControl, CableControl, FlapControl), Scenario 8 (non-zero blade root moments and IPC gains for IPC, ActiveWakeControl), Scenario 9 (SD_Mode=1, SU_Mode=1 for Shutdown, Startup), or Scenario 10 (OL_Mode=2 azimuth tracking for PIDController). Without the correct scenario, KGen verification only proves plumbing (zero in → zero out), not arithmetic correctness.
 
 **Note:** SecLPFilter_Vel requires `CC_Mode=1` in Scenario 3 of vit_sim.py (so CableControl is actually called). This was fixed — the `CALL CableControl` in DISCON.F90 is gated by `CC_Mode > 0`.
 
@@ -572,7 +607,7 @@ After every feature implementation, run:
    ```bash
    docker exec vit-dev bash -c "cd /workspace/ROSCO && bash scripts/verify_all.sh"
    ```
-   Must show: `42/42 passed` (KGen-verified functions only). Each function should report `N/N passed` where N is the number of cases in its golden fixture (typically 20-23). Stage B/C/D/E functions are not included in `verify_all.sh` — they are verified via 10-scenario simulation comparison against `baseline_arrays/`. For parallel execution, launch 3 batches via separate docker exec calls:
+   Must show: `42/42 passed` (KGen-verified functions only). Each function should report `N/N passed` where N is the number of cases in its golden fixture (typically 20-23). Stage B/C/D/E functions are not included in `verify_all.sh` — they are verified via 27-scenario simulation comparison against `baseline_arrays/`. For parallel execution, launch 3 batches via separate docker exec calls:
    ```bash
    docker exec vit-dev bash -c "cd /workspace/ROSCO && bash scripts/verify_all.sh 1" &
    docker exec vit-dev bash -c "cd /workspace/ROSCO && bash scripts/verify_all.sh 2" &
@@ -605,7 +640,7 @@ After every feature implementation, run:
 
 This is the definitive test of the entire VIT pipeline: start from a completely clean ROSCO, build a pure-Fortran baseline, extract kernels for all functions, verify the C++ translations, integrate them into the codebase, rebuild, and confirm byte-identical simulation output.
 
-The clean build test covers all 52 integrated functions across 10 scenarios.
+The clean build test covers all 52 integrated functions across 27 scenarios × 13 output arrays (~5.25M values total, ~2.56M non-trivial).
 
 **Step 1 — Reset ROSCO to clean state (runs on Mac, not in container):**
 
@@ -670,14 +705,20 @@ mkdir -p integrated_arrays
 cd Examples && python3 vit_sim.py --output-dir /workspace/ROSCO/integrated_arrays > /workspace/ROSCO/integrated_output.txt 2>&1 && cd /workspace/ROSCO
 ```
 
-Then compare all simulation arrays byte-for-byte:
+Then compare all simulation arrays byte-for-byte. Prefer the `vit sim-compare` CLI (same comparison, structured output, proper exit code):
+
+```bash
+vit sim-compare baseline_arrays/ integrated_arrays/
+```
+
+Or use the inline Python loop for full-detail scenario-by-scenario output:
 
 ```bash
 python3 -c "
 import numpy as np, sys
 ok = True
 total = 0
-for s in [1, 2, 3, 4, 5, 6, 7, 8, 9]:
+for s in range(1, 28):
     b = np.load(f'baseline_arrays/scenario_{s}.npz')
     i = np.load(f'integrated_arrays/scenario_{s}.npz')
     for key in sorted(b.files):
@@ -696,7 +737,9 @@ else:
 "
 ```
 
-With `-ffp-contract=off` (the default in CMakeLists.txt), every value must be IDENTICAL. The comparison covers gen_torque, bld_pitch, gen_speed, gen_power, and nac_yaw at every timestep across all 10 scenarios (~692,000 values total). Any difference — even 1 ULP — indicates a translation or integration bug.
+With `-ffp-contract=off` (the default in CMakeLists.txt), every value must be IDENTICAL **except** the one known tolerated difference: 3 values at Scenario 16 `bld_pitch`/`bld_pitch_2`/`bld_pitch_3` index 4444 differ by `8.47e-22 rad` (single-root-cause gfortran code-gen artifact — see Known Limitations → Tolerated compiler artifact). The comparison covers 13 output arrays per scenario — `bld_pitch`, `bld_pitch_2`, `bld_pitch_3`, `gen_torque`, `gen_speed`, `gen_power`, `nac_yaw`, `flp_angle_1`/`2`/`3`, `cc_actuated_l`, `cc_actuated_dl`, `stc_input` — at every timestep across all 27 scenarios (**~5.25M values total, ~2.56M non-trivial**). Any unexpected difference — even 1 ULP — indicates a translation or integration bug.
+
+**Upstream comparison (optional, stronger chain).** `bash scripts/reset_to_upstream.sh` resets ROSCO to unmodified NREL source (commit `e8010f0`). Rebuild, run `vit_sim.py --output-dir upstream_check/`, then `vit sim-compare upstream_arrays/ upstream_check/` to prove the type modifications in the fork are behaviorally neutral. Upstream segfaults on Scenario 4 due to a Flp_Mode=2 uninitialized-K bug present in ROSCO v2.9.0 — `upstream_arrays/` therefore has 26 `.npz` files, not 27.
 
 Cleanup after passing: `rm -rf integrated_arrays integrated_output.txt`
 
@@ -725,6 +768,22 @@ After both checks pass, delete the test output file:
 rm -f integrated_output.txt
 ```
 The `baseline_output.txt` is kept as a reference. Only delete transient output files (e.g., `integrated_output.txt`, `errvar_fix_output.txt`) — these are not committed and cause confusion if left around.
+
+### Performance
+
+C++ runs **~25% faster than Fortran** across 27 scenarios (17.48s vs 23.17s with `-ffp-contract=off` on ARM64 Linux, gfortran/g++ 13.3.0). The speedup is a language-level property — g++ generates tighter ARM64 code than gfortran for the same translated algorithms. No algorithmic changes.
+
+| Build | `-ffp-contract=off` | `-ffp-contract=fast` | FMA benefit |
+|-------|---------------------|----------------------|-------------|
+| Upstream Fortran | 23.20s | 21.77s | 6.2% |
+| Modified Fortran | 23.17s | 22.34s | 3.6% |
+| C++ | 17.48s | 17.17s | 1.8% |
+
+Upstream vs modified Fortran differ by 0.15% (noise) — the fork's type modifications have **zero measurable performance impact**. Fortran benefits more from FMA than C++ because gfortran leaves more unfused multiply-add opportunities for `-ffp-contract=fast` to exploit.
+
+**Production recommendation: C++ with `-ffp-contract=fast`** (17.17s, 26% faster than upstream Fortran with fast FMA — the fastest benchmarked configuration). The `-ffp-contract=off` flag is only needed during the verification phase for bit-identical cross-language comparison; the pure-C++ build on `integrated` can re-enable FMA freely.
+
+Benchmark infrastructure: `vit_sim.py --benchmark N --build LABEL` runs each scenario N times with OS-level fd 1 redirection (suppresses both Python and controller stdout) and writes timing CSV to stderr. See dev notes `202604031707-performance-benchmark.md` and `202604040850-fma-benchmark-and-colleague-test.md` for full per-scenario results.
 
 ### Development Workflow
 
@@ -865,7 +924,7 @@ During the translation phase (mixed Fortran/C++ binary), every translated functi
 - **Shared header**: `vit integrate --apply` emits/updates a header with `extern "C"` declarations for each integrated function's `_c` entry point
 - **`vit translate`**: Scaffolds include `_c` declarations for already-translated callees (detected from `vit.yaml` translations registry)
 
-In Phase 11 (pure C++), all Fortran wrappers become dead code and are removed. C++ calls C++ directly throughout.
+On the `integrated` branch (Phase 11 complete), all Fortran wrappers are removed and C++ calls C++ directly throughout. On `main`, the Fortran wrappers still exist on disk but are not in the build (CMakeLists compiles only `.cpp` files).
 
 ### Kernel callee bridges
 
@@ -894,6 +953,24 @@ VIT detects translated callees by scanning the target function's original source
 - **DLL SAVE variable persistence**: Fortran SAVE variables may persist across scenarios within a single `vit_sim.py` run (ctypes `dlclose()` may not truly unload the library). VIT's `kgen.dll_persistence.resets` config patches the instrumented source to reset project-specific guard variables (e.g., ROSCO's `AlreadyInitialized`) on each call. Note: with per-scenario extraction (`--run-args '--scenario N'`), only one scenario runs per process, so this reset may be unnecessary in practice — but the config provides a safety net for multi-scenario extraction.
 
 - **PROCEDURE POINTER declarations**: KGen's original parser couldn't handle `PROCEDURE(...), POINTER` (Fortran 2003+). Fixed in our KGen fork (commit `31d653c`).
+
+### Tolerated compiler artifact (Scenario 16)
+
+3 values in the 27-scenario simulation comparison differ between Fortran and C++: `bld_pitch[4444]`, `bld_pitch_2[4444]`, `bld_pitch_3[4444]` in Scenario 16, all by `8.47e-22 rad` (`2^{-70}` vs exact zero).
+
+**Root cause:** gfortran and g++ evaluate the rate limiter expression `x + ((-x/a) * a)` differently for one specific input at one specific timestep. g++ produces exact zero; gfortran produces `2^{-70}`. This is a compiler code-generation difference at the boundary of IEEE 754 representability, not a translation bug — the C++ source faithfully reproduces the Fortran arithmetic. Scenario 16 disables IPC, so all three blades see the same collective pitch and the same artifact appears in all three arrays (one root cause, three manifestations). Fully explained in dev note `202604031325-scenario16-sub-ulp-root-cause.md`.
+
+This is the **only** tolerated difference across the 27-scenario verification chain. Any other mismatch indicates a real bug.
+
+### Honest verification caveats (from adversarial audit)
+
+Two real caveats should be stated alongside the headline verification numbers so they aren't misleading:
+
+1. **51% of compared values are trivially zero** (185 of 351 arrays are all-zero — modes produce zero output when disabled or when inputs are zero). The honest non-trivial comparison is ~**2.56M** values, not 5.25M. Zero-vs-zero still confirms that disabled modes don't accidentally produce output, which is valuable but less powerful than comparing non-trivial outputs.
+
+2. **Simulation-level comparison operates at float32 precision** (the avrSWAP interface and ROSCO's deployment precision). A translation bug producing a sub-float32 error in a code path that does not feed back into the closed loop would be invisible at the simulation level.
+
+**Mitigations:** (a) 42 functions are KGen-verified at float64 — first line of defense catches sub-float32 differences in arithmetic; (b) closed-loop feedback amplifies sub-ULP errors over thousands of timesteps, so a systematic translation bug cannot hide at float32 precision through 24K closed-loop timesteps; (c) float32 is the production avrSWAP interface (OpenFAST uses the same) — equivalent at float32 means equivalent in real deployment. Reference: dev note `202604031638-adversarial-verification-audit.md`.
 
 ## Development Notes Convention
 
@@ -941,5 +1018,21 @@ There are two repos in this workspace:
 | **ROSCO** | `vit_translation/ROSCO/` | `git@github.com:kevinmenear/ROSCO.git` | Forked from NREL/ROSCO. Translations, vit.yaml, TRANSLATION_TIPS.md, golden kernel fixtures |
 
 ROSCO is a fork of the upstream NREL/ROSCO repo. VIT-specific files (translations, config, kernel fixtures) are committed and pushed to the fork. Changes to translations, vit.yaml, and kernel fixtures go in the ROSCO repo. Changes to VIT tool code, tests, dev notes, and planning docs go in the VIT repo.
+
+### Branches
+
+The ROSCO fork has two meaningful branches:
+
+| Branch | Role | `rosco/controller/src/` layout | Fortran files on disk? | `CMakeLists.txt` |
+|--------|------|-------------------------------|------------------------|------------------|
+| **`main`** | Development workspace where extract/verify/integrate cycles run | Flat (`.cpp` files directly under `src/`) | Yes — `.f90` files coexist so `reset_to_clean.sh` can restore them for extraction cycles | Pure C/C++ (`LANGUAGES C CXX`); the 16 `.f90` files on disk are **not** in SOURCES and are uncompiled artifacts |
+| **`integrated`** | Final production state — pure C++ end product | Module subdirectories: `Functions/`, `Filters/`, `Controllers/`, `ControllerBlocks/`, `ReadSetParameters/`, `IO/`, plus `include/` for shared headers (`vit_types.h`, `vit_translated.h`, `rosco_constants.h`, `restart_fields.h`) | No — all Fortran source files removed | Pure C/C++, references module subdirectories |
+
+The `integrated` branch is the canonical final state. Key commits on `integrated` not on `main`:
+- `423b5c3` — **Remove all Fortran from integrated branch — pure C++ controller** (removes all 16 `.f90` files)
+- `b8473d6` — **Remove translation artifacts: metadata, extern C wrappers, `_c` indirection** (strips 1,733 lines of scaffolding, renames `_c()` calls to PascalCase via shared `vit_translated.h`)
+- `7ccc73f` — **Restructure src/ into module subdirectories** (moves flat `.cpp` files into `Functions/`, `Filters/`, etc.)
+
+Day-to-day development happens on `main` because the extract/verify cycles need real Fortran source present. The `integrated` branch is refreshed by merging `main` + re-running the three cleanup commits when substantial changes land on `main`. Dev notes live on `main` only. `baseline_arrays/`, `upstream_arrays/`, `kernel/`, `translations/`, and all `scripts/` live on `main`.
 
 Run `git add` and `git commit` directly when the user asks to commit. Do not run `git push` unless explicitly asked. Do not run destructive git commands (`reset --hard`, `push --force`, etc.) without confirmation. The only exception for autonomous git usage is `git checkout .` on ROSCO as part of a clean build test (see "Clean Build Test" above).
