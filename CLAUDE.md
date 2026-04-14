@@ -15,7 +15,7 @@ This workspace contains three tools that work together to enable verified Fortra
 - **Phase 11 complete** on the `integrated` branch: pure C++ `libdiscon.so`, all 16 Fortran source files removed from `CMakeLists.txt`, confirmed by `ldd libdiscon.so` (no `libgfortran.so` — only `libstdc++`, `libm`, `libgcc_s`, `libc`).
 - **All 52 translatable functions verified and integrated.** 42 via KGen kernel verification at float64. 10 Stage B/C/D/E functions (file I/O, config parsing, platform modules, orchestrators) verified via 27-scenario simulation comparison at float32 (the avrSWAP deployment precision).
 - The `main` branch intentionally keeps Fortran source files on disk so extract/verify/integrate cycles remain reproducible (`reset_to_clean.sh` checks them out of git for each cycle). See **Git → Branches** below for how `main` and `integrated` relate.
-- `PROJECT_PLAN.md` in the VIT repo has phase-by-phase detail with completed checkboxes.
+- `PROJECT_PLAN_ROSCO.md` in the VIT repo has phase-by-phase detail with completed checkboxes. See `CREATING_PROJECT_PLANS.md` for the methodology future plans should follow.
 
 ## Development Environment
 
@@ -991,22 +991,27 @@ When the user says "add this to development notes", "make a dev note", or simila
 **Scope:** [area of change]
 ```
 
-## Project Plan
+## Project Plans
 
-`PROJECT_PLAN.md` is the master roadmap for translating all of ROSCO from Fortran to C++. It contains the function-by-function assessment, full module map, derived type strategy, an 11-phase enhancement roadmap, and the translation workflow (Section 4a: `vit translate` command, module-organized storage in `translations/`, and translation metadata).
+Each VIT translation effort has its own plan document named `PROJECT_PLAN_<TARGET>.md` at the VIT repo root. Current plans:
+
+- **`PROJECT_PLAN_ROSCO.md`** — the completed ROSCO translation effort. Contains the function-by-function assessment, full module map, derived type strategy, 11-phase enhancement roadmap, Phase 11.5 (post-completion verification push), and the translation workflow (Section 4a: `vit translate` command, module-organized storage in `translations/`, and translation metadata). Historical record of a completed project.
+- **`PROJECT_PLAN_AERODYN.md`** — the in-progress OpenFAST AeroDyn translation (approximately 9× ROSCO's scope). To be drafted using the methodology in `CREATING_PROJECT_PLANS.md`. Lives in the OpenFAST workspace (`vit_translation_openfast/`).
+
+**Before starting a new translation effort, read `CREATING_PROJECT_PLANS.md`.** It is a meta-document derived from a rigorous retrospective of ROSCO's plan drift, and it describes how to produce a better plan: structural inventory (via AST tooling like `fparser2`) before any plan text, explicit confidence labels on phases, first-class open questions, named revisit triggers, and a standard document structure. The ROSCO plan drifted in enumerable ways (granularity imposition, implicit strategy decisions, post-hoc Phase 11.5, no confidence markers, end-of-project auditing) that the methodology is designed to prevent in future efforts. Applying it takes 2-3 days up front but saves weeks of mid-project thrashing.
 
 ### Execution Process
 
-We execute the plan one phase at a time. For each phase:
+We execute each plan one phase at a time. For each phase:
 
-1. **Review**: Read the phase in `PROJECT_PLAN.md` and understand the scope
+1. **Review**: Read the phase in `PROJECT_PLAN_<TARGET>.md` and understand the scope
 2. **Plan**: Create a detailed implementation plan for the phase
 3. **Execute**: Implement the VIT enhancements and/or write C++ translations
 4. **Test**: Run unit tests, verification regression, and any phase-specific validation
-5. **Update**: Mark the phase and its sub-items as complete in `PROJECT_PLAN.md`. Update the phase description to reflect what was actually done — adjustments, additional work discovered, or better approaches found during implementation
+5. **Update**: Mark the phase and its sub-items as complete in `PROJECT_PLAN_<TARGET>.md`. Update the phase description to reflect what was actually done — adjustments, additional work discovered, or better approaches found during implementation
 6. **Dev note**: Write a dev note capturing the phase completion
 
-`PROJECT_PLAN.md` uses checkboxes (`- [ ]` / `- [x]`) for phases and sub-items so progress is visible at a glance. The document is a living record: it should always reflect reality, not just the original plan.
+Plan documents use checkboxes (`- [ ]` / `- [x]`) for phases and sub-items so progress is visible at a glance. They are living records: they should always reflect reality, not just the original plan. See `CREATING_PROJECT_PLANS.md` for the full maintenance protocol (revisit triggers, change log discipline, confidence label updates, done-criteria revisions).
 
 ## Git
 
@@ -1014,7 +1019,7 @@ There are two repos in this workspace:
 
 | Repo | Path | Remote | What goes here |
 |------|------|--------|---------------|
-| **VIT** | `vit_translation/vit/` | `origin` (private) | VIT tool code, tests, dev notes, PROJECT_PLAN.md, CLAUDE.md |
+| **VIT** | `vit_translation/vit/` | `origin` (private) | VIT tool code, tests, dev notes, plan docs (`PROJECT_PLAN_*.md`), `CREATING_PROJECT_PLANS.md`, `CLAUDE.md` |
 | **ROSCO** | `vit_translation/ROSCO/` | `git@github.com:kevinmenear/ROSCO.git` | Forked from NREL/ROSCO. Translations, vit.yaml, TRANSLATION_TIPS.md, golden kernel fixtures |
 
 ROSCO is a fork of the upstream NREL/ROSCO repo. VIT-specific files (translations, config, kernel fixtures) are committed and pushed to the fork. Changes to translations, vit.yaml, and kernel fixtures go in the ROSCO repo. Changes to VIT tool code, tests, dev notes, and planning docs go in the VIT repo.
