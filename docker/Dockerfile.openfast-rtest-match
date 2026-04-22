@@ -1,0 +1,90 @@
+# Dockerfile for vit-dev-openfast-rtest — matches the ACTUAL r-test reference toolchain.
+#
+# PURPOSE
+# -------
+# The r-test README.rst documents the toolchain that generated the committed
+# reference .outb files:
+#
+#   System Version:  Ubuntu 22.04 (WSL)
+#   Compiler:        GNU Fortran 12.2 (APT)
+#   Math Library:    liblapack (APT)
+#
+# This is DIFFERENT from NREL's current CI (which uses gfortran-14 + ATLAS on
+# ubuntu-24.04). We previously matched the current CI and got mixed results
+# because we were matching the wrong target. This Dockerfile matches the
+# actual reference generators.
+#
+# BUILD (from vit/docker/):
+#   docker build --platform linux/amd64 -f Dockerfile.openfast-rtest-match -t vit-dev-openfast-rtest ..
+#
+# RUN:
+#   docker run -d --name vit-dev-openfast-rtest \
+#       --platform linux/amd64 \
+#       -v ~/vit_translation_openfast:/workspace \
+#       vit-dev-openfast-rtest
+#
+# PREREQUISITES:
+#   crane pull --platform linux/amd64 ubuntu:22.04 /tmp/ubuntu-22.04-amd64.tar
+#   docker load < /tmp/ubuntu-22.04-amd64.tar
+
+FROM --platform=linux/amd64 ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Match r-test reference: gfortran-12 (default on 22.04) + liblapack-dev (reference Netlib)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gfortran \
+        g++ \
+        gcc \
+        liblapack-dev \
+        libyaml-cpp-dev \
+        cmake \
+        make \
+        wget \
+        ca-certificates \
+        build-essential \
+        libssl-dev \
+        zlib1g-dev \
+        libffi-dev \
+        libbz2-dev \
+        libreadline-dev \
+        libsqlite3-dev \
+        libncurses-dev \
+        python3 \
+        python3-pip \
+        python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python 2.7 (for KGen)
+RUN wget -q https://www.python.org/ftp/python/2.7.18/Python-2.7.18.tar.xz \
+        -O /tmp/Python-2.7.18.tar.xz \
+    && cd /tmp && tar -xf Python-2.7.18.tar.xz \
+    && cd Python-2.7.18 \
+    && ./configure --prefix=/opt/python27 \
+    && make -j$(nproc) \
+    && make install \
+    && ln -sf /opt/python27/bin/python2.7 /usr/local/bin/python2.7 \
+    && cd / && rm -rf /tmp/Python-2.7.18*
+
+# VIT Python dependencies + fparser + OpenFAST reg_test deps
+RUN pip3 install --break-system-packages \
+        numpy \
+        pyyaml \
+        rich \
+        fparser \
+        nptdms \
+        pandas \
+        scipy \
+        pytest \
+    2>/dev/null || pip3 install \
+        numpy \
+        pyyaml \
+        rich \
+        fparser \
+        nptdms \
+        pandas \
+        scipy \
+        pytest
+
+WORKDIR /workspace
+CMD ["sleep", "infinity"]

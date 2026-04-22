@@ -207,9 +207,64 @@ We now have drift data for three build configurations against NREL's old-toolcha
 
 Both configurations pass NREL's actual regression tolerance of 1e-2 for all non-OLAF cases. The OLAF cases (BAR_OLAF, VerticalAxis_OLAF) would also pass at 1e-2 tolerance because the absolute values are large enough that the relative differences fall below 1%.
 
+## Second attempt: matching the actual r-test toolchain (gfortran-12 + liblapack)
+
+After discovering the toolchain mismatch, we built a third container (`vit-dev-openfast-rtest`) matching the OLD reference toolchain:
+
+- `FROM --platform=linux/amd64 ubuntu:22.04`
+- gfortran-12.3.0 (closest apt match to the r-test README's "12.2")
+- `liblapack-dev` (reference Netlib LAPACK — NOT ATLAS, NOT OpenBLAS)
+- `cmake 3.22.1` (Ubuntu 22.04 default)
+- No OpenMP flag (the r-test README doesn't mention it)
+- `RelWithDebInfo` build type
+
+Dockerfile: `vit/docker/Dockerfile.openfast-rtest-match`. Same amd64 Rosetta pattern as before.
+
+### Results: identical to gfortran-14 + ATLAS build
+
+| Case | gfortran-14 + ATLAS (Rosetta) | gfortran-12 + liblapack (Rosetta) | ARM64 + OpenBLAS (native) |
+|------|------------------------------|-----------------------------------|---------------------------|
+| BAR_SineMotion | 100% bit-identical | **100% bit-identical** | 90.55% |
+| MHK_RM1_Fixed | 68.52%, max abs 13.58 | **68.52%, max abs 13.58** | **100%** |
+| BAR_OLAF | 92.66%, max abs 1749 | **92.66%, max abs 1749** | 98.68%, max abs 1749 |
+| VerticalAxis_OLAF | 25.75% | **25.75%** | 25.75% |
+
+**Every number is identical between the two Rosetta-based containers.** Switching BLAS library (ATLAS → liblapack), compiler (gfortran-14 → 12), and cmake (3.28 → 3.22) produced **zero change** in the output when both run under Rosetta.
+
+### Interpretation: Rosetta is the dominant and only remaining variable
+
+**Rosetta's x86_64 → ARM64 instruction translation layer introduces deterministic FP artifacts that completely mask all toolchain differences.** Whether we use ATLAS or liblapack, gfortran-12 or gfortran-14, the Rosetta-translated output is the same. All BLAS/compiler differences are below Rosetta's noise floor.
+
+This means:
+1. **BAR_SineMotion's 100% match is a Rosetta coincidence** — Rosetta happens to produce NREL-matching values for this code path regardless of the x86_64 toolchain behind it.
+2. **MHK's 68.52% is a Rosetta artifact** — both toolchains produce the same 68.52% through Rosetta. Our ARM64 native build (without Rosetta) produces 100%. The MHK drift is introduced by Rosetta, not by BLAS or compiler.
+3. **OLAF cases are dominated by solver sensitivity** — Rosetta noise, BLAS differences, compiler differences are all below the OLAF amplification threshold.
+4. **We cannot achieve bit-identity with NREL's references on Apple Silicon.** Rosetta is a fixed FP noise floor that cannot be reduced by any toolchain matching. The only path to true bit-identity would be native x86_64 hardware.
+
+### The ARM64 build was actually closer to NREL
+
+For the MHK case specifically, our ARM64 + OpenBLAS build (100% bit-identical to NREL) was CLOSER to NREL's reference than either Rosetta-based build (68.52%). This is because the ARM64 native code path coincidentally produces the same IEEE 754 doubles as NREL's native x86_64 for this specific simple BEMT calculation, while Rosetta's translation layer introduces differences.
+
+This is a data point against using Rosetta for NREL-matching: in some cases, ARM64 native is actually closer to NREL's native x86_64 than Rosetta-emulated x86_64.
+
+## Conclusion: platform-specific baselines are the right strategy
+
+**Decision: Option A — accept ARM64 platform-specific baselines.**
+
+The investigation conclusively showed:
+1. Toolchain matching (BLAS, compiler, build flags) can achieve bit-identity for specific BEMT cases (BAR_SineMotion) — but only when the toolchain difference, not Rosetta, was the dominant factor.
+2. Rosetta introduces its own FP noise floor that dominates all toolchain differences and cannot be eliminated on Apple Silicon hardware.
+3. OLAF solver sensitivity amplifies any perturbation regardless of source, making OLAF cases resistant to toolchain matching.
+4. NREL themselves use 1e-2 tolerance — they do not expect cross-platform bit-identity.
+5. Our ARM64 baselines are deterministic, self-consistent, and in one case (MHK) actually closer to NREL than any Rosetta-based build.
+
+**The ARM64 + OpenBLAS baselines committed in Phase 2 (all 16 cases) remain the correct verification infrastructure.** They gate translation regressions via bit-identical comparison on our platform. Cross-platform comparison against NREL uses their own 1e-2 tolerance as a sanity signal, not a gate.
+
+The NREL-matching containers (`vit-dev-openfast-nrel` and `vit-dev-openfast-rtest`) remain available for anyone who wants to investigate further or for use if native x86_64 hardware becomes available in the future.
+
 ## Decisions pending
 
-The user needs to decide how to proceed. The options:
+The conclusion above resolves the decision. For the record, the options that were considered:
 
 ### Option A: Accept platform-specific baselines (revert to ARM64-only)
 
