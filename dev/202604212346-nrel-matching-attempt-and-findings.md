@@ -262,6 +262,35 @@ The investigation conclusively showed:
 
 The NREL-matching containers (`vit-dev-openfast-nrel` and `vit-dev-openfast-rtest`) remain available for anyone who wants to investigate further or for use if native x86_64 hardware becomes available in the future.
 
+## Definitive NREL regression test (the "is our build correct?" stamp)
+
+After all the toolchain-matching experiments, we ran the one test that answers the question definitively: **NREL's own `executeAerodynRegressionCase.py` at NREL's own tolerance (`rtol=2`, `atol=1.9` — meaning 1e-2 relative, ~1.3e-2 absolute)** across all 16 baselined cases, on BOTH our ARM64 build and the NREL-matching x86_64 build.
+
+### Results
+
+| Build | PASS | FAIL | Failed case | Failure reason |
+|-------|------|------|-------------|----------------|
+| ARM64 + OpenBLAS + gfortran-13 (native) | **15/16** | 1 | `ad_timeseries_shutdown` | 5MW_Baseline path resolution (not correctness) |
+| x86_64(Rosetta) + ATLAS + gfortran-14 (NREL-match) | **15/16** | 1 | `ad_timeseries_shutdown` | Same path issue |
+
+**Both builds produce identical pass/fail results.** Every case that can run passes NREL's regression test at NREL's own tolerance, on both platforms. The one failure (`ad_timeseries_shutdown`) is a path-resolution issue in NREL's regression script — it doesn't copy the `5MW_Baseline` shared data directory that `ad_timeseries_shutdown` references via `../../../glue-codes/openfast/5MW_Baseline/`. Our own scripts handle this with an explicit copy step, and `verify_aerodyn_baselines.sh` passes 16/16 on the ARM64 build.
+
+### What this proves
+
+**Our ARM64 + OpenBLAS build is correct by NREL's own standards.** The platform drift we characterized (BLAS, architecture, compiler) is within the bounds NREL considers acceptable for their regression testing. NREL's 1e-2 tolerance is explicitly designed to accommodate this kind of cross-platform variation.
+
+This was the definitive test we should have run much earlier in the investigation. It would have resolved the "platform drift" concern immediately: if NREL's own test passes, our build is NREL-approved. The deeper investigations (time-series analysis, NREL-matching containers, Rosetta findings) were valuable for understanding WHY the drift exists, but the pass/fail at NREL's tolerance was always the bottom line.
+
+### Gotcha discovered: shared build directory between containers
+
+During this test, we hit a real issue: the three containers (`vit-dev-openfast`, `vit-dev-openfast-nrel`, `vit-dev-openfast-rtest`) all mount the same workspace, including the `openfast/build/` directory. When we built in the x86_64 container, the resulting `aerodyn_driver` binary was x86_64. Switching back to the ARM64 container and trying to run that binary produced "exit code 5" for all 16 cases — wrong-architecture binary.
+
+**Fix: always rebuild after switching containers.** `cd build && rm -rf * && cmake ... && make aerodyn_driver` takes ~30 seconds on ARM64 and ~2 minutes on x86_64 under Rosetta. This is not automated — it's a manual step. Documenting it here and in `baselines/README.md` so future users don't hit the same confusion.
+
+### Verifier path fix
+
+Also fixed a bug in `verify_aerodyn_baselines.sh`: the 5MW_Baseline source path used `../../..` relative navigation which didn't resolve correctly inside the container. Changed to the absolute path `${OPENFAST_ROOT}/reg_tests/r-test/glue-codes/openfast/5MW_Baseline`, matching the pattern used in `generate_aerodyn_baseline.sh`. This fixed `ad_timeseries_shutdown` verification (now 16/16 pass).
+
 ## Decisions pending
 
 The conclusion above resolves the decision. For the record, the options that were considered:
