@@ -1,0 +1,103 @@
+# Dockerfile for vit-dev-openfast-nrel — NREL-matching x86_64 build environment.
+#
+# PURPOSE
+# -------
+# Matches NREL's CI configuration as closely as possible so that our AeroDyn
+# regression test output is bit-identical (or very close) to NREL's shipped
+# r-test references. This eliminates the need for separate platform-specific
+# baselines and makes our verification directly comparable to NREL's.
+#
+# NREL's CI (from .github/workflows/automated-dev-tests.yml):
+#   - OS: ubuntu-24.04 (x86_64)
+#   - Compiler: gfortran-14, g++-14, gcc-14
+#   - BLAS: ATLAS (-DBLA_VENDOR:STRING=ATLAS, libatlas-base-dev)
+#   - Build type: RelWithDebInfo
+#   - OpenMP: ON
+#   - Double precision: ON
+#
+# This Dockerfile starts FROM ubuntu:24.04 (amd64 variant, loaded via crane)
+# and installs the same packages NREL uses in their CI.
+#
+# BUILD (from vit/docker/):
+#   docker build --platform linux/amd64 -f Dockerfile.openfast-nrel-match -t vit-dev-openfast-nrel ..
+#
+# RUN:
+#   docker run -d --name vit-dev-openfast-nrel \
+#       --platform linux/amd64 \
+#       -v ~/vit_translation_openfast:/workspace \
+#       vit-dev-openfast-nrel
+#
+# NOTE: runs under Rosetta 2 translation on Apple Silicon. Performance is
+# ~50-70% of native ARM64 but FP behavior should match native x86_64 for
+# standard operations (Rosetta translates at the instruction level).
+#
+# PREREQUISITES:
+#   1. amd64 ubuntu:24.04 must be loaded locally (TLS blocks Docker pull):
+#      brew install crane
+#      crane pull --platform linux/amd64 ubuntu:24.04 /tmp/ubuntu-24.04-amd64.tar
+#      docker load < /tmp/ubuntu-24.04-amd64.tar
+#
+#   2. qemu-img shim must be in PATH for Colima (see baselines/README.md Phase 3)
+#
+# NETWORK: pip install steps require network during docker build. Verified
+# working in this environment (dev note 202604140204).
+
+FROM --platform=linux/amd64 ubuntu:24.04
+
+# Match NREL CI: gfortran-14, g++-14, gcc-14, ATLAS BLAS, cmake
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gfortran-14 \
+        g++-14 \
+        gcc-14 \
+        libatlas-base-dev \
+        libyaml-cpp-dev \
+        cmake \
+        make \
+        wget \
+        ca-certificates \
+        build-essential \
+        libssl-dev \
+        zlib1g-dev \
+        libffi-dev \
+        libbz2-dev \
+        libreadline-dev \
+        libsqlite3-dev \
+        libncurses-dev \
+        python3 \
+        python3-pip \
+        python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set gfortran-14 / gcc-14 / g++-14 as defaults (matching NREL CI)
+RUN update-alternatives --install /usr/bin/gfortran gfortran /usr/bin/gfortran-14 100 \
+    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
+    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100 \
+    && update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 100 \
+    && update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 100
+
+# Python 2.7 (for KGen — same as Dockerfile.openfast)
+RUN wget -q https://www.python.org/ftp/python/2.7.18/Python-2.7.18.tar.xz \
+        -O /tmp/Python-2.7.18.tar.xz \
+    && cd /tmp && tar -xf Python-2.7.18.tar.xz \
+    && cd Python-2.7.18 \
+    && ./configure --prefix=/opt/python27 \
+    && make -j$(nproc) \
+    && make install \
+    && ln -sf /opt/python27/bin/python2.7 /usr/local/bin/python2.7 \
+    && cd / && rm -rf /tmp/Python-2.7.18*
+
+# VIT Python dependencies + fparser + OpenFAST reg_test deps
+RUN pip3 install --break-system-packages \
+        numpy \
+        pyyaml \
+        rich \
+        fparser \
+        vtk \
+        'Bokeh>=2.4,!=3.0.0,!=3.0.1,!=3.0.2,!=3.0.3' \
+        nptdms \
+        pandas \
+        scipy \
+        pytest
+
+WORKDIR /workspace
+CMD ["sleep", "infinity"]
