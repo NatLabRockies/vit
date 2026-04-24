@@ -45,7 +45,7 @@ Per the methodology, each question has: what we don't know, why it matters (what
 
 **When needed:** Before Phase 1 starts. Can be answered right now from existing data.
 
-**Status:** unknown — answerable immediately
+**Status:** answered (2026-04-24). 287 unique external callees. Breakdown: ~140 Registry Pack/Unpack/Copy/Destroy boilerplate (eliminated by the C++ Registry generator), ~22 NWTC utility routines (SetErrStat, AllocAry, WrScr, etc.), ~30 mesh-related routines, ~95 other (I/O parsing, VTK, InflowWind/SeaState calls, math utilities, Fortran intrinsics like MOVE_ALLOC and C_F_POINTER). Excluding Registry boilerplate and Fortran intrinsics, the true interop wrapper count is ~150 unique routines. This is significant but manageable — wrappers can be generated incrementally as each phase encounters new external callees.
 
 ### OQ4: r-test coverage of the 507 procedures
 
@@ -57,7 +57,7 @@ Per the methodology, each question has: what we don't know, why it matters (what
 
 **When needed:** Before phasing is finalized. Can be partially answered from the call graph now.
 
-**Status:** unknown — partially answerable from existing data
+**Status:** partially answered (2026-04-24). Static analysis of the 16 r-test cases: 9 exercise the BEMT path (BEMT, UnsteadyAero, AirfoilInfo, DBEMT), 8 exercise the OLAF path (FVW, UnsteadyAero, AirfoilInfo). **AeroAcoustics is NOT exercised** by any r-test case (it has a separate driver executable). **C-binding is NOT exercised** (called from C, not from aerodyn_driver). **Linearization (Jacobian routines) is NOT exercised** (requires full OpenFAST). Full dynamic coverage analysis (which specific procedures are called) requires runtime instrumentation — deferred to Phase 1.
 
 ### OQ5: OpenMP in FVW
 
@@ -69,7 +69,7 @@ Per the methodology, each question has: what we don't know, why it matters (what
 
 **When needed:** Before Phase 4 starts.
 
-**Status:** unknown — answerable immediately by reading source
+**Status:** answered (2026-04-24). OpenMP usage is simple `!$OMP PARALLEL DO` loops with explicit private variable lists and `schedule(runtime)`. All instances are in `FVW_BiotSavart.f90` — embarrassingly parallel loops over control points and segments for Biot-Savart velocity computation. No critical sections, no reductions, no complex thread management. Direct translation to C++ `#pragma omp parallel for` with the same private/schedule clauses. OpenMP should be preserved in translation — it's performance-critical for the FVW solver.
 
 ### OQ6: POINTER fields in Registry types
 
