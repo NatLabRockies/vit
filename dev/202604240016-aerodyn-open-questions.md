@@ -91,9 +91,9 @@ Per the methodology, each question has: what we don't know, why it matters (what
 
 **What would answer it:** Read the MeshType definition in NWTC Library and design the view struct / C interop pattern for it.
 
-**When needed:** Before Phase 1 starts (mesh data flows through even leaf-level functions).
+**When needed:** Before Phase 4 starts (Phases 1-3 and 5 have zero mesh field dereferences).
 
-**Status:** unknown
+**Status:** answered (2026-04-24). MeshType interop uses a view struct populator pattern (~80 lines total). AeroDyn physics code only reads mesh data fields (Position, TranslationVel, Orientation, Force, Moment, etc.) — it never calls mesh lifecycle operations (MeshCreate, MeshCopy, etc.). A C++ `MeshType_View` struct holds data pointers; a Fortran BIND(C) populator fills it via `C_LOC()`. Not needed until Phase 4 (FVW has 11 mesh dereferences). Phase 6 is heaviest (271 dereferences). NWTC Library translation is not needed — the 25 mesh operation callees stay Fortran, called from Fortran code. See dev note `202604240640`.
 
 ### OQ8: VIT enhancements needed for AeroDyn
 

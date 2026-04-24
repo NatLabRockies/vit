@@ -149,11 +149,9 @@ Simple `!$OMP PARALLEL DO` loops in FVW_BiotSavart.f90. Embarrassingly parallel 
 
 **Answer:** AeroDyn has only 5 POINTER field instances, all non-owning references to external module types (FlowFieldType from InflowWind, WaveFieldType from SeaState). In the Registry data model, POINTER fields are marked with `*` prefix (`is_pointer=true`, `is_target=false`). Copy uses shallow association (`=>`), Destroy nullifies without deallocating, Pack/Unpack use `RegPackPointer`/`c_loc` for reference tracking. In the C++ generator, POINTER fields map to `void*` (opaque non-owning pointer). No target pointers exist in AeroDyn's Registry types.
 
-### OQ7: Mesh types at interop boundary [unknown]
+### OQ7: Mesh types at interop boundary [answered 2026-04-24]
 
-How to pass `MeshType` / `MeshMapType` (complex NWTC Library types) across C interop?
-
-**Blocks:** Phase 1. **Info needed:** Read MeshType definition, design view struct pattern. **When:** Before Phase 1.
+**Answer:** MeshType interop uses a view struct populator pattern (~80 lines total), not NWTC Library translation. AeroDyn physics code only reads mesh data fields (Position, TranslationVel, Orientation, etc.) — it never calls mesh lifecycle operations. A C++ `MeshType_View` struct (~50 lines) holds pointers to the data arrays; a Fortran BIND(C) populator (~30 lines) fills it from the real MeshType using `C_LOC()`. Phases 1-3 and 5 have zero mesh dereferences — the view struct is not needed until Phase 4 (11 accesses in FVW). Phase 6 is heaviest (271 accesses). See dev note `202604240640`.
 
 ### OQ8: VIT enhancements for AeroDyn [unknown]
 
