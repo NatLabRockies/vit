@@ -1,0 +1,538 @@
+[
+  {
+    "name": "Aero_Tests",
+    "module": "AeroAcoustics",
+    "file": "AeroAcoustics.f90",
+    "line_count": 28,
+    "visibility": "private",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "ReadDriverInputFile",
+    "module": "AeroAcoustics_Driver_Subs",
+    "file": "AeroAcoustics_Driver_Subs.f90",
+    "line_count": 152,
+    "visibility": "public",
+    "likely_reason": "driver_entry_point"
+  },
+  {
+    "name": "f_int1",
+    "module": "TNO",
+    "file": "AeroAcoustics_TNO.f90",
+    "line_count": 79,
+    "visibility": "private",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "f_int2",
+    "module": "TNO",
+    "file": "AeroAcoustics_TNO.f90",
+    "line_count": 9,
+    "visibility": "private",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "AD_CalcConstrStateResidual",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "line_count": 48,
+    "visibility": "public",
+    "likely_reason": "likely_framework_interface"
+  },
+  {
+    "name": "AD_JacobianPInput",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "line_count": 308,
+    "visibility": "public",
+    "likely_reason": "likely_framework_interface"
+  },
+  {
+    "name": "AD_JacobianPContState",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "line_count": 59,
+    "visibility": "public",
+    "likely_reason": "likely_framework_interface"
+  },
+  {
+    "name": "AD_JacobianPDiscState",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "line_count": 55,
+    "visibility": "public",
+    "likely_reason": "likely_framework_interface"
+  },
+  {
+    "name": "AD_JacobianPConstrState",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "line_count": 55,
+    "visibility": "public",
+    "likely_reason": "likely_framework_interface"
+  },
+  {
+    "name": "AD_VarsPackExtInput",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "line_count": 47,
+    "visibility": "public",
+    "likely_reason": "likely_framework_interface"
+  },
+  {
+    "name": "Compute_dX",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "line_count": 79,
+    "visibility": "private",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "Dvr_Init",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "line_count": 66,
+    "visibility": "public",
+    "likely_reason": "driver_entry_point"
+  },
+  {
+    "name": "Dvr_InitCase",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "line_count": 199,
+    "visibility": "public",
+    "likely_reason": "driver_entry_point"
+  },
+  {
+    "name": "Dvr_TimeStep",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "line_count": 84,
+    "visibility": "public",
+    "likely_reason": "driver_entry_point"
+  },
+  {
+    "name": "ADI_C_PreInit",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "line_count": 278,
+    "visibility": "public",
+    "likely_reason": "c_binding_entry_point"
+  },
+  {
+    "name": "ADI_C_Init",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "line_count": 717,
+    "visibility": "public",
+    "likely_reason": "c_binding_entry_point"
+  },
+  {
+    "name": "ADI_C_CalcOutput",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "line_count": 86,
+    "visibility": "public",
+    "likely_reason": "c_binding_entry_point"
+  },
+  {
+    "name": "ADI_C_UpdateStates",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "line_count": 168,
+    "visibility": "public",
+    "likely_reason": "c_binding_entry_point"
+  },
+  {
+    "name": "ADI_C_End",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "line_count": 91,
+    "visibility": "public",
+    "likely_reason": "c_binding_entry_point"
+  },
+  {
+    "name": "ADI_C_SetupRotor",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "line_count": 397,
+    "visibility": "public",
+    "likely_reason": "c_binding_entry_point"
+  },
+  {
+    "name": "ADI_C_SetRotorMotion",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "line_count": 195,
+    "visibility": "public",
+    "likely_reason": "c_binding_entry_point"
+  },
+  {
+    "name": "ADI_C_GetRotorLoads",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "line_count": 102,
+    "visibility": "public",
+    "likely_reason": "c_binding_entry_point"
+  },
+  {
+    "name": "ADI_C_GetDiskAvgVel",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "line_count": 77,
+    "visibility": "public",
+    "likely_reason": "c_binding_entry_point"
+  },
+  {
+    "name": "ADI_C_GetFlowFieldPointer",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "line_count": 34,
+    "visibility": "public",
+    "likely_reason": "c_binding_entry_point"
+  },
+  {
+    "name": "ADI_C_SetFlowFieldPointer",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "line_count": 44,
+    "visibility": "public",
+    "likely_reason": "c_binding_entry_point"
+  },
+  {
+    "name": "ComputePhiFromInductions",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "line_count": 18,
+    "visibility": "private",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "BEMT_End",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "line_count": 64,
+    "visibility": "public",
+    "likely_reason": "likely_framework_interface"
+  },
+  {
+    "name": "BEMT_UpdateDiscState",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "line_count": 41,
+    "visibility": "public",
+    "likely_reason": "likely_framework_interface"
+  },
+  {
+    "name": "getAirfoilOrientationMatrix",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "line_count": 19,
+    "visibility": "public",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "BEMTU_Test_ACT_Relationship",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "line_count": 53,
+    "visibility": "public",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "computeAirfoilAOA",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "line_count": 12,
+    "visibility": "private",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "GetEulerAnglesFromOrientation",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "line_count": 12,
+    "visibility": "public",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "DBEMT_TEST01",
+    "module": null,
+    "file": "DBEMT_Test.f90",
+    "line_count": 44,
+    "visibility": "public",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "DBEMT_TEST02",
+    "module": null,
+    "file": "DBEMT_Test.f90",
+    "line_count": 58,
+    "visibility": "public",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "DBEMT_TEST03",
+    "module": null,
+    "file": "DBEMT_Test.f90",
+    "line_count": 48,
+    "visibility": "public",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "DBEMT_TEST04",
+    "module": null,
+    "file": "DBEMT_Test.f90",
+    "line_count": 46,
+    "visibility": "public",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "DBEMT_TEST05",
+    "module": null,
+    "file": "DBEMT_Test.f90",
+    "line_count": 46,
+    "visibility": "public",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "DBEMT_TEST06",
+    "module": null,
+    "file": "DBEMT_Test.f90",
+    "line_count": 50,
+    "visibility": "public",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "DBEMT_TEST07",
+    "module": null,
+    "file": "DBEMT_Test.f90",
+    "line_count": 52,
+    "visibility": "public",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "DBEMT_TEST08",
+    "module": null,
+    "file": "DBEMT_Test.f90",
+    "line_count": 101,
+    "visibility": "public",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "DBEMT_TEST09",
+    "module": null,
+    "file": "DBEMT_Test.f90",
+    "line_count": 83,
+    "visibility": "public",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "DBEMT_TEST10",
+    "module": null,
+    "file": "DBEMT_Test.f90",
+    "line_count": 88,
+    "visibility": "public",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "DBEMT_TEST11",
+    "module": null,
+    "file": "DBEMT_Test.f90",
+    "line_count": 88,
+    "visibility": "public",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "Output_Gamma",
+    "module": "FVW_SUBS",
+    "file": "FVW_Subs.f90",
+    "line_count": 33,
+    "visibility": "public",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "find_nan_1D",
+    "module": "FVW_SUBS",
+    "file": "FVW_Subs.f90",
+    "line_count": 22,
+    "visibility": "public",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "find_nan_3D",
+    "module": "FVW_SUBS",
+    "file": "FVW_Subs.f90",
+    "line_count": 25,
+    "visibility": "public",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "test_equal_i0",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "line_count": 22,
+    "visibility": "private",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "test_equal_i1",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "line_count": 33,
+    "visibility": "private",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "test_almost_equal_0",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "line_count": 28,
+    "visibility": "private",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "test_almost_equal_1",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "line_count": 37,
+    "visibility": "private",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "test_almost_equal_2",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "line_count": 34,
+    "visibility": "private",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "Test_LatticeToSegment",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "line_count": 170,
+    "visibility": "private",
+    "likely_reason": "test_function"
+  },
+  {
+    "name": "print_mean_4d",
+    "module": "FVW_VortexTools",
+    "file": "FVW_VortexTools.f90",
+    "line_count": 20,
+    "visibility": "public",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "print_tree",
+    "module": "FVW_VortexTools",
+    "file": "FVW_VortexTools.f90",
+    "line_count": 32,
+    "visibility": "public",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "ui_expansion_order2",
+    "module": "FVW_VortexTools",
+    "file": "FVW_VortexTools.f90",
+    "line_count": 145,
+    "visibility": "public",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "ReadDriverInputFile",
+    "module": "UA_Dvr_Subs",
+    "file": "UA_Dvr_Subs.f90",
+    "line_count": 226,
+    "visibility": "public",
+    "likely_reason": "driver_entry_point"
+  },
+  {
+    "name": "Dvr_SetParameters",
+    "module": "UA_Dvr_Subs",
+    "file": "UA_Dvr_Subs.f90",
+    "line_count": 64,
+    "visibility": "public",
+    "likely_reason": "driver_entry_point"
+  },
+  {
+    "name": "driverInputsToUAInitData",
+    "module": "UA_Dvr_Subs",
+    "file": "UA_Dvr_Subs.f90",
+    "line_count": 75,
+    "visibility": "public",
+    "likely_reason": "driver_entry_point"
+  },
+  {
+    "name": "setInflow",
+    "module": "UA_Dvr_Subs",
+    "file": "UA_Dvr_Subs.f90",
+    "line_count": 16,
+    "visibility": "public",
+    "likely_reason": "driver_entry_point"
+  },
+  {
+    "name": "setLDinputs",
+    "module": "UA_Dvr_Subs",
+    "file": "UA_Dvr_Subs.f90",
+    "line_count": 23,
+    "visibility": "public",
+    "likely_reason": "driver_entry_point"
+  },
+  {
+    "name": "setUAinputs",
+    "module": "UA_Dvr_Subs",
+    "file": "UA_Dvr_Subs.f90",
+    "line_count": 28,
+    "visibility": "public",
+    "likely_reason": "driver_entry_point"
+  },
+  {
+    "name": "setUAinputsAlphaSim",
+    "module": "UA_Dvr_Subs",
+    "file": "UA_Dvr_Subs.f90",
+    "line_count": 84,
+    "visibility": "public",
+    "likely_reason": "driver_entry_point"
+  },
+  {
+    "name": "Dvr_EndSim",
+    "module": "UA_Dvr_Subs",
+    "file": "UA_Dvr_Subs.f90",
+    "line_count": 29,
+    "visibility": "public",
+    "likely_reason": "driver_entry_point"
+  },
+  {
+    "name": "backupStates",
+    "module": null,
+    "file": "UnsteadyAero_Driver.f90",
+    "line_count": 7,
+    "visibility": "public",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "restoreUAStates",
+    "module": null,
+    "file": "UnsteadyAero_Driver.f90",
+    "line_count": 5,
+    "visibility": "public",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "restoreLDStates",
+    "module": null,
+    "file": "UnsteadyAero_Driver.f90",
+    "line_count": 4,
+    "visibility": "public",
+    "likely_reason": "unknown"
+  },
+  {
+    "name": "print_help",
+    "module": null,
+    "file": "UnsteadyAero_Driver.f90",
+    "line_count": 11,
+    "visibility": "public",
+    "likely_reason": "unknown"
+  }
+]

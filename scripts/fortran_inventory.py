@@ -17,7 +17,7 @@ Output files:
     call_graph.json           — caller→callee edges with internal/external tags
     type_inventory.json       — derived TYPE definitions with fields
     module_dependencies.json  — USE graph, topologically sorted
-    dead_code.json            — procedures with zero call sites
+    uncalled_procedures.json  — procedures with zero call sites within scanned scope
     framework_boundary.json   — public API procedures (external-facing)
     loc_metrics.json          — lines of code per file/module/procedure
     inventory_summary.md      — human-readable digest
@@ -299,9 +299,22 @@ def _extract_procedure(node, kind, module_name, filename, is_gen,
 # Pass 2: Build call graph
 # ---------------------------------------------------------------------------
 
+def _get_procedure_name(proc_node):
+    """Extract the procedure name from a subroutine or function node."""
+    sub_stmts = walk(proc_node, f2003.Subroutine_Stmt)
+    fn_stmts = walk(proc_node, f2003.Function_Stmt)
+    stmt = sub_stmts[0] if sub_stmts else (fn_stmts[0] if fn_stmts else None)
+    if stmt is None:
+        return None
+    if hasattr(stmt, "items") and len(stmt.items) > 1 and stmt.items[1] is not None:
+        return str(stmt.items[1])
+    return first_name(stmt)
+
+
 def build_call_graph(all_trees, procedures, modules):
     """
-    Build caller->callee edges from CALL statements within each procedure.
+    Build caller->callee edges from CALL statements AND function references
+    (Part_Ref nodes) within each procedure.
     """
     # Build lookup: procedure name (lower) -> defined module
     proc_lookup = {}
@@ -322,17 +335,11 @@ def build_call_graph(all_trees, procedures, modules):
         # Find all procedures in this tree
         for proc_node in (walk(tree, f2003.Subroutine_Subprogram) +
                           walk(tree, f2003.Function_Subprogram)):
-            # Get procedure name
-            sub_stmts = walk(proc_node, f2003.Subroutine_Stmt)
-            fn_stmts = walk(proc_node, f2003.Function_Stmt)
-            if sub_stmts:
-                caller = first_name(sub_stmts[0])
-            elif fn_stmts:
-                caller = first_name(fn_stmts[0])
-            else:
+            caller = _get_procedure_name(proc_node)
+            if caller is None:
                 continue
 
-            # Find CALL statements within this procedure
+            # Track CALL statements (subroutine calls)
             for call in walk(proc_node, f2003.Call_Stmt):
                 callee_names = walk(call, f2003.Name)
                 if callee_names:
@@ -343,7 +350,25 @@ def build_call_graph(all_trees, procedures, modules):
                         "callee": callee,
                         "file": fname,
                         "is_internal": is_internal,
+                        "kind": "call",
                     })
+
+            # Track function references in expressions (x = func(y), if(func(y)))
+            # fparser represents these as Part_Ref or Structure_Constructor depending
+            # on context. Check both, and only record if the name matches a known procedure.
+            for ref_node in (walk(proc_node, f2003.Part_Ref) +
+                             walk(proc_node, f2003.Structure_Constructor)):
+                ref_names = walk(ref_node, f2003.Name)
+                if ref_names:
+                    ref_name = str(ref_names[0])
+                    if ref_name.lower() in proc_lookup:
+                        edges.append({
+                            "caller": caller,
+                            "callee": ref_name,
+                            "file": fname,
+                            "is_internal": True,
+                            "kind": "function_ref",
+                        })
 
     # Deduplicate edges (same caller->callee may appear multiple times)
     seen = set()
@@ -506,29 +531,55 @@ def build_module_dependencies(modules, procedures):
 # Pass 5: Dead code detection
 # ---------------------------------------------------------------------------
 
-def find_dead_code(procedures, call_edges):
-    """Find procedures with zero call sites."""
-    # All callees
+def find_uncalled_procedures(procedures, call_edges):
+    """
+    Find procedures with zero call sites WITHIN the scanned source tree.
+
+    CAVEAT: This does NOT mean the procedure is truly dead code. It may be
+    called from:
+    - OpenFAST glue code (outside AeroDyn)
+    - Other OpenFAST modules (InflowWind, SeaState, etc.)
+    - C/C++ code via C-binding entry points
+    - Main programs (drivers)
+    - Type-bound procedure dispatch
+
+    This list is useful for identifying *candidates* for exclusion from
+    translation scope, but each entry needs manual verification.
+    """
+    # All callees (from both CALL statements and function references)
     called = set()
     for e in call_edges:
         called.add(e["callee"].lower())
 
-    dead = []
+    uncalled = []
     for p in procedures:
         if p["is_registry_generated"]:
             continue  # Skip registry boilerplate
         if p.get("is_internal", False):
             continue  # Skip CONTAINS-block internal procedures
         if p["name"].lower() not in called:
-            dead.append({
+            # Classify the likely reason it appears uncalled
+            reason = "unknown"
+            mod = p["module"] or ""
+            if "c_binding" in mod.lower():
+                reason = "c_binding_entry_point"
+            elif "driver" in mod.lower() or "dvr" in mod.lower():
+                reason = "driver_entry_point"
+            elif "test" in mod.lower() or "TEST" in p["name"]:
+                reason = "test_function"
+            elif p["visibility"] == "public" and p["name"].startswith(("AD_", "BEMT_", "DBEMT_", "UA_", "FVW_", "AA_", "AFI_", "ADI_")):
+                reason = "likely_framework_interface"
+
+            uncalled.append({
                 "name": p["name"],
                 "module": p["module"],
                 "file": p["file"],
                 "line_count": p["line_count"],
                 "visibility": p["visibility"],
+                "likely_reason": reason,
             })
 
-    return dead
+    return uncalled
 
 
 # ---------------------------------------------------------------------------
@@ -657,7 +708,7 @@ def compute_loc_metrics(src_files, procedures, modules, file_registry_map):
 # ---------------------------------------------------------------------------
 
 def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
-                  dead, boundary):
+                  uncalled, boundary):
     """Write inventory_summary.md."""
     lines = []
     lines.append("# AeroDyn Structural Inventory Summary")
@@ -688,7 +739,7 @@ def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
     lines.append(f"| Procedures with SAVE state | {sum(1 for p in procedures if p['has_save'])} |")
     lines.append(f"| Derived types | {len(type_defs)} |")
     lines.append(f"| Call graph edges | {len(call_edges)} |")
-    lines.append(f"| Dead code procedures | {len(dead)} |")
+    lines.append(f"| Uncalled within AeroDyn | {len(uncalled)} |")
     lines.append(f"| Framework boundary procedures | {len(boundary)} |")
     lines.append("")
 
@@ -765,13 +816,16 @@ def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
     lines.append("")
 
     # Dead code
-    lines.append(f"## Dead Code: {len(dead)} procedures (zero call sites)")
+    lines.append(f"## Uncalled Within AeroDyn: {len(uncalled)} procedures")
     lines.append("")
-    if dead:
-        lines.append("| Name | Module | File | Lines | Visibility |")
-        lines.append("|------|--------|------|-------|-----------|")
-        for d in sorted(dead, key=lambda x: -x["line_count"]):
-            lines.append(f"| {d['name']} | {d['module'] or '-'} | {d['file']} | {d['line_count']} | {d['visibility']} |")
+    lines.append("*These have zero call sites in the scanned AeroDyn source. Many are called from*")
+    lines.append("*outside AeroDyn (OpenFAST glue code, C bindings, drivers, tests). Not dead code.*")
+    lines.append("")
+    if uncalled:
+        lines.append("| Name | Module | Lines | Likely Reason |")
+        lines.append("|------|--------|-------|--------------|")
+        for d in sorted(uncalled, key=lambda x: -x["line_count"]):
+            lines.append(f"| {d['name']} | {d['module'] or '-'} | {d['line_count']} | {d.get('likely_reason', '?')} |")
     else:
         lines.append("(none found)")
     lines.append("")
@@ -875,9 +929,9 @@ def main():
     print(f"  Modules in topo order: {len(mod_deps)}")
 
     # Pass 5: Dead code
-    print("\nPass 5: Finding dead code...")
-    dead = find_dead_code(procedures, call_edges)
-    print(f"  Dead procedures: {len(dead)}")
+    print("\nPass 5: Finding uncalled procedures...")
+    uncalled = find_uncalled_procedures(procedures, call_edges)
+    print(f"  Uncalled within scope: {len(uncalled)}")
 
     # Pass 6: Framework boundary
     print("\nPass 6: Identifying framework boundary...")
@@ -900,13 +954,13 @@ def main():
     write_json("call_graph.json", call_edges)
     write_json("type_inventory.json", type_defs)
     write_json("module_dependencies.json", mod_deps)
-    write_json("dead_code.json", dead)
+    write_json("uncalled_procedures.json", uncalled)
     write_json("framework_boundary.json", boundary)
     write_json("loc_metrics.json", loc)
 
     # Write markdown summary
     write_summary(args.output, loc, procedures, call_edges, type_defs, mod_deps,
-                  dead, boundary)
+                  uncalled, boundary)
 
     print(f"\nDone. {len(procedures)} procedures inventoried across {loc['file_count']} files.")
 
