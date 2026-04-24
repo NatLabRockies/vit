@@ -235,6 +235,7 @@ def generate_integration_plan(
     if cmake_file:
         cmake_patches = _generate_cmake_patches(
             cmake_file, cpp_wrapper_name, target_name,
+            fortran_source=os.path.basename(source_file),
             extra_fortran_sources=view_populator_names,
         )
         patches.extend(cmake_patches)
@@ -554,60 +555,130 @@ def _generate_fortran_patches(sig: FortranSignature, source_file: str,
     return patches
 
 
+def _find_target_for_source(content: str, fortran_source: str) -> Optional[str]:
+    """Find which cmake add_library target contains a given source file.
+
+    Searches for add_library(target_name STATIC|SHARED ...) blocks that
+    list the source file. Returns the target name, or None if not found.
+
+    Works with both explicit source lists:
+        add_library(mylib STATIC src/file1.f90 src/file2.f90)
+    and variable-based lists:
+        set(SOURCES file1.f90 file2.f90)
+        add_library(mylib SHARED ${SOURCES})
+    """
+    # Normalize: accept both "AirfoilInfo.f90" and "src/AirfoilInfo.f90"
+    source_basename = os.path.basename(fortran_source)
+
+    # Find all add_library blocks with explicit source lists
+    for match in re.finditer(
+        r'add_library\s*\(\s*(\w+)\s+(?:STATIC|SHARED)\s+(.*?)\)',
+        content, re.DOTALL | re.IGNORECASE,
+    ):
+        target_name = match.group(1)
+        sources_text = match.group(2)
+        if source_basename in sources_text:
+            return target_name
+
+    return None
+
+
 def _generate_cmake_patches(cmake_file: str, cpp_source_name: str,
                              target_name: str,
+                             fortran_source: str = "",
                              extra_fortran_sources: Optional[list] = None,
                              ) -> list[IntegrationPatch]:
-    """Generate patches for CMakeLists.txt."""
+    """Generate patches for CMakeLists.txt.
+
+    Handles two cmake patterns:
+    1. ROSCO-style: set(SOURCES ...) + add_library(target SHARED ${SOURCES})
+    2. OpenFAST-style: add_library(target STATIC src/file1.f90 src/file2.f90 ...)
+       with multiple targets in the same CMakeLists.txt
+
+    For pattern 2, auto-detects which target contains the Fortran source file
+    being replaced and adds the C++ source to that target.
+    """
     content = Path(cmake_file).read_text()
     patches = []
 
-    # Enable CXX language
+    # Auto-detect target if we have the Fortran source name
+    detected_target = None
+    if fortran_source:
+        detected_target = _find_target_for_source(content, fortran_source)
+
+    effective_target = detected_target or target_name
+
+    # --- Pattern 1: set(SOURCES ...) ---
+    has_sources_var = re.search(
+        r'set\s*\(\s*SOURCES\b', content, re.IGNORECASE,
+    )
+
+    # --- Pattern 2: add_library with explicit source lists ---
+    has_explicit_sources = re.search(
+        r'add_library\s*\(\s*\w+\s+(?:STATIC|SHARED)\s+[^$]',
+        content, re.IGNORECASE,
+    )
+
+    # Enable CXX language (add before the first add_library if not present)
     if "enable_language(CXX)" not in content and "enable_language( CXX" not in content:
-        # Find project() or cmake_minimum_required() to add after
-        for pattern in [r'(project\s*\([^)]*\))', r'(cmake_minimum_required\s*\([^)]*\))']:
-            match = re.search(pattern, content, re.IGNORECASE)
-            if match:
+        if has_explicit_sources and detected_target:
+            # Add enable_language(CXX) before the target's add_library
+            lib_match = re.search(
+                rf'(add_library\s*\(\s*{re.escape(effective_target)}\b)',
+                content, re.IGNORECASE,
+            )
+            if lib_match:
                 patches.append(IntegrationPatch(
                     filepath=cmake_file,
                     description="Enable CXX language in CMake",
                     action="modify",
                     content="",
-                    original_snippet=match.group(0),
-                    replacement_snippet=match.group(0) + "\nenable_language(CXX)",
+                    original_snippet=lib_match.group(0),
+                    replacement_snippet=f"enable_language(CXX)\n{lib_match.group(0)}",
                 ))
-                break
+        else:
+            # Fallback: add after project() or cmake_minimum_required()
+            for pattern in [r'(project\s*\([^)]*\))', r'(cmake_minimum_required\s*\([^)]*\))']:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    patches.append(IntegrationPatch(
+                        filepath=cmake_file,
+                        description="Enable CXX language in CMake",
+                        action="modify",
+                        content="",
+                        original_snippet=match.group(0),
+                        replacement_snippet=match.group(0) + "\nenable_language(CXX)",
+                    ))
+                    break
 
-    # Add C++ source to target
+    # Add C++ source to the correct target
     if cpp_source_name not in content:
-        sources_match = re.search(
-            r'set\s*\(\s*SOURCES\b(.*?)(^\))',
-            content, re.MULTILINE | re.DOTALL | re.IGNORECASE,
-        )
-        if sources_match:
-            block_body = sources_match.group(1)
-            # Find the last non-blank, non-comment line in the block
-            source_lines = [l for l in block_body.strip().split('\n')
-                            if l.strip() and not l.strip().startswith('#')]
-            if source_lines:
-                last_entry = source_lines[-1]
-                patches.append(IntegrationPatch(
-                    filepath=cmake_file,
-                    description=f"Add {cpp_source_name} to source list",
-                    action="modify",
-                    content="",
-                    original_snippet=last_entry,
-                    replacement_snippet=f"{last_entry}\n    src/{cpp_source_name}",
-                ))
-
-    # Add extra Fortran sources (e.g., view populator .f90 files)
-    for f90_name in (extra_fortran_sources or []):
-        if f90_name not in content:
-            # Re-read content to account for prior patches
-            current_content = Path(cmake_file).read_text() if patches else content
+        if has_explicit_sources and detected_target:
+            # Pattern 2: find the add_library block and add before the closing )
+            lib_block = re.search(
+                rf'(add_library\s*\(\s*{re.escape(effective_target)}\s+(?:STATIC|SHARED)\s+)(.*?)(\))',
+                content, re.DOTALL | re.IGNORECASE,
+            )
+            if lib_block:
+                # Find the last source file line in the block
+                block_body = lib_block.group(2)
+                source_lines = [l for l in block_body.strip().split('\n')
+                                if l.strip() and not l.strip().startswith('#')]
+                if source_lines:
+                    last_entry = source_lines[-1]
+                    patches.append(IntegrationPatch(
+                        filepath=cmake_file,
+                        description=f"Add {cpp_source_name} to {effective_target} source list",
+                        action="modify",
+                        content="",
+                        original_snippet=last_entry,
+                        replacement_snippet=f"{last_entry}\n  src/{cpp_source_name}",
+                    ))
+        elif has_sources_var:
+            # Pattern 1: add to set(SOURCES ...) block
             sources_match = re.search(
                 r'set\s*\(\s*SOURCES\b(.*?)(^\))',
-                current_content, re.MULTILINE | re.DOTALL | re.IGNORECASE,
+                content, re.MULTILINE | re.DOTALL | re.IGNORECASE,
             )
             if sources_match:
                 block_body = sources_match.group(1)
@@ -617,27 +688,89 @@ def _generate_cmake_patches(cmake_file: str, cpp_source_name: str,
                     last_entry = source_lines[-1]
                     patches.append(IntegrationPatch(
                         filepath=cmake_file,
-                        description=f"Add {f90_name} to source list",
+                        description=f"Add {cpp_source_name} to source list",
                         action="modify",
                         content="",
                         original_snippet=last_entry,
-                        replacement_snippet=f"{last_entry}\n    src/{f90_name}",
+                        replacement_snippet=f"{last_entry}\n    src/{cpp_source_name}",
                     ))
 
-    # Link stdc++
+    # Add extra Fortran sources (e.g., view populator .f90 files)
+    for f90_name in (extra_fortran_sources or []):
+        if f90_name not in content:
+            current_content = Path(cmake_file).read_text() if patches else content
+            if has_explicit_sources and detected_target:
+                lib_block = re.search(
+                    rf'(add_library\s*\(\s*{re.escape(effective_target)}\s+(?:STATIC|SHARED)\s+)(.*?)(\))',
+                    current_content, re.DOTALL | re.IGNORECASE,
+                )
+                if lib_block:
+                    block_body = lib_block.group(2)
+                    source_lines = [l for l in block_body.strip().split('\n')
+                                    if l.strip() and not l.strip().startswith('#')]
+                    if source_lines:
+                        last_entry = source_lines[-1]
+                        patches.append(IntegrationPatch(
+                            filepath=cmake_file,
+                            description=f"Add {f90_name} to {effective_target} source list",
+                            action="modify",
+                            content="",
+                            original_snippet=last_entry,
+                            replacement_snippet=f"{last_entry}\n  src/{f90_name}",
+                        ))
+            elif has_sources_var:
+                sources_match = re.search(
+                    r'set\s*\(\s*SOURCES\b(.*?)(^\))',
+                    current_content, re.MULTILINE | re.DOTALL | re.IGNORECASE,
+                )
+                if sources_match:
+                    block_body = sources_match.group(1)
+                    source_lines = [l for l in block_body.strip().split('\n')
+                                    if l.strip() and not l.strip().startswith('#')]
+                    if source_lines:
+                        last_entry = source_lines[-1]
+                        patches.append(IntegrationPatch(
+                            filepath=cmake_file,
+                            description=f"Add {f90_name} to source list",
+                            action="modify",
+                            content="",
+                            original_snippet=last_entry,
+                            replacement_snippet=f"{last_entry}\n    src/{f90_name}",
+                        ))
+
+    # Link stdc++ to the correct target
     if "stdc++" not in content:
-        lib_match = re.search(
-            rf'(add_library\s*\(\s*{re.escape(target_name)}\s+SHARED\s+\$\{{SOURCES\}}\s*\))',
-            content,
+        # Find the target_link_libraries line for the effective target
+        link_match = re.search(
+            rf'(target_link_libraries\s*\(\s*{re.escape(effective_target)}\b[^)]*\))',
+            content, re.IGNORECASE,
         )
-        if lib_match:
+        if link_match:
+            original = link_match.group(0)
+            # Add stdc++ before the closing paren
+            replacement = original[:-1] + " stdc++)"
             patches.append(IntegrationPatch(
                 filepath=cmake_file,
-                description="Link stdc++ library",
+                description=f"Link stdc++ to {effective_target}",
                 action="modify",
                 content="",
-                original_snippet=lib_match.group(0),
-                replacement_snippet=f"{lib_match.group(0)}\ntarget_link_libraries({target_name} PRIVATE stdc++)",
+                original_snippet=original,
+                replacement_snippet=replacement,
             ))
+        elif has_sources_var:
+            # Fallback for SOURCES-based pattern
+            lib_match = re.search(
+                rf'(add_library\s*\(\s*{re.escape(effective_target)}\s+SHARED\s+\$\{{SOURCES\}}\s*\))',
+                content,
+            )
+            if lib_match:
+                patches.append(IntegrationPatch(
+                    filepath=cmake_file,
+                    description=f"Link stdc++ to {effective_target}",
+                    action="modify",
+                    content="",
+                    original_snippet=lib_match.group(0),
+                    replacement_snippet=f"{lib_match.group(0)}\ntarget_link_libraries({effective_target} PRIVATE stdc++)",
+                ))
 
     return patches
