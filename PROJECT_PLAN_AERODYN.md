@@ -127,11 +127,9 @@ InflowWind, SeaState, LinDyn stay Fortran. AeroDyn receives their data via view 
 
 **Answer:** Highly feasible. The Registry is a clean C++ code generator (~3,200 lines) with a modular architecture — separate generator files per output language (`registry_gen_fortran.cpp`, `registry_gen_c.cpp`). Adding `registry_gen_cpp.cpp` follows the exact same pattern. The data model (`registry.hpp`) already captures POINTER/ALLOCATABLE/deferred dims/nested types/C type mappings. A new `-cppcode` flag was added and generates `ModuleName_Types.hpp` headers. All 10 AeroDyn headers (2,666 lines, 140 structs) compile cleanly with g++ C++17.
 
-### OQ2: KGen on AeroDyn [unknown]
+### OQ2: KGen on AeroDyn [answered 2026-04-24]
 
-Will KGen's instrumentation work on AeroDyn's cmake build chain?
-
-**Blocks:** Phase 1. **Info needed:** Run `vit extract` on one AeroDyn function. **When:** Before Phase 1.
+**Answer:** Yes. KGen works on AeroDyn's cmake executable build chain. First successful extraction: Calculate_Cn from AirfoilInfo.f90, 20 cases captured from the `ad_BAR_SineMotion` test case. Required 12 VIT fixes for AeroDyn's multi-target cmake, preprocessor-controlled precision, Docker timestamps, and same-file caller/callee pattern. See dev notes `202604241004` (first extraction), `202604241051` (adaptation issues catalog).
 
 ### OQ3: NWTC Library interop surface [answered]
 
@@ -191,26 +189,29 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [x] Design C++ output format — C-compatible structs with pointer+size for allocatable, void* for opaque/external types
 - [x] Implement generator — `registry_gen_cpp.cpp` (~230 lines), `-cppcode` flag
 - [x] Verify generated types compile — 10/10 headers compile with g++ C++17, 10/10 Fortran files identical (no regression)
-- [ ] Commit generated C++ types
+- [x] Commit generated C++ types
+- [x] Follow-up: `-cppcode-double` flag for correct ReKi→double mapping (dev note `202604241459`)
 
-**Dev note:** `202604241XXX` (Phase 0 implementation)
+**Dev notes:** `202604240609` (Registry generator), `202604240622` (Phase 0 retrospective), `202604240640` (MeshType interop investigation)
 
-### Phase 1: AirfoilInfo + DBEMT [planned]
+### Phase 1: AirfoilInfo + DBEMT [in progress]
 
 **Goal:** Translate the two leaf sub-modules. Validate that VIT + KGen work on AeroDyn. This is the "prove it works" gate.
 
 **Scope:** 37 procedures, ~3,415 lines. 17 leaf functions.
 
-**Confidence:** planned — shape is clear, details depend on OQ2/OQ7/OQ8.
+**Confidence:** committed — proof-of-concept complete (Calculate_Cn), OQ2 answered, infrastructure hardened.
 
 **Dependencies:** Phase 0 (C++ types must exist for the translated functions to reference).
 
 **Work:**
-- [ ] Validate KGen extraction on AeroDyn build chain (OQ2)
-- [ ] Validate VIT extract/verify/integrate cycle (OQ8)
-- [ ] Design mesh interop pattern for MeshType (OQ7)
+- [x] Validate KGen extraction on AeroDyn build chain (OQ2) — 20 cases captured, 12 VIT fixes
+- [x] Validate VIT extract/verify/integrate cycle (OQ8, partial) — Calculate_Cn 20/20 IDENTICAL
+- [x] First function: Calculate_Cn verified and integrated, 16/16 regression tests pass
+- [x] Infrastructure: FP_CONTRACT_OFF cmake option, baselines regenerated, ReKi precision, cmake auto-patching
+- [ ] Design mesh interop pattern for MeshType (OQ7 answered — ~80-line view struct, not needed until Phase 4)
 - [ ] Design NWTC Library interop wrappers (first batch)
-- [ ] Translate AirfoilInfo leaf functions (12 leaves)
+- [ ] Translate AirfoilInfo leaf functions (12 leaves — next: function with derived type arguments)
 - [ ] Translate AirfoilInfo mid-level functions (11 remaining)
 - [ ] Translate DBEMT leaf functions (5 leaves)
 - [ ] Translate DBEMT mid-level functions (9 remaining)
@@ -218,7 +219,9 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [ ] Verify: 16-case baseline bit-identical
 - [ ] Verify: NREL regression 16/16
 
-**Revisit trigger:** After KGen/VIT validation — if extraction fails or VIT needs major enhancements, reassess timeline and approach before continuing.
+**Revisit trigger:** After KGen/VIT validation — if extraction fails or VIT needs major enhancements, reassess timeline and approach before continuing. **Status: POC passed, no showstoppers found.**
+
+**Dev notes:** `202604241004` (first extraction), `202604241026` (precision mismatch), `202604241051` (VIT adaptation issues), `202604241122` (first verification), `202604241337` (FMA confirmed), `202604241400` (first full verification), `202604241415` (full pipeline proven), `202604241459` (four infrastructure fixes)
 
 ### Phase 2: BEMTUncoupled + UnsteadyAero [planned]
 
@@ -370,25 +373,35 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 
 **Date:** 2026-04-24
 
-**Status:** Planning complete. Steps 1-7 of CREATING_PROJECT_PLANS.md methodology executed. Structural inventory committed. Scope decisions, key decisions, and open questions documented. Phase roadmap drafted.
+**Status:** Phase 0 complete. Phase 1 proof-of-concept complete. Infrastructure hardened. Full VIT pipeline (extract → verify → integrate) proven on Calculate_Cn with 20/20 IDENTICAL kernel verification and 16/16 regression tests passing.
 
-**Next action:** Begin Phase 0 investigation — read the OpenFAST Registry source code to answer OQ1 and OQ6, then design the C++ generator.
+**Next action:** Scale Phase 1 — translate remaining AirfoilInfo functions (next: derived type arguments), then DBEMT.
 
 **Completed milestones:**
 - [x] Docker container (`vit-dev-openfast`) built and verified
 - [x] OpenFAST builds, AeroDyn Driver runs 16 regression test cases
 - [x] Platform-specific baselines committed for all 16 test cases
+- [x] Baselines regenerated with `-ffp-contract=off` (2026-04-24)
 - [x] NREL regression 16/16 PASS with wrapper script
 - [x] Three-tier verification infrastructure operational
 - [x] fparser2 structural inventory (7 JSON data files)
 - [x] All 67 uncalled procedures fully classified (0 unknowns)
 - [x] Scope decisions locked (5)
 - [x] Key architectural decisions locked (6)
-- [x] Open questions enumerated (10, 3 answered)
+- [x] Open questions enumerated (10, 6 answered: OQ1/OQ2/OQ3/OQ5/OQ6/OQ7)
 - [x] PROJECT_PLAN_AERODYN.md drafted
+- [x] Phase 0: Registry C++ generator (`-cppcode`, `-cppcode-double`)
+- [x] Phase 0: OQ1, OQ6, OQ7 answered
+- [x] Phase 1 POC: Calculate_Cn extracted (20 cases), verified (20/20 IDENTICAL), integrated (16/16 regression pass)
+- [x] Phase 1 POC: 12 VIT fixes for AeroDyn adaptation
+- [x] Infrastructure: FP_CONTRACT_OFF cmake option, ReKi precision, cmake auto-patching
 
 ## 8. Change Log
 
-| Date | What changed | Why | Commit |
-|------|-------------|-----|--------|
-| 2026-04-24 | Initial plan document | Steps 1-7 complete | TBD |
+| Date | What changed | Why |
+|------|-------------|-----|
+| 2026-04-24 | Initial plan document | Steps 1-7 complete |
+| 2026-04-24 | Phase 0 complete | Registry C++ generator, OQ1/OQ6 answered |
+| 2026-04-24 | OQ7 answered | MeshType interop is ~80-line view struct, not NWTC translation |
+| 2026-04-24 | Phase 1 POC complete | Calculate_Cn end-to-end, 12 VIT fixes, 4 infrastructure fixes |
+| 2026-04-24 | Baselines regenerated | `-ffp-contract=off` in cmake, 16/16 verified |

@@ -25,7 +25,7 @@ This workspace contains three tools that work together to enable verified Fortra
 
 - **Workspace:** `vit_translation_openfast/` — sibling to the ROSCO workspace, with independent git clones of VIT, KGen, and OpenFAST (no symlinks). Both workspace VIT clones share the same `main` branch on the `NatLabRockies/vit` remote.
 - **Target:** translate all of AeroDyn to C++ — 507 hand-written procedures across 46,803 lines, plus a C++ code generator for the OpenFAST Registry (740 generated procedures / 28,490 lines), plus drivers and C-binding layer. End state: pure C++ AeroDyn module, no Fortran source, no libgfortran dependency. 42 Fortran source files, ~75,000 total lines.
-- **Current stage:** **Phase 0 (Registry C++ Generator) complete.** Extended the OpenFAST Registry tool with `-cppcode` flag that generates C-compatible `_Types.hpp` headers from Registry schema files. 10 AeroDyn headers generated (2,666 lines, 140 structs), all compile with g++ C++17. OQ1 (feasibility) and OQ6 (POINTER handling) answered. Environment, build, and verification baselines all verified. fparser2-based structural inventory committed at `vit/analysis/aerodyn/` (7 JSON data files + markdown summary). Five scope decisions and six key architectural decisions finalized.
+- **Current stage:** **Phase 1 proof-of-concept complete.** Full VIT pipeline (extract → verify → integrate) proven on AeroDyn with Calculate_Cn: 20/20 IDENTICAL kernel verification, 16/16 regression tests pass with integrated C++. Phase 0 (Registry C++ generator) complete. 12 VIT fixes and 4 infrastructure changes committed for AeroDyn support. See "AeroDyn Workflow" section below for extraction/verification/integration commands.
 - **Scope decisions (committed 2026-04-23, dev note `202604232342`):**
   1. **Breadth:** All of AeroDyn — all 5 sub-systems (BEMT, FVW/OLAF, UnsteadyAero, AeroAcoustics, core AeroDyn), all 507 hand-written procedures
   2. **Registry types:** Build a C++ code generator for the OpenFAST Registry (replaces 740 auto-generated Fortran procedures)
@@ -40,12 +40,52 @@ This workspace contains three tools that work together to enable verified Fortra
   5. **NWTC Library:** Stays Fortran, C interop boundary (shared framework, separate project to translate)
   6. **External modules:** InflowWind, SeaState, LinDyn stay Fortran, accessed via C interop (read-only data providers)
 - **Translation boundary:** Everything inside AeroDyn → C++. Everything outside (NWTC Library, InflowWind, SeaState, LinDyn, OpenFAST glue code) → stays Fortran, crossed via BIND(C) / view structs.
-- **Open questions (10, dev note `202604240016`):** OQ1: Registry generator feasibility (how complex is the Registry tool?). OQ2: KGen on AeroDyn (will instrumentation work on this build chain?). OQ3: NWTC Library interop surface (how many wrappers needed?). OQ4: r-test coverage of 507 procedures (which functions have zero coverage?). OQ5: OpenMP in FVW (simple loops or complex threading?). OQ6: POINTER fields in Registry types (different semantics than ALLOCATABLE?). OQ7: Mesh types at interop boundary (how to pass MeshType to C++?). OQ8: VIT enhancements needed (what breaks on AeroDyn?). OQ9: Upstream sync strategy (how to handle NREL changes mid-project?). OQ10: Full OpenFAST build for coupled-mode extraction. OQ3/OQ4/OQ5 can be answered from existing data; OQ1/OQ6 needed before Phase 0; OQ2/OQ7/OQ8 before Phase 1; OQ9/OQ10 deferrable.
+- **Open questions (10, dev note `202604240016`):** **Answered:** OQ1 (Registry feasible, dev note `202604240609`), OQ2 (KGen works on AeroDyn cmake, dev note `202604241004`), OQ3 (287 external callees, ~150 wrappers), OQ5 (OpenMP simple parallel DO), OQ6 (5 POINTERs, all non-owning, dev note `202604240609`), OQ7 (MeshType view struct ~80 lines, not needed until Phase 4, dev note `202604240640`). **Partially answered:** OQ4 (r-test coverage), OQ8 (VIT on AeroDyn — 12 fixes applied, simple functions work, derived types not yet tested). **Open:** OQ9 (upstream sync), OQ10 (full OpenFAST build).
 - **Structural inventory findings (dev note `202604232137`):** 507 hand-written top-level procedures, 247 leaf functions (first translation targets), 5 semi-independent sub-systems, 176 derived types (150 AeroDyn + 26 NWTC deps), 14 genuinely dead procedures (660 lines, excluded from scope), 3 confirmed framework interface procedures, 10 C-binding entry points, only 1 procedure with SAVE state. External dependencies: NWTC Library (framework), InflowWind, SeaState, LinDyn.
-- **Verification infrastructure:** 16 AeroDyn regression test cases with committed baselines (`openfast/baselines/aerodyn/`). Three verification scripts: `verify_aerodyn_baselines.sh` (bit-identical gate), `run_nrel_regression.sh` (NREL 1e-2 correctness gate, 16/16 PASS), `check_aerodyn_nrel_drift.sh` (informational drift reporter). See dev notes `202604140330` (Phase 1), `202604210845` (Phase 2 all 16 cases), `202604232054` (NREL regression 16/16).
-- **Next step:** Begin Phase 1 (AirfoilInfo + DBEMT) — validate KGen extraction on AeroDyn build chain (OQ2), validate VIT on AeroDyn (OQ8), design mesh interop pattern (OQ7), translate 37 procedures (~3,415 lines). This is the "prove it works" gate. See `PROJECT_PLAN_AERODYN.md` Phase 1 for details.
-- **Dev notes:** `202604140013` (kickoff), `202604140204` (container), `202604140241` (OpenFAST build), `202604140253` (.outb format analysis), `202604140330` (baseline Phase 1), `202604210845` (baseline Phase 2), `202604210915` (platform drift), `202604212346` (NREL-matching investigation), `202604232054` (NREL regression 16/16), `202604232137` (structural inventory), `202604232243` (uncalled investigation), `202604232318` (uncalled refinement), `202604232342` (scope decisions), `202604240012` (key decisions), `202604240016` (open questions), `202604240027` (plan drafted).
-- **Methodology reference:** `CREATING_PROJECT_PLANS.md` — read this before drafting `PROJECT_PLAN_AERODYN.md`.
+- **Verification infrastructure:** 16 AeroDyn regression test cases with committed baselines (`openfast/baselines/aerodyn/`), regenerated 2026-04-24 with `-ffp-contract=off`. Three verification scripts: `verify_aerodyn_baselines.sh` (bit-identical gate), `run_nrel_regression.sh` (NREL 1e-2 correctness gate, 16/16 PASS), `check_aerodyn_nrel_drift.sh` (informational drift reporter). **After integrating any function, run `verify_aerodyn_baselines.sh all` to confirm 16/16 pass.**
+- **Next step:** Scale Phase 1 — translate remaining AirfoilInfo functions (next target: a function with derived type arguments to test VIT's type handling), then DBEMT. Infrastructure proven on Calculate_Cn. See `PROJECT_PLAN_AERODYN.md` Phase 1 for full scope.
+- **Methodology reference:** `CREATING_PROJECT_PLANS.md` — read this before drafting new plan documents.
+
+### AeroDyn Workflow
+
+VIT configuration is at `openfast/vit.yaml`. Key differences from ROSCO:
+- `source_dir: modules` — broad, so KGen can find NWTC Library sources for USE resolution
+- `fortran.flags: -cpp -fdefault-real-8 -fdefault-double-8 -ffp-contract=off` — matches the OpenFAST project build
+- `fortran.preprocessor_defines: [OPENFAST_DOUBLE_PRECISION, HAS_FORTRAN2008_FEATURES]` — passed as `-D` flags to KGen so it resolves `#ifdef` correctly
+- `build_system.cmake_file: modules/aerodyn/CMakeLists.txt` — VIT auto-detects which `add_library` target contains the source file
+
+**Translation workflow (per function):**
+
+```bash
+# 1. Extract (inside vit-dev-openfast container, from /workspace/openfast)
+vit extract FuncName -f modules/aerodyn/src/File.f90 -l LINE
+
+# 2. Generate scaffold
+vit translate FuncName -f modules/aerodyn/src/File.f90 --module ModuleName
+
+# 3. Write the C++ implementation in the generated scaffold
+
+# 4. Verify (20/20 IDENTICAL expected)
+vit verify FuncName translations/Module/funcname.cpp -f modules/aerodyn/src/File.f90 --kernel-dir kernel/FuncName
+
+# 5. Integrate (auto-patches AirfoilInfo.f90 AND CMakeLists.txt)
+vit integrate FuncName translations/Module/funcname.cpp -f modules/aerodyn/src/File.f90 --apply
+
+# 6. Rebuild
+cd build && cmake .. && cmake --build . --target aerodyn_driver -j$(nproc)
+
+# 7. Regression test (16/16 must pass)
+cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
+```
+
+**Build flags:** The OpenFAST fork has `FP_CONTRACT_OFF=ON` (default) in `CMakeLists.txt`, which sets `-ffp-contract=off` on both Fortran and C++ compilers. This is required for bit-identical verification during the translation phase. For production pure-C++ builds after translation: `cmake .. -DFP_CONTRACT_OFF=OFF`.
+
+**Registry C++ headers:** Generate with `-cppcode-double` flag for correct ReKi→double mapping: `openfast_registry input.txt -cppcode-double -O output_dir`
+
+**Extraction lessons learned:**
+- Call site must be on a code path exercised by the test case (Calculate_Cn: line 974 worked, line 956 was in an untaken branch)
+- KGen's ElapsedTime phase selects invocations — the count is not simply the first N
+- Docker filesystem timestamps can prevent cmake recompilation — VIT handles this automatically with `touch` in the build wrapper
 
 ## Development Environment
 
