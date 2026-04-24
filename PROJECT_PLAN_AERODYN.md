@@ -123,11 +123,9 @@ InflowWind, SeaState, LinDyn stay Fortran. AeroDyn receives their data via view 
 
 ## 4. Open Questions
 
-### OQ1: Registry generator feasibility [unknown]
+### OQ1: Registry generator feasibility [answered 2026-04-24]
 
-How complex is the OpenFAST Registry tool? Can we extend it to emit C++?
-
-**Blocks:** Phase 0. **Info needed:** Read Registry source code. **When:** Before Phase 0.
+**Answer:** Highly feasible. The Registry is a clean C++ code generator (~3,200 lines) with a modular architecture — separate generator files per output language (`registry_gen_fortran.cpp`, `registry_gen_c.cpp`). Adding `registry_gen_cpp.cpp` follows the exact same pattern. The data model (`registry.hpp`) already captures POINTER/ALLOCATABLE/deferred dims/nested types/C type mappings. A new `-cppcode` flag was added and generates `ModuleName_Types.hpp` headers. All 10 AeroDyn headers (2,666 lines, 140 structs) compile cleanly with g++ C++17.
 
 ### OQ2: KGen on AeroDyn [unknown]
 
@@ -147,11 +145,9 @@ Will KGen's instrumentation work on AeroDyn's cmake build chain?
 
 Simple `!$OMP PARALLEL DO` loops in FVW_BiotSavart.f90. Embarrassingly parallel over control points/segments. Direct `#pragma omp parallel for` translation. Should be preserved — performance-critical.
 
-### OQ6: POINTER fields in Registry types [unknown]
+### OQ6: POINTER fields in Registry types [answered 2026-04-24]
 
-How does the Registry handle POINTERs vs ALLOCATABLEs in Pack/Unpack?
-
-**Blocks:** Phase 0 design. **Info needed:** Read Registry source + generated types. **When:** Before Phase 0.
+**Answer:** AeroDyn has only 5 POINTER field instances, all non-owning references to external module types (FlowFieldType from InflowWind, WaveFieldType from SeaState). In the Registry data model, POINTER fields are marked with `*` prefix (`is_pointer=true`, `is_target=false`). Copy uses shallow association (`=>`), Destroy nullifies without deallocating, Pack/Unpack use `RegPackPointer`/`c_loc` for reference tracking. In the C++ generator, POINTER fields map to `void*` (opaque non-owning pointer). No target pointers exist in AeroDyn's Registry types.
 
 ### OQ7: Mesh types at interop boundary [unknown]
 
@@ -183,23 +179,23 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 
 ### Phase 0: Registry C++ Generator [speculative]
 
-**Goal:** Build a C++ code generator that replaces all Registry-generated `_Types.f90` files with C++ equivalents.
+**Goal:** Build a C++ code generator that produces C-compatible struct headers from Registry schema files, so translated C++ physics code has type definitions to work with.
 
-**Scope:** ~740 procedures, ~28,490 lines of Fortran replaced. 10 `_Types.f90` files across AeroDyn sub-modules.
+**Scope:** 10 Registry input files (2,180 lines) → 10 C++ headers (2,666 lines, 140 structs). The 740 Fortran boilerplate procedures (Copy/Destroy/Pack/Unpack/ExtrapInterp) remain Fortran for now — they're called by the OpenFAST framework which stays Fortran. C++ equivalents are a Phase 8 concern.
 
-**Confidence:** speculative — depends on OQ1 (Registry architecture) and OQ6 (POINTER handling).
+**Confidence:** committed — OQ1 and OQ6 answered, implementation complete.
 
 **Dependencies:** None (first phase).
 
 **Work:**
-- [ ] Investigate OpenFAST Registry tool source code (OQ1)
-- [ ] Understand POINTER vs ALLOCATABLE in generated code (OQ6)
-- [ ] Design C++ output format (structs, Pack/Unpack equivalents)
-- [ ] Implement generator
-- [ ] Verify generated types compile and interoperate with Fortran physics code
+- [x] Investigate OpenFAST Registry tool source code (OQ1) — highly feasible, modular C++ architecture
+- [x] Understand POINTER vs ALLOCATABLE in generated code (OQ6) — 5 POINTERs, all non-owning, map to void*
+- [x] Design C++ output format — C-compatible structs with pointer+size for allocatable, void* for opaque/external types
+- [x] Implement generator — `registry_gen_cpp.cpp` (~230 lines), `-cppcode` flag
+- [x] Verify generated types compile — 10/10 headers compile with g++ C++17, 10/10 Fortran files identical (no regression)
 - [ ] Commit generated C++ types
 
-**Revisit trigger:** After investigation — if the Registry is too complex to extend, pivot to standalone generator or defer to Option C (leave types as Fortran with interop wrappers).
+**Dev note:** `202604241XXX` (Phase 0 implementation)
 
 ### Phase 1: AirfoilInfo + DBEMT [planned]
 

@@ -21,7 +21,7 @@ Per the methodology, each question has: what we don't know, why it matters (what
 
 **When needed:** Before Phase 0 starts.
 
-**Status:** unknown
+**Status:** answered (2026-04-24). Highly feasible. The Registry is a clean C++ code generator (~3,200 lines) with modular architecture — separate files per output language. Adding `registry_gen_cpp.cpp` was straightforward. A new `-cppcode` flag generates `ModuleName_Types.hpp` headers. All 10 AeroDyn headers (2,666 lines, 140 structs) compile with g++ C++17. See dev note `202604240609`.
 
 ### OQ2: KGen on AeroDyn — has it been tested?
 
@@ -81,7 +81,7 @@ Per the methodology, each question has: what we don't know, why it matters (what
 
 **When needed:** Before Phase 0 starts.
 
-**Status:** unknown
+**Status:** answered (2026-04-24). AeroDyn has only 5 POINTER field instances, all non-owning references to external module types (FlowFieldType, WaveFieldType). Copy uses shallow association (`=>`), Destroy nullifies without deallocating, Pack/Unpack use RegPackPointer/c_loc for reference tracking. In C++: POINTER fields map to `void*` (opaque non-owning pointer). No target pointers exist in AeroDyn. See dev note `202604240609`.
 
 ### OQ7: Mesh types at the interop boundary
 
