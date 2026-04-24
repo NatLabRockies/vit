@@ -265,6 +265,7 @@ def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
             "kind_aliases": config.kind_aliases,
             "compiler": config.fortran_compiler,
             "flags": config.fortran_flags,
+            **({"preprocessor_defines": config.preprocessor_defines} if config.preprocessor_defines else {}),
         },
         "verification": {
             "tolerance": config.tolerance,

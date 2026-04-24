@@ -121,26 +121,24 @@ def generate_integration_plan(
     # Read user's C++ implementation
     cpp_impl_content = Path(cpp_impl_path).read_text()
 
-    # Copy consolidated types header to src/ (find from translations/)
+    # Generate/update consolidated types header from type registry.
+    # Uses existing file content so types from prior integrations are preserved;
+    # new types from the current function's registry are appended.
     struct_header_names = []
     if derived_types:
-        # Walk up from implementation file to find vit_types.h
-        impl_parent = Path(cpp_impl_path).parent
-        for parent in [impl_parent] + list(impl_parent.parents):
-            candidate = parent / "vit_types.h"
-            if candidate.exists():
-                dest = Path(src_dir) / "vit_types.h"
-                new_content = candidate.read_text()
-                old_content = dest.read_text() if dest.exists() else ""
-                if new_content != old_content:
-                    patches.append(IntegrationPatch(
-                        filepath=str(dest),
-                        description="Copy/update consolidated types header",
-                        action="create",
-                        content=new_content,
-                    ))
-                struct_header_names = ["vit_types.h"]
-                break
+        from .derived_type_parser import generate_consolidated_types_header
+        dest = Path(src_dir) / "vit_types.h"
+        old_content = dest.read_text() if dest.exists() else ""
+        new_content = generate_consolidated_types_header(
+            derived_types, kind_aliases, existing_content=old_content)
+        if new_content != old_content:
+            patches.append(IntegrationPatch(
+                filepath=str(dest),
+                description="Generate/update consolidated types header from registry",
+                action="create",
+                content=new_content,
+            ))
+        struct_header_names = ["vit_types.h"]
 
     # Generate the complete C++ file (impl + wrapper)
     cpp_complete = _generate_standalone_cpp(sig, cpp_impl_content, kind_aliases,
@@ -184,10 +182,6 @@ def generate_integration_plan(
 
             populator_name = f"vit_{type_name.lower()}_view.f90"
             populator_path = os.path.join(src_dir, populator_name)
-
-            # Skip if already exists (idempotent — another function may have created it)
-            if os.path.exists(populator_path):
-                continue
 
             # Use pre-computed field mappings from registry
             mappings = getattr(type_info, 'field_mappings', None) or []

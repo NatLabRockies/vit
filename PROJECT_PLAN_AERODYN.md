@@ -209,9 +209,12 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [x] Validate VIT extract/verify/integrate cycle (OQ8, partial) — Calculate_Cn 20/20 IDENTICAL
 - [x] First function: Calculate_Cn verified and integrated, 16/16 regression tests pass
 - [x] Infrastructure: FP_CONTRACT_OFF cmake option, baselines regenerated, ReKi precision, cmake auto-patching
+- [x] View struct infrastructure: nested TYPE() embedding, ALLOCATABLE TYPE() opaque, rank-3, LOGICAL(C_BOOL), TYPE() space normalization (8 VIT fixes, dev note `202604241905`)
+- [x] FindBoundingTables: 21/21 IDENTICAL, AFI_ParameterType view struct
+- [x] Compute_iLoweriUpper: 20/20 IDENTICAL, AFI_Table_Type view struct with nested AFI_UA_BL_Type
 - [ ] Design mesh interop pattern for MeshType (OQ7 answered — ~80-line view struct, not needed until Phase 4)
 - [ ] Design NWTC Library interop wrappers (first batch)
-- [ ] Translate AirfoilInfo leaf functions (12 leaves — next: function with derived type arguments)
+- [ ] Translate AirfoilInfo leaf functions (10 remaining — ALLOCATABLE TYPE() array access pattern needed for functions that read `p%Table(i)%field`)
 - [ ] Translate AirfoilInfo mid-level functions (11 remaining)
 - [ ] Translate DBEMT leaf functions (5 leaves)
 - [ ] Translate DBEMT mid-level functions (9 remaining)
@@ -219,9 +222,13 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [ ] Verify: 16-case baseline bit-identical
 - [ ] Verify: NREL regression 16/16
 
-**Revisit trigger:** After KGen/VIT validation — if extraction fails or VIT needs major enhancements, reassess timeline and approach before continuing. **Status: POC passed, no showstoppers found.**
+**Known VIT limitations (to be resolved as needed during Phase 1):**
+- **ALLOCATABLE TYPE() array access:** Current view struct uses `void*` (opaque) for ALLOCATABLE TYPE() fields like `p%Table(:)`. Functions that access elements (e.g., `p%Table(i)%Alpha`) will need a marshalling solution — probably a flattened array-of-structs view where the populator serializes each element's fields into contiguous C memory. First function needing this: `AFI_ComputeAirfoilCoefs1D` (reads `p%Table(iTable)%Coefs`).
+- **Nested TYPE() embedding is single-level:** Inline struct generation skips TYPE() fields inside nested types. If a nested type contains another C-compatible nested type, it won't be embedded. Not triggered by current AirfoilInfo types (AFI_UA_BL_Type is all scalars). Will need recursion if deeper nesting appears (likely Phase 2 or Phase 4).
 
-**Dev notes:** `202604241004` (first extraction), `202604241026` (precision mismatch), `202604241051` (VIT adaptation issues), `202604241122` (first verification), `202604241337` (FMA confirmed), `202604241400` (first full verification), `202604241415` (full pipeline proven), `202604241459` (four infrastructure fixes)
+**Revisit trigger:** After KGen/VIT validation — if extraction fails or VIT needs major enhancements, reassess timeline and approach before continuing. **Status: POC passed, no showstoppers found. Derived type handling proven.**
+
+**Dev notes:** `202604241004` (first extraction), `202604241026` (precision mismatch), `202604241051` (VIT adaptation issues), `202604241122` (first verification), `202604241337` (FMA confirmed), `202604241400` (first full verification), `202604241415` (full pipeline proven), `202604241459` (four infrastructure fixes), `202604241905` (derived type functions proven)
 
 ### Phase 2: BEMTUncoupled + UnsteadyAero [planned]
 
@@ -405,3 +412,5 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 | 2026-04-24 | OQ7 answered | MeshType interop is ~80-line view struct, not NWTC translation |
 | 2026-04-24 | Phase 1 POC complete | Calculate_Cn end-to-end, 12 VIT fixes, 4 infrastructure fixes |
 | 2026-04-24 | Baselines regenerated | `-ffp-contract=off` in cmake, 16/16 verified |
+| 2026-04-24 | View struct infrastructure | 8 VIT fixes for AeroDyn Registry-generated types (nested TYPE embedding, ALLOCATABLE TYPE opaque, rank-3, LOGICAL(C_BOOL), TYPE() normalization) |
+| 2026-04-24 | FindBoundingTables + Compute_iLoweriUpper | First derived type functions verified (21/21 + 20/20 IDENTICAL) and integrated (16/16 regression) |
