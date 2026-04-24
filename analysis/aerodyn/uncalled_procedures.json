@@ -13,7 +13,7 @@
     "file": "AeroAcoustics_Driver_Subs.f90",
     "line_count": 152,
     "visibility": "public",
-    "likely_reason": "driver_entry_point"
+    "likely_reason": "program_block"
   },
   {
     "name": "f_int1",
@@ -93,7 +93,7 @@
     "file": "AeroDyn_Driver_Subs.f90",
     "line_count": 66,
     "visibility": "public",
-    "likely_reason": "driver_entry_point"
+    "likely_reason": "program_block"
   },
   {
     "name": "Dvr_InitCase",
@@ -101,7 +101,7 @@
     "file": "AeroDyn_Driver_Subs.f90",
     "line_count": 199,
     "visibility": "public",
-    "likely_reason": "driver_entry_point"
+    "likely_reason": "program_block"
   },
   {
     "name": "Dvr_TimeStep",
@@ -109,7 +109,7 @@
     "file": "AeroDyn_Driver_Subs.f90",
     "line_count": 84,
     "visibility": "public",
-    "likely_reason": "driver_entry_point"
+    "likely_reason": "program_block"
   },
   {
     "name": "ADI_C_PreInit",
@@ -165,7 +165,7 @@
     "file": "AeroDyn_Inflow_C_Binding.f90",
     "line_count": 195,
     "visibility": "public",
-    "likely_reason": "c_binding_entry_point"
+    "likely_reason": "commented_out"
   },
   {
     "name": "ADI_C_GetRotorLoads",
@@ -221,7 +221,7 @@
     "file": "BEMT.f90",
     "line_count": 41,
     "visibility": "public",
-    "likely_reason": "likely_framework_interface"
+    "likely_reason": "commented_out"
   },
   {
     "name": "getAirfoilOrientationMatrix",
@@ -261,7 +261,7 @@
     "file": "DBEMT_Test.f90",
     "line_count": 44,
     "visibility": "public",
-    "likely_reason": "test_function"
+    "likely_reason": "program_block"
   },
   {
     "name": "DBEMT_TEST02",
@@ -269,7 +269,7 @@
     "file": "DBEMT_Test.f90",
     "line_count": 58,
     "visibility": "public",
-    "likely_reason": "test_function"
+    "likely_reason": "program_block"
   },
   {
     "name": "DBEMT_TEST03",
@@ -277,7 +277,7 @@
     "file": "DBEMT_Test.f90",
     "line_count": 48,
     "visibility": "public",
-    "likely_reason": "test_function"
+    "likely_reason": "program_block"
   },
   {
     "name": "DBEMT_TEST04",
@@ -285,7 +285,7 @@
     "file": "DBEMT_Test.f90",
     "line_count": 46,
     "visibility": "public",
-    "likely_reason": "test_function"
+    "likely_reason": "program_block"
   },
   {
     "name": "DBEMT_TEST05",
@@ -293,7 +293,7 @@
     "file": "DBEMT_Test.f90",
     "line_count": 46,
     "visibility": "public",
-    "likely_reason": "test_function"
+    "likely_reason": "program_block"
   },
   {
     "name": "DBEMT_TEST06",
@@ -301,7 +301,7 @@
     "file": "DBEMT_Test.f90",
     "line_count": 50,
     "visibility": "public",
-    "likely_reason": "test_function"
+    "likely_reason": "program_block"
   },
   {
     "name": "DBEMT_TEST07",
@@ -309,7 +309,7 @@
     "file": "DBEMT_Test.f90",
     "line_count": 52,
     "visibility": "public",
-    "likely_reason": "test_function"
+    "likely_reason": "program_block"
   },
   {
     "name": "DBEMT_TEST08",
@@ -317,7 +317,7 @@
     "file": "DBEMT_Test.f90",
     "line_count": 101,
     "visibility": "public",
-    "likely_reason": "test_function"
+    "likely_reason": "program_block"
   },
   {
     "name": "DBEMT_TEST09",
@@ -325,7 +325,7 @@
     "file": "DBEMT_Test.f90",
     "line_count": 83,
     "visibility": "public",
-    "likely_reason": "test_function"
+    "likely_reason": "program_block"
   },
   {
     "name": "DBEMT_TEST10",
@@ -333,7 +333,7 @@
     "file": "DBEMT_Test.f90",
     "line_count": 88,
     "visibility": "public",
-    "likely_reason": "test_function"
+    "likely_reason": "program_block"
   },
   {
     "name": "DBEMT_TEST11",
@@ -341,7 +341,7 @@
     "file": "DBEMT_Test.f90",
     "line_count": 88,
     "visibility": "public",
-    "likely_reason": "test_function"
+    "likely_reason": "program_block"
   },
   {
     "name": "Output_Gamma",
@@ -413,7 +413,7 @@
     "file": "FVW_Tests.f90",
     "line_count": 170,
     "visibility": "private",
-    "likely_reason": "test_function"
+    "likely_reason": "genuinely_dead"
   },
   {
     "name": "print_mean_4d",
@@ -445,7 +445,7 @@
     "file": "UA_Dvr_Subs.f90",
     "line_count": 226,
     "visibility": "public",
-    "likely_reason": "driver_entry_point"
+    "likely_reason": "program_block"
   },
   {
     "name": "Dvr_SetParameters",
@@ -453,7 +453,7 @@
     "file": "UA_Dvr_Subs.f90",
     "line_count": 64,
     "visibility": "public",
-    "likely_reason": "driver_entry_point"
+    "likely_reason": "program_block"
   },
   {
     "name": "driverInputsToUAInitData",
@@ -461,7 +461,7 @@
     "file": "UA_Dvr_Subs.f90",
     "line_count": 75,
     "visibility": "public",
-    "likely_reason": "driver_entry_point"
+    "likely_reason": "program_block"
   },
   {
     "name": "setInflow",
@@ -469,7 +469,7 @@
     "file": "UA_Dvr_Subs.f90",
     "line_count": 16,
     "visibility": "public",
-    "likely_reason": "driver_entry_point"
+    "likely_reason": "program_block"
   },
   {
     "name": "setLDinputs",
@@ -477,7 +477,7 @@
     "file": "UA_Dvr_Subs.f90",
     "line_count": 23,
     "visibility": "public",
-    "likely_reason": "driver_entry_point"
+    "likely_reason": "program_block"
   },
   {
     "name": "setUAinputs",
@@ -485,7 +485,7 @@
     "file": "UA_Dvr_Subs.f90",
     "line_count": 28,
     "visibility": "public",
-    "likely_reason": "driver_entry_point"
+    "likely_reason": "program_block"
   },
   {
     "name": "setUAinputsAlphaSim",
@@ -493,7 +493,7 @@
     "file": "UA_Dvr_Subs.f90",
     "line_count": 84,
     "visibility": "public",
-    "likely_reason": "driver_entry_point"
+    "likely_reason": "program_block"
   },
   {
     "name": "Dvr_EndSim",
@@ -501,7 +501,7 @@
     "file": "UA_Dvr_Subs.f90",
     "line_count": 29,
     "visibility": "public",
-    "likely_reason": "driver_entry_point"
+    "likely_reason": "program_block"
   },
   {
     "name": "backupStates",

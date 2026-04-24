@@ -602,92 +602,124 @@ def find_uncalled_procedures(procedures, call_edges, src_dir):
     for p in uncalled_candidates:
         name = p["name"]
         mod = p["module"] or ""
-        reason = "unknown"
 
-        # Heuristic classification by module/name
-        if "c_binding" in mod.lower():
-            reason = "c_binding_entry_point"
-        elif "driver" in mod.lower() or "dvr" in mod.lower():
-            reason = "driver_entry_point"
-        elif "test" in mod.lower() or "TEST" in name:
-            reason = "test_function"
-        elif p["visibility"] == "public" and name.startswith(("AD_", "BEMT_", "DBEMT_", "UA_", "FVW_", "AA_", "AFI_", "ADI_")):
-            reason = "likely_framework_interface"
+        # Deep source text analysis for ALL uncalled procedures.
+        # Scan every source file for references to this procedure name.
+        # Track three separate signals:
+        #   - commented_out: name appears in commented-out call/reference
+        #   - callback_usage: name appears as non-string argument in a CALL
+        #   - program_block_call: name called from a PROGRAM block
+        #   - any_live_reference: name appears in live (non-comment, non-string,
+        #     non-definition, non-access-stmt) code
+        name_lower = name.lower()
+        commented_out = False
+        callback_usage = False
+        program_block_call = False
+        any_live_reference = False
 
-        # For unknowns, do deeper source text analysis
-        if reason == "unknown":
-            name_lower = name.lower()
-            commented_out = False
-            callback_usage = False
-            program_block_call = False
-            any_reference = False
+        # Pre-compile word-boundary regex for this name to avoid substring
+        # false positives (e.g., "print_tree" matching "print_tree_rec")
+        name_re = re.compile(r'\b' + re.escape(name_lower) + r'\b')
 
-            for fname, lines in all_lines_by_file.items():
-                in_program_block = False
-                for line in lines:
-                    stripped = line.strip().lower()
+        for fname, lines in all_lines_by_file.items():
+            in_program_block = False
+            for line in lines:
+                stripped = line.strip().lower()
 
-                    # Track PROGRAM blocks
-                    if stripped.startswith("program ") and not stripped.startswith("program("):
-                        in_program_block = True
-                    if stripped.startswith("end program"):
-                        in_program_block = False
+                # Track PROGRAM blocks
+                if stripped.startswith("program ") and not stripped.startswith("program("):
+                    in_program_block = True
+                if stripped.startswith("end program"):
+                    in_program_block = False
 
-                    # Skip the definition line itself
-                    if ("subroutine " + name_lower in stripped or
-                        "function " + name_lower in stripped) and \
-                       ("end subroutine" not in stripped and "end function" not in stripped):
-                        if stripped.lstrip("!").strip().startswith(("subroutine ", "function ",
-                                                                     "pure ", "elemental ",
-                                                                     "real", "integer", "logical")):
+                # Quick substring check before expensive regex
+                if name_lower not in stripped:
+                    continue
+
+                # Word-boundary check — reject substring matches
+                if not name_re.search(stripped):
+                    continue
+
+                # Skip the definition line itself (SUB/FUNCTION declaration or END)
+                # Use regex to handle variable whitespace
+                stripped_nocomment = stripped.lstrip("!").strip()
+                if re.search(r'\b(subroutine|function)\b', stripped_nocomment):
+                    if name_re.search(stripped_nocomment):
+                        # This line has both "subroutine/function" and our name —
+                        # likely a definition, END statement, or forward declaration
+                        if any(stripped_nocomment.startswith(kw) for kw in
+                               ("subroutine", "function", "pure", "elemental",
+                                "real", "integer", "logical", "end ")):
                             continue
 
-                    if name_lower not in stripped:
-                        continue
+                # Check for commented-out calls: !...call name or !...name(
+                if stripped.startswith("!"):
+                    rest = stripped.lstrip("!")
+                    if ("call " + name_lower in rest or
+                        name_lower + "(" in rest):
+                        commented_out = True
+                    continue  # Don't check further for comment lines
 
-                    # Check for commented-out calls: !...call name or !...name(
-                    if stripped.startswith("!") and name_lower in stripped:
-                        rest = stripped.lstrip("!")
-                        if ("call " + name_lower in rest or
-                            name_lower + "(" in rest):
-                            commented_out = True
-                            any_reference = True
+                # From here: non-comment lines only
+                # Strip string literals for all remaining checks
+                line_no_strings = re.sub(r"'[^']*'", "", stripped)
+                line_no_strings = re.sub(r'"[^"]*"', "", line_no_strings)
 
-                    # Check for callback: name appears as argument in a CALL
-                    # Pattern: call something(..., name, ...) where name is
-                    # not the first token after call
-                    if not stripped.startswith("!") and "call " in stripped:
-                        # Extract what's after "call word("
-                        call_match = re.search(r"call\s+\w+\s*\((.+)\)", stripped)
-                        if call_match:
-                            args_text = call_match.group(1)
-                            # Check if our procedure name is in the arguments
-                            if re.search(r'\b' + re.escape(name_lower) + r'\b', args_text):
-                                callback_usage = True
-                                any_reference = True
+                if not name_re.search(line_no_strings):
+                    continue  # Name only appeared inside string literals
 
-                    # Check for PROGRAM block call
-                    if in_program_block and not stripped.startswith("!"):
-                        if ("call " + name_lower in stripped or
-                            name_lower + "(" in stripped):
-                            program_block_call = True
-                            any_reference = True
+                # Check for callback: name appears as non-callee argument in CALL
+                if "call " in line_no_strings:
+                    call_match = re.search(r"call\s+\w+\s*\((.+)\)", line_no_strings)
+                    if call_match:
+                        args_text = call_match.group(1)
+                        if name_re.search(args_text):
+                            callback_usage = True
+                            any_live_reference = True
 
-                    # Check for any non-definition, non-comment reference
-                    if not stripped.startswith("!") and name_lower in stripped:
-                        # Exclude PUBLIC/PRIVATE declarations and the definition itself
-                        if not any(kw in stripped for kw in ["public ", "private ",
-                                                              "subroutine " + name_lower,
-                                                              "function " + name_lower]):
-                            any_reference = True
+                # Check for PROGRAM block call
+                if in_program_block:
+                    if ("call " + name_lower in line_no_strings or
+                        name_lower + "(" in line_no_strings):
+                        program_block_call = True
+                        any_live_reference = True
 
-            if commented_out and not callback_usage and not program_block_call:
-                reason = "commented_out"
-            elif callback_usage:
-                reason = "callback"
-            elif program_block_call:
-                reason = "program_block"
-            elif not any_reference:
+                # Check for any live reference (excluding PUBLIC/PRIVATE/definition)
+                if not any(kw in line_no_strings for kw in ["public ", "private ",
+                                                             "subroutine " + name_lower,
+                                                             "function " + name_lower]):
+                    any_live_reference = True
+
+        # Classification priority:
+        # 1. Source evidence (strongest signal)
+        # 2. Heuristic by module/name (when no source evidence)
+        # 3. genuinely_dead (no evidence at all)
+        if callback_usage:
+            reason = "callback"
+        elif program_block_call:
+            reason = "program_block"
+        elif commented_out and not any_live_reference:
+            reason = "commented_out"
+        elif any_live_reference:
+            # Has some reference but not via CALL/PROGRAM — use heuristic
+            if "c_binding" in mod.lower():
+                reason = "c_binding_entry_point"
+            elif p["visibility"] == "public" and name.startswith(("AD_", "BEMT_", "DBEMT_", "UA_", "FVW_", "AA_", "AFI_", "ADI_")):
+                reason = "likely_framework_interface"
+            elif "driver" in mod.lower() or "dvr" in mod.lower():
+                reason = "driver_entry_point"
+            elif "test" in mod.lower() or "TEST" in name:
+                reason = "test_function"
+            else:
+                reason = "unknown"
+        else:
+            # No live reference, no commented-out reference — check heuristic
+            # before declaring dead (C-binding functions are called from C)
+            if "c_binding" in mod.lower():
+                reason = "c_binding_entry_point"
+            elif p["visibility"] == "public" and name.startswith(("AD_", "BEMT_", "DBEMT_", "UA_", "FVW_", "AA_", "AFI_", "ADI_")):
+                reason = "likely_framework_interface"
+            else:
                 reason = "genuinely_dead"
 
         uncalled.append({
