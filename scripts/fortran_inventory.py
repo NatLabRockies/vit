@@ -531,53 +531,173 @@ def build_module_dependencies(modules, procedures):
 # Pass 5: Dead code detection
 # ---------------------------------------------------------------------------
 
-def find_uncalled_procedures(procedures, call_edges):
+def find_uncalled_procedures(procedures, call_edges, src_dir):
     """
-    Find procedures with zero call sites WITHIN the scanned source tree.
+    Find procedures with zero call sites WITHIN the scanned source tree,
+    then classify each by WHY it appears uncalled.
 
-    CAVEAT: This does NOT mean the procedure is truly dead code. It may be
-    called from:
-    - OpenFAST glue code (outside AeroDyn)
-    - Other OpenFAST modules (InflowWind, SeaState, etc.)
-    - C/C++ code via C-binding entry points
-    - Main programs (drivers)
-    - Type-bound procedure dispatch
-
-    This list is useful for identifying *candidates* for exclusion from
-    translation scope, but each entry needs manual verification.
+    Categories:
+    - c_binding_entry_point: in a C-binding module, called from C/C++
+    - driver_entry_point: in a driver module, called from PROGRAM blocks
+    - test_function: in a test module or has TEST in name
+    - likely_framework_interface: PUBLIC with standard OpenFAST prefix
+    - commented_out: calls exist in source but are commented out (!call)
+    - callback: procedure name appears as an argument in a CALL statement
+    - program_block: called from a PROGRAM block (not scanned as module)
+    - genuinely_dead: defined but never referenced anywhere in source tree
     """
     # All callees (from both CALL statements and function references)
     called = set()
     for e in call_edges:
         called.add(e["callee"].lower())
 
-    uncalled = []
+    # Pre-classify by module/name heuristics first
+    uncalled_candidates = []
     for p in procedures:
         if p["is_registry_generated"]:
-            continue  # Skip registry boilerplate
+            continue
         if p.get("is_internal", False):
-            continue  # Skip CONTAINS-block internal procedures
+            continue
         if p["name"].lower() not in called:
-            # Classify the likely reason it appears uncalled
-            reason = "unknown"
-            mod = p["module"] or ""
-            if "c_binding" in mod.lower():
-                reason = "c_binding_entry_point"
-            elif "driver" in mod.lower() or "dvr" in mod.lower():
-                reason = "driver_entry_point"
-            elif "test" in mod.lower() or "TEST" in p["name"]:
-                reason = "test_function"
-            elif p["visibility"] == "public" and p["name"].startswith(("AD_", "BEMT_", "DBEMT_", "UA_", "FVW_", "AA_", "AFI_", "ADI_")):
-                reason = "likely_framework_interface"
+            uncalled_candidates.append(p)
 
-            uncalled.append({
-                "name": p["name"],
-                "module": p["module"],
-                "file": p["file"],
-                "line_count": p["line_count"],
-                "visibility": p["visibility"],
-                "likely_reason": reason,
-            })
+    if not uncalled_candidates:
+        return []
+
+    # For remaining unknowns, scan source files for deeper classification.
+    # Build a text index: for each source file, read its lines.
+    # Check for:
+    #   1. Commented-out calls: lines matching "!.*call.*<name>" (case-insensitive)
+    #   2. Callback usage: name appears as an argument inside a CALL statement
+    #   3. PROGRAM-block calls: name called from a PROGRAM ... END PROGRAM block
+    import re
+
+    file_lines_cache = {}
+    def get_file_lines(filename):
+        if filename not in file_lines_cache:
+            full_path = os.path.join(src_dir, filename)
+            try:
+                with open(full_path, "r", errors="replace") as f:
+                    file_lines_cache[filename] = f.readlines()
+            except Exception:
+                file_lines_cache[filename] = []
+        return file_lines_cache[filename]
+
+    # Read ALL source files in directory for text search
+    all_src_files = sorted(glob.glob(os.path.join(src_dir, "*.f90")) +
+                           glob.glob(os.path.join(src_dir, "*.F90")))
+    all_lines_by_file = {}
+    all_text_by_file = {}
+    for fpath in all_src_files:
+        fname = os.path.basename(fpath)
+        try:
+            with open(fpath, "r", errors="replace") as f:
+                lines = f.readlines()
+                all_lines_by_file[fname] = lines
+                all_text_by_file[fname] = "".join(lines)
+        except Exception:
+            pass
+
+    uncalled = []
+    for p in uncalled_candidates:
+        name = p["name"]
+        mod = p["module"] or ""
+        reason = "unknown"
+
+        # Heuristic classification by module/name
+        if "c_binding" in mod.lower():
+            reason = "c_binding_entry_point"
+        elif "driver" in mod.lower() or "dvr" in mod.lower():
+            reason = "driver_entry_point"
+        elif "test" in mod.lower() or "TEST" in name:
+            reason = "test_function"
+        elif p["visibility"] == "public" and name.startswith(("AD_", "BEMT_", "DBEMT_", "UA_", "FVW_", "AA_", "AFI_", "ADI_")):
+            reason = "likely_framework_interface"
+
+        # For unknowns, do deeper source text analysis
+        if reason == "unknown":
+            name_lower = name.lower()
+            commented_out = False
+            callback_usage = False
+            program_block_call = False
+            any_reference = False
+
+            for fname, lines in all_lines_by_file.items():
+                in_program_block = False
+                for line in lines:
+                    stripped = line.strip().lower()
+
+                    # Track PROGRAM blocks
+                    if stripped.startswith("program ") and not stripped.startswith("program("):
+                        in_program_block = True
+                    if stripped.startswith("end program"):
+                        in_program_block = False
+
+                    # Skip the definition line itself
+                    if ("subroutine " + name_lower in stripped or
+                        "function " + name_lower in stripped) and \
+                       ("end subroutine" not in stripped and "end function" not in stripped):
+                        if stripped.lstrip("!").strip().startswith(("subroutine ", "function ",
+                                                                     "pure ", "elemental ",
+                                                                     "real", "integer", "logical")):
+                            continue
+
+                    if name_lower not in stripped:
+                        continue
+
+                    # Check for commented-out calls: !...call name or !...name(
+                    if stripped.startswith("!") and name_lower in stripped:
+                        rest = stripped.lstrip("!")
+                        if ("call " + name_lower in rest or
+                            name_lower + "(" in rest):
+                            commented_out = True
+                            any_reference = True
+
+                    # Check for callback: name appears as argument in a CALL
+                    # Pattern: call something(..., name, ...) where name is
+                    # not the first token after call
+                    if not stripped.startswith("!") and "call " in stripped:
+                        # Extract what's after "call word("
+                        call_match = re.search(r"call\s+\w+\s*\((.+)\)", stripped)
+                        if call_match:
+                            args_text = call_match.group(1)
+                            # Check if our procedure name is in the arguments
+                            if re.search(r'\b' + re.escape(name_lower) + r'\b', args_text):
+                                callback_usage = True
+                                any_reference = True
+
+                    # Check for PROGRAM block call
+                    if in_program_block and not stripped.startswith("!"):
+                        if ("call " + name_lower in stripped or
+                            name_lower + "(" in stripped):
+                            program_block_call = True
+                            any_reference = True
+
+                    # Check for any non-definition, non-comment reference
+                    if not stripped.startswith("!") and name_lower in stripped:
+                        # Exclude PUBLIC/PRIVATE declarations and the definition itself
+                        if not any(kw in stripped for kw in ["public ", "private ",
+                                                              "subroutine " + name_lower,
+                                                              "function " + name_lower]):
+                            any_reference = True
+
+            if commented_out and not callback_usage and not program_block_call:
+                reason = "commented_out"
+            elif callback_usage:
+                reason = "callback"
+            elif program_block_call:
+                reason = "program_block"
+            elif not any_reference:
+                reason = "genuinely_dead"
+
+        uncalled.append({
+            "name": name,
+            "module": p["module"],
+            "file": p["file"],
+            "line_count": p["line_count"],
+            "visibility": p["visibility"],
+            "likely_reason": reason,
+        })
 
     return uncalled
 
@@ -818,14 +938,53 @@ def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
     # Dead code
     lines.append(f"## Uncalled Within AeroDyn: {len(uncalled)} procedures")
     lines.append("")
-    lines.append("*These have zero call sites in the scanned AeroDyn source. Many are called from*")
-    lines.append("*outside AeroDyn (OpenFAST glue code, C bindings, drivers, tests). Not dead code.*")
+
+    # Group by reason
+    from collections import Counter as _Counter
+    reason_counts = _Counter(d.get("likely_reason", "?") for d in uncalled)
+    reason_order = ["c_binding_entry_point", "driver_entry_point", "test_function",
+                    "likely_framework_interface", "commented_out", "callback",
+                    "program_block", "genuinely_dead", "unknown"]
+    reason_labels = {
+        "c_binding_entry_point": "C-binding entry points (called from C/C++)",
+        "driver_entry_point": "Driver entry points (called from PROGRAM blocks)",
+        "test_function": "Test functions",
+        "likely_framework_interface": "Framework interface (called by OpenFAST glue code)",
+        "commented_out": "Commented-out calls (dormant debug code)",
+        "callback": "Callbacks (passed as function arguments)",
+        "program_block": "Called from PROGRAM block (not scanned as module)",
+        "genuinely_dead": "Genuinely dead code (no reference anywhere in source)",
+        "unknown": "Unclassified",
+    }
+
+    lines.append("| Category | Count | Translation Impact |")
+    lines.append("|----------|-------|--------------------|")
+    for r in reason_order:
+        c = reason_counts.get(r, 0)
+        if c > 0:
+            label = reason_labels.get(r, r)
+            if r == "genuinely_dead":
+                impact = "Exclude from scope"
+            elif r in ("commented_out", "callback", "program_block"):
+                impact = "Translate if parent is in scope"
+            else:
+                impact = "Translate (called externally)"
+            lines.append(f"| {label} | {c} | {impact} |")
     lines.append("")
-    if uncalled:
-        lines.append("| Name | Module | Lines | Likely Reason |")
-        lines.append("|------|--------|-------|--------------|")
-        for d in sorted(uncalled, key=lambda x: -x["line_count"]):
-            lines.append(f"| {d['name']} | {d['module'] or '-'} | {d['line_count']} | {d.get('likely_reason', '?')} |")
+
+    # Show each category
+    for r in reason_order:
+        items = [d for d in uncalled if d.get("likely_reason") == r]
+        if not items:
+            continue
+        label = reason_labels.get(r, r)
+        lines.append(f"### {label} ({len(items)})")
+        lines.append("")
+        lines.append("| Name | Module | Lines |")
+        lines.append("|------|--------|-------|")
+        for d in sorted(items, key=lambda x: -x["line_count"]):
+            lines.append(f"| {d['name']} | {d['module'] or '-'} | {d['line_count']} |")
+        lines.append("")
     else:
         lines.append("(none found)")
     lines.append("")
@@ -930,7 +1089,7 @@ def main():
 
     # Pass 5: Dead code
     print("\nPass 5: Finding uncalled procedures...")
-    uncalled = find_uncalled_procedures(procedures, call_edges)
+    uncalled = find_uncalled_procedures(procedures, call_edges, args.src)
     print(f"  Uncalled within scope: {len(uncalled)}")
 
     # Pass 6: Framework boundary

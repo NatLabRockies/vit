@@ -5,7 +5,7 @@
     "file": "AeroAcoustics.f90",
     "line_count": 28,
     "visibility": "private",
-    "likely_reason": "unknown"
+    "likely_reason": "genuinely_dead"
   },
   {
     "name": "ReadDriverInputFile",
@@ -21,7 +21,7 @@
     "file": "AeroAcoustics_TNO.f90",
     "line_count": 79,
     "visibility": "private",
-    "likely_reason": "unknown"
+    "likely_reason": "callback"
   },
   {
     "name": "f_int2",
@@ -29,7 +29,7 @@
     "file": "AeroAcoustics_TNO.f90",
     "line_count": 9,
     "visibility": "private",
-    "likely_reason": "unknown"
+    "likely_reason": "callback"
   },
   {
     "name": "AD_CalcConstrStateResidual",
@@ -85,7 +85,7 @@
     "file": "AeroDyn.f90",
     "line_count": 79,
     "visibility": "private",
-    "likely_reason": "unknown"
+    "likely_reason": "genuinely_dead"
   },
   {
     "name": "Dvr_Init",
@@ -205,7 +205,7 @@
     "file": "BEMT.f90",
     "line_count": 18,
     "visibility": "private",
-    "likely_reason": "unknown"
+    "likely_reason": "genuinely_dead"
   },
   {
     "name": "BEMT_End",
@@ -229,7 +229,7 @@
     "file": "BEMTUncoupled.f90",
     "line_count": 19,
     "visibility": "public",
-    "likely_reason": "unknown"
+    "likely_reason": "genuinely_dead"
   },
   {
     "name": "BEMTU_Test_ACT_Relationship",
@@ -237,7 +237,7 @@
     "file": "BEMTUncoupled.f90",
     "line_count": 53,
     "visibility": "public",
-    "likely_reason": "unknown"
+    "likely_reason": "genuinely_dead"
   },
   {
     "name": "computeAirfoilAOA",
@@ -245,7 +245,7 @@
     "file": "BEMTUncoupled.f90",
     "line_count": 12,
     "visibility": "private",
-    "likely_reason": "unknown"
+    "likely_reason": "genuinely_dead"
   },
   {
     "name": "GetEulerAnglesFromOrientation",
@@ -253,7 +253,7 @@
     "file": "BEMTUncoupled.f90",
     "line_count": 12,
     "visibility": "public",
-    "likely_reason": "unknown"
+    "likely_reason": "genuinely_dead"
   },
   {
     "name": "DBEMT_TEST01",
@@ -349,7 +349,7 @@
     "file": "FVW_Subs.f90",
     "line_count": 33,
     "visibility": "public",
-    "likely_reason": "unknown"
+    "likely_reason": "commented_out"
   },
   {
     "name": "find_nan_1D",
@@ -357,7 +357,7 @@
     "file": "FVW_Subs.f90",
     "line_count": 22,
     "visibility": "public",
-    "likely_reason": "unknown"
+    "likely_reason": "genuinely_dead"
   },
   {
     "name": "find_nan_3D",
@@ -365,7 +365,7 @@
     "file": "FVW_Subs.f90",
     "line_count": 25,
     "visibility": "public",
-    "likely_reason": "unknown"
+    "likely_reason": "genuinely_dead"
   },
   {
     "name": "test_equal_i0",
@@ -421,7 +421,7 @@
     "file": "FVW_VortexTools.f90",
     "line_count": 20,
     "visibility": "public",
-    "likely_reason": "unknown"
+    "likely_reason": "commented_out"
   },
   {
     "name": "print_tree",
@@ -429,7 +429,7 @@
     "file": "FVW_VortexTools.f90",
     "line_count": 32,
     "visibility": "public",
-    "likely_reason": "unknown"
+    "likely_reason": "commented_out"
   },
   {
     "name": "ui_expansion_order2",
@@ -437,7 +437,7 @@
     "file": "FVW_VortexTools.f90",
     "line_count": 145,
     "visibility": "public",
-    "likely_reason": "unknown"
+    "likely_reason": "commented_out"
   },
   {
     "name": "ReadDriverInputFile",
@@ -509,7 +509,7 @@
     "file": "UnsteadyAero_Driver.f90",
     "line_count": 7,
     "visibility": "public",
-    "likely_reason": "unknown"
+    "likely_reason": "commented_out"
   },
   {
     "name": "restoreUAStates",
@@ -517,7 +517,7 @@
     "file": "UnsteadyAero_Driver.f90",
     "line_count": 5,
     "visibility": "public",
-    "likely_reason": "unknown"
+    "likely_reason": "commented_out"
   },
   {
     "name": "restoreLDStates",
@@ -525,7 +525,7 @@
     "file": "UnsteadyAero_Driver.f90",
     "line_count": 4,
     "visibility": "public",
-    "likely_reason": "unknown"
+    "likely_reason": "commented_out"
   },
   {
     "name": "print_help",
@@ -533,6 +533,6 @@
     "file": "UnsteadyAero_Driver.f90",
     "line_count": 11,
     "visibility": "public",
-    "likely_reason": "unknown"
+    "likely_reason": "program_block"
   }
 ]
