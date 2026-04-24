@@ -25,17 +25,25 @@ This workspace contains three tools that work together to enable verified Fortra
 
 - **Workspace:** `vit_translation_openfast/` — sibling to the ROSCO workspace, with independent git clones of VIT, KGen, and OpenFAST (no symlinks). Both workspace VIT clones share the same `main` branch on the `NatLabRockies/vit` remote.
 - **Target:** translate all of AeroDyn to C++ — 507 hand-written procedures across 46,803 lines, plus a C++ code generator for the OpenFAST Registry (740 generated procedures / 28,490 lines), plus drivers and C-binding layer. End state: pure C++ AeroDyn module, no Fortran source, no libgfortran dependency. 42 Fortran source files, ~75,000 total lines.
-- **Current stage:** **structural inventory complete; scope decisions locked; drafting PROJECT_PLAN_AERODYN.md.** Environment, build, and verification baselines all verified. fparser2-based structural inventory committed at `vit/analysis/aerodyn/` (7 JSON data files + markdown summary). Five scope decisions finalized (see below).
+- **Current stage:** **structural inventory complete; scope and architecture locked; drafting PROJECT_PLAN_AERODYN.md.** Environment, build, and verification baselines all verified. fparser2-based structural inventory committed at `vit/analysis/aerodyn/` (7 JSON data files + markdown summary). Five scope decisions and six key architectural decisions finalized.
 - **Scope decisions (committed 2026-04-23, dev note `202604232342`):**
   1. **Breadth:** All of AeroDyn — all 5 sub-systems (BEMT, FVW/OLAF, UnsteadyAero, AeroAcoustics, core AeroDyn), all 507 hand-written procedures
   2. **Registry types:** Build a C++ code generator for the OpenFAST Registry (replaces 740 auto-generated Fortran procedures)
   3. **Drivers/C-binding:** Translate everything — full C++, no Fortran remaining
   4. **Verification:** Three-tier, same as ROSCO — KGen float64 kernel verification + 16-case simulation bit-identical + NREL regression 16/16
   5. **Done criteria:** Pure C++ AeroDyn module — no Fortran source in the build, no libgfortran, 16/16 regression pass, AeroDyn Driver functional, C-binding preserved
+- **Key architectural decisions (committed 2026-04-24, dev note `202604240012`):**
+  1. **Type strategy:** Registry generator for Registry types, VIT `analyze-types` for hand-written types (clean tool separation)
+  2. **KGen extraction:** Both AeroDyn Driver (primary, 16 r-test cases) AND full OpenFAST (for coupled-mode-only functions like linearization)
+  3. **Phasing:** Bottom-up by dependency layer — Registry generator (Phase 0) → leaf modules → mid-level → orchestrators → drivers/C-binding (Phase 7)
+  4. **FMA:** `-ffp-contract=off` during translation, re-enable on pure C++ build (same as ROSCO)
+  5. **NWTC Library:** Stays Fortran, C interop boundary (shared framework, separate project to translate)
+  6. **External modules:** InflowWind, SeaState, LinDyn stay Fortran, accessed via C interop (read-only data providers)
+- **Translation boundary:** Everything inside AeroDyn → C++. Everything outside (NWTC Library, InflowWind, SeaState, LinDyn, OpenFAST glue code) → stays Fortran, crossed via BIND(C) / view structs.
 - **Structural inventory findings (dev note `202604232137`):** 507 hand-written top-level procedures, 247 leaf functions (first translation targets), 5 semi-independent sub-systems, 176 derived types (150 AeroDyn + 26 NWTC deps), 14 genuinely dead procedures (660 lines, excluded from scope), 3 confirmed framework interface procedures, 10 C-binding entry points, only 1 procedure with SAVE state. External dependencies: NWTC Library (framework), InflowWind, SeaState, LinDyn.
 - **Verification infrastructure:** 16 AeroDyn regression test cases with committed baselines (`openfast/baselines/aerodyn/`). Three verification scripts: `verify_aerodyn_baselines.sh` (bit-identical gate), `run_nrel_regression.sh` (NREL 1e-2 correctness gate, 16/16 PASS), `check_aerodyn_nrel_drift.sh` (informational drift reporter). See dev notes `202604140330` (Phase 1), `202604210845` (Phase 2 all 16 cases), `202604232054` (NREL regression 16/16).
-- **Next step:** Complete Steps 3-7 of CREATING_PROJECT_PLANS.md methodology — key decisions, open questions, phase roadmap, revisit triggers — and draft PROJECT_PLAN_AERODYN.md.
-- **Dev notes:** `202604140013` (kickoff), `202604140204` (container), `202604140241` (OpenFAST build), `202604140253` (.outb format analysis), `202604140330` (baseline Phase 1), `202604210845` (baseline Phase 2), `202604210915` (platform drift), `202604212346` (NREL-matching investigation), `202604232054` (NREL regression 16/16), `202604232137` (structural inventory), `202604232243` (uncalled investigation), `202604232318` (uncalled refinement), `202604232342` (scope decisions).
+- **Next step:** Complete Steps 4-7 of CREATING_PROJECT_PLANS.md methodology — open questions, phase roadmap, revisit triggers — and draft PROJECT_PLAN_AERODYN.md.
+- **Dev notes:** `202604140013` (kickoff), `202604140204` (container), `202604140241` (OpenFAST build), `202604140253` (.outb format analysis), `202604140330` (baseline Phase 1), `202604210845` (baseline Phase 2), `202604210915` (platform drift), `202604212346` (NREL-matching investigation), `202604232054` (NREL regression 16/16), `202604232137` (structural inventory), `202604232243` (uncalled investigation), `202604232318` (uncalled refinement), `202604232342` (scope decisions), `202604240012` (key decisions).
 - **Methodology reference:** `CREATING_PROJECT_PLANS.md` — read this before drafting `PROJECT_PLAN_AERODYN.md`.
 
 ## Development Environment
