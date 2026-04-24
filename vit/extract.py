@@ -368,7 +368,16 @@ def generate_state_capture_build_script(
     kgen_utils_src = os.path.join(os.path.abspath(kernel_dir), "kgen_utils.f90")
 
     # Determine target location for kgen_utils.f90
-    if source_dir:
+    # Prefer the cmake_file's src/ subdirectory (matches the sed pattern that adds
+    # "src/kgen_utils.f90" to the CMakeLists.txt source list). Fall back to source_dir.
+    if cmake_file:
+        cmake_dir = os.path.dirname(os.path.abspath(cmake_file))
+        src_subdir = os.path.join(cmake_dir, "src")
+        if os.path.isdir(src_subdir):
+            kgen_utils_dest = os.path.join(src_subdir, "kgen_utils.f90")
+        else:
+            kgen_utils_dest = os.path.join(cmake_dir, "kgen_utils.f90")
+    elif source_dir:
         kgen_utils_dest = os.path.join(os.path.abspath(source_dir), "kgen_utils.f90")
     else:
         kgen_utils_dest = os.path.join(os.getcwd(), "kgen_utils.f90")
@@ -386,6 +395,7 @@ def generate_state_capture_build_script(
         f'KGEN_UTILS_SRC="{kgen_utils_src}"',
         f'KGEN_UTILS_DEST="{kgen_utils_dest}"',
         f'CMAKE_FILE="{cmake_file_abs}"',
+        'echo "VIT_WRAPPER: invoked at $(date), cwd=$(pwd)" >> /tmp/vit_wrapper.log',
         "",
         "# Step 1: Copy kgen_utils.f90 into source tree (if it exists)",
         'if [ -f "$KGEN_UTILS_SRC" ]; then',
@@ -406,7 +416,7 @@ def generate_state_capture_build_script(
             '        fi',
             '        # Add kgen_utils.f90 only if not already present',
             '        if ! grep -q "kgen_utils.f90" "$CMAKE_FILE"; then',
-            r"""            sed -i '0,/\(src\/[A-Za-z_]*\.f90\)/s//\1\n    src\/kgen_utils.f90/' "$CMAKE_FILE" """,
+            r"""            sed -i '0,/^\( *src\/[A-Za-z_]*\.f90\)$/s//\1\n    src\/kgen_utils.f90/' "$CMAKE_FILE" """,
             '            echo "VIT: Patched CMakeLists.txt to include kgen_utils.f90"',
             '        fi',
             "    fi",
@@ -480,6 +490,21 @@ def generate_state_capture_build_script(
                 'echo "VIT: Patched DLL SAVE variable reset in instrumented source"',
                 "",
             ])
+
+    # Step 2d: Touch all Fortran source files in the cmake source directory
+    # to force cmake to recompile them. KGen's state Makefile copies instrumented
+    # source files over the originals, but on Docker-mounted filesystems the
+    # timestamps may not change, causing cmake to skip recompilation.
+    if cmake_file_abs:
+        cmake_src_dir = os.path.join(os.path.dirname(cmake_file_abs), "src")
+        script_lines.extend([
+            f'# Step 2d: Touch source files to force cmake recompilation',
+            f'# (Docker filesystem timestamps may not update on cp)',
+            f'for f90 in "{cmake_src_dir}"/*.f90 "{cmake_src_dir}"/*.F90; do',
+            f'    [ -f "$f90" ] && touch "$f90"',
+            f'done',
+            "",
+        ])
 
     script_lines.extend([
         "# Step 3: Run the actual build",
@@ -559,8 +584,18 @@ def cleanup_kgen_utils_injection(
             shutil.move(backup, cmake_file)
             cleaned.append(f"Restored {cmake_file}")
 
-    # Remove injected kgen_utils.f90
-    if source_dir:
+    # Remove injected kgen_utils.f90 (check cmake src/ subdir first, then source_dir)
+    removed_kgen_utils = False
+    if cmake_file:
+        cmake_dir = os.path.dirname(os.path.abspath(cmake_file))
+        for candidate in [os.path.join(cmake_dir, "src", "kgen_utils.f90"),
+                          os.path.join(cmake_dir, "kgen_utils.f90")]:
+            if os.path.exists(candidate):
+                os.remove(candidate)
+                cleaned.append(f"Removed {candidate}")
+                removed_kgen_utils = True
+                break
+    if not removed_kgen_utils and source_dir:
         injected = os.path.join(source_dir, "kgen_utils.f90")
         if os.path.exists(injected):
             os.remove(injected)
