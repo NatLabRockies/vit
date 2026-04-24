@@ -1047,14 +1047,21 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
                     content, count=1, flags=re.IGNORECASE,
                 )
 
-        # Remove PUBLIC statements inside subroutines.
+        # Remove PUBLIC statements inside subroutines (illegal Fortran).
         # KGen sometimes copies PUBLIC statements from the original module-level
-        # code into the generated kernel driver subroutine, which is illegal
-        # Fortran (PUBLIC is only valid in module specification parts).
-        content = re.sub(
-            r'^\s*PUBLIC\s+\w+\s*$', '! VIT: removed invalid PUBLIC statement',
-            content, flags=re.MULTILINE | re.IGNORECASE,
-        )
+        # code into the generated kernel driver subroutine. PUBLIC is only valid
+        # in module specification parts (before CONTAINS), not inside procedures.
+        # Only remove PUBLIC statements that appear after CONTAINS to avoid
+        # stripping legitimate module-level PUBLIC declarations.
+        contains_pos = content.upper().find('\nCONTAINS\n')
+        if contains_pos >= 0:
+            before_contains = content[:contains_pos]
+            after_contains = content[contains_pos:]
+            after_contains = re.sub(
+                r'^\s*PUBLIC\s+\w+\s*$', '! VIT: removed invalid PUBLIC statement',
+                after_contains, flags=re.MULTILINE | re.IGNORECASE,
+            )
+            content = before_contains + after_contains
 
         # Remove USE statements for DISCON module.
         # When extracting from DISCON.F90, KGen generates the kernel driver

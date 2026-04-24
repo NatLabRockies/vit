@@ -385,15 +385,28 @@ def _parse_type_declaration(line: str, line_upper: str, names_to_find: set):
         if not var_decl:
             continue
 
-        # Check for inline array dimensions: var(3,3)
+        # Check for inline array dimensions: var(3,3) or var(size(alpha))
         var_name = var_decl
         local_dims = dim_spec
         local_is_array = has_dimension
 
-        paren_match = re.match(r'(\w+)\s*\(([^)]*)\)', var_decl)
-        if paren_match:
-            var_name = paren_match.group(1)
-            local_dims = paren_match.group(2)
+        # Use balanced-paren matching (not [^)]*) to handle nested parens
+        # like Cn(size(alpha))
+        paren_start_match = re.match(r'(\w+)\s*\(', var_decl)
+        if paren_start_match:
+            var_name = paren_start_match.group(1)
+            open_pos = paren_start_match.end() - 1  # position of '('
+            depth = 0
+            close_pos = open_pos
+            for k in range(open_pos, len(var_decl)):
+                if var_decl[k] == '(':
+                    depth += 1
+                elif var_decl[k] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        close_pos = k
+                        break
+            local_dims = var_decl[open_pos + 1:close_pos]
             local_is_array = True
         else:
             var_name = re.match(r'(\w+)', var_decl)

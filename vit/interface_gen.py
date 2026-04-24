@@ -24,7 +24,31 @@ from pathlib import Path
 from typing import Optional
 
 from .fortran_parser import FortranSignature, IntentKind, FortranArg
-from .type_map import get_type_mapping, TypeMapping
+from .type_map import get_type_mapping, TypeMapping, normalize_fortran_type
+
+
+def _fortran_kind_byte_size(kind: str) -> int:
+    """Return the byte size for a Fortran kind parameter (numeric or named)."""
+    try:
+        k = int(kind)
+        return k  # Numeric kinds like "8" = 8 bytes, "4" = 4 bytes
+    except ValueError:
+        return 0  # Unknown named kind — can't determine size
+
+
+def _resolve_fortran_type(fortran_type: str, kind_aliases: Optional[dict] = None) -> str:
+    """Resolve project-specific kind aliases in a Fortran type string.
+
+    Converts e.g. REAL(ReKi) → REAL(8) using kind_aliases, so the wrapper
+    function is self-contained and doesn't need USE statements for kind modules.
+    Derived types (TYPE(...)) pass through unchanged.
+    """
+    if not kind_aliases:
+        return fortran_type
+    resolved = normalize_fortran_type(fortran_type, kind_aliases)
+    # normalize_fortran_type uppercases — preserve original casing style
+    # by using the resolved form only (it's standard Fortran, casing doesn't matter)
+    return resolved
 
 
 def _is_passthrough(arg: FortranArg, kind_aliases: Optional[dict] = None,
@@ -238,28 +262,32 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
 
     # Declare arguments — non-CHARACTER first so INTEGER length params are
     # declared before CHARACTER(len_param) args that depend on them.
+    # Resolve kind aliases (e.g., REAL(ReKi) → REAL(8)) so the wrapper is
+    # self-contained and doesn't need USE statements for project kind modules.
     char_args = []
     for arg in sig.args:
         mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
         if mapping.character_len_param or (mapping.character_length and mapping.character_length > 1):
             char_args.append(arg)
             continue
+        resolved_type = _resolve_fortran_type(arg.fortran_type, kind_aliases)
         intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ", INTENT(IN)"
         optional_str = ", OPTIONAL" if arg.is_optional else ""
         target_str = _get_target_attr(arg, kind_aliases, derived_types)
         if arg.is_array:
-            lines.append(f"        {arg.fortran_type}{intent_str}{optional_str}{target_str} :: {arg.name}{_format_dims(arg)}")
+            lines.append(f"        {resolved_type}{intent_str}{optional_str}{target_str} :: {arg.name}{_format_dims(arg)}")
         else:
-            lines.append(f"        {arg.fortran_type}{intent_str}{optional_str}{target_str} :: {arg.name}")
+            lines.append(f"        {resolved_type}{intent_str}{optional_str}{target_str} :: {arg.name}")
     for arg in char_args:
+        resolved_type = _resolve_fortran_type(arg.fortran_type, kind_aliases)
         intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ", INTENT(IN)"
-        lines.append(f"        {arg.fortran_type}{intent_str} :: {arg.name}")
+        lines.append(f"        {resolved_type}{intent_str} :: {arg.name}")
 
-    # Declare result with original type
+    # Declare result with resolved type
     if sig.result_type:
-        ret_type = sig.result_type
+        ret_type = _resolve_fortran_type(sig.result_type, kind_aliases)
     elif sig.args:
-        ret_type = sig.args[0].fortran_type
+        ret_type = _resolve_fortran_type(sig.args[0].fortran_type, kind_aliases)
     else:
         raise ValueError(
             f"Cannot determine result type for wrapper of '{sig.name}'. "
@@ -335,22 +363,26 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
 
     # Declare arguments — non-CHARACTER first so INTEGER length params are
     # declared before CHARACTER(len_param) args that depend on them.
+    # Resolve kind aliases (e.g., REAL(ReKi) → REAL(8)) so the wrapper is
+    # self-contained and doesn't need USE statements for project kind modules.
     char_args = []
     for arg in sig.args:
         mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
         if mapping.character_len_param or (mapping.character_length and mapping.character_length > 1):
             char_args.append(arg)
             continue
+        resolved_type = _resolve_fortran_type(arg.fortran_type, kind_aliases)
         intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ""
         optional_str = ", OPTIONAL" if arg.is_optional else ""
         target_str = _get_target_attr(arg, kind_aliases, derived_types)
         if arg.is_array:
-            lines.append(f"        {arg.fortran_type}{intent_str}{optional_str}{target_str} :: {arg.name}{_format_dims(arg)}")
+            lines.append(f"        {resolved_type}{intent_str}{optional_str}{target_str} :: {arg.name}{_format_dims(arg)}")
         else:
-            lines.append(f"        {arg.fortran_type}{intent_str}{optional_str}{target_str} :: {arg.name}")
+            lines.append(f"        {resolved_type}{intent_str}{optional_str}{target_str} :: {arg.name}")
     for arg in char_args:
+        resolved_type = _resolve_fortran_type(arg.fortran_type, kind_aliases)
         intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ""
-        lines.append(f"        {arg.fortran_type}{intent_str} :: {arg.name}")
+        lines.append(f"        {resolved_type}{intent_str} :: {arg.name}")
 
     # CHARACTER local var declarations (before any executable statements)
     lines.extend(_generate_character_declarations(sig, kind_aliases, derived_types))
@@ -865,12 +897,12 @@ def _build_wrapper_call_args(sig: FortranSignature,
         elif mapping.iso_c_type.startswith("LOGICAL") and mapping.c_kind:
             # LOGICAL needs explicit conversion to C_BOOL
             call_args.append(f"LOGICAL({arg.name}, {mapping.c_kind})")
-        elif mapping.c_kind != mapping.fortran_kind and mapping.fortran_kind:
-            # Need to convert from project kind to C kind
+        elif mapping.c_kind != mapping.fortran_kind and mapping.fortran_kind and \
+                mapping.byte_size != _fortran_kind_byte_size(mapping.fortran_kind):
+            # Need to convert from project kind to C kind (different byte sizes)
             if mapping.iso_c_type.startswith("REAL"):
                 call_args.append(f"REAL({arg.name}, {mapping.c_kind})")
             elif mapping.iso_c_type.startswith("INTEGER"):
-                # Fortran's integer conversion function is INT(), not INTEGER()
                 call_args.append(f"INT({arg.name}, {mapping.c_kind})")
             else:
                 base = mapping.iso_c_type.split("(")[0]
