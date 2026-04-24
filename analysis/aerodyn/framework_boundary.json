@@ -1,0 +1,1346 @@
+[
+  {
+    "name": "AA_Init",
+    "module": "AeroAcoustics",
+    "file": "AeroAcoustics.f90",
+    "reason": "standard_interface",
+    "arg_count": 12
+  },
+  {
+    "name": "AA_UpdateStates",
+    "module": "AeroAcoustics",
+    "file": "AeroAcoustics.f90",
+    "reason": "standard_interface",
+    "arg_count": 9
+  },
+  {
+    "name": "AA_End",
+    "module": "AeroAcoustics",
+    "file": "AeroAcoustics.f90",
+    "reason": "standard_interface",
+    "arg_count": 8
+  },
+  {
+    "name": "AA_CalcOutput",
+    "module": "AeroAcoustics",
+    "file": "AeroAcoustics.f90",
+    "reason": "standard_interface",
+    "arg_count": 9
+  },
+  {
+    "name": "ReadDriverInputFile",
+    "module": "AeroAcoustics_Driver_Subs",
+    "file": "AeroAcoustics_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 4
+  },
+  {
+    "name": "Cleanup",
+    "module": "AeroAcoustics_Driver_Subs",
+    "file": "AeroAcoustics_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "Dvr_EndOutput",
+    "module": "AeroAcoustics_Driver_Subs",
+    "file": "AeroAcoustics_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 4
+  },
+  {
+    "name": "Dvr_InitializeOutputs",
+    "module": "AeroAcoustics_Driver_Subs",
+    "file": "AeroAcoustics_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 4
+  },
+  {
+    "name": "Dvr_WriteOutputs",
+    "module": "AeroAcoustics_Driver_Subs",
+    "file": "AeroAcoustics_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 3
+  },
+  {
+    "name": "Init_AFI",
+    "module": "AeroAcoustics_Driver_Subs",
+    "file": "AeroAcoustics_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 4
+  },
+  {
+    "name": "Init_AAmodule",
+    "module": "AeroAcoustics_Driver_Subs",
+    "file": "AeroAcoustics_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 3
+  },
+  {
+    "name": "Cleanup",
+    "module": "AeroAcoustics_Driver_Subs",
+    "file": "AeroAcoustics_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "SetInputsForAA",
+    "module": "AeroAcoustics_Driver_Subs",
+    "file": "AeroAcoustics_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 1
+  },
+  {
+    "name": "Failed",
+    "module": "AeroAcoustics_Driver_Subs",
+    "file": "AeroAcoustics_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "Failed",
+    "module": "AeroAcoustics_Driver_Subs",
+    "file": "AeroAcoustics_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "SPL_integrate",
+    "module": "TNO",
+    "file": "AeroAcoustics_TNO.f90",
+    "reason": "explicit_public",
+    "arg_count": 10
+  },
+  {
+    "name": "AD_Init",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "reason": "standard_interface",
+    "arg_count": 13
+  },
+  {
+    "name": "AD_ReInit",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "reason": "explicit_public",
+    "arg_count": 9
+  },
+  {
+    "name": "AD_End",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "reason": "standard_interface",
+    "arg_count": 10
+  },
+  {
+    "name": "AD_UpdateStates",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "reason": "standard_interface",
+    "arg_count": 12
+  },
+  {
+    "name": "AD_CalcWind_Rotor",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "reason": "explicit_public",
+    "arg_count": 10
+  },
+  {
+    "name": "AD_CalcOutput",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "reason": "standard_interface",
+    "arg_count": 12
+  },
+  {
+    "name": "AD_CalcConstrStateResidual",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "reason": "standard_interface",
+    "arg_count": 11
+  },
+  {
+    "name": "RotCalcContStateDeriv",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "reason": "explicit_public",
+    "arg_count": 13
+  },
+  {
+    "name": "AD_JacobianPInput",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "reason": "standard_interface",
+    "arg_count": 17
+  },
+  {
+    "name": "AD_JacobianPContState",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "reason": "standard_interface",
+    "arg_count": 17
+  },
+  {
+    "name": "AD_JacobianPDiscState",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "reason": "standard_interface",
+    "arg_count": 16
+  },
+  {
+    "name": "AD_JacobianPConstrState",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "reason": "standard_interface",
+    "arg_count": 16
+  },
+  {
+    "name": "AD_VarsPackExtInput",
+    "module": "AeroDyn",
+    "file": "AeroDyn.f90",
+    "reason": "explicit_public",
+    "arg_count": 4
+  },
+  {
+    "name": "AllBldNdOuts_InitOut",
+    "module": "AeroDyn_AllBldNdOuts_IO",
+    "file": "AeroDyn_AllBldNdOuts_IO.f90",
+    "reason": "explicit_public",
+    "arg_count": 5
+  },
+  {
+    "name": "Calc_WriteAllBldNdOutput",
+    "module": "AeroDyn_AllBldNdOuts_IO",
+    "file": "AeroDyn_AllBldNdOuts_IO.f90",
+    "reason": "explicit_public",
+    "arg_count": 13
+  },
+  {
+    "name": "AllBldNdOuts_SetParameters",
+    "module": "AeroDyn_AllBldNdOuts_IO",
+    "file": "AeroDyn_AllBldNdOuts_IO.f90",
+    "reason": "explicit_public",
+    "arg_count": 5
+  },
+  {
+    "name": "Dvr_Init",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 6
+  },
+  {
+    "name": "Dvr_InitCase",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 7
+  },
+  {
+    "name": "cleanUp",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "Dvr_TimeStep",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 7
+  },
+  {
+    "name": "Dvr_EndCase",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 5
+  },
+  {
+    "name": "Dvr_CleanUp",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 6
+  },
+  {
+    "name": "Init_ADI_ForDriver",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 8
+  },
+  {
+    "name": "cleanup",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "Init_Meshes",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 4
+  },
+  {
+    "name": "Set_Mesh_Motion",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 6
+  },
+  {
+    "name": "Shift_ADI_Inputs",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 5
+  },
+  {
+    "name": "Dvr_ReadInputFile",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 4
+  },
+  {
+    "name": "CleanUp",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "setSimpleMotion",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 7
+  },
+  {
+    "name": "ValidateInputs",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 3
+  },
+  {
+    "name": "Dvr_InitializeOutputs",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 5
+  },
+  {
+    "name": "Dvr_InitializeDriverOutputs",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 4
+  },
+  {
+    "name": "Dvr_CalcOutputDriver",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 5
+  },
+  {
+    "name": "Dvr_WriteOutputs",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 8
+  },
+  {
+    "name": "setVTKParameters",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 6
+  },
+  {
+    "name": "WrVTK_Surfaces",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 5
+  },
+  {
+    "name": "WrVTK_Lines",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 5
+  },
+  {
+    "name": "WrVTK_Ground",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 5
+  },
+  {
+    "name": "userHubMotion_Init",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 5
+  },
+  {
+    "name": "userHubMotion",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 11
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "Failed0",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 1
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "Check",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 2
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "Check",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 2
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Driver_Subs",
+    "file": "AeroDyn_Driver_Subs.f90",
+    "reason": "driver",
+    "arg_count": 0
+  },
+  {
+    "name": "ADI_Init",
+    "module": "AeroDyn_Inflow",
+    "file": "AeroDyn_Inflow.f90",
+    "reason": "explicit_public",
+    "arg_count": 13
+  },
+  {
+    "name": "ADI_ReInit",
+    "module": "AeroDyn_Inflow",
+    "file": "AeroDyn_Inflow.f90",
+    "reason": "explicit_public",
+    "arg_count": 9
+  },
+  {
+    "name": "ADI_End",
+    "module": "AeroDyn_Inflow",
+    "file": "AeroDyn_Inflow.f90",
+    "reason": "explicit_public",
+    "arg_count": 10
+  },
+  {
+    "name": "ADI_UpdateStates",
+    "module": "AeroDyn_Inflow",
+    "file": "AeroDyn_Inflow.f90",
+    "reason": "explicit_public",
+    "arg_count": 12
+  },
+  {
+    "name": "ADI_CalcOutput",
+    "module": "AeroDyn_Inflow",
+    "file": "AeroDyn_Inflow.f90",
+    "reason": "explicit_public",
+    "arg_count": 11
+  },
+  {
+    "name": "concatOutputHeaders",
+    "module": "AeroDyn_Inflow",
+    "file": "AeroDyn_Inflow.f90",
+    "reason": "explicit_public",
+    "arg_count": 6
+  },
+  {
+    "name": "Init_MeshMap_For_ADI",
+    "module": "AeroDyn_Inflow",
+    "file": "AeroDyn_Inflow.f90",
+    "reason": "explicit_public",
+    "arg_count": 5
+  },
+  {
+    "name": "Set_Inputs_For_ADI",
+    "module": "AeroDyn_Inflow",
+    "file": "AeroDyn_Inflow.f90",
+    "reason": "explicit_public",
+    "arg_count": 4
+  },
+  {
+    "name": "ADI_C_PreInit",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 22
+  },
+  {
+    "name": "ShowPassedData",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "ADI_C_Init",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 18
+  },
+  {
+    "name": "ValidateSetInputs",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 2
+  },
+  {
+    "name": "ValidateSetVTK",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 2
+  },
+  {
+    "name": "SetupFileOutputs",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "ShowPassedData",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "SetupMotionLoadsInterfaceMeshes",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "MapLoadsInterfaceMeshes",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "CheckNodes",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 1
+  },
+  {
+    "name": "SetDiskAvgPoints",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 1
+  },
+  {
+    "name": "ADI_C_CalcOutput",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 4
+  },
+  {
+    "name": "ADI_C_UpdateStates",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 4
+  },
+  {
+    "name": "ADI_C_End",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 2
+  },
+  {
+    "name": "ADI_C_SetupRotor",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 16
+  },
+  {
+    "name": "ShowPassedData",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "CheckMeshPts",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 1
+  },
+  {
+    "name": "SetupMotionMesh",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "ADI_C_SetRotorMotion",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 20
+  },
+  {
+    "name": "ShowPassedData",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "ADI_C_GetRotorLoads",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 6
+  },
+  {
+    "name": "ShowPassedData",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "ADI_C_GetDiskAvgVel",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 4
+  },
+  {
+    "name": "ShowPassedData",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "Set_MotionMesh",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 3
+  },
+  {
+    "name": "AD_SetInputMotion",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 16
+  },
+  {
+    "name": "AD_TransferLoads",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 5
+  },
+  {
+    "name": "Set_OutputLoadArray",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 1
+  },
+  {
+    "name": "OrientRemap",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 1
+  },
+  {
+    "name": "WrVTK_refMeshes",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 4
+  },
+  {
+    "name": "WrVTK_PointsRef",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 2
+  },
+  {
+    "name": "WrVTK_LinesRef",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 2
+  },
+  {
+    "name": "WrVTK_Meshes",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 4
+  },
+  {
+    "name": "WrVTK_Points",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 2
+  },
+  {
+    "name": "WrVTK_Surfaces",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 2
+  },
+  {
+    "name": "WrVTK_Lines",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 2
+  },
+  {
+    "name": "WrVTK_Ground",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 5
+  },
+  {
+    "name": "ClearTmpStorage",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "ClearMeshArr1",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 1
+  },
+  {
+    "name": "ClearMeshMapArr2",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 1
+  },
+  {
+    "name": "ADI_C_GetFlowFieldPointer",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 3
+  },
+  {
+    "name": "ShowPassedData",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "ADI_C_SetFlowFieldPointer",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 3
+  },
+  {
+    "name": "ShowPassedData",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "Failed0",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 1
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 1
+  },
+  {
+    "name": "Failed0",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 1
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "Failed0",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 1
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "Failed",
+    "module": "AeroDyn_Inflow_C_BINDING",
+    "file": "AeroDyn_Inflow_C_Binding.f90",
+    "reason": "c_binding",
+    "arg_count": 0
+  },
+  {
+    "name": "AFI_Init",
+    "module": "AirfoilInfo",
+    "file": "AirfoilInfo.f90",
+    "reason": "standard_interface",
+    "arg_count": 5
+  },
+  {
+    "name": "AFI_ComputeAirfoilCoefs",
+    "module": "AirfoilInfo",
+    "file": "AirfoilInfo.f90",
+    "reason": "explicit_public",
+    "arg_count": 7
+  },
+  {
+    "name": "AFI_ComputeUACoefs",
+    "module": "AirfoilInfo",
+    "file": "AirfoilInfo.f90",
+    "reason": "explicit_public",
+    "arg_count": 6
+  },
+  {
+    "name": "AFI_WrHeader",
+    "module": "AirfoilInfo",
+    "file": "AirfoilInfo.f90",
+    "reason": "explicit_public",
+    "arg_count": 5
+  },
+  {
+    "name": "AFI_WrData",
+    "module": "AirfoilInfo",
+    "file": "AirfoilInfo.f90",
+    "reason": "explicit_public",
+    "arg_count": 4
+  },
+  {
+    "name": "AFI_WrTables",
+    "module": "AirfoilInfo",
+    "file": "AirfoilInfo.f90",
+    "reason": "explicit_public",
+    "arg_count": 3
+  },
+  {
+    "name": "BEMT_Init",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "reason": "standard_interface",
+    "arg_count": 14
+  },
+  {
+    "name": "BEMT_ReInit",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "reason": "standard_interface",
+    "arg_count": 8
+  },
+  {
+    "name": "BEMT_End",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "reason": "standard_interface",
+    "arg_count": 9
+  },
+  {
+    "name": "BEMT_UpdateStates",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "reason": "standard_interface",
+    "arg_count": 13
+  },
+  {
+    "name": "UpdatePhi",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "reason": "explicit_public",
+    "arg_count": 8
+  },
+  {
+    "name": "BEMT_CalcOutput",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "reason": "standard_interface",
+    "arg_count": 12
+  },
+  {
+    "name": "BEMT_InitStates",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "reason": "explicit_public",
+    "arg_count": 11
+  },
+  {
+    "name": "BEMT_CalcContStateDeriv",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "reason": "explicit_public",
+    "arg_count": 12
+  },
+  {
+    "name": "BEMT_UpdateDiscState",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "reason": "explicit_public",
+    "arg_count": 11
+  },
+  {
+    "name": "BEMT_CalcConstrStateResidual",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "reason": "explicit_public",
+    "arg_count": 12
+  },
+  {
+    "name": "CheckLinearizationInput",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "reason": "explicit_public",
+    "arg_count": 7
+  },
+  {
+    "name": "Get_phi_perturbations",
+    "module": "BEMT",
+    "file": "BEMT.f90",
+    "reason": "explicit_public",
+    "arg_count": 5
+  },
+  {
+    "name": "GetReynoldsNumber",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "reason": "explicit_public",
+    "arg_count": 13
+  },
+  {
+    "name": "GetRelativeVelocity",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "reason": "explicit_public",
+    "arg_count": 8
+  },
+  {
+    "name": "getAirfoilOrientation",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "reason": "explicit_public",
+    "arg_count": 6
+  },
+  {
+    "name": "getAirfoilOrientationMatrix",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "reason": "explicit_public",
+    "arg_count": 4
+  },
+  {
+    "name": "computeAirfoilOperatingAOA",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "reason": "explicit_public",
+    "arg_count": 6
+  },
+  {
+    "name": "Transform_ClCd_to_CxCy",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "reason": "explicit_public",
+    "arg_count": 7
+  },
+  {
+    "name": "Transform_ClCdCm_to_CxCyCzCmxCmyCmz",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "reason": "explicit_public",
+    "arg_count": 16
+  },
+  {
+    "name": "ApplySkewedWakeCorrection",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "reason": "explicit_public",
+    "arg_count": 11
+  },
+  {
+    "name": "limitInductionFactors",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "reason": "explicit_public",
+    "arg_count": 2
+  },
+  {
+    "name": "BEMTU_Test_ACT_Relationship",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "reason": "explicit_public",
+    "arg_count": 0
+  },
+  {
+    "name": "VelocityIsZero",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "reason": "explicit_public",
+    "arg_count": 1
+  },
+  {
+    "name": "BEMTU_InductionWithResidual",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "reason": "explicit_public",
+    "arg_count": 16
+  },
+  {
+    "name": "getHubTipLossCorrection",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "reason": "explicit_public",
+    "arg_count": 7
+  },
+  {
+    "name": "GetEulerAnglesFromOrientation",
+    "module": "BEMTUnCoupled",
+    "file": "BEMTUncoupled.f90",
+    "reason": "explicit_public",
+    "arg_count": 2
+  },
+  {
+    "name": "DBEMT_Init",
+    "module": "DBEMT",
+    "file": "DBEMT.f90",
+    "reason": "standard_interface",
+    "arg_count": 10
+  },
+  {
+    "name": "DBEMT_ReInit",
+    "module": "DBEMT",
+    "file": "DBEMT.f90",
+    "reason": "explicit_public",
+    "arg_count": 4
+  },
+  {
+    "name": "DBEMT_InitStates_AllNodes",
+    "module": "DBEMT",
+    "file": "DBEMT.f90",
+    "reason": "explicit_public",
+    "arg_count": 4
+  },
+  {
+    "name": "DBEMT_UpdateStates",
+    "module": "DBEMT",
+    "file": "DBEMT.f90",
+    "reason": "standard_interface",
+    "arg_count": 12
+  },
+  {
+    "name": "DBEMT_CalcOutput",
+    "module": "DBEMT",
+    "file": "DBEMT.f90",
+    "reason": "standard_interface",
+    "arg_count": 11
+  },
+  {
+    "name": "DBEMT_CalcContStateDeriv",
+    "module": "DBEMT",
+    "file": "DBEMT.f90",
+    "reason": "explicit_public",
+    "arg_count": 11
+  },
+  {
+    "name": "DBEMT_End",
+    "module": "DBEMT",
+    "file": "DBEMT.f90",
+    "reason": "standard_interface",
+    "arg_count": 7
+  },
+  {
+    "name": "FVW_Init",
+    "module": "FVW",
+    "file": "FVW.f90",
+    "reason": "standard_interface",
+    "arg_count": 14
+  },
+  {
+    "name": "FVW_End",
+    "module": "FVW",
+    "file": "FVW.f90",
+    "reason": "standard_interface",
+    "arg_count": 10
+  },
+  {
+    "name": "FVW_UpdateStates",
+    "module": "FVW",
+    "file": "FVW.f90",
+    "reason": "standard_interface",
+    "arg_count": 13
+  },
+  {
+    "name": "FVW_CalcOutput",
+    "module": "FVW",
+    "file": "FVW.f90",
+    "reason": "standard_interface",
+    "arg_count": 11
+  },
+  {
+    "name": "Test_BiotSavart_Sgmt",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "reason": "explicit_public",
+    "arg_count": 2
+  },
+  {
+    "name": "Test_BiotSavart_Part",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "reason": "explicit_public",
+    "arg_count": 2
+  },
+  {
+    "name": "Test_BiotSavart_PartTree",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "reason": "explicit_public",
+    "arg_count": 2
+  },
+  {
+    "name": "Test_BiotSavart_SrcPnl",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "reason": "explicit_public",
+    "arg_count": 2
+  },
+  {
+    "name": "Test_SegmentsToPart",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "reason": "explicit_public",
+    "arg_count": 2
+  },
+  {
+    "name": "FVW_Test_WakeInducedVelocities",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "reason": "explicit_public",
+    "arg_count": 2
+  },
+  {
+    "name": "Test_LinSolve",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "reason": "explicit_public",
+    "arg_count": 2
+  },
+  {
+    "name": "Test_SrcPnl_Sphere",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "reason": "explicit_public",
+    "arg_count": 2
+  },
+  {
+    "name": "FVW_RunTests",
+    "module": "FVW_Tests",
+    "file": "FVW_Tests.f90",
+    "reason": "explicit_public",
+    "arg_count": 2
+  },
+  {
+    "name": "UA_ReInit",
+    "module": "UnsteadyAero",
+    "file": "UnsteadyAero.f90",
+    "reason": "explicit_public",
+    "arg_count": 7
+  },
+  {
+    "name": "UA_Init",
+    "module": "UnsteadyAero",
+    "file": "UnsteadyAero.f90",
+    "reason": "standard_interface",
+    "arg_count": 14
+  },
+  {
+    "name": "UA_UpdateStates",
+    "module": "UnsteadyAero",
+    "file": "UnsteadyAero.f90",
+    "reason": "standard_interface",
+    "arg_count": 14
+  },
+  {
+    "name": "UA_InitStates_AllNodes",
+    "module": "UnsteadyAero",
+    "file": "UnsteadyAero.f90",
+    "reason": "explicit_public",
+    "arg_count": 6
+  },
+  {
+    "name": "UA_CalcContStateDeriv",
+    "module": "UnsteadyAero",
+    "file": "UnsteadyAero.f90",
+    "reason": "explicit_public",
+    "arg_count": 12
+  },
+  {
+    "name": "UA_CalcOutput",
+    "module": "UnsteadyAero",
+    "file": "UnsteadyAero.f90",
+    "reason": "standard_interface",
+    "arg_count": 13
+  },
+  {
+    "name": "UA_WriteOutputToFile",
+    "module": "UnsteadyAero",
+    "file": "UnsteadyAero.f90",
+    "reason": "explicit_public",
+    "arg_count": 3
+  },
+  {
+    "name": "UA_End",
+    "module": "UnsteadyAero",
+    "file": "UnsteadyAero.f90",
+    "reason": "standard_interface",
+    "arg_count": 1
+  }
+]

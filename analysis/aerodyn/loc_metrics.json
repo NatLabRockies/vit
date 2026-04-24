@@ -1,0 +1,485 @@
+{
+  "total_lines": 75293,
+  "total_generated": 28490,
+  "total_handwritten": 46803,
+  "file_count": 39,
+  "module_count": 35,
+  "procedure_count": 1437,
+  "per_file": [
+    {
+      "file": "AeroDyn_Types.f90",
+      "lines": 7389,
+      "is_registry_generated": true
+    },
+    {
+      "file": "AeroDyn.f90",
+      "lines": 7260,
+      "is_registry_generated": false
+    },
+    {
+      "file": "FVW_Types.f90",
+      "lines": 4999,
+      "is_registry_generated": true
+    },
+    {
+      "file": "UnsteadyAero.f90",
+      "lines": 4331,
+      "is_registry_generated": false
+    },
+    {
+      "file": "BEMT_Types.f90",
+      "lines": 3138,
+      "is_registry_generated": true
+    },
+    {
+      "file": "UnsteadyAero_Types.f90",
+      "lines": 2817,
+      "is_registry_generated": true
+    },
+    {
+      "file": "AeroDyn_IO.f90",
+      "lines": 2740,
+      "is_registry_generated": false
+    },
+    {
+      "file": "AeroDyn_Inflow_C_Binding.f90",
+      "lines": 2704,
+      "is_registry_generated": false
+    },
+    {
+      "file": "BEMT.f90",
+      "lines": 2531,
+      "is_registry_generated": false
+    },
+    {
+      "file": "AeroDyn_IO_Params.f90",
+      "lines": 2497,
+      "is_registry_generated": false
+    },
+    {
+      "file": "AeroAcoustics_Types.f90",
+      "lines": 2431,
+      "is_registry_generated": true
+    },
+    {
+      "file": "AeroDyn_Inflow_Types.f90",
+      "lines": 2372,
+      "is_registry_generated": true
+    },
+    {
+      "file": "AeroAcoustics.f90",
+      "lines": 2339,
+      "is_registry_generated": false
+    },
+    {
+      "file": "AeroDyn_Driver_Subs.f90",
+      "lines": 2307,
+      "is_registry_generated": false
+    },
+    {
+      "file": "FVW_VortexTools.f90",
+      "lines": 2295,
+      "is_registry_generated": false
+    },
+    {
+      "file": "FVW_Subs.f90",
+      "lines": 2213,
+      "is_registry_generated": false
+    },
+    {
+      "file": "AirfoilInfo.f90",
+      "lines": 2170,
+      "is_registry_generated": false
+    },
+    {
+      "file": "FVW.f90",
+      "lines": 1851,
+      "is_registry_generated": false
+    },
+    {
+      "file": "DBEMT_Types.f90",
+      "lines": 1674,
+      "is_registry_generated": true
+    },
+    {
+      "file": "AirfoilInfo_Types.f90",
+      "lines": 1649,
+      "is_registry_generated": true
+    },
+    {
+      "file": "AeroDyn_AllBldNdOuts_IO.f90",
+      "lines": 1642,
+      "is_registry_generated": false
+    },
+    {
+      "file": "AeroDyn_Driver_Types.f90",
+      "lines": 1438,
+      "is_registry_generated": true
+    },
+    {
+      "file": "BEMTUncoupled.f90",
+      "lines": 1343,
+      "is_registry_generated": false
+    },
+    {
+      "file": "UA_Dvr_Subs.f90",
+      "lines": 1017,
+      "is_registry_generated": false
+    },
+    {
+      "file": "FVW_Tests.f90",
+      "lines": 961,
+      "is_registry_generated": false
+    },
+    {
+      "file": "DBEMT.f90",
+      "lines": 925,
+      "is_registry_generated": false
+    },
+    {
+      "file": "AeroAcoustics_IO.f90",
+      "lines": 819,
+      "is_registry_generated": false
+    },
+    {
+      "file": "DBEMT_Test.f90",
+      "lines": 729,
+      "is_registry_generated": false
+    },
+    {
+      "file": "AeroDyn_Inflow.f90",
+      "lines": 682,
+      "is_registry_generated": false
+    },
+    {
+      "file": "FVW_IO.f90",
+      "lines": 677,
+      "is_registry_generated": false
+    },
+    {
+      "file": "FVW_BiotSavart.f90",
+      "lines": 618,
+      "is_registry_generated": false
+    },
+    {
+      "file": "FVW_Wings.f90",
+      "lines": 597,
+      "is_registry_generated": false
+    },
+    {
+      "file": "AeroDyn_Inflow_C_Binding_Types.f90",
+      "lines": 583,
+      "is_registry_generated": true
+    },
+    {
+      "file": "AeroAcoustics_Driver_Subs.f90",
+      "lines": 523,
+      "is_registry_generated": false
+    },
+    {
+      "file": "UnsteadyAero_Driver.f90",
+      "lines": 313,
+      "is_registry_generated": false
+    },
+    {
+      "file": "mod_root1dim.f90",
+      "lines": 235,
+      "is_registry_generated": false
+    },
+    {
+      "file": "AeroAcoustics_TNO.f90",
+      "lines": 201,
+      "is_registry_generated": false
+    },
+    {
+      "file": "AeroAcoustics_Driver.f90",
+      "lines": 176,
+      "is_registry_generated": false
+    },
+    {
+      "file": "AeroDyn_Driver.f90",
+      "lines": 107,
+      "is_registry_generated": false
+    }
+  ],
+  "per_module": [
+    {
+      "module": "AeroDyn",
+      "procedure_lines": 8438
+    },
+    {
+      "module": "AeroDyn_Types",
+      "procedure_lines": 7438
+    },
+    {
+      "module": "UnsteadyAero",
+      "procedure_lines": 5284
+    },
+    {
+      "module": "FVW_Types",
+      "procedure_lines": 5007
+    },
+    {
+      "module": "AeroDyn_Inflow_C_BINDING",
+      "procedure_lines": 3752
+    },
+    {
+      "module": "AeroDyn_IO",
+      "procedure_lines": 3591
+    },
+    {
+      "module": "BEMT_Types",
+      "procedure_lines": 3247
+    },
+    {
+      "module": "BEMT",
+      "procedure_lines": 2889
+    },
+    {
+      "module": "AeroAcoustics",
+      "procedure_lines": 2881
+    },
+    {
+      "module": "FVW_VortexTools",
+      "procedure_lines": 2868
+    },
+    {
+      "module": "AeroDyn_Driver_Subs",
+      "procedure_lines": 2856
+    },
+    {
+      "module": "UnsteadyAero_Types",
+      "procedure_lines": 2819
+    },
+    {
+      "module": "FVW_SUBS",
+      "procedure_lines": 2745
+    },
+    {
+      "module": "AirfoilInfo",
+      "procedure_lines": 2410
+    },
+    {
+      "module": "FVW",
+      "procedure_lines": 2409
+    },
+    {
+      "module": "AeroAcoustics_Types",
+      "procedure_lines": 2360
+    },
+    {
+      "module": "AeroDyn_AllBldNdOuts_IO",
+      "procedure_lines": 2327
+    },
+    {
+      "module": "AeroDyn_Inflow_Types",
+      "procedure_lines": 2327
+    },
+    {
+      "module": "DBEMT_Types",
+      "procedure_lines": 1727
+    },
+    {
+      "module": "AirfoilInfo_Types",
+      "procedure_lines": 1648
+    },
+    {
+      "module": "BEMTUnCoupled",
+      "procedure_lines": 1441
+    },
+    {
+      "module": "AeroDyn_Driver_Types",
+      "procedure_lines": 1365
+    },
+    {
+      "module": "UA_Dvr_Subs",
+      "procedure_lines": 1159
+    },
+    {
+      "module": "FVW_Tests",
+      "procedure_lines": 1151
+    },
+    {
+      "module": "DBEMT",
+      "procedure_lines": 1028
+    },
+    {
+      "module": "AeroAcoustics_IO",
+      "procedure_lines": 1021
+    },
+    {
+      "module": "FVW_IO",
+      "procedure_lines": 920
+    },
+    {
+      "module": "AeroDyn_Inflow",
+      "procedure_lines": 843
+    },
+    {
+      "module": "FVW_BiotSavart",
+      "procedure_lines": 807
+    },
+    {
+      "module": "FVW_Wings",
+      "procedure_lines": 712
+    },
+    {
+      "module": "AeroAcoustics_Driver_Subs",
+      "procedure_lines": 543
+    },
+    {
+      "module": "AeroDyn_Inflow_C_Binding_Types",
+      "procedure_lines": 527
+    },
+    {
+      "module": "mod_root1dim",
+      "procedure_lines": 224
+    },
+    {
+      "module": "TNO",
+      "procedure_lines": 171
+    }
+  ],
+  "top_20_procedures": [
+    {
+      "name": "Calc_WriteAllBldNdOutput",
+      "module": "AeroDyn_AllBldNdOuts_IO",
+      "file": "AeroDyn_AllBldNdOuts_IO.f90",
+      "line_count": 1938,
+      "is_registry_generated": false
+    },
+    {
+      "name": "ParsePrimaryFileInfo",
+      "module": "AeroDyn_IO",
+      "file": "AeroDyn_IO.f90",
+      "line_count": 824,
+      "is_registry_generated": false
+    },
+    {
+      "name": "UA_CalcOutput",
+      "module": "UnsteadyAero",
+      "file": "UnsteadyAero.f90",
+      "line_count": 765,
+      "is_registry_generated": false
+    },
+    {
+      "name": "ADI_C_Init",
+      "module": "AeroDyn_Inflow_C_BINDING",
+      "file": "AeroDyn_Inflow_C_Binding.f90",
+      "line_count": 717,
+      "is_registry_generated": false
+    },
+    {
+      "name": "AD_CopyRotMiscVarType",
+      "module": "AeroDyn_Types",
+      "file": "AeroDyn_Types.f90",
+      "line_count": 644,
+      "is_registry_generated": true
+    },
+    {
+      "name": "Calc_WriteOutput",
+      "module": "AeroDyn_IO",
+      "file": "AeroDyn_IO.f90",
+      "line_count": 557,
+      "is_registry_generated": false
+    },
+    {
+      "name": "Dvr_ReadInputFile",
+      "module": "AeroDyn_Driver_Subs",
+      "file": "AeroDyn_Driver_Subs.f90",
+      "line_count": 521,
+      "is_registry_generated": false
+    },
+    {
+      "name": "ReadAFfile",
+      "module": "AirfoilInfo",
+      "file": "AirfoilInfo.f90",
+      "line_count": 512,
+      "is_registry_generated": false
+    },
+    {
+      "name": "FVW_CopyWng_MiscVarType",
+      "module": "FVW_Types",
+      "file": "FVW_Types.f90",
+      "line_count": 500,
+      "is_registry_generated": true
+    },
+    {
+      "name": "RotCalcBuoyantLoads",
+      "module": "AeroDyn",
+      "file": "AeroDyn.f90",
+      "line_count": 493,
+      "is_registry_generated": false
+    },
+    {
+      "name": "AD_Init",
+      "module": "AeroDyn",
+      "file": "AeroDyn.f90",
+      "line_count": 461,
+      "is_registry_generated": false
+    },
+    {
+      "name": "ComputeKelvinChain",
+      "module": "UnsteadyAero",
+      "file": "UnsteadyAero.f90",
+      "line_count": 458,
+      "is_registry_generated": false
+    },
+    {
+      "name": "ValidateInputData",
+      "module": "AeroDyn",
+      "file": "AeroDyn.f90",
+      "line_count": 433,
+      "is_registry_generated": false
+    },
+    {
+      "name": "AD_CopyRotParameterType",
+      "module": "AeroDyn_Types",
+      "file": "AeroDyn_Types.f90",
+      "line_count": 424,
+      "is_registry_generated": true
+    },
+    {
+      "name": "UA_CopyDiscState",
+      "module": "UnsteadyAero_Types",
+      "file": "UnsteadyAero_Types.f90",
+      "line_count": 421,
+      "is_registry_generated": true
+    },
+    {
+      "name": "FVW_ReadInputFile",
+      "module": "FVW_IO",
+      "file": "FVW_IO.f90",
+      "line_count": 406,
+      "is_registry_generated": false
+    },
+    {
+      "name": "ADI_C_SetupRotor",
+      "module": "AeroDyn_Inflow_C_BINDING",
+      "file": "AeroDyn_Inflow_C_Binding.f90",
+      "line_count": 397,
+      "is_registry_generated": false
+    },
+    {
+      "name": "SetInputsForBEMT",
+      "module": "AeroDyn",
+      "file": "AeroDyn.f90",
+      "line_count": 368,
+      "is_registry_generated": false
+    },
+    {
+      "name": "CalculateUACoeffs",
+      "module": "AirfoilInfo",
+      "file": "AirfoilInfo.f90",
+      "line_count": 359,
+      "is_registry_generated": false
+    },
+    {
+      "name": "AD_PrintSum",
+      "module": "AeroDyn_IO",
+      "file": "AeroDyn_IO.f90",
+      "line_count": 352,
+      "is_registry_generated": false
+    }
+  ]
+}
