@@ -489,23 +489,36 @@ def apply_type_strategies(registry: dict, type_strategies: dict) -> None:
                 break
 
 
+def _lookup_type(registry: dict, type_name: str) -> Optional[DerivedTypeInfo]:
+    """Case-insensitive lookup in a type registry."""
+    upper = type_name.upper()
+    for k, v in registry.items():
+        if k.upper() == upper:
+            return v
+    return None
+
+
 def generate_view_struct_header(
     type_info: DerivedTypeInfo,
     field_mappings: list,
     kind_aliases: Optional[dict] = None,
+    registry: Optional[dict] = None,
 ) -> str:
     """
     Generate a C view struct header for a Fortran type with ALLOCATABLE fields.
 
     ALLOCATABLE 1D fields become pointer + size pairs.
     ALLOCATABLE 2D fields become pointer + rows + cols.
+    ALLOCATABLE 3D fields become pointer + dim1 + dim2 + dim3.
     Scalar and CHARACTER fields are copied directly (same as BIND(C) structs).
-    Fields not in field_mappings are skipped (unmapped ALLOCATABLE fields).
+    Nested TYPE(X) fields are embedded by value if X is C-compatible.
+    ALLOCATABLE TYPE(X) fields become void* + size (opaque).
 
     Args:
         type_info: Parsed derived type definition
         field_mappings: List of AllocatableFieldMapping from scan_allocatable_sizes()
         kind_aliases: Project-specific kind aliases for type resolution
+        registry: Dict mapping type_name → DerivedTypeInfo for nested type lookup
 
     Returns:
         Complete C header file content with include guard
@@ -534,20 +547,60 @@ def generate_view_struct_header(
     lines.append(f"")
     lines.append(f"#include <stdint.h>")
     lines.append(f"")
-    lines.append(f"typedef struct {{")
 
     # --- Scalars and fixed-size arrays (non-ALLOCATABLE, non-POINTER) ---
     scalar_fields = [
         f for f in type_info.fields
         if not f.is_allocatable and not f.is_pointer
     ]
+    # Collect nested types that need inline struct definitions
+    nested_inline_types = []
+    if registry:
+        for f in scalar_fields:
+            if f.fortran_type.upper().startswith("TYPE("):
+                nested_name = f.fortran_type[5:-1].strip()
+                nested_info = _lookup_type(registry, nested_name)
+                if nested_info and nested_info.is_c_compatible_recursive(registry):
+                    nested_inline_types.append((f, nested_info))
+
+    # Emit inline struct definitions for nested types (before the main struct)
+    if nested_inline_types:
+        for f, nested_info in nested_inline_types:
+            # Check if this nested type is already defined (e.g., in a consolidated header)
+            nested_guard = f"{nested_info.name.upper()}_T_H"
+            lines.append(f"#ifndef {nested_guard}")
+            lines.append(f"#define {nested_guard}")
+            lines.append(f"typedef struct {{")
+            for nf in nested_info.fields:
+                if nf.fortran_type.upper().startswith("TYPE("):
+                    continue  # Skip deeply nested types in inline defs
+                nm = get_type_mapping(nf.fortran_type, kind_aliases)
+                if nm.character_length:
+                    lines.append(f"    char {nf.name}[{nm.character_length}];")
+                elif nf.is_array and nf.array_dims:
+                    c_dims = _fortran_dims_to_c(nf.array_dims)
+                    lines.append(f"    {nm.c_type} {nf.name}{c_dims};")
+                else:
+                    lines.append(f"    {nm.c_type} {nf.name};")
+            lines.append(f"}} {nested_info.name.lower()}_t;")
+            lines.append(f"#endif // {nested_guard}")
+            lines.append(f"")
+
+    lines.append(f"typedef struct {{")
+
     if scalar_fields:
         lines.append(f"    // --- Scalar and fixed-size fields ---")
     for f in scalar_fields:
-        # Nested TYPE(X) — skip for now (view struct doesn't embed nested types)
+        # Nested TYPE(X) — embed if C-compatible, skip if not
         if f.fortran_type.upper().startswith("TYPE("):
             nested_name = f.fortran_type[5:-1].strip()
-            lines.append(f"    // TYPE({nested_name}) {f.name}; // nested type — not in view")
+            # Check if we have an inline definition for this type
+            is_embedded = any(ni.name.upper() == nested_name.upper()
+                              for _, ni in nested_inline_types)
+            if is_embedded:
+                lines.append(f"    {nested_name.lower()}_t {f.name};")
+            else:
+                lines.append(f"    // TYPE({nested_name}) {f.name}; // nested type — not in view (not C-compatible)")
             continue
 
         mapping = get_type_mapping(f.fortran_type, kind_aliases)
@@ -565,7 +618,6 @@ def generate_view_struct_header(
         lines.append(f"")
         lines.append(f"    // --- ALLOCATABLE fields (pointer + size) ---")
     for f in alloc_fields:
-        mapping = get_type_mapping(f.fortran_type, kind_aliases)
         m = mapping_by_name.get(f.name)
         # Determine rank: from scanner mapping if available, else from array_dims
         if m:
@@ -574,13 +626,27 @@ def generate_view_struct_header(
             rank = f.array_dims.count(",") + 1
         else:
             rank = 1
+
+        # ALLOCATABLE TYPE() fields — opaque void* pointer + size
+        if f.fortran_type.upper().startswith("TYPE("):
+            nested_name = f.fortran_type[5:-1].strip()
+            lines.append(f"    void* {f.name};  // TYPE({nested_name}), ALLOCATABLE — opaque")
+            lines.append(f"    int32_t n_{f.name};")
+            continue
+
+        mapping = get_type_mapping(f.fortran_type, kind_aliases)
         if rank == 1:
             lines.append(f"    {mapping.c_type}* {f.name};")
             lines.append(f"    int32_t n_{f.name};")
-        elif rank >= 2:
+        elif rank == 2:
             lines.append(f"    {mapping.c_type}* {f.name};  // column-major")
             lines.append(f"    int32_t n_{f.name}_rows;")
             lines.append(f"    int32_t n_{f.name}_cols;")
+        elif rank >= 3:
+            lines.append(f"    {mapping.c_type}* {f.name};  // column-major")
+            lines.append(f"    int32_t n_{f.name}_dim1;")
+            lines.append(f"    int32_t n_{f.name}_dim2;")
+            lines.append(f"    int32_t n_{f.name}_dim3;")
 
     # --- POINTER fields (skip — handled via parent 2D array) ---
     pointer_fields = [f for f in type_info.fields if f.is_pointer]
@@ -876,7 +942,8 @@ def generate_consolidated_types_header(
 
         if is_view:
             mappings = getattr(type_info, 'field_mappings', None) or []
-            block = generate_view_struct_header(type_info, mappings, kind_aliases)
+            block = generate_view_struct_header(type_info, mappings, kind_aliases,
+                                                registry=derived_types)
         else:
             block = generate_c_struct_header(
                 type_info, kind_aliases,

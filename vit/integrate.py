@@ -202,7 +202,8 @@ def generate_integration_plan(
                 )
 
             populator_content = generate_view_populator(
-                type_info, mappings, kind_aliases, source_module=source_module
+                type_info, mappings, kind_aliases, source_module=source_module,
+                registry=derived_types
             )
             patches.append(IntegrationPatch(
                 filepath=populator_path,

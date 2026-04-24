@@ -332,6 +332,11 @@ def _parse_type_declaration(line: str, line_upper: str, names_to_find: set):
     if type_str is None:
         return None
 
+    # Normalize "TYPE (Foo)" → "TYPE(Foo)" — remove optional whitespace
+    # so downstream code can use startswith("TYPE(") consistently
+    if type_str.upper().startswith("TYPE") and "(" in type_str:
+        type_str = re.sub(r'^(TYPE)\s*\(', r'\1(', type_str, flags=re.IGNORECASE)
+
     # Parse attributes between type and ::
     intent = IntentKind.NONE
     is_optional = False

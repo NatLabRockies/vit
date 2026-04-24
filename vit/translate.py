@@ -140,7 +140,8 @@ def generate_translation_prompt(
         for type_info in order_types_by_dependency(compatible):
             if getattr(type_info, 'view_strategy', None) == 'view':
                 mappings = getattr(type_info, 'field_mappings', None) or []
-                header = generate_view_struct_header(type_info, mappings, kind_aliases)
+                header = generate_view_struct_header(type_info, mappings, kind_aliases,
+                                                     registry=derived_types)
             else:
                 header = generate_c_struct_header(type_info, kind_aliases,
                                                    registry=derived_types,

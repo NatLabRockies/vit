@@ -725,17 +725,17 @@ class TestOptionalArgs:
 class TestLogicalType:
     """Phase 3: LOGICAL type handling."""
 
-    def test_logical_maps_to_int(self):
+    def test_logical_maps_to_int8(self):
         from vit.type_map import get_type_mapping
         m = get_type_mapping("LOGICAL")
-        assert m.c_type == "int"
+        assert m.c_type == "int8_t"  # C_BOOL is 1 byte
         assert m.iso_c_type == "LOGICAL(C_BOOL)"
 
     def test_ratelimit_reset_c_param(self):
         sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
         params = build_c_params(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
         param_dict = {name: ctype for ctype, name in params}
-        assert param_dict["reset"] == "int"
+        assert param_dict["reset"] == "int8_t"  # C_BOOL is 1 byte
 
     def test_wrapper_logical_conversion(self):
         """LOGICAL args should get explicit LOGICAL(x, C_BOOL) conversion."""

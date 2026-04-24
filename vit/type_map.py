@@ -42,9 +42,9 @@ FORTRAN_TO_C = {
     "INTEGER(2)": TypeMapping("INTEGER(2)", "2", "C_SHORT", "short", "INTEGER(C_SHORT)", 2),
     "INTEGER(1)": TypeMapping("INTEGER(1)", "1", "C_SIGNED_CHAR", "signed char", "INTEGER(C_SIGNED_CHAR)", 1),
 
-    # Logical
-    "LOGICAL": TypeMapping("LOGICAL", "", "C_BOOL", "int", "LOGICAL(C_BOOL)", 4),
-    "LOGICAL(4)": TypeMapping("LOGICAL(4)", "4", "C_BOOL", "int", "LOGICAL(C_BOOL)", 4),
+    # Logical — C_BOOL is 1 byte (_Bool in C, int8_t for struct layout compatibility)
+    "LOGICAL": TypeMapping("LOGICAL", "", "C_BOOL", "int8_t", "LOGICAL(C_BOOL)", 1),
+    "LOGICAL(4)": TypeMapping("LOGICAL(4)", "4", "C_BOOL", "int8_t", "LOGICAL(C_BOOL)", 1),
 
     # Character (single)
     "CHARACTER": TypeMapping("CHARACTER", "", "C_CHAR", "char", "CHARACTER(C_CHAR)", 1),

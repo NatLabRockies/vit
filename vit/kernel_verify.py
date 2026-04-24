@@ -190,7 +190,8 @@ def setup_kernel_cpp(
                 )
                 return result
             populator_content = generate_view_populator(
-                type_info, mappings, kind_aliases, source_module=source_module
+                type_info, mappings, kind_aliases, source_module=source_module,
+                registry=derived_types
             )
             populator_filename = f"vit_{type_name.lower()}_view.f90"
             populator_path = kernel / populator_filename
