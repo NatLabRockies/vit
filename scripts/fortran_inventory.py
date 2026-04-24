@@ -531,7 +531,53 @@ def build_module_dependencies(modules, procedures):
 # Pass 5: Dead code detection
 # ---------------------------------------------------------------------------
 
-def find_uncalled_procedures(procedures, call_edges, src_dir):
+def _name_found_in_tree(name, exclude_dir, search_dir):
+    """
+    Search the broader source tree (--search) for references to a procedure name,
+    excluding files in the primary source directory (--src) which we already scanned.
+    Returns True if the name is referenced outside the primary source.
+    """
+    import subprocess
+    name_lower = name.lower()
+    # Use grep for speed — searching potentially thousands of files
+    try:
+        result = subprocess.run(
+            ["grep", "-ril", "--include=*.f90", "--include=*.F90",
+             name_lower, search_dir],
+            capture_output=True, text=True, timeout=30)
+        for fpath in result.stdout.strip().split("\n"):
+            if not fpath:
+                continue
+            # Skip files in the primary source directory
+            if os.path.abspath(fpath).startswith(os.path.abspath(exclude_dir)):
+                continue
+            # Verify word-boundary match in this file
+            try:
+                with open(fpath, "r", errors="replace") as f:
+                    import re as _re
+                    pattern = _re.compile(r'\b' + _re.escape(name_lower) + r'\b', _re.IGNORECASE)
+                    for line in f:
+                        stripped = line.strip()
+                        if stripped.startswith("!"):
+                            continue
+                        # Strip strings
+                        clean = _re.sub(r"'[^']*'", "", stripped)
+                        clean = _re.sub(r'"[^"]*"', "", clean)
+                        if pattern.search(clean):
+                            # Exclude definition lines
+                            clean_lower = clean.lower()
+                            if any(kw in clean_lower for kw in
+                                   ["subroutine " + name_lower, "function " + name_lower]):
+                                continue
+                            return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
+def find_uncalled_procedures(procedures, call_edges, src_dir, search_dir=None):
     """
     Find procedures with zero call sites WITHIN the scanned source tree,
     then classify each by WHY it appears uncalled.
@@ -540,7 +586,7 @@ def find_uncalled_procedures(procedures, call_edges, src_dir):
     - c_binding_entry_point: in a C-binding module, called from C/C++
     - driver_entry_point: in a driver module, called from PROGRAM blocks
     - test_function: in a test module or has TEST in name
-    - likely_framework_interface: PUBLIC with standard OpenFAST prefix
+    - framework_interface: confirmed called from outside --src via --search
     - commented_out: calls exist in source but are commented out (!call)
     - callback: procedure name appears as an argument in a CALL statement
     - program_block: called from a PROGRAM block (not scanned as module)
@@ -691,9 +737,10 @@ def find_uncalled_procedures(procedures, call_edges, src_dir):
                     any_live_reference = True
 
         # Classification priority:
-        # 1. Source evidence (strongest signal)
-        # 2. Heuristic by module/name (when no source evidence)
-        # 3. genuinely_dead (no evidence at all)
+        # 1. Source evidence from within --src (strongest signal)
+        # 2. Broader search via --search (confirms framework interface)
+        # 3. Heuristic by module/name (when no evidence available)
+        # 4. genuinely_dead (no evidence at all)
         if callback_usage:
             reason = "callback"
         elif program_block_call:
@@ -701,11 +748,8 @@ def find_uncalled_procedures(procedures, call_edges, src_dir):
         elif commented_out and not any_live_reference:
             reason = "commented_out"
         elif any_live_reference:
-            # Has some reference but not via CALL/PROGRAM — use heuristic
             if "c_binding" in mod.lower():
                 reason = "c_binding_entry_point"
-            elif p["visibility"] == "public" and name.startswith(("AD_", "BEMT_", "DBEMT_", "UA_", "FVW_", "AA_", "AFI_", "ADI_")):
-                reason = "likely_framework_interface"
             elif "driver" in mod.lower() or "dvr" in mod.lower():
                 reason = "driver_entry_point"
             elif "test" in mod.lower() or "TEST" in name:
@@ -713,12 +757,11 @@ def find_uncalled_procedures(procedures, call_edges, src_dir):
             else:
                 reason = "unknown"
         else:
-            # No live reference, no commented-out reference — check heuristic
-            # before declaring dead (C-binding functions are called from C)
+            # No live reference in --src. Check --search tree if provided.
             if "c_binding" in mod.lower():
                 reason = "c_binding_entry_point"
-            elif p["visibility"] == "public" and name.startswith(("AD_", "BEMT_", "DBEMT_", "UA_", "FVW_", "AA_", "AFI_", "ADI_")):
-                reason = "likely_framework_interface"
+            elif search_dir and _name_found_in_tree(name, src_dir, search_dir):
+                reason = "framework_interface"
             else:
                 reason = "genuinely_dead"
 
@@ -975,13 +1018,13 @@ def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
     from collections import Counter as _Counter
     reason_counts = _Counter(d.get("likely_reason", "?") for d in uncalled)
     reason_order = ["c_binding_entry_point", "driver_entry_point", "test_function",
-                    "likely_framework_interface", "commented_out", "callback",
+                    "framework_interface", "commented_out", "callback",
                     "program_block", "genuinely_dead", "unknown"]
     reason_labels = {
         "c_binding_entry_point": "C-binding entry points (called from C/C++)",
         "driver_entry_point": "Driver entry points (called from PROGRAM blocks)",
         "test_function": "Test functions",
-        "likely_framework_interface": "Framework interface (called by OpenFAST glue code)",
+        "framework_interface": "Framework interface (confirmed called from OpenFAST glue code)",
         "commented_out": "Commented-out calls (dormant debug code)",
         "callback": "Callbacks (passed as function arguments)",
         "program_block": "Called from PROGRAM block (not scanned as module)",
@@ -1061,6 +1104,10 @@ def main():
     parser.add_argument("--src", required=True, help="Primary source directory (full inventory)")
     parser.add_argument("--deps", default=None, help="Dependency source directory (module/type only)")
     parser.add_argument("--output", required=True, help="Output directory for JSON/MD files")
+    parser.add_argument("--search", default=None,
+                        help="Broader source tree to search for external callers "
+                             "(e.g., the full OpenFAST modules/ directory). Used to "
+                             "confirm or reject 'likely_framework_interface' entries.")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
@@ -1121,7 +1168,8 @@ def main():
 
     # Pass 5: Dead code
     print("\nPass 5: Finding uncalled procedures...")
-    uncalled = find_uncalled_procedures(procedures, call_edges, args.src)
+    uncalled = find_uncalled_procedures(procedures, call_edges, args.src,
+                                        search_dir=args.search)
     print(f"  Uncalled within scope: {len(uncalled)}")
 
     # Pass 6: Framework boundary
