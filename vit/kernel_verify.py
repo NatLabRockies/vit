@@ -1035,6 +1035,18 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
         # Fix USE kgen_utils_mod ONLY → USE kgen_utils_mod (all files)
         content = _fix_kgen_utils_mod_only(content)
 
+        # Fix unresolved ISO_FORTRAN_ENV symbols (e.g., real64, int32).
+        # KGen resolves #ifdef but can't resolve intrinsic module constants,
+        # leaving markers like "R8Ki = real64 !!! UNRESOLVED !!! real64".
+        # Add USE ISO_FORTRAN_ENV if the file has unresolved symbols from it.
+        if "UNRESOLVED" in content and ("real64" in content or "int32" in content or "real32" in content):
+            if "ISO_FORTRAN_ENV" not in content.upper():
+                content = re.sub(
+                    r'(USE\s+kgen_utils_mod[^\n]*\n)',
+                    r'\1    USE, INTRINSIC :: ISO_FORTRAN_ENV\n',
+                    content, count=1, flags=re.IGNORECASE,
+                )
+
         # Remove PUBLIC statements inside subroutines.
         # KGen sometimes copies PUBLIC statements from the original module-level
         # code into the generated kernel driver subroutine, which is illegal

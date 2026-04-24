@@ -626,6 +626,7 @@ def generate_kgen_command(
     kgen_path: str = "kgen",
     output_dir: Optional[str] = None,
     invocation: str = "",
+    preprocessor_defines: Optional[list[str]] = None,
 ) -> str:
     """
     Generate the kgen command line.
@@ -639,6 +640,9 @@ def generate_kgen_command(
         output_dir: Where to put kernel/ and state/ directories
         invocation: KGen invocation spec: "MPI_rank:OMP_thread:start-end"
                     e.g., "0:0:1-20" captures calls 1-20 on rank 0 thread 0
+        preprocessor_defines: List of preprocessor macros to pass to KGen
+                    (e.g., ["OPENFAST_DOUBLE_PRECISION"]). KGen uses these to
+                    resolve #ifdef conditionals in Fortran source during parsing.
 
     Returns:
         Shell command string
@@ -656,6 +660,10 @@ def generate_kgen_command(
 
     if invocation:
         parts.append(f"--invocation {invocation}")
+
+    if preprocessor_defines:
+        for define in preprocessor_defines:
+            parts.append(f"-D {define}")
 
     return " ".join(parts)
 
@@ -920,6 +928,7 @@ def run_kgen_extract(
     package_name: str = "",
     invocation: str = "",
     assumed_size_arrays: Optional[dict] = None,
+    preprocessor_defines: Optional[list[str]] = None,
     dll_persistence: Optional[dict] = None,
     env: Optional[dict] = None,
     dry_run: bool = False,
@@ -1013,6 +1022,7 @@ def run_kgen_extract(
         kgen_path=kgen_path,
         output_dir=output_dir,
         invocation=invocation,
+        preprocessor_defines=preprocessor_defines,
     )
     result["cmd"] = cmd
 

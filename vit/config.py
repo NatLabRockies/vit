@@ -86,6 +86,7 @@ class VitConfig:
     })
     fortran_compiler: str = "gfortran"
     fortran_flags: str = ""  # Extra Fortran flags for kernel compilation
+    preprocessor_defines: list = field(default_factory=list)  # Preprocessor macros for KGen parsing (e.g., OPENFAST_DOUBLE_PRECISION)
 
     tolerance: float = 1e-14
     translations: dict = field(default_factory=dict)
@@ -166,6 +167,7 @@ def load_config(config_path: Optional[str] = None) -> VitConfig:
         kind_aliases=fortran.get("kind_aliases", DEFAULT_CONFIG["fortran"]["kind_aliases"]),
         fortran_compiler=fortran.get("compiler", "gfortran"),
         fortran_flags=fortran.get("flags", ""),
+        preprocessor_defines=fortran.get("preprocessor_defines", []),
         tolerance=verify.get("tolerance", 1e-14),
         translations=data.get("translations", {}),
         type_strategies=_parse_type_strategies(data.get("types", {})),

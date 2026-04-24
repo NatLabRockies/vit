@@ -374,6 +374,7 @@ def cmd_extract(args, config):
             package_name=config.project_name,
             invocation=config.invocation,
             assumed_size_arrays=assumed_size or None,
+            preprocessor_defines=config.preprocessor_defines or None,
             dll_persistence=config.dll_persistence or None,
             dry_run=args.dry_run,
         )
