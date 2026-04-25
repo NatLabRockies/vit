@@ -422,6 +422,9 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     call_str = ", ".join(call_args)
     lines.append(f"        CALL {c_func_name}({call_str})")
 
+    # Reverse CHARACTER copy: C_CHAR → CHARACTER for INTENT(OUT/INOUT)
+    lines.extend(_generate_character_reverse_copy_loops(sig, kind_aliases, derived_types))
+
     # Reverse-copy: copy modified scalars from view back to Fortran type
     if reverse_copy and view_args:
         lines.append(f"        ! Copy modified scalars back from view to Fortran type")
@@ -477,6 +480,28 @@ def _generate_character_copy_loops(sig, kind_aliases, derived_types):
                 has_any = True
             lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
             lines.append(f"            {arg.name}_c(vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
+            lines.append(f"        END DO")
+    return lines
+
+
+def _generate_character_reverse_copy_loops(sig, kind_aliases, derived_types):
+    """Emit reverse copy loops for C_CHAR→CHARACTER conversion.
+    Must be in the executable section (after the C call).
+    Only for INTENT(OUT) and INTENT(INOUT) CHARACTER parameters."""
+    lines = []
+    has_any = False
+    for arg in sig.args:
+        intent_str = arg.intent.value.upper() if arg.intent else ""
+        if intent_str not in ("OUT", "INOUT"):
+            continue
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+        len_expr = _get_char_len_expr(arg, mapping, sig)
+        if len_expr:
+            if not has_any:
+                lines.append(f"        ! Copy C_CHAR arrays back to CHARACTER args (INTENT OUT/INOUT)")
+                has_any = True
+            lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
+            lines.append(f"            {arg.name}(vit_i_{arg.name}:vit_i_{arg.name}) = {arg.name}_c(vit_i_{arg.name})")
             lines.append(f"        END DO")
     return lines
 
