@@ -160,9 +160,13 @@ Then rebuild (or use the committed integrated version if no new integrations wer
 **Step 7 — Restore `vit.yaml` `run_cmd`** to the default (`ad_BAR_SineMotion`) if it was changed.
 
 **If extraction reports "No state data captured":**
-1. Query the coverage data to verify the line number and test case are correct — this is almost always the cause.
-2. Check that source is clean (no integration wrappers referencing VIT modules).
-3. Do not assume infrastructure is broken. Verify the call site and test case are correct first — this is almost always the cause. Only consider infrastructure issues as a last resort, and communicate with the user before investigating.
+
+Follow the debugging checklist in `vit/docs/EXTRACTION_INTERNALS.md` Section 7. The most common causes are:
+1. **Wrong test case** — query coverage data to verify the line is hit by the configured test case.
+2. **Cross-module instrumentation** — KGen instruments files outside the aerodyn cmake target, causing a silent build failure. Run the build wrapper manually (`bash .vit_build_wrapper.sh`) and look for compile errors. See EXTRACTION_INTERNALS.md Section 6 (F2) for details.
+3. **Source not clean** — integration wrappers referencing VIT modules cause build failures.
+
+Do not assume infrastructure is broken. Verify the call site, test case, and build output first. Only consider deeper infrastructure issues as a last resort, and communicate with the user before investigating. For the complete pipeline reference, see `vit/docs/EXTRACTION_INTERNALS.md`.
 
 **Other pitfalls:**
 - KGen modifies `AirfoilInfo_Types.f90` and `AeroDyn_Driver.f90` (strips blank comment lines). Always `git checkout` these after extraction if they show as modified.
