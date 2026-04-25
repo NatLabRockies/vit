@@ -511,6 +511,39 @@ def cmd_translate(args, config):
     if tips_path.is_file():
         tips_text = tips_path.read_text()
 
+    # Detect already-translated callees and generate their _c signatures
+    # so the translator knows what functions are available to call.
+    callee_declarations = None
+    if config.translations and config.source_dir:
+        from .kernel_verify import detect_callees
+        from .fortran_parser import find_function_in_file as _find_func
+        from .integrate import _generate_c_declaration
+        known_funcs = set(config.translations.keys())
+        callee_names = detect_callees(fortran_text, args.function_name,
+                                       known_functions=known_funcs)
+        if callee_names:
+            decls = []
+            for cname in callee_names:
+                if cname not in config.translations:
+                    continue
+                # Find the callee's signature to generate its _c declaration
+                for pattern in ("**/*.f90", "**/*.F90"):
+                    for f90 in sorted(Path(config.source_dir).glob(pattern)):
+                        try:
+                            csig = _find_func(str(f90), cname)
+                            if csig:
+                                c_decl = _generate_c_declaration(
+                                    csig, config.kind_aliases, derived_types)
+                                decls.append(c_decl)
+                                break
+                        except (ValueError, FileNotFoundError):
+                            continue
+                    else:
+                        continue
+                    break
+            if decls:
+                callee_declarations = decls
+
     # Generate prompt
     prompt = generate_translation_prompt(
         sig=sig,
@@ -520,6 +553,7 @@ def cmd_translate(args, config):
         scaffold_text=scaffold,
         tips_text=tips_text,
         derived_types=derived_types,
+        callee_declarations=callee_declarations,
     )
 
     # Print summary

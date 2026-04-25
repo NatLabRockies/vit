@@ -83,6 +83,7 @@ def generate_translation_prompt(
     call_site_info: Optional[str] = None,
     tips_text: Optional[str] = None,
     derived_types: Optional[dict] = None,
+    callee_declarations: Optional[list[str]] = None,
 ) -> str:
     """
     Generate a complete translation prompt for LLM-assisted translation.
@@ -98,6 +99,8 @@ def generate_translation_prompt(
         scaffold_text: The generated C++ scaffold (verbatim)
         call_site_info: Call site file and line (e.g., "Controllers.f90:102")
         tips_text: Contents of TRANSLATION_TIPS.md, if it exists
+        callee_declarations: List of C declaration strings for already-translated
+            callees (e.g., ["double computeua360_cnoffset_c(...);"]).
 
     Returns:
         Complete prompt string ready to be sent to an LLM
@@ -153,6 +156,19 @@ def generate_translation_prompt(
             sections.append("```c")
             sections.append("\n\n".join(d.strip() for d in struct_defs))
             sections.append("```\n")
+
+    # Already-translated callee declarations
+    if callee_declarations:
+        sections.append("## Already-Translated Callees\n")
+        sections.append(
+            "This function calls the following already-translated functions. "
+            "Call them directly using these C signatures — the declarations are "
+            "provided automatically by VIT (do NOT add your own `extern \"C\"` "
+            "or `#include` for these).\n"
+        )
+        sections.append("```c")
+        sections.append("\n".join(callee_declarations))
+        sections.append("```\n")
 
     # ALLOCATABLE field hints for view types
     if derived_types:
