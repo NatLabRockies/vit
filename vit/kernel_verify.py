@@ -263,8 +263,6 @@ def setup_kernel_cpp(
             kernel, source_dir, fortran_compiler, run_env
         )
         result["files_modified"].extend(repair.get("modified", []))
-        for msg in repair.get("log", []):
-            result["files_modified"]  # log is informational, not an error
         if repair.get("errors"):
             result["errors"].extend(repair["errors"])
         # Print repair log for visibility

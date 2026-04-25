@@ -163,7 +163,7 @@ Then rebuild (or use the committed integrated version if no new integrations wer
 
 Follow the debugging checklist in `vit/docs/EXTRACTION_INTERNALS.md` Section 7. The most common causes are:
 1. **Wrong test case** — query coverage data to verify the line is hit by the configured test case.
-2. **Cross-module instrumentation** — KGen instruments files outside the aerodyn cmake target, causing a silent build failure. Run the build wrapper manually (`bash .vit_build_wrapper.sh`) and look for compile errors. See EXTRACTION_INTERNALS.md Section 6 (F2) for details.
+2. **Cross-module instrumentation** — KGen instruments files outside the build target's cmake directory, causing a silent build failure. Run the build wrapper manually (`bash .vit_build_wrapper.sh`) and look for compile errors. See EXTRACTION_INTERNALS.md Section 6 (F2) for details.
 3. **Source not clean** — integration wrappers referencing VIT modules cause build failures.
 
 Do not assume infrastructure is broken. Verify the call site, test case, and build output first. Only consider deeper infrastructure issues as a last resort, and communicate with the user before investigating. For the complete pipeline reference, see `vit/docs/EXTRACTION_INTERNALS.md`.
