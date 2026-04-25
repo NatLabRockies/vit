@@ -159,14 +159,23 @@ def setup_kernel_cpp(
     shutil.copy2(cpp_impl_path, impl_dest)
     result["files_modified"].append(str(impl_dest))
 
-    # --- Step 1a: Copy shared constants header (if found near the impl file) ---
-    for parent in [Path(cpp_impl_path).parent] + list(Path(cpp_impl_path).parent.parents):
-        candidate = parent / "rosco_constants.h"
-        if candidate.exists():
-            constants_dest = kernel / "rosco_constants.h"
-            shutil.copy2(str(candidate), str(constants_dest))
-            result["files_modified"].append(str(constants_dest))
-            break
+    # --- Step 1a: Copy shared headers (if found near impl file or in source dir) ---
+    for header_name in ["rosco_constants.h", "vit_nwtc.h"]:
+        found = False
+        for parent in [Path(cpp_impl_path).parent] + list(Path(cpp_impl_path).parent.parents):
+            candidate = parent / header_name
+            if candidate.exists():
+                dest = kernel / header_name
+                shutil.copy2(str(candidate), str(dest))
+                result["files_modified"].append(str(dest))
+                found = True
+                break
+        if not found and source_dir:
+            for candidate in sorted(Path(source_dir).rglob(header_name)):
+                dest = kernel / header_name
+                shutil.copy2(str(candidate), str(dest))
+                result["files_modified"].append(str(dest))
+                break
 
     # --- Step 1b: Generate consolidated type header ---
     struct_headers = []
