@@ -109,8 +109,9 @@ Creates a shell script that KGen will invoke as its `build_cmd`. The wrapper han
 2. **Patch CMakeLists.txt** to add `src/kgen_utils.f90` to the source list
 3. **Reconfigure cmake** (`cd build && cmake ..`) to pick up the new source file
 4. **Touch all .f90 files** in `modules/aerodyn/src/` to force recompilation (Docker filesystem timestamps may not update on `cp`)
-5. **Reconfigure cmake again** (picks up touched files)
-6. **Run the actual build** (`cmake --build . --target aerodyn_driver -j$(nproc)`)
+5. **Fix cross-module instrumentation** (step 2e) — detect files KGen instrumented outside the cmake target's directory tree, extract their `kw_*` subroutines, and transplant them into the in-target module file that defines the same Fortran MODULE. This ensures all KGen-generated symbols are compiled by the build target.
+6. **Reconfigure cmake again** (picks up touched files + any transplanted subroutines)
+7. **Run the actual build** (`cmake --build . --target aerodyn_driver -j$(nproc)`)
 
 All actions are logged to `/tmp/vit_wrapper.log`.
 
@@ -272,7 +273,7 @@ After KGen finishes (success or failure), VIT cleans up:
 | # | Failure | Symptom | Root Cause | First Diagnostic Step |
 |---|---------|---------|------------|----------------------|
 | F1 | Wrong test case | 0 state files | Call site not reached in simulation | `query_coverage.py --call-sites FuncName` |
-| F2 | Cross-module instrumentation | 0 state files | KGen instruments files outside the build target; build fails silently | Run wrapper manually: `bash .vit_build_wrapper.sh` |
+| F2 | Cross-module instrumentation | 0 state files | KGen instruments files outside the build target | **Auto-fixed by step 2e**: VIT transplants kw_* subroutines into the in-target module file. If still failing, check `/tmp/vit_wrapper.log` for transplant messages. |
 | F3 | Stale pragmas | Wrong function extracted | `.kgen_org` files from previous run contain pragmas | `grep -r '!$kgen' modules/` |
 | F4 | kgen_utils not compiled | 0 state files | Wrapper didn't inject or cmake didn't pick it up | Check `/tmp/vit_wrapper.log` |
 | F5 | Docker timestamps | 0 state files | `cp` doesn't update timestamps; cmake skips recompile | Check build log for "Building Fortran object...AirfoilInfo.f90.o" |

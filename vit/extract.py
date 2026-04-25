@@ -57,6 +57,292 @@ def _create_kgen_backups(kernel: Path) -> None:
         shutil.copy2(makefile, kernel / "Makefile.kgen")
 
 
+def fix_cross_module_instrumentation(
+    state_dir: str, cmake_file: str, source_dir: str
+) -> list[str]:
+    """
+    Detect and fix cross-module KGen instrumentation.
+
+    KGen traces USE dependency chains and instruments source files in every
+    module it encounters — not just the build target. When a file outside
+    the cmake target's source tree is instrumented, its kw_* subroutines
+    won't be compiled, causing unresolved symbol errors.
+
+    This function transplants kw_* subroutines from cross-module instrumented
+    files into the correct module file within the build target. Both files
+    define the same Fortran MODULE (same module name, same module-scope
+    variables), so the subroutine works in either location.
+
+    Called from the build wrapper AFTER KGen's state Makefile 'replace' step
+    has copied instrumented source to the source tree, and BEFORE the cmake
+    build.
+
+    Args:
+        state_dir: Path to KGen's state/ directory (contains Makefile)
+        cmake_file: Path to the cmake target's CMakeLists.txt
+        source_dir: Root source directory for searching module files
+
+    Returns:
+        List of human-readable descriptions of fixes applied
+    """
+    fixes = []
+    state_makefile = os.path.join(state_dir, "Makefile")
+    if not os.path.exists(state_makefile):
+        return fixes
+
+    # Determine the cmake target's source directory
+    cmake_dir = os.path.dirname(os.path.abspath(cmake_file))
+
+    # Parse the state Makefile to find all files KGen instrumented
+    instrumented_files = _parse_state_makefile_replace_files(state_makefile)
+
+    for abs_path in instrumented_files:
+        # Check if this file is outside the cmake target's directory tree
+        if os.path.abspath(abs_path).startswith(cmake_dir + os.sep):
+            continue  # In-target file, no fix needed
+
+        # Cross-module file detected
+        cross_module_path = abs_path
+        module_name = _extract_module_name(cross_module_path)
+        if not module_name:
+            continue
+
+        public_lines, subroutine_blocks = _extract_kw_subroutines(
+            cross_module_path
+        )
+        if not subroutine_blocks:
+            continue  # No kw_* subroutines to transplant
+
+        # Find the in-target file that defines the same module
+        target_file = _find_module_file_in_dir(
+            module_name, source_dir, exclude_path=cross_module_path
+        )
+        if not target_file:
+            fixes.append(
+                f"WARNING: Cross-module file {os.path.basename(cross_module_path)} "
+                f"defines MODULE {module_name} but no matching file found in "
+                f"source tree under {source_dir}"
+            )
+            continue
+
+        # Transplant the kw_* subroutines
+        _inject_kw_into_module(target_file, public_lines, subroutine_blocks)
+
+        sub_names = [
+            re.search(r'SUBROUTINE\s+(\w+)', block, re.IGNORECASE).group(1)
+            for block in subroutine_blocks
+            if re.search(r'SUBROUTINE\s+(\w+)', block, re.IGNORECASE)
+        ]
+        fixes.append(
+            f"Transplanted {', '.join(sub_names)} from "
+            f"{os.path.basename(cross_module_path)} to "
+            f"{os.path.basename(target_file)}"
+        )
+
+    return fixes
+
+
+def _parse_state_makefile_replace_files(makefile_path: str) -> list[str]:
+    """Parse state/Makefile 'replace' target to get instrumented file paths.
+
+    The replace target has lines like:
+        cp -f AirfoilInfo.f90 /workspace/openfast/modules/aerodyn/src/AirfoilInfo.f90
+
+    Returns the list of absolute destination paths.
+    """
+    content = Path(makefile_path).read_text()
+    files = []
+    in_replace = False
+    for line in content.split("\n"):
+        raw = line  # Preserve original indentation for detection
+        stripped = line.strip()
+        if stripped.startswith("replace:"):
+            in_replace = True
+            continue
+        if in_replace:
+            # Makefile recipe lines start with a tab. A non-tab, non-empty
+            # line indicates the next target.
+            if raw and not raw[0] in ('\t', ' ') and not raw.startswith('#'):
+                break  # Next target
+            # Match: cp -f <local> <abs_path>
+            m = re.match(r'cp\s+-f\s+\S+\s+(\S+)', stripped)
+            if m:
+                files.append(m.group(1))
+    return files
+
+
+def _extract_module_name(filepath: str) -> Optional[str]:
+    """Extract the MODULE name from a Fortran file.
+
+    Looks for 'MODULE name' (not 'MODULE PROCEDURE' or 'MODULE FUNCTION').
+    """
+    try:
+        content = Path(filepath).read_text()
+    except (FileNotFoundError, PermissionError):
+        return None
+    for line in content.split("\n"):
+        stripped = line.strip()
+        # Skip comments
+        if stripped.startswith("!"):
+            continue
+        m = re.match(
+            r'MODULE\s+(\w+)\s*$', stripped, re.IGNORECASE
+        )
+        if m:
+            name = m.group(1)
+            # Exclude 'MODULE PROCEDURE' etc.
+            if name.upper() not in ("PROCEDURE", "FUNCTION", "SUBROUTINE"):
+                return name
+    return None
+
+
+def _extract_kw_subroutines(
+    filepath: str,
+) -> tuple[list[str], list[str]]:
+    """Extract kw_* PUBLIC declarations and subroutine bodies.
+
+    Returns:
+        (public_lines, subroutine_blocks) where:
+        - public_lines: lines like '   PUBLIC kw_externs_in_nwtc_base'
+        - subroutine_blocks: complete subroutine text blocks
+    """
+    try:
+        content = Path(filepath).read_text()
+    except (FileNotFoundError, PermissionError):
+        return [], []
+
+    lines = content.split("\n")
+    public_lines = []
+    subroutine_blocks = []
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+
+        # Capture PUBLIC kw_* declarations
+        if re.match(r'PUBLIC\s+kw_', stripped, re.IGNORECASE):
+            public_lines.append(lines[i])
+            i += 1
+            continue
+
+        # Capture SUBROUTINE kw_* ... END SUBROUTINE kw_*
+        m = re.match(r'SUBROUTINE\s+(kw_\w+)', stripped, re.IGNORECASE)
+        if m:
+            sub_name = m.group(1)
+            block_lines = [lines[i]]
+            i += 1
+            # Collect until END SUBROUTINE
+            while i < len(lines):
+                block_lines.append(lines[i])
+                if re.match(
+                    rf'\s*END\s+SUBROUTINE\s+{re.escape(sub_name)}\s*$',
+                    lines[i].strip(), re.IGNORECASE,
+                ):
+                    break
+                i += 1
+            subroutine_blocks.append("\n".join(block_lines))
+            i += 1
+            continue
+
+        i += 1
+
+    return public_lines, subroutine_blocks
+
+
+def _find_module_file_in_dir(
+    module_name: str, search_dir: str, exclude_path: str = ""
+) -> Optional[str]:
+    """Find the file defining MODULE <name> within search_dir.
+
+    Recursively searches for .f90/.F90 files containing 'MODULE <name>'.
+    Excludes the file at exclude_path (the cross-module file itself).
+    """
+    exclude_abs = os.path.abspath(exclude_path) if exclude_path else ""
+    search_path = Path(search_dir).resolve()
+
+    for pattern in ["**/*.f90", "**/*.F90"]:
+        for fpath in search_path.glob(pattern):
+            if str(fpath.resolve()) == exclude_abs:
+                continue
+            try:
+                content = fpath.read_text()
+            except (UnicodeDecodeError, PermissionError):
+                continue
+            for line in content.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("!"):
+                    continue
+                m = re.match(
+                    r'MODULE\s+(\w+)\s*$', stripped, re.IGNORECASE
+                )
+                if m and m.group(1).upper() == module_name.upper():
+                    return str(fpath)
+    return None
+
+
+def _inject_kw_into_module(
+    target_file: str,
+    public_lines: list[str],
+    subroutine_blocks: list[str],
+):
+    """Inject kw_* PUBLIC declarations and subroutines into a module file.
+
+    - PUBLIC declarations are added after existing PUBLIC/IMPLICIT lines
+    - Subroutine bodies are added before END MODULE
+    - If no CONTAINS section exists, one is added
+    """
+    content = Path(target_file).read_text()
+    lines = content.split("\n")
+
+    # Find insertion points
+    end_module_idx = None
+    contains_idx = None
+    last_public_or_implicit_idx = None
+
+    for i, line in enumerate(lines):
+        stripped = line.strip().upper()
+        if stripped.startswith("!"):
+            continue
+        if re.match(r'END\s+MODULE\b', stripped):
+            end_module_idx = i
+        if stripped == "CONTAINS":
+            contains_idx = i
+        if re.match(r'(PUBLIC|PRIVATE|IMPLICIT)\b', stripped):
+            last_public_or_implicit_idx = i
+
+    if end_module_idx is None:
+        return  # Can't find END MODULE — bail
+
+    # Insert PUBLIC declarations after the last PUBLIC/IMPLICIT line
+    if public_lines and last_public_or_implicit_idx is not None:
+        insert_idx = last_public_or_implicit_idx + 1
+        for pl in public_lines:
+            lines.insert(insert_idx, pl)
+            insert_idx += 1
+            # Adjust indices
+            if contains_idx is not None and contains_idx >= last_public_or_implicit_idx:
+                contains_idx += 1
+            end_module_idx += 1
+
+    # Insert subroutines before END MODULE
+    if subroutine_blocks:
+        # Add CONTAINS if not present
+        if contains_idx is None:
+            lines.insert(end_module_idx, "")
+            lines.insert(end_module_idx + 1, "CONTAINS")
+            end_module_idx += 2
+
+        # Insert subroutine blocks before END MODULE
+        insert_lines = []
+        for block in subroutine_blocks:
+            insert_lines.append("")
+            insert_lines.extend(block.split("\n"))
+
+        for j, sl in enumerate(insert_lines):
+            lines.insert(end_module_idx + j, sl)
+
+    Path(target_file).write_text("\n".join(lines))
+
+
 def find_call_sites(source_dir: str, function_name: str,
                     file_pattern: str = "*.f90") -> list[tuple[str, int, str]]:
     """
@@ -347,6 +633,7 @@ def generate_state_capture_build_script(
     kernel_dir: str = "kernel",
     assumed_size_arrays: dict = None,
     dll_persistence: dict = None,
+    state_dir: str = "state",
 ) -> str:
     """
     Generate a shell script that wraps the build command for state capture.
@@ -533,6 +820,29 @@ def generate_state_capture_build_script(
             f'for f90 in "{cmake_src_dir}"/*.f90 "{cmake_src_dir}"/*.F90; do',
             f'    [ -f "$f90" ] && touch "$f90"',
             f'done',
+            "",
+        ])
+
+    # Step 2e: Fix cross-module KGen instrumentation.
+    # KGen instruments files across cmake target boundaries (following USE chains).
+    # Files outside the build target aren't compiled, so their kw_* subroutines
+    # cause unresolved symbol errors. Transplant kw_* subroutines from cross-module
+    # files into the in-target module file that defines the same Fortran MODULE.
+    if cmake_file_abs and source_dir:
+        state_dir_abs = os.path.abspath(state_dir)
+        source_dir_abs = os.path.abspath(source_dir)
+        script_lines.extend([
+            "# Step 2e: Fix cross-module KGen instrumentation",
+            f'python3 -c "',
+            f'import sys; sys.path.insert(0, \\"{os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}\\")',
+            f'from vit.extract import fix_cross_module_instrumentation',
+            f'fixes = fix_cross_module_instrumentation(',
+            f'    \\"{state_dir_abs}\\",',
+            f'    \\"{cmake_file_abs}\\",',
+            f'    \\"{source_dir_abs}\\"',
+            f')',
+            f'for f in fixes: print(\\"VIT: \\" + f)',
+            f'" 2>&1 | tee -a /tmp/vit_wrapper.log',
             "",
         ])
 
@@ -1059,6 +1369,7 @@ def run_kgen_extract(
         kernel_dir=output_dir or "kernel",
         assumed_size_arrays=assumed_size_arrays,
         dll_persistence=dll_persistence,
+        state_dir=os.path.join(output_dir or ".", "state"),
     )
     effective_build_cmd = f"bash {wrapper_script}"
 
