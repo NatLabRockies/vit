@@ -82,10 +82,89 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 
 **Registry C++ headers:** Generate with `-cppcode-double` flag for correct ReKi→double mapping: `openfast_registry input.txt -cppcode-double -O output_dir`
 
-**Extraction lessons learned:**
-- Call site must be on a code path exercised by the test case (Calculate_Cn: line 974 worked, line 956 was in an untaken branch)
-- KGen's ElapsedTime phase selects invocations — the count is not simply the first N
-- Docker filesystem timestamps can prevent cmake recompilation — VIT handles this automatically with `touch` in the build wrapper
+**Extraction parameters:** Per-function extraction details (callers, test cases, invocation ranges) are tracked in `EXTRACTION_PARAMS.md` in the OpenFAST repo. See also the call graph at `vit/analysis/aerodyn/call_graph.json` for tracing complex call paths.
+
+### AeroDyn Test Case Coverage Map
+
+17 regression test cases with different mode combinations. Use this to pick the right test case for KGen extraction based on which code path the target function is on.
+
+| Test Case | UA | AFTab | Wake | DBEMT | Cavit | Notes |
+|-----------|-----|-------|------|-------|-------|-------|
+| ad_BAR_SineMotion | 0 | 1 | 1 (BEMT) | 1 | - | **Default.** No UA. Most BEMT-path functions. |
+| ad_BAR_SineMotion_UA4_DBEMT3 | 4 | 1 | 1 (BEMT) | 3 | - | **UA init path.** CalculateUACoeffs, UA separation functions. |
+| ad_BAR_CombinedCases | 0 | 1 | 1 (BEMT) | 1 | - | Combined analysis type (AnalysisType=3). |
+| ad_BAR_RNAMotion | 0 | 1 | 1 (BEMT) | 0 | - | RNA motion, no DBEMT. |
+| ad_BAR_OLAF | 0 | 1 | 3 (OLAF) | - | - | OLAF wake model, BAR turbine. |
+| ad_MHK_RM1_Fixed | 0 | 2 | 1 (BEMT) | 2 | Yes | **Multi-table Re interp.** FindBoundingTables, AFI_ComputeAirfoilCoefs2D. |
+| ad_MHK_RM1_Fixed_IfW | 0 | 2 | 1 (BEMT) | 2 | Yes | Same as above + InflowWind. |
+| ad_MHK_RM1_Floating | 0 | 2 | 1 (BEMT) | 2 | Yes | Floating MHK, cavitation. |
+| ad_Kite_OLAF | 3 | 1 | 3 (OLAF) | - | - | **UA_Mod=3** (Minnema/Pierce) + OLAF. |
+| ad_B1n2_OLAF | 0 | 3 | 3 (OLAF) | - | - | **AFTabMod=3** (UserProp interp) + OLAF. |
+| ad_Sphere_OLAF | 0 | 3 | 3 (OLAF) | - | - | AFTabMod=3, spherical geometry. |
+| ad_VerticalAxis_OLAF | 0 | 2 | 3 (OLAF) | - | - | **VAWT.** AFTabMod=2 + OLAF. |
+| ad_EllipticalWingInf_OLAF | 0 | 1 | 3 (OLAF) | - | - | Infinite elliptical wing, OLAF. |
+| ad_HelicalWakeInf_OLAF | 0 | 1 | 3 (OLAF) | - | - | Infinite helical wake, OLAF. |
+| ad_MultipleHAWT | 0 | 1 | 1 (BEMT) | 0 | - | 2-turbine HAWT. |
+| ad_QuadRotor_OLAF | 0 | 1 | 3 (OLAF) | - | - | 4-rotor quad, OLAF. |
+| ad_timeseries_shutdown | 0 | 1 | 1 (BEMT) | 0 | - | Time-dependent input (AnalysisType=2), shutdown event. |
+
+**Test case selection guide:**
+- **General BEMT functions:** `ad_BAR_SineMotion` (default)
+- **UA-dependent functions** (CalculateUACoeffs, Compute_iLoweriUpper, ComputeUA360_*): `ad_BAR_SineMotion_UA4_DBEMT3`
+- **Multi-table interpolation** (FindBoundingTables, AFI_ComputeAirfoilCoefs2D): `ad_MHK_RM1_Fixed`
+- **OLAF/FVW functions:** `ad_BAR_OLAF` or `ad_Kite_OLAF` (latter adds UA)
+- **DBEMT functions:** `ad_BAR_SineMotion` (DBEMT_Mod=1) or `ad_BAR_SineMotion_UA4_DBEMT3` (DBEMT_Mod=3)
+
+### Extraction Workflow (AeroDyn)
+
+Extraction requires clean (pre-integration) source. Line numbers shift after each integration, so always find them fresh.
+
+**Step-by-step:**
+
+1. **Reset source to clean Fortran:**
+   ```bash
+   # Run on Mac, not in container
+   bash scripts/reset_to_clean.sh
+   ```
+
+2. **Find the call site line number.** Two methods:
+   - **Simple grep** (leaf functions with 1-2 callers):
+     ```bash
+     grep -n "call FunctionName" modules/aerodyn/src/SourceFile.f90
+     ```
+   - **Call graph lookup** (complex call paths): check `vit/analysis/aerodyn/call_graph.json` to find callers and trace which mode flag gates the call.
+   
+   Pick the call site on a branch that the chosen test case exercises. See `EXTRACTION_PARAMS.md` for per-function details.
+
+3. **Choose the test case** from the coverage map above. Update `vit.yaml` `run_cmd` if different from the current setting:
+   ```yaml
+   run_cmd: cd /workspace/openfast/reg_tests/r-test/modules/aerodyn/TEST_CASE
+       && /workspace/openfast/build/modules/aerodyn/aerodyn_driver ad_driver.dvr
+   ```
+
+4. **Rebuild with clean source** (inside container):
+   ```bash
+   cd /workspace/openfast/build && cmake --build . --target aerodyn_driver -j$(nproc)
+   ```
+
+5. **Extract** (inside container):
+   ```bash
+   cd /workspace/openfast && vit extract FunctionName -f modules/aerodyn/src/SourceFile.f90 -l LINE
+   ```
+
+6. **Restore integrated source:**
+   ```bash
+   # Run on Mac
+   git checkout -- modules/aerodyn/src/AirfoilInfo.f90
+   ```
+   Then re-integrate all functions and rebuild (or use the committed integrated version if no new integrations were added).
+
+7. **Restore `vit.yaml` `run_cmd`** to the default (`ad_BAR_SineMotion`) if it was changed.
+
+**Common pitfalls:**
+- KGen modifies `AirfoilInfo_Types.f90` and `AeroDyn_Driver.f90` (strips blank comment lines). Always `git checkout` these after extraction if they show as modified.
+- If extraction reports "No state data captured", check: (a) correct line number, (b) test case exercises the code path, (c) source is clean (no integration wrappers referencing VIT modules).
+- The `invocation` setting in vit.yaml controls how many calls KGen captures. Default `0:0:1-5` works for runtime functions; use `0:0:1-20` for init-time functions called once per airfoil (30 airfoils x 1 call = 30 total, but KGen counts per call site).
 
 ## Development Environment
 
