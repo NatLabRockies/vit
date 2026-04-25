@@ -848,6 +848,77 @@ def detect_callees(source: str, target_name: str,
     return sorted(callees, key=str.upper)
 
 
+def _make_callees_public_in_kernel(
+    kernel: Path,
+    callee_sigs: list,
+) -> None:
+    """
+    Ensure callee functions are PUBLIC in kernel Fortran modules.
+
+    KGen's reduced modules often have PRIVATE default access and only export
+    the target function. Callee bridges need to USE other functions from the
+    same module. This function scans kernel .f90 files for each callee's
+    definition and adds a PUBLIC statement if the module has PRIVATE default.
+    """
+    callee_names_lower = {sig.name.lower() for sig in callee_sigs}
+
+    for f90_file in sorted(kernel.glob("*.[fF]90")):
+        if f90_file.name.startswith("vit_"):
+            continue
+        content = f90_file.read_text()
+        content_upper = content.upper()
+
+        # Only process files that are modules with PRIVATE default access
+        if "MODULE " not in content_upper or "\n    PRIVATE" not in content.upper().replace("\r", ""):
+            # Check more loosely for PRIVATE
+            has_private = bool(re.search(r'^\s*PRIVATE\s*$', content, re.MULTILINE | re.IGNORECASE))
+            if not has_private:
+                continue
+
+        # Find which callees are defined in this file's CONTAINS section
+        contains_pos = content_upper.find("\nCONTAINS")
+        if contains_pos < 0:
+            continue
+
+        callees_in_file = []
+        for m in re.finditer(
+            r'\b(?:FUNCTION|SUBROUTINE)\s+(\w+)\s*\(',
+            content[contains_pos:], re.IGNORECASE
+        ):
+            fname = m.group(1)
+            if fname.lower() in callee_names_lower:
+                callees_in_file.append(fname)
+
+        if not callees_in_file:
+            continue
+
+        # Add PUBLIC statements for each callee not already PUBLIC
+        for callee in callees_in_file:
+            public_pattern = re.compile(
+                rf'^\s*PUBLIC\s+.*\b{re.escape(callee)}\b',
+                re.MULTILINE | re.IGNORECASE,
+            )
+            if public_pattern.search(content):
+                continue  # Already PUBLIC
+
+            # Insert PUBLIC statement after the last existing PUBLIC line
+            # (before INTERFACE or CONTAINS)
+            last_public = None
+            for m in re.finditer(r'^\s*PUBLIC\b.*$', content, re.MULTILINE | re.IGNORECASE):
+                last_public = m
+
+            if last_public:
+                insert_pos = last_public.end()
+                content = content[:insert_pos] + f"\n    PUBLIC {callee}" + content[insert_pos:]
+            else:
+                # No PUBLIC lines — insert before CONTAINS
+                contains_match = re.search(r'^CONTAINS', content, re.MULTILINE | re.IGNORECASE)
+                if contains_match:
+                    content = content[:contains_match.start()] + f"    PUBLIC {callee}\n\n" + content[contains_match.start():]
+
+        f90_file.write_text(content)
+
+
 def _generate_callee_bridges(
     kernel: Path,
     sig: FortranSignature,
@@ -966,6 +1037,12 @@ def _generate_callee_bridges(
             # args, unsupported types). The C++ will get a linker error only
             # if it actually calls this callee — which is the right behavior.
             pass
+
+    # Ensure callee functions are PUBLIC in kernel modules.
+    # KGen's reduced modules may have PRIVATE default access, hiding callees
+    # that the bridge needs to USE.
+    if callee_sigs:
+        _make_callees_public_in_kernel(kernel, callee_sigs)
 
     # Generate callee declarations header for C++
     if callee_sigs:
@@ -1107,7 +1184,7 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
     """
     modified_files = []
     interface_block = generate_fortran_interface_block(sig, kind_aliases, derived_types)
-    wrapper_body = generate_fortran_wrapper(sig, kind_aliases, derived_types, is_kernel=True)
+    wrapper_body = generate_fortran_wrapper(sig, kind_aliases, derived_types, is_kernel=True, reverse_copy=True)
 
     for f90_file in sorted(kernel.glob("*.[fF]90")):
         content = f90_file.read_text()
