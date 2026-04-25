@@ -167,7 +167,21 @@ def get_type_mapping(fortran_type: str, kind_aliases: Optional[dict] = None,
                 byte_size=1,
                 character_len_param=inner.lower(),
             )
-        # CHARACTER(:) or CHARACTER(*) — cannot map directly
+        # CHARACTER(*) — assumed-length string parameter.
+        # At the C interop boundary, this becomes char* with a fixed buffer size.
+        # The caller must provide the buffer; the Fortran side fills it up to LEN.
+        # Map to char* with a default length (ErrMsgLen=8196 in OpenFAST/NWTC).
+        if inner == '*':
+            return TypeMapping(
+                fortran_type=fortran_type.strip(),
+                fortran_kind="*",
+                c_kind="C_CHAR",
+                c_type="char",
+                iso_c_type="CHARACTER(KIND=C_CHAR)",
+                byte_size=1,
+                character_len_param="*",
+            )
+        # CHARACTER(:) — deferred-length, cannot map directly
         raise ValueError(
             f"Cannot map Fortran type '{fortran_type}' (normalized: '{normalized}'). "
             f"Deferred-length CHARACTER(:) is not C-compatible. "

@@ -438,6 +438,9 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
 def _get_char_len_expr(arg, mapping, sig):
     """Get the length expression for a CHARACTER argument, using original case."""
     if mapping.character_len_param:
+        # CHARACTER(*) — assumed-length: use LEN(argname) at runtime
+        if mapping.character_len_param == "*":
+            return f"LEN({arg.name})"
         for a in sig.args:
             if a.name.lower() == mapping.character_len_param.lower():
                 return a.name
