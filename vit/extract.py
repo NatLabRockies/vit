@@ -236,11 +236,22 @@ def clean_kgen_artifacts(working_dir: str = ".") -> list[str]:
         List of files removed
     """
     removed = []
-    for artifact in ["strace.log", "kgen.log", "model.ini"]:
+    for artifact in ["kgen.log", "model.ini"]:
         path = os.path.join(working_dir, artifact)
         if os.path.exists(path):
             os.remove(path)
             removed.append(path)
+
+    # Create a dummy strace.log so KGen skips its compflag build phase.
+    # KGen's compflag phase wraps the full build command with strace to
+    # discover compiler flags — a clean + full rebuild (~100s) that we
+    # don't need because VIT provides include.ini independently.
+    # If strace.log exists, KGen skips the build entirely (line 62 of
+    # compflag/main.py: "Reusing KGen strace logfile").
+    strace_path = os.path.join(working_dir, "strace.log")
+    if not os.path.exists(strace_path):
+        Path(strace_path).write_text("# dummy — VIT provides include.ini\n")
+        removed.append(f"Created dummy {strace_path}")
 
     # Remove elapsedtime/ directory — KGen stores ETime profiling data here
     # and reuses it across extractions, which can embed the wrong function
