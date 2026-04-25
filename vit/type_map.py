@@ -170,7 +170,6 @@ def get_type_mapping(fortran_type: str, kind_aliases: Optional[dict] = None,
         # CHARACTER(*) — assumed-length string parameter.
         # At the C interop boundary, this becomes char* with a fixed buffer size.
         # The caller must provide the buffer; the Fortran side fills it up to LEN.
-        # Map to char* with a default length (ErrMsgLen=8196 in OpenFAST/NWTC).
         if inner == '*':
             return TypeMapping(
                 fortran_type=fortran_type.strip(),

@@ -737,14 +737,6 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
                 lines[i] = line.rstrip() + " -lstdc++"
                 break
 
-    # 4b. Add -llapack -lblas when NWTC_LAPACK is in the kernel
-    content_joined = "\n".join(lines)
-    if "NWTC_LAPACK" in content_joined and "-llapack" not in content_joined:
-        for i, line in enumerate(lines):
-            if ("-o kernel.exe" in line or "-o\tkernel.exe" in line) and "rm " not in line and "./" not in line:
-                lines[i] = line.rstrip() + " -llapack -lblas"
-                break
-
     makefile.write_text("\n".join(lines))
 
 
@@ -1096,10 +1088,6 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
     interface_block = generate_fortran_interface_block(sig, kind_aliases, derived_types)
     wrapper_body = generate_fortran_wrapper(sig, kind_aliases, derived_types, is_kernel=True)
 
-    # Pre-pass: add missing CHARACTER length constants (e.g., ErrMsgLen)
-    # to kernel module files. KGen's reduced copies may be incomplete.
-    _patch_missing_character_constants(kernel, modified_files)
-
     for f90_file in sorted(kernel.glob("*.[fF]90")):
         content = f90_file.read_text()
         original = content
@@ -1196,7 +1184,7 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
         if field_log:
             content = _patch_field_value_logging(content)
 
-        # Check if this file contains our function (further patches below)
+        # Check if this file contains our function
         func_pattern = rf'\b(FUNCTION|SUBROUTINE)\s+{name_upper}\s*\('
         if not re.search(func_pattern, content_upper):
             # Even files that don't contain our function may need USE fixes
@@ -1528,116 +1516,6 @@ def _fix_kgen_utils_mod_only(content: str) -> str:
             i += 1
 
     return "\n".join(result)
-
-
-def _patch_missing_character_constants(kernel: Path, modified_files: list) -> None:
-    """
-    Add missing CHARACTER length constants to kernel module files.
-
-    KGen bundles reduced copies of framework modules (e.g., NWTC_Base_reduced.f90)
-    that may be missing constants like ErrMsgLen. Other bundled files (e.g.,
-    NWTC_LAPACK.f90) reference these constants for CHARACTER declarations.
-    Without them, the kernel won't compile.
-
-    Detection: scan all kernel .f90 files for CHARACTER(IDENTIFIER) where
-    IDENTIFIER is a name (not numeric, not '*', not ':'). Check if any kernel
-    file defines that IDENTIFIER. If not, add it to the module that defines
-    error-related constants (ErrID_None, ErrID_Fatal).
-    """
-    # Scan for CHARACTER(name) patterns in all kernel files
-    needed_constants = set()
-    defined_constants = set()
-    for f90_file in sorted(kernel.glob("*.[fF]90")):
-        content = f90_file.read_text()
-        # Find CHARACTER(name) or CHARACTER(LEN=name)
-        for m in re.finditer(
-            r'CHARACTER\s*\(\s*(?:LEN\s*=\s*)?(\w+)\s*\)',
-            content, re.IGNORECASE,
-        ):
-            name = m.group(1)
-            if not name.isdigit() and name not in ('*', ':'):
-                needed_constants.add(name.upper())
-        # Find definitions: INTEGER ... :: name = value
-        for m in re.finditer(
-            r'INTEGER\b[^:]*::\s*(\w+)\s*=',
-            content, re.IGNORECASE,
-        ):
-            defined_constants.add(m.group(1).upper())
-        # Also check for PARAMETER definitions
-        for m in re.finditer(
-            r'INTEGER\s*(?:\([^)]*\))?\s*,\s*PARAMETER\s*::\s*(\w+)\s*=',
-            content, re.IGNORECASE,
-        ):
-            defined_constants.add(m.group(1).upper())
-
-    missing = needed_constants - defined_constants
-    if not missing:
-        return
-
-    # Known framework constants with default values
-    known_constants = {
-        "ERRMSGLEN": ("INTEGER", 8196),
-    }
-
-    # Find the target module file: the one that DEFINES ErrID_Fatal as a PARAMETER
-    # (not just references it). This is the framework base module (e.g., NWTC_Base).
-    target_file = None
-    for f90_file in sorted(kernel.glob("*.[fF]90")):
-        content = f90_file.read_text()
-        if re.search(
-            r'INTEGER\s*(?:\([^)]*\))?\s*,\s*PARAMETER\s*::\s*ErrID_Fatal\s*=',
-            content, re.IGNORECASE,
-        ):
-            target_file = f90_file
-            break
-
-    # Simple fix: replace CHARACTER(CONST_NAME) with CHARACTER(value) directly.
-    # This avoids module-scope conflicts and broken USE chains — just inline
-    # the known literal value everywhere it appears.
-    # Also ensure the constant name is declared as a local INTEGER wherever
-    # it's used in a READ statement (KGen reads it from state data; the value
-    # is discarded but the READ must succeed for binary format sequencing).
-    for f90_file in sorted(kernel.glob("*.[fF]90")):
-        content = f90_file.read_text()
-        original = content
-        for const_name in missing:
-            if const_name in known_constants:
-                _, default_val = known_constants[const_name]
-                # Replace CHARACTER(CONST_NAME) and CHARACTER(LEN=CONST_NAME)
-                content = re.sub(
-                    rf'CHARACTER\s*\(\s*{const_name}\s*\)',
-                    f'CHARACTER({default_val})',
-                    content, flags=re.IGNORECASE,
-                )
-                content = re.sub(
-                    rf'CHARACTER\s*\(\s*LEN\s*=\s*{const_name}\s*\)',
-                    f'CHARACTER(LEN={default_val})',
-                    content, flags=re.IGNORECASE,
-                )
-                # If file has READ(...) const_name, add a local INTEGER declaration
-                # so the sequential binary read doesn't fail
-                if re.search(rf'READ\s*\([^)]*\)\s*{const_name}\b', content, re.IGNORECASE):
-                    if not re.search(rf'INTEGER\b[^:]*::\s*{const_name}\b', content, re.IGNORECASE):
-                        # Add declaration after first IMPLICIT NONE or after last USE
-                        lines = content.split("\n")
-                        insert_idx = None
-                        for i, line in enumerate(lines):
-                            stripped = line.strip().upper()
-                            if stripped.startswith("IMPLICIT NONE"):
-                                insert_idx = i + 1
-                                break
-                        if insert_idx is None:
-                            for i, line in enumerate(lines):
-                                if re.match(r'\s*USE\s+', line.strip(), re.IGNORECASE):
-                                    insert_idx = i + 1
-                        if insert_idx is not None:
-                            lines.insert(insert_idx,
-                                f"    INTEGER :: {const_name.lower()}"
-                                f"  ! VIT: dummy for sequential binary read")
-                            content = "\n".join(lines)
-        if content != original:
-            f90_file.write_text(content)
-            modified_files.append(str(f90_file))
 
 
 def _fix_use_ordering(content: str) -> str:

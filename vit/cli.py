@@ -426,7 +426,6 @@ def cmd_extract(args, config):
                 error_lines = [
                     l for l in output.splitlines()
                     if any(kw in l.lower() for kw in ['error:', 'error ', 'failed', 'fatal'])
-                    and not any(skip in l.lower() for skip in ['errmsg', 'errstat', 'errid_', 'err_'])
                 ]
                 if error_lines:
                     print(f"  Build/run errors detected:")
