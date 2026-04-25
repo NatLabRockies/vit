@@ -332,6 +332,7 @@ def generate_state_capture_build_script(
     install_cmd: str = "",
     cmake_file: str = "",
     source_dir: str = "",
+    build_dir: str = "",
     kernel_dir: str = "kernel",
     assumed_size_arrays: dict = None,
     dll_persistence: dict = None,
@@ -396,17 +397,20 @@ def generate_state_capture_build_script(
         f'KGEN_UTILS_DEST="{kgen_utils_dest}"',
         f'CMAKE_FILE="{cmake_file_abs}"',
         'echo "VIT_WRAPPER: invoked at $(date), cwd=$(pwd)" >> /tmp/vit_wrapper.log',
+        'echo "VIT_WRAPPER: KGEN_UTILS_SRC=$KGEN_UTILS_SRC exists=$([ -f $KGEN_UTILS_SRC ] && echo YES || echo NO)" >> /tmp/vit_wrapper.log',
         "",
         "# Step 1: Copy kgen_utils.f90 into source tree (if it exists)",
         'if [ -f "$KGEN_UTILS_SRC" ]; then',
         '    cp "$KGEN_UTILS_SRC" "$KGEN_UTILS_DEST"',
         "    # (kgen_utils.f90 copied as-is, no modifications needed)",
         '    echo "VIT: Copied kgen_utils.f90 to source tree"',
+        '    echo "VIT_WRAPPER: copied kgen_utils.f90 to $KGEN_UTILS_DEST" >> /tmp/vit_wrapper.log',
         "",
     ]
 
     # Step 2: Patch CMakeLists.txt if cmake project
     if cmake_file_abs:
+        build_dir_abs = os.path.abspath(build_dir) if build_dir else ""
         script_lines.extend([
             '    # Patch CMakeLists.txt to include kgen_utils.f90 (only once)',
             '    if [ -f "$CMAKE_FILE" ]; then',
@@ -418,11 +422,26 @@ def generate_state_capture_build_script(
             '        if ! grep -q "kgen_utils.f90" "$CMAKE_FILE"; then',
             r"""            sed -i '0,/^\( *src\/[A-Za-z_]*\.f90\)$/s//\1\n    src\/kgen_utils.f90/' "$CMAKE_FILE" """,
             '            echo "VIT: Patched CMakeLists.txt to include kgen_utils.f90"',
+        ])
+        # Reconfigure cmake so it picks up the new source file.
+        # cmake caches its source list internally — patching CMakeLists.txt
+        # without reconfiguring means `cmake --build .` silently uses the
+        # old source list and never compiles kgen_utils.f90.
+        # This is critical for incremental build commands (cmake --build .)
+        # as opposed to full clean builds (rm -rf * && cmake .. && cmake --build .).
+        if build_dir_abs:
+            script_lines.extend([
+                f'            echo "VIT: Reconfiguring cmake to pick up kgen_utils.f90"',
+                f'            cd "{build_dir_abs}" && cmake .. > /dev/null 2>&1',
+            ])
+        script_lines.extend([
             '        fi',
             "    fi",
         ])
 
     script_lines.extend([
+        "else",
+        '    echo "VIT_WRAPPER: kgen_utils.f90 not found at $KGEN_UTILS_SRC — skipping injection" >> /tmp/vit_wrapper.log',
         "fi",
         "",
     ])
@@ -506,8 +525,25 @@ def generate_state_capture_build_script(
             "",
         ])
 
+    # Step 3: Reconfigure cmake if CMakeLists was modified (kgen_utils.f90 added).
+    # cmake caches its source list internally — patching CMakeLists.txt without
+    # reconfiguring means `cmake --build .` silently uses the old source list
+    # and never compiles kgen_utils.f90. This is essential for incremental build
+    # commands (cmake --build .) as opposed to full clean builds.
+    if cmake_file_abs and build_dir:
+        build_dir_abs = os.path.abspath(build_dir)
+        script_lines.extend([
+            "# Step 3: Reconfigure cmake if CMakeLists was modified",
+            f'if [ -f "{cmake_file_abs}.vit_backup" ]; then',
+            f'    echo "VIT_WRAPPER: reconfiguring cmake" >> /tmp/vit_wrapper.log',
+            f'    cd "{build_dir_abs}" && cmake .. >> /tmp/vit_wrapper.log 2>&1',
+            f'    echo "VIT_WRAPPER: cmake reconfigure exit code=$?" >> /tmp/vit_wrapper.log',
+            f'fi',
+            "",
+        ])
+
     script_lines.extend([
-        "# Step 3: Run the actual build",
+        "# Step 4: Run the actual build",
         "# Temporarily disable set -e so the cleanup step always runs",
         "set +e",
         f"{build_cmd}",
@@ -1008,6 +1044,7 @@ def run_kgen_extract(
         install_cmd=install_cmd,
         cmake_file=cmake_file,
         source_dir=source_dir,
+        build_dir=build_dir,
         kernel_dir=output_dir or "kernel",
         assumed_size_arrays=assumed_size_arrays,
         dll_persistence=dll_persistence,
