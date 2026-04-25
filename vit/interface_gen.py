@@ -1070,12 +1070,21 @@ def generate_kernel_callee_bridge(
         lines.append(f"        USE {sig.module_name}, ONLY: {sig.name}")
     for use_stmt in use_stmts:
         lines.append(f"        {use_stmt}")
-    # USE view stash modules for view-type args (bridges use the stash instead of C_F_POINTER)
+    # USE view stash modules for view-type args (bridges use the stash instead of C_F_POINTER).
+    # For INOUT/OUT view args, also import the populator + view type for post-call re-sync
+    # (Fortran may modify scalars in the original type; the view must reflect those changes
+    # so the caller's reverse-copy doesn't overwrite them with stale values).
     for arg, mapping in view_struct_args:
         type_lower = mapping.c_type.lower()
         module_name = f"vit_{type_lower}_view"
         stash_name = f"vit_original_{type_lower}"
-        lines.append(f"        USE {module_name}, ONLY: {stash_name}")
+        needs_resync = arg.intent and arg.intent.value.upper() in ("INOUT", "OUT")
+        if needs_resync:
+            view_type = f"{type_lower}_view_t"
+            populator = f"vit_populate_{type_lower}"
+            lines.append(f"        USE {module_name}, ONLY: {stash_name}, {view_type}, {populator}")
+        else:
+            lines.append(f"        USE {module_name}, ONLY: {stash_name}")
     lines.append(f"        IMPLICIT NONE")
 
     # Declare BIND(C) arguments (same as interface block)
@@ -1089,6 +1098,11 @@ def generate_kernel_callee_bridge(
     # Declare local Fortran pointer variables for regular struct args (not view types)
     for arg, mapping in struct_args:
         lines.append(f"        TYPE({arg.derived_type_name}), POINTER :: {arg.name}_f")
+    # Declare local view pointers for post-call re-sync (INOUT/OUT only)
+    for arg, mapping in view_struct_args:
+        if arg.intent and arg.intent.value.upper() in ("INOUT", "OUT"):
+            type_lower = mapping.c_type.lower()
+            lines.append(f"        TYPE({type_lower}_view_t), POINTER :: {arg.name}_view")
 
     # Convert C struct pointers to Fortran pointers (regular structs only)
     if struct_args:
@@ -1145,6 +1159,25 @@ def generate_kernel_callee_bridge(
             lines.append(_make_call(sig.name, required_str, True, result_name, ret_mapping))
         else:
             lines.append(_make_call(sig.name, required_str, False))
+
+    # Re-sync view structs after the Fortran call, but only for INOUT/OUT args.
+    # The Fortran function may have modified scalar fields in the original type
+    # (via the stash). The C++ caller's view struct must reflect those changes
+    # so the final reverse-copy doesn't overwrite them with stale values.
+    # IN-only args are not modified — re-syncing them would corrupt the view
+    # (the INTENT(OUT) populator zeros the struct before re-filling).
+    inout_view_args = [
+        (arg, mapping) for arg, mapping in view_struct_args
+        if arg.intent and arg.intent.value.upper() in ("INOUT", "OUT")
+    ]
+    if inout_view_args:
+        lines.append(f"        ! Re-sync view struct from Fortran type after callee modified it")
+        for arg, mapping in inout_view_args:
+            type_lower = mapping.c_type.lower()
+            stash_name = f"vit_original_{type_lower}"
+            populator = f"vit_populate_{type_lower}"
+            lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_view)")
+            lines.append(f"        CALL {populator}({stash_name}, {arg.name}_view)")
 
     if sig.is_function and not sig.result_is_array:
         lines.append(f"    END FUNCTION {bridge_name}")
