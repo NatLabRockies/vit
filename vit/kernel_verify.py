@@ -116,6 +116,7 @@ def setup_kernel_cpp(
     fortran_flags: str = "",
     translations: Optional[dict] = None,
     source_dir: Optional[str] = None,
+    fortran_compiler: str = "gfortran",
 ) -> dict:
     """
     Wire a C++ translation into a KGen kernel directory for verification.
@@ -252,6 +253,24 @@ def setup_kernel_cpp(
         except Exception as e:
             result["errors"].append(f"Callee bridge Makefile patch failed: {e}")
 
+    # --- Step 6: Compile-error-driven kernel repair ---
+    # KGen bundles reduced copies of framework modules that may be missing
+    # constants, subroutines, and library links. Try to build; if it fails,
+    # parse the compiler/linker errors, fix from project source, retry.
+    if source_dir and len(result["errors"]) == 0:
+        run_env = {**os.environ}
+        repair = _repair_kernel_build(
+            kernel, source_dir, fortran_compiler, run_env
+        )
+        result["files_modified"].extend(repair.get("modified", []))
+        for msg in repair.get("log", []):
+            result["files_modified"]  # log is informational, not an error
+        if repair.get("errors"):
+            result["errors"].extend(repair["errors"])
+        # Print repair log for visibility
+        for msg in repair.get("log", []):
+            print(f"  {msg}")
+
     result["success"] = len(result["errors"]) == 0
     return result
 
@@ -273,9 +292,13 @@ def _build_and_run_kernel(kernel: Path, env: dict) -> tuple[int, str]:
 
     run = subprocess.run(
         "./kernel.exe", shell=True, cwd=str(kernel),
-        capture_output=True, text=True, env=env,
+        capture_output=True, env=env,
     )
-    return 0, run.stdout + run.stderr
+    # Decode with error handling — kernel output may contain binary garbage
+    # from CHARACTER buffer comparisons (uninitialized bytes in the buffer)
+    output = run.stdout.decode("utf-8", errors="replace") + \
+             run.stderr.decode("utf-8", errors="replace")
+    return 0, output
 
 
 def _extract_function_body(content: str, name: str, is_function: bool) -> Optional[tuple[int, int, list[str]]]:
@@ -1516,6 +1539,415 @@ def _fix_kgen_utils_mod_only(content: str) -> str:
             i += 1
 
     return "\n".join(result)
+
+
+# ---------------------------------------------------------------------------
+# Compile-error-driven kernel repair
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class KernelBuildError:
+    """A structured build error from compiling a kernel."""
+    file: str
+    line: int
+    category: str  # 'missing_constant', 'undefined_symbol', 'link_undefined'
+    symbol: str
+    context: str
+
+
+def _parse_build_errors(output: str) -> list[KernelBuildError]:
+    """Parse gfortran/linker output into structured build errors."""
+    errors = []
+    lines = output.split("\n")
+
+    # Track current file context (gfortran prints file:line:col: on one line,
+    # the error message on a subsequent line)
+    current_file = ""
+    current_line = 0
+
+    for i, line in enumerate(lines):
+        # File:line:col: context line
+        m = re.match(r'^(\S+\.f90):(\d+):\d+:', line, re.IGNORECASE)
+        if m:
+            current_file = m.group(1)
+            current_line = int(m.group(2))
+            continue
+
+        stripped = line.strip()
+
+        # "Error: Scalar INTEGER expression expected at (1)"
+        # This happens when CHARACTER(IDENTIFIER) uses an undefined constant
+        if "Scalar INTEGER expression expected" in stripped:
+            # Look backwards for the source line to extract the constant name
+            for j in range(i - 1, max(i - 5, -1), -1):
+                src_m = re.search(r'CHARACTER\s*\(\s*(?:LEN\s*=\s*)?(\w+)\s*\)',
+                                  lines[j], re.IGNORECASE)
+                if src_m:
+                    errors.append(KernelBuildError(
+                        file=current_file, line=current_line,
+                        category="missing_constant",
+                        symbol=src_m.group(1),
+                        context=lines[j].strip(),
+                    ))
+                    break
+            continue
+
+        # "Error: Symbol 'xxx' at (1) has no IMPLICIT type"
+        # gfortran uses Unicode curly quotes (\u2018 \u2019) not ASCII quotes
+        m = re.match(r"Error:\s+Symbol\s+['\u2018](\w+)['\u2019]\s+at\s+\(1\)\s+has no IMPLICIT type",
+                     stripped, re.IGNORECASE)
+        if m:
+            errors.append(KernelBuildError(
+                file=current_file, line=current_line,
+                category="undefined_symbol",
+                symbol=m.group(1),
+                context=stripped,
+            ))
+            continue
+
+        # "undefined reference to 'symbol_'" (linker)
+        # Linker may use backtick, ASCII quote, or Unicode curly quotes
+        m = re.search(r"undefined reference to [`'\u2018](\w+)['\u2019]", stripped)
+        if m:
+            errors.append(KernelBuildError(
+                file=current_file, line=0,
+                category="link_undefined",
+                symbol=m.group(1),
+                context=stripped,
+            ))
+            continue
+
+    # Deduplicate by (category, symbol)
+    seen = set()
+    unique = []
+    for e in errors:
+        key = (e.category, e.symbol.lower())
+        if key not in seen:
+            seen.add(key)
+            unique.append(e)
+    return unique
+
+
+def _find_constant_in_source(symbol: str, source_dir: str) -> Optional[int]:
+    """Search project source for an INTEGER PARAMETER definition and return its value."""
+    pattern = re.compile(
+        rf'INTEGER\b[^:]*PARAMETER[^:]*::\s*{re.escape(symbol)}\s*=\s*(\d+)',
+        re.IGNORECASE,
+    )
+    source_path = Path(source_dir)
+    for fpath in sorted(source_path.rglob("*.[fF]90")):
+        try:
+            content = fpath.read_text()
+        except (UnicodeDecodeError, PermissionError):
+            continue
+        m = pattern.search(content)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def _fix_missing_constant(
+    kernel: Path, error: KernelBuildError, source_dir: str
+) -> bool:
+    """Fix a missing constant by inlining its value from project source.
+
+    Replaces CHARACTER(CONST) and CHARACTER(LEN=CONST) with CHARACTER(value).
+    Also adds a dummy INTEGER declaration if the constant is READ from state data.
+
+    Returns True if a fix was applied.
+    """
+    value = _find_constant_in_source(error.symbol, source_dir)
+    if value is None:
+        return False
+
+    target = kernel / error.file
+    if not target.exists():
+        return False
+
+    content = target.read_text()
+    original = content
+    name = error.symbol
+
+    content = re.sub(
+        rf'CHARACTER\s*\(\s*{name}\s*\)',
+        f'CHARACTER({value})',
+        content, flags=re.IGNORECASE,
+    )
+    content = re.sub(
+        rf'CHARACTER\s*\(\s*LEN\s*=\s*{name}\s*\)',
+        f'CHARACTER(LEN={value})',
+        content, flags=re.IGNORECASE,
+    )
+
+    if content != original:
+        target.write_text(content)
+        return True
+    return False
+
+
+def _fix_undefined_symbol(
+    kernel: Path, error: KernelBuildError, source_dir: str
+) -> bool:
+    """Fix an undefined symbol by adding its declaration.
+
+    For symbols that are READ from KGen state data (like errmsglen),
+    adds a local INTEGER declaration so the sequential binary read succeeds.
+    For symbols defined as PARAMETERs in project source, inlines the value.
+
+    Returns True if a fix was applied.
+    """
+    symbol = error.symbol
+    target = kernel / error.file
+    if not target.exists():
+        return False
+
+    content = target.read_text()
+
+    # Check if this symbol is READ from state data in this file
+    if re.search(rf'READ\s*\([^)]*\)\s*{symbol}\b', content, re.IGNORECASE):
+        # Add local INTEGER declaration
+        if not re.search(rf'INTEGER\b[^:]*::\s*{symbol}\b', content, re.IGNORECASE):
+            lines = content.split("\n")
+            # Insert after first IMPLICIT NONE, or after last USE, or at top
+            insert_idx = None
+            for i, line in enumerate(lines):
+                stripped = line.strip().upper()
+                if stripped.startswith("IMPLICIT NONE"):
+                    insert_idx = i + 1
+                    break
+            if insert_idx is None:
+                for i, line in enumerate(lines):
+                    if re.match(r'\s*USE\s+', line.strip(), re.IGNORECASE):
+                        insert_idx = i + 1
+            if insert_idx is not None:
+                lines.insert(insert_idx,
+                    f"    INTEGER :: {symbol}  ! VIT: dummy for sequential binary state read")
+                target.write_text("\n".join(lines))
+                return True
+
+    # Check if it's a PARAMETER in the project source — inline it
+    value = _find_constant_in_source(symbol, source_dir)
+    if value is not None:
+        lines = content.split("\n")
+        insert_idx = None
+        for i, line in enumerate(lines):
+            stripped = line.strip().upper()
+            if stripped.startswith("IMPLICIT NONE"):
+                insert_idx = i + 1
+                break
+        if insert_idx is None:
+            for i, line in enumerate(lines):
+                if re.match(r'\s*USE\s+', line.strip(), re.IGNORECASE):
+                    insert_idx = i + 1
+        if insert_idx is not None:
+            lines.insert(insert_idx,
+                f"    INTEGER, PARAMETER :: {symbol} = {value}  ! VIT: from project source")
+            target.write_text("\n".join(lines))
+            return True
+
+    return False
+
+
+def _fix_link_undefined(
+    kernel: Path, error: KernelBuildError, source_dir: str = ""
+) -> bool:
+    """Fix an undefined linker symbol.
+
+    Strategy 1: Detect LAPACK/BLAS symbols by naming convention → add -l flags.
+    Strategy 2: Find the Fortran subroutine in the project source → inject into
+                the kernel module that should contain it.
+
+    Returns True if a fix was applied.
+    """
+    symbol = error.symbol.rstrip("_")  # Remove Fortran name mangling underscore
+
+    # Strategy 1: Standard LAPACK/BLAS naming
+    is_lapack_blas = bool(re.match(
+        r'^[sdcz]'
+        r'(?:ge[a-z]{2,4}|gb[a-z]{2,4}|gt[a-z]{2,4}|'
+        r'po[a-z]{2,4}|pp[a-z]{2,4}|pb[a-z]{2,4}|pt[a-z]{2,4}|'
+        r'sy[a-z]{2,4}|sp[a-z]{2,4}|he[a-z]{2,4}|hp[a-z]{2,4}|'
+        r'or[a-z]{2,4}|un[a-z]{2,4}|tr[a-z]{2,4}|tp[a-z]{2,4}|'
+        r'tb[a-z]{2,4}|st[a-z]{2,4}|bd[a-z]{2,4}|la[a-z]{2,4}|'
+        r'axpy|scal|copy|dot|nrm2|gemm|gemv|trsm|trsv)$',
+        symbol.lower(),
+    ))
+
+    if is_lapack_blas:
+        makefile = kernel / "Makefile"
+        if not makefile.exists():
+            return False
+        content = makefile.read_text()
+        if "-llapack" in content:
+            return False
+        lines = content.split("\n")
+        for i, line in enumerate(lines):
+            if ("-o kernel.exe" in line or "-o\tkernel.exe" in line) \
+                    and "rm " not in line and "./" not in line:
+                lines[i] = line.rstrip() + " -llapack -lblas"
+                makefile.write_text("\n".join(lines))
+                return True
+        return False
+
+    # Strategy 2: Find subroutine in project source and inject into kernel module
+    if not source_dir:
+        return False
+
+    # Search project source for SUBROUTINE/FUNCTION definition
+    sub_pattern = re.compile(
+        rf'^\s*((?:PURE\s+|ELEMENTAL\s+|RECURSIVE\s+)*'
+        rf'(?:SUBROUTINE|FUNCTION)\s+{re.escape(symbol)}\s*\()',
+        re.IGNORECASE | re.MULTILINE,
+    )
+    end_pattern = re.compile(
+        rf'^\s*END\s+(?:SUBROUTINE|FUNCTION)(?:\s+{re.escape(symbol)})?\s*$',
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    source_path = Path(source_dir)
+    for fpath in sorted(source_path.rglob("*.[fF]90")):
+        try:
+            content = fpath.read_text()
+        except (UnicodeDecodeError, PermissionError):
+            continue
+
+        start_match = sub_pattern.search(content)
+        if not start_match:
+            continue
+        end_match = end_pattern.search(content, start_match.start())
+        if not end_match:
+            continue
+
+        # Extract the subroutine body
+        sub_body = content[start_match.start():end_match.end()]
+
+        # Find which module this subroutine belongs to
+        # Look backwards from the subroutine start for MODULE name
+        before_sub = content[:start_match.start()]
+        module_name = None
+        for m in re.finditer(r'MODULE\s+(\w+)\s*$', before_sub, re.IGNORECASE | re.MULTILINE):
+            name = m.group(1)
+            if name.upper() not in ("PROCEDURE", "FUNCTION", "SUBROUTINE"):
+                module_name = name
+
+        if not module_name:
+            continue
+
+        # Find the kernel file that defines this module
+        target_file = None
+        for kf in sorted(kernel.glob("*.[fF]90")):
+            kc = kf.read_text()
+            if re.search(rf'MODULE\s+{module_name}\s*$', kc, re.IGNORECASE | re.MULTILINE):
+                target_file = kf
+                break
+
+        if not target_file:
+            continue
+
+        # Inject the subroutine before END MODULE
+        tc = target_file.read_text()
+        end_mod = re.search(rf'END\s+MODULE\s+{module_name}', tc, re.IGNORECASE)
+        if not end_mod:
+            continue
+
+        # Check if subroutine already exists
+        if re.search(rf'SUBROUTINE\s+{re.escape(symbol)}\s*\(', tc, re.IGNORECASE):
+            continue
+
+        # Ensure CONTAINS exists
+        if "CONTAINS" not in tc.upper().split("END MODULE")[0]:
+            insert_pos = end_mod.start()
+            tc = tc[:insert_pos] + "\nCONTAINS\n\n" + sub_body + "\n\n" + tc[insert_pos:]
+        else:
+            insert_pos = end_mod.start()
+            tc = tc[:insert_pos] + "\n" + sub_body + "\n\n" + tc[insert_pos:]
+
+        target_file.write_text(tc)
+        return True
+
+    return False
+
+
+def _repair_kernel_build(
+    kernel: Path,
+    source_dir: str,
+    fortran_compiler: str,
+    env: dict,
+    max_iterations: int = 5,
+) -> dict:
+    """Compile-error-driven kernel repair loop.
+
+    Attempts to build the kernel, parses compiler/linker errors, applies
+    fixes from the project source tree, and retries. Stops when the build
+    succeeds or no more fixes can be applied.
+
+    Returns:
+        dict with 'success' (bool), 'modified' (list of files), 'errors' (list),
+        'iterations' (int), 'log' (list of human-readable repair descriptions)
+    """
+    result = {
+        "success": False,
+        "modified": [],
+        "errors": [],
+        "iterations": 0,
+        "log": [],
+    }
+
+    for iteration in range(max_iterations):
+        result["iterations"] = iteration + 1
+
+        # Clean and build (merge stderr into stdout for coherent error parsing)
+        subprocess.run("make clean", shell=True, cwd=str(kernel),
+                       capture_output=True, env=env)
+        build = subprocess.run(
+            "make build 2>&1", shell=True, cwd=str(kernel),
+            capture_output=True, text=True, env=env,
+        )
+
+        if build.returncode == 0:
+            result["success"] = True
+            result["log"].append(f"Build succeeded on iteration {iteration + 1}")
+            return result
+
+        # Parse errors
+        output = build.stdout
+        errors = _parse_build_errors(output)
+
+        if not errors:
+            result["errors"].append(
+                f"Build failed but no parseable errors found. Output:\n{output[-2000:]}"
+            )
+            return result
+
+        # Try to fix each error
+        fixes_applied = 0
+        for error in errors:
+            fixed = False
+            if error.category == "missing_constant":
+                fixed = _fix_missing_constant(kernel, error, source_dir)
+            elif error.category == "undefined_symbol":
+                fixed = _fix_undefined_symbol(kernel, error, source_dir)
+            elif error.category == "link_undefined":
+                fixed = _fix_link_undefined(kernel, error, source_dir)
+
+            if fixed:
+                fixes_applied += 1
+                result["modified"].append(error.file)
+                result["log"].append(
+                    f"[iter {iteration + 1}] Fixed {error.category}: "
+                    f"{error.symbol} in {error.file}"
+                )
+
+        if fixes_applied == 0:
+            result["errors"].append(
+                f"Build failed with {len(errors)} errors, none fixable automatically. "
+                f"First unfixed: {errors[0].category} '{errors[0].symbol}' in {errors[0].file}"
+            )
+            return result
+
+    result["errors"].append(f"Reached max iterations ({max_iterations})")
+    return result
 
 
 def _fix_use_ordering(content: str) -> str:

@@ -623,6 +623,7 @@ def cmd_verify(args, config):
         fortran_flags=config.fortran_flags,
         translations=config.translations,
         source_dir=config.abs_source_dir,
+        fortran_compiler=config.fortran_compiler,
     )
 
     if not setup_result["success"]:
@@ -757,6 +758,8 @@ def cmd_run(args, config):
                 field_log=field_log,
                 derived_types=derived_types,
                 fortran_flags=config.fortran_flags,
+                source_dir=config.abs_source_dir,
+                fortran_compiler=config.fortran_compiler,
             )
 
             if not setup_result["success"]:
