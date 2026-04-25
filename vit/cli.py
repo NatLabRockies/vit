@@ -421,10 +421,23 @@ def cmd_extract(args, config):
                 print(f"  Cases:  {cases}")
             else:
                 print(f"  WARNING: No state data captured.")
-                print(f"  The simulation may not have run, or the instrumented library")
-                print(f"  wasn't installed where the simulation loads it from.")
-                print(f"  Set install_cmd in vit.yaml, e.g.:")
-                print(f"    install_cmd: cp <build_dir>/libdiscon.so <install_dir>/libdiscon.so")
+                # Surface any build/run errors from KGen output
+                output = result.get("output", "")
+                error_lines = [
+                    l for l in output.splitlines()
+                    if any(kw in l.lower() for kw in ['error:', 'error ', 'failed', 'fatal'])
+                    and not any(skip in l.lower() for skip in ['errmsg', 'errstat', 'errid_', 'err_'])
+                ]
+                if error_lines:
+                    print(f"  Build/run errors detected:")
+                    for line in error_lines[-15:]:
+                        print(f"    {line.strip()}")
+                else:
+                    print(f"  No build/run errors detected in KGen output.")
+                    print(f"  Possible causes:")
+                    print(f"    - Wrong test case (call site not reached)")
+                    print(f"    - Source not clean (integration wrappers present)")
+                    print(f"  See docs/EXTRACTION_INTERNALS.md Section 7 for debugging checklist.")
         else:
             print(f"✗ Extraction failed")
             print(result["output"])

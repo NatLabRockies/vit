@@ -195,7 +195,7 @@ KGen runs `make` from the `state/` directory. The default target is `run`, which
 5. **run** — Execute the simulation with the instrumented binary
 6. **recover** — Restore original source files (belt-and-suspenders)
 
-**Critical:** KGen runs `make` via `run_shcmd('make', cwd=state_dir)`. This function captures stdout/stderr but **does not log them or check the return code unless `show_error_msg` is set** (it's not). If any step fails — build error, simulation crash, permission denied — the failure is **completely silent**. KGen simply proceeds to the next step and reports "Application built/run is finished."
+**Error reporting:** KGen runs `make` via `run_shcmd('make', cwd=state_dir)`. If the make command fails (non-zero return code), KGen now prints the captured stdout/stderr to its own stdout, which VIT captures. VIT's CLI then scans for error lines and displays them alongside the "No state data captured" warning. This was added after a silent build failure wasted hours of debugging — previously KGen swallowed all errors and reported "Application built/run is finished" regardless.
 
 ## 4. State File Generation
 
@@ -276,7 +276,7 @@ After KGen finishes (success or failure), VIT cleans up:
 | F3 | Stale pragmas | Wrong function extracted | `.kgen_org` files from previous run contain pragmas | `grep -r '!$kgen' modules/` |
 | F4 | kgen_utils not compiled | 0 state files | Wrapper didn't inject or cmake didn't pick it up | Check `/tmp/vit_wrapper.log` |
 | F5 | Docker timestamps | 0 state files | `cp` doesn't update timestamps; cmake skips recompile | Check build log for "Building Fortran object...AirfoilInfo.f90.o" |
-| F6 | Build fails silently | 0 state files | Any compile error in instrumented code | `cd state && make save && make replace && bash ../.vit_build_wrapper.sh` |
+| F6 | Build fails | 0 state files | Any compile error in instrumented code | VIT now shows the error automatically; for manual diagnosis: `cd state && make save && make replace && bash ../.vit_build_wrapper.sh` |
 | F7 | Simulation fails | 0 state files | run_cmd errors (wrong path, missing inputs, crash) | Run simulation manually: `<run_cmd>` from original CWD |
 | F8 | Wrong outdir | State files in wrong location | Relative outdir resolves differently | `grep kgen_filepath state/AirfoilInfo.f90` |
 | F9 | Wrong line number | 0 state files or wrong function | Line shifted by integrations | Compare coverage data line vs clean source line |
