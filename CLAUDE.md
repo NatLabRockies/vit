@@ -138,7 +138,7 @@ docker exec vit-dev-openfast bash -c "cd /workspace/openfast && bash scripts/gen
 bash scripts/reset_to_clean.sh
 ```
 
-**Step 3 — Update `vit.yaml`** with the test case and invocation range from Step 1. Default `0:0:1-5` works for runtime functions; use `0:0:1-20` for init-time functions.
+**Step 3 — Update `vit.yaml`** with the test case from Step 1.
 
 **Step 4 — Rebuild with clean source** (inside container):
 ```bash
@@ -162,7 +162,7 @@ Then rebuild (or use the committed integrated version if no new integrations wer
 **If extraction reports "No state data captured":**
 1. Query the coverage data to verify the line number and test case are correct — this is almost always the cause.
 2. Check that source is clean (no integration wrappers referencing VIT modules).
-3. Do NOT assume infrastructure is broken. Do NOT manually trace code paths to find a different test case. Trust the coverage data.
+3. Do not assume infrastructure is broken. Verify the call site and test case are correct first — this is almost always the cause. Only consider infrastructure issues as a last resort, and communicate with the user before investigating.
 
 **Other pitfalls:**
 - KGen modifies `AirfoilInfo_Types.f90` and `AeroDyn_Driver.f90` (strips blank comment lines). Always `git checkout` these after extraction if they show as modified.
