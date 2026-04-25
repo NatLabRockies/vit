@@ -82,7 +82,7 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 
 **Registry C++ headers:** Generate with `-cppcode-double` flag for correct ReKi→double mapping: `openfast_registry input.txt -cppcode-double -O output_dir`
 
-**Extraction parameters:** Per-function extraction details (callers, test cases, invocation ranges) are tracked in `EXTRACTION_PARAMS.md` in the OpenFAST repo. See also the call graph at `vit/analysis/aerodyn/call_graph.json` for tracing complex call paths.
+**Line coverage data:** Per-line execution counts for all AeroDyn source files across all 17 test cases are at `vit/analysis/aerodyn/line_coverage.json` (generated from clean source via gcov). Regenerate with: `docker exec vit-dev-openfast bash -c "cd /workspace/openfast && bash scripts/generate_coverage.sh"`. Must be regenerated from clean source (after `reset_to_clean.sh`), not integrated source.
 
 ### AeroDyn Test Case Coverage Map
 
@@ -119,52 +119,54 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 
 Extraction requires clean (pre-integration) source. Line numbers shift after each integration, so always find them fresh.
 
-**Step-by-step:**
+**Step 1 — Query coverage data for the call site and test case:**
+```bash
+docker exec vit-dev-openfast bash -c "python3 /workspace/vit/scripts/query_coverage.py --call-sites FunctionName"
+```
+This returns every call site (file:line) with which test cases exercise it and how many times. Pick the call site and test case with the most hits. **Do not manually trace code paths to guess test cases** — the coverage data is definitive and manual analysis has proven unreliable (see dev note `202604250803`).
 
-1. **Reset source to clean Fortran:**
-   ```bash
-   # Run on Mac, not in container
-   bash scripts/reset_to_clean.sh
-   ```
+If coverage data doesn't exist yet, generate it (once, ~10 min):
+```bash
+# Reset to clean source first (run on Mac)
+bash scripts/reset_to_clean.sh
+docker exec vit-dev-openfast bash -c "cd /workspace/openfast && bash scripts/generate_coverage.sh"
+```
 
-2. **Find the call site line number.** Two methods:
-   - **Simple grep** (leaf functions with 1-2 callers):
-     ```bash
-     grep -n "call FunctionName" modules/aerodyn/src/SourceFile.f90
-     ```
-   - **Call graph lookup** (complex call paths): check `vit/analysis/aerodyn/call_graph.json` to find callers and trace which mode flag gates the call.
-   
-   Pick the call site on a branch that the chosen test case exercises. See `EXTRACTION_PARAMS.md` for per-function details.
+**Step 2 — Reset source to clean Fortran:**
+```bash
+# Run on Mac, not in container
+bash scripts/reset_to_clean.sh
+```
 
-3. **Choose the test case** from the coverage map above. Update `vit.yaml` `run_cmd` if different from the current setting:
-   ```yaml
-   run_cmd: cd /workspace/openfast/reg_tests/r-test/modules/aerodyn/TEST_CASE
-       && /workspace/openfast/build/modules/aerodyn/aerodyn_driver ad_driver.dvr
-   ```
+**Step 3 — Update `vit.yaml`** with the test case and invocation range from Step 1. Default `0:0:1-5` works for runtime functions; use `0:0:1-20` for init-time functions.
 
-4. **Rebuild with clean source** (inside container):
-   ```bash
-   cd /workspace/openfast/build && cmake --build . --target aerodyn_driver -j$(nproc)
-   ```
+**Step 4 — Rebuild with clean source** (inside container):
+```bash
+cd /workspace/openfast/build && cmake --build . --target aerodyn_driver -j$(nproc)
+```
 
-5. **Extract** (inside container):
-   ```bash
-   cd /workspace/openfast && vit extract FunctionName -f modules/aerodyn/src/SourceFile.f90 -l LINE
-   ```
+**Step 5 — Extract** (inside container):
+```bash
+cd /workspace/openfast && vit extract FunctionName -f modules/aerodyn/src/SourceFile.f90 -l LINE
+```
 
-6. **Restore integrated source:**
-   ```bash
-   # Run on Mac
-   git checkout -- modules/aerodyn/src/AirfoilInfo.f90
-   ```
-   Then re-integrate all functions and rebuild (or use the committed integrated version if no new integrations were added).
+**Step 6 — Restore integrated source:**
+```bash
+# Run on Mac
+git checkout -- modules/aerodyn/src/AirfoilInfo.f90
+```
+Then rebuild (or use the committed integrated version if no new integrations were added).
 
-7. **Restore `vit.yaml` `run_cmd`** to the default (`ad_BAR_SineMotion`) if it was changed.
+**Step 7 — Restore `vit.yaml` `run_cmd`** to the default (`ad_BAR_SineMotion`) if it was changed.
 
-**Common pitfalls:**
+**If extraction reports "No state data captured":**
+1. Query the coverage data to verify the line number and test case are correct — this is almost always the cause.
+2. Check that source is clean (no integration wrappers referencing VIT modules).
+3. Do NOT assume infrastructure is broken. Do NOT manually trace code paths to find a different test case. Trust the coverage data.
+
+**Other pitfalls:**
 - KGen modifies `AirfoilInfo_Types.f90` and `AeroDyn_Driver.f90` (strips blank comment lines). Always `git checkout` these after extraction if they show as modified.
-- If extraction reports "No state data captured", check: (a) correct line number, (b) test case exercises the code path, (c) source is clean (no integration wrappers referencing VIT modules).
-- The `invocation` setting in vit.yaml controls how many calls KGen captures. Default `0:0:1-5` works for runtime functions; use `0:0:1-20` for init-time functions called once per airfoil (30 airfoils x 1 call = 30 total, but KGen counts per call site).
+- If a kernel fixture already exists for a function, its `kernel_driver.f90` contains the actual call site that was used — this is ground truth, not hand-written documentation.
 
 ## Development Environment
 
