@@ -151,11 +151,9 @@ Simple `!$OMP PARALLEL DO` loops in FVW_BiotSavart.f90. Embarrassingly parallel 
 
 **Answer:** MeshType interop uses a view struct populator pattern (~80 lines total), not NWTC Library translation. AeroDyn physics code only reads mesh data fields (Position, TranslationVel, Orientation, etc.) — it never calls mesh lifecycle operations. A C++ `MeshType_View` struct (~50 lines) holds pointers to the data arrays; a Fortran BIND(C) populator (~30 lines) fills it from the real MeshType using `C_LOC()`. Phases 1-3 and 5 have zero mesh dereferences — the view struct is not needed until Phase 4 (11 accesses in FVW). Phase 6 is heaviest (271 accesses). See dev note `202604240640`.
 
-### OQ8: VIT enhancements for AeroDyn [unknown]
+### OQ8: VIT enhancements for AeroDyn [answered 2026-04-25]
 
-What breaks when running VIT on AeroDyn's larger types, cmake build, module structure?
-
-**Blocks:** Phase 1. **Info needed:** Attempt full extract/verify/integrate on one function. **When:** Before Phase 1 (overlaps OQ2).
+**Answer:** VIT works on AeroDyn. 14 VIT fixes were needed (12 for initial AeroDyn adaptation, 2 more for derived type infrastructure). Proven across 4 functions with increasing type complexity: scalar/array (Calculate_Cn), AFI_ParameterType view struct (FindBoundingTables), nested TYPE embedding (Compute_iLoweriUpper), AFI_Table_Type with tanh math (ComputeUA360_CnOffset). All 16/16 regression pass. Known limitation: ALLOCATABLE TYPE() array access (`p%Table(i)%field`) needs marshalling solution for mid-level functions.
 
 ### OQ9: Upstream sync strategy [unknown — decision needed]
 
@@ -212,9 +210,12 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [x] View struct infrastructure: nested TYPE() embedding, ALLOCATABLE TYPE() opaque, rank-3, LOGICAL(C_BOOL), TYPE() space normalization (8 VIT fixes, dev note `202604241905`)
 - [x] FindBoundingTables: 21/21 IDENTICAL, AFI_ParameterType view struct
 - [x] Compute_iLoweriUpper: 20/20 IDENTICAL, AFI_Table_Type view struct with nested AFI_UA_BL_Type
+- [x] ComputeUA360_CnOffset: 21/21 IDENTICAL, AFI_Table_Type view struct, tanh math
+- [x] gcov line coverage infrastructure: definitive test case selection for all functions
+- [x] OQ8 answered: VIT works on AeroDyn derived types
 - [ ] Design mesh interop pattern for MeshType (OQ7 answered — ~80-line view struct, not needed until Phase 4)
 - [ ] Design NWTC Library interop wrappers (first batch)
-- [ ] Translate AirfoilInfo leaf functions (10 remaining — ALLOCATABLE TYPE() array access pattern needed for functions that read `p%Table(i)%field`)
+- [ ] Translate AirfoilInfo leaf functions (8 remaining — ALLOCATABLE TYPE() array access pattern needed for functions that read `p%Table(i)%field`)
 - [ ] Translate AirfoilInfo mid-level functions (11 remaining)
 - [ ] Translate DBEMT leaf functions (5 leaves)
 - [ ] Translate DBEMT mid-level functions (9 remaining)
@@ -378,11 +379,11 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 
 ## 7. Current State
 
-**Date:** 2026-04-24
+**Date:** 2026-04-25
 
-**Status:** Phase 0 complete. Phase 1 proof-of-concept complete. Infrastructure hardened. Full VIT pipeline (extract → verify → integrate) proven on Calculate_Cn with 20/20 IDENTICAL kernel verification and 16/16 regression tests passing.
+**Status:** Phase 0 complete. Phase 1 in progress — 4 AirfoilInfo functions integrated, gcov coverage infrastructure operational. Ready for batch translation of remaining leaf functions.
 
-**Next action:** Scale Phase 1 — translate remaining AirfoilInfo functions (next: derived type arguments), then DBEMT.
+**Next action:** Scale Phase 1 — translate remaining AirfoilInfo leaf functions using coverage-guided extraction, then DBEMT.
 
 **Completed milestones:**
 - [x] Docker container (`vit-dev-openfast`) built and verified
@@ -395,13 +396,18 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [x] All 67 uncalled procedures fully classified (0 unknowns)
 - [x] Scope decisions locked (5)
 - [x] Key architectural decisions locked (6)
-- [x] Open questions enumerated (10, 6 answered: OQ1/OQ2/OQ3/OQ5/OQ6/OQ7)
+- [x] Open questions enumerated (10, 7 answered: OQ1/OQ2/OQ3/OQ5/OQ6/OQ7/OQ8)
 - [x] PROJECT_PLAN_AERODYN.md drafted
 - [x] Phase 0: Registry C++ generator (`-cppcode`, `-cppcode-double`)
 - [x] Phase 0: OQ1, OQ6, OQ7 answered
 - [x] Phase 1 POC: Calculate_Cn extracted (20 cases), verified (20/20 IDENTICAL), integrated (16/16 regression pass)
 - [x] Phase 1 POC: 12 VIT fixes for AeroDyn adaptation
 - [x] Infrastructure: FP_CONTRACT_OFF cmake option, ReKi precision, cmake auto-patching
+- [x] Phase 1: FindBoundingTables (21/21), Compute_iLoweriUpper (20/20), ComputeUA360_CnOffset (21/21) — all integrated, 16/16 regression
+- [x] Phase 1: View struct infrastructure proven (nested TYPE embedding, ALLOCATABLE TYPE opaque, rank-3, LOGICAL(C_BOOL))
+- [x] gcov line coverage infrastructure: per-line execution counts for all AeroDyn source across 17 test cases (`generate_coverage.sh`, `parse_gcov.py`, `query_coverage.py`)
+- [x] KGen ETime profiling disabled (saves one build cycle per extraction)
+- [x] OQ8 answered: VIT works on AeroDyn — derived types, view structs, nested types all proven
 
 ## 8. Change Log
 
@@ -414,3 +420,8 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 | 2026-04-24 | Baselines regenerated | `-ffp-contract=off` in cmake, 16/16 verified |
 | 2026-04-24 | View struct infrastructure | 8 VIT fixes for AeroDyn Registry-generated types (nested TYPE embedding, ALLOCATABLE TYPE opaque, rank-3, LOGICAL(C_BOOL), TYPE() normalization) |
 | 2026-04-24 | FindBoundingTables + Compute_iLoweriUpper | First derived type functions verified (21/21 + 20/20 IDENTICAL) and integrated (16/16 regression) |
+| 2026-04-25 | ComputeUA360_CnOffset | 21/21 IDENTICAL, integrated (16/16 regression). Fourth AirfoilInfo function. |
+| 2026-04-25 | gcov coverage infrastructure | Per-line execution counts for all source across 17 test cases. Eliminates test case guesswork for extraction. |
+| 2026-04-25 | EXTRACTION_PARAMS.md removed | Replaced by coverage data. Hand-maintained records caused a multi-hour debugging session (wrong line number). |
+| 2026-04-25 | KGen ETime disabled | Default disabled in KGen fork. VIT specifies invocation range explicitly. |
+| 2026-04-25 | OQ8 answered | VIT works on AeroDyn: derived types, view structs, nested types all proven across 4 functions. |
