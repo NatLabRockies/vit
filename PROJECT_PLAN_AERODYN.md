@@ -213,10 +213,14 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [x] ComputeUA360_CnOffset: 21/21 IDENTICAL, AFI_Table_Type view struct, tanh math
 - [x] gcov line coverage infrastructure: definitive test case selection for all functions
 - [x] OQ8 answered: VIT works on AeroDyn derived types
-- [ ] Design mesh interop pattern for MeshType (OQ7 answered — ~80-line view struct, not needed until Phase 4)
+- [x] Calculate_C_alpha: 20/20 IDENTICAL, LAPACK dgels dependency, CHARACTER(*) support, compile-error-driven kernel repair (dev note `202604251331`)
+- [x] ComputeUASeparationFunction_zero: 20/20 IDENTICAL, first view reverse-copy in kernel verification (dev note `202604251425`)
+- [x] ComputeUA360_updateCnSeparated: 20/20 IDENTICAL, callee bridge to CnOffset, callee PUBLIC visibility fix
+- [x] ComputeUA360_updateSeparationF: 20/20 IDENTICAL, CSHIFT intrinsic, callee bridge, most complex leaf
+- [x] Infrastructure: view reverse-copy in kernel verification, callee PUBLIC visibility, kernel repair, auto-callee declarations (dev notes `202604251425`, `202604251451`, `202604251503`)
+- [x] Design mesh interop pattern for MeshType (OQ7 answered — ~80-line view struct, not needed until Phase 4)
 - [ ] Design NWTC Library interop wrappers (first batch)
-- [ ] Translate AirfoilInfo leaf functions (8 remaining — ALLOCATABLE TYPE() array access pattern needed for functions that read `p%Table(i)%field`)
-- [ ] Translate AirfoilInfo mid-level functions (11 remaining)
+- [ ] Translate remaining AirfoilInfo functions: ComputeUASeparationFunction_onCl, ComputeUA360_AttachedFlow, CalculateUACoeffs (orchestrator), AFI_ValidateInitInput (simulation-level)
 - [ ] Translate DBEMT leaf functions (5 leaves)
 - [ ] Translate DBEMT mid-level functions (9 remaining)
 - [ ] Verify: KGen kernel pass for all 37 functions
@@ -224,12 +228,12 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [ ] Verify: NREL regression 16/16
 
 **Known VIT limitations (to be resolved as needed during Phase 1):**
-- **ALLOCATABLE TYPE() array access:** Current view struct uses `void*` (opaque) for ALLOCATABLE TYPE() fields like `p%Table(:)`. Functions that access elements (e.g., `p%Table(i)%Alpha`) will need a marshalling solution — probably a flattened array-of-structs view where the populator serializes each element's fields into contiguous C memory. First function needing this: `AFI_ComputeAirfoilCoefs1D` (reads `p%Table(iTable)%Coefs`).
+- **~~ALLOCATABLE TYPE() array access~~:** Resolved — functions accessing `p%Table(i)%field` patterns work with current view struct infrastructure (proven by ComputeUA360_CnOffset, 21/21 IDENTICAL). The view struct populator handles single-table access. Array-of-structs marshalling may still be needed for functions that iterate over all tables.
 - **Nested TYPE() embedding is single-level:** Inline struct generation skips TYPE() fields inside nested types. If a nested type contains another C-compatible nested type, it won't be embedded. Not triggered by current AirfoilInfo types (AFI_UA_BL_Type is all scalars). Will need recursion if deeper nesting appears (likely Phase 2 or Phase 4).
 
-**Revisit trigger:** After KGen/VIT validation — if extraction fails or VIT needs major enhancements, reassess timeline and approach before continuing. **Status: POC passed, no showstoppers found. Derived type handling proven.**
+**Revisit trigger:** After KGen/VIT validation — if extraction fails or VIT needs major enhancements, reassess timeline and approach before continuing. **Status: POC passed, no showstoppers. 8 functions integrated including LAPACK dependencies, callee bridges, view reverse-copy, and CSHIFT translation.**
 
-**Dev notes:** `202604241004` (first extraction), `202604241026` (precision mismatch), `202604241051` (VIT adaptation issues), `202604241122` (first verification), `202604241337` (FMA confirmed), `202604241400` (first full verification), `202604241415` (full pipeline proven), `202604241459` (four infrastructure fixes), `202604241905` (derived type functions proven)
+**Dev notes:** `202604241004` (first extraction), `202604241026` (precision mismatch), `202604241051` (VIT adaptation issues), `202604241122` (first verification), `202604241337` (FMA confirmed), `202604241400` (first full verification), `202604241415` (full pipeline proven), `202604241459` (four infrastructure fixes), `202604241905` (derived type functions proven), `202604251125` (cross-module instrumentation), `202604251317` (kernel repair), `202604251331` (Calculate_C_alpha complete), `202604251425` (view reverse-copy fix), `202604251451` (three functions + two fixes), `202604251503` (auto-callee declarations)
 
 ### Phase 2: BEMTUncoupled + UnsteadyAero [planned]
 
@@ -381,9 +385,9 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 
 **Date:** 2026-04-25
 
-**Status:** Phase 0 complete. Phase 1 in progress — 4 AirfoilInfo functions integrated, gcov coverage infrastructure operational. Ready for batch translation of remaining leaf functions.
+**Status:** Phase 0 complete. Phase 1 in progress — 8 AirfoilInfo functions integrated (all leaf functions done), gcov coverage infrastructure operational. Next: callee-dependent functions, then CalculateUACoeffs orchestrator, then DBEMT.
 
-**Next action:** Scale Phase 1 — translate remaining AirfoilInfo leaf functions using coverage-guided extraction, then DBEMT.
+**Next action:** Translate callee-dependent AirfoilInfo functions (ComputeUASeparationFunction_onCl, ComputeUA360_AttachedFlow), then CalculateUACoeffs orchestrator, then AFI_ValidateInitInput (simulation-level), then DBEMT.
 
 **Completed milestones:**
 - [x] Docker container (`vit-dev-openfast`) built and verified
@@ -408,6 +412,9 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [x] gcov line coverage infrastructure: per-line execution counts for all AeroDyn source across 17 test cases (`generate_coverage.sh`, `parse_gcov.py`, `query_coverage.py`)
 - [x] KGen ETime profiling disabled (saves one build cycle per extraction)
 - [x] OQ8 answered: VIT works on AeroDyn — derived types, view structs, nested types all proven
+- [x] Phase 1: Calculate_C_alpha (20/20), ComputeUASeparationFunction_zero (20/20), ComputeUA360_updateCnSeparated (20/20), ComputeUA360_updateSeparationF (20/20) — all integrated, 16/16 regression
+- [x] Phase 1: Infrastructure — view reverse-copy in kernel verification, callee PUBLIC visibility, compile-error-driven kernel repair, cross-module instrumentation, auto-callee declarations
+- [x] OQ4 answered: gcov coverage definitive across all 17 test cases
 
 ## 8. Change Log
 
@@ -425,3 +432,6 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 | 2026-04-25 | EXTRACTION_PARAMS.md removed | Replaced by coverage data. Hand-maintained records caused a multi-hour debugging session (wrong line number). |
 | 2026-04-25 | KGen ETime disabled | Default disabled in KGen fork. VIT specifies invocation range explicitly. |
 | 2026-04-25 | OQ8 answered | VIT works on AeroDyn: derived types, view structs, nested types all proven across 4 functions. |
+| 2026-04-25 | 4 more AirfoilInfo functions | Calculate_C_alpha (LAPACK), ComputeUASeparationFunction_zero, ComputeUA360_updateCnSeparated, ComputeUA360_updateSeparationF — all 20/20 IDENTICAL, 16/16 regression. Total: 8 integrated. |
+| 2026-04-25 | Infrastructure sprint | View reverse-copy in kernel verification, callee PUBLIC visibility, compile-error-driven kernel repair, cross-module instrumentation fix, auto-callee declarations in translate prompt + production wrappers. |
+| 2026-04-25 | OQ4 answered | gcov line coverage provides definitive per-line data across all 17 test cases. |
