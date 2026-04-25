@@ -372,6 +372,8 @@ def _apply_header_patch(patch: IntegrationPatch) -> None:
             f"#ifndef {guard}",
             f"#define {guard}",
             "",
+            '#include "vit_types.h"',
+            "",
             "#ifdef __cplusplus",
             'extern "C" {',
             "#endif",
@@ -436,7 +438,10 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
     if struct_headers:
         for h in struct_headers:
             lines.append(f'#include "{h}"')
-        lines.append("")
+    # Include shared callee declarations header (provides _c entry points
+    # for already-translated functions that this translation may call)
+    lines.append(f'#include "vit_translated.h"')
+    lines.append("")
 
     # Include the user's implementation
     lines.append("// --- User-provided C++ implementation ---")
