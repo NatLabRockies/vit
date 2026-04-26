@@ -488,18 +488,9 @@ def cmd_translate(args, config):
         out_dir = Path("translations") / module_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate/update consolidated types header
-    struct_header_names = []
-    if derived_types:
-        from .derived_type_parser import generate_consolidated_types_header
-        types_path = Path("translations") / "vit_types.h"
-        existing = types_path.read_text() if types_path.exists() else ""
-        new_content = generate_consolidated_types_header(
-            derived_types, config.kind_aliases, existing)
-        if new_content != existing:
-            types_path.parent.mkdir(parents=True, exist_ok=True)
-            types_path.write_text(new_content)
-        struct_header_names = ["vit_types.h"]
+    # struct_header_names tells the scaffold to emit #include "vit_types.h".
+    # The actual header is generated on-demand in kernel/test/integration dirs.
+    struct_header_names = ["vit_types.h"] if derived_types else []
 
     # Generate scaffold
     scaffold = generate_translation_scaffold(
@@ -1206,17 +1197,14 @@ def cmd_test_validate(args, config):
     out_dir = Path("translations") / module_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate/update consolidated types header
+    # Generate consolidated types header into the test directory (not translations root).
+    # Fresh from registry, same pattern as kernel_verify.
     struct_header_names = []
     if derived_types:
         from .derived_type_parser import generate_consolidated_types_header
-        types_path = Path("translations") / "vit_types.h"
-        existing = types_path.read_text() if types_path.exists() else ""
-        new_content = generate_consolidated_types_header(
-            derived_types, config.kind_aliases, existing)
-        if new_content != existing:
-            types_path.parent.mkdir(parents=True, exist_ok=True)
-            types_path.write_text(new_content)
+        consolidated = generate_consolidated_types_header(derived_types, config.kind_aliases)
+        types_path = out_dir / "vit_types.h"
+        types_path.write_text(consolidated)
         struct_header_names = ["vit_types.h"]
 
     # Read shared files from config

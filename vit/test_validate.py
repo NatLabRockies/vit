@@ -230,14 +230,8 @@ def generate_test_makefile(
             if not p.is_absolute():
                 p = Path(config_dir) / f
             include_dirs.add(str(p.parent))
-    # Include the current directory and the translations root directory.
-    # translations/vit_types.h has ALL types (including newly translated ones),
-    # while modules/aerodyn/src/vit_types.h only has already-integrated types.
-    # Put translations/ FIRST so the complete vit_types.h is found.
+    # Include the current directory (vit_types.h is generated here by cmd_test_validate).
     include_dirs.add(".")
-    config_dir = str(Path(source_dir).parent) if source_dir else "."
-    translations_dir = str(Path(config_dir) / "translations")
-    include_dirs.add(translations_dir)
 
     cxx_includes = " ".join(f"-I{d}" for d in sorted(include_dirs))
 
