@@ -911,6 +911,41 @@ def order_types_by_dependency(types: list[DerivedTypeInfo]) -> list[DerivedTypeI
     return result
 
 
+def _dedup_guarded_blocks(content: str) -> str:
+    """Remove duplicate #ifndef/#endif guarded blocks, keeping the first.
+
+    View struct headers emit inline definitions for nested types that may
+    already be defined as standalone blocks earlier in the file. Both use
+    the same include guard (e.g., AFI_UA_BL_TYPE_T_H), so the second copy
+    is dead code. This strips all but the first occurrence.
+    """
+    import re
+    lines = content.split("\n")
+    seen_guards = set()
+    result = []
+    skip_until_endif = None  # guard name we're skipping
+
+    for line in lines:
+        if skip_until_endif:
+            if line.strip() == f"#endif // {skip_until_endif}":
+                skip_until_endif = None
+            continue
+
+        m = re.match(r'^#ifndef (\w+_T_H)\s*$', line)
+        if m:
+            guard = m.group(1)
+            if guard in seen_guards:
+                skip_until_endif = guard
+                continue
+            seen_guards.add(guard)
+
+        result.append(line)
+
+    content = "\n".join(result)
+    content = re.sub(r'\n{3,}', '\n\n', content)
+    return content
+
+
 def generate_consolidated_types_header(
     derived_types: dict,
     kind_aliases: Optional[dict] = None,
@@ -974,9 +1009,9 @@ def generate_consolidated_types_header(
         closing = f"\n#endif // {guard}\n"
         if closing in existing_content:
             insert = "\n" + "\n\n".join(new_blocks) + "\n"
-            return existing_content.replace(closing, insert + closing)
+            return _dedup_guarded_blocks(existing_content.replace(closing, insert + closing))
         # Fallback: append at end
-        return existing_content.rstrip() + "\n\n" + "\n\n".join(new_blocks) + "\n"
+        return _dedup_guarded_blocks(existing_content.rstrip() + "\n\n" + "\n\n".join(new_blocks) + "\n")
 
     # Create from scratch
     lines = [
@@ -993,6 +1028,7 @@ def generate_consolidated_types_header(
     lines.append("")
     lines.append(f"#endif // {guard}")
     lines.append("")
-    return "\n".join(lines)
+
+    return _dedup_guarded_blocks("\n".join(lines))
 
 

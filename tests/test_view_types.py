@@ -203,13 +203,13 @@ class TestPopulatorGeneration:
     def test_1d_cloc(self):
         mapping = _make_mapping("arr", "REAL(8)", 1, "A", ["N"])
         code = self._generate([("arr", "REAL(8)", True, ":")], [mapping])
-        assert "C_LOC(src%arr(1))" in code
+        assert "C_LOC(src%arr(LBOUND(src%arr,1)))" in code
         assert "SIZE(src%arr)" in code
 
     def test_2d_cloc(self):
         mapping = _make_mapping("mat", "REAL(8)", 2, "E", ["N", "M"])
         code = self._generate([("mat", "REAL(8)", True, ":,:")], [mapping])
-        assert "C_LOC(src%mat(1,1))" in code
+        assert "C_LOC(src%mat(LBOUND(src%mat,1),LBOUND(src%mat,2)))" in code
         assert "SIZE(src%mat, 1)" in code
         assert "SIZE(src%mat, 2)" in code
 
@@ -479,7 +479,7 @@ class TestUnmapped2DRankInference:
         """Populator handles unmapped 2D with SIZE(field, 1) and SIZE(field, 2)."""
         ti = _make_type_info("T", [("mat", "REAL(8)", True, ":,:")])
         code = generate_view_populator(ti, [], {"DbKi": "REAL(8)"}, "TestMod")
-        assert "C_LOC(src%mat(1,1))" in code
+        assert "C_LOC(src%mat(LBOUND(src%mat,1),LBOUND(src%mat,2)))" in code
         assert "SIZE(src%mat, 1)" in code
         assert "SIZE(src%mat, 2)" in code
 
