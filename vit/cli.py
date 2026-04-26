@@ -171,6 +171,8 @@ def main():
                            help="Fortran source file containing the function")
     p_testval.add_argument("--module", "-m", dest="module_name", default=None,
                            help="Module name (for organizing output)")
+    p_testval.add_argument("--run", action="store_true",
+                           help="Build and run the test harness after generating")
 
     args = parser.parse_args()
 
@@ -1184,6 +1186,7 @@ def cmd_test_validate(args, config):
     from .test_validate import (
         generate_fortran_bridge,
         generate_test_harness_skeleton,
+        generate_test_makefile,
         generate_test_validate_prompt,
     )
     from .translate import _extract_function_text
@@ -1237,6 +1240,20 @@ def cmd_test_validate(args, config):
     bridge_path = out_dir / f"{sig.name.lower()}_bridge.f90"
     bridge_path.write_text(bridge)
 
+    # Generate and write Makefile
+    cpp_file_abs = str(Path(args.cpp_file).resolve()) if args.cpp_file else None
+    makefile_text = generate_test_makefile(
+        sig=sig,
+        build_dir=config.abs_build_dir,
+        source_dir=config.abs_source_dir,
+        fortran_flags=config.fortran_flags,
+        preprocessor_defines=config.preprocessor_defines,
+        shared_files=shared_files,
+        cpp_file=cpp_file_abs,
+    )
+    makefile_path = out_dir / "Makefile"
+    makefile_path.write_text(makefile_text)
+
     # Extract Fortran source
     source_text = Path(args.file).read_text()
     fortran_text = _extract_function_text(source_text, args.function_name)
@@ -1260,6 +1277,7 @@ def cmd_test_validate(args, config):
     # Output
     print(f"Generated test skeleton: {out_path}")
     print(f"Generated Fortran bridge: {bridge_path}")
+    print(f"Generated Makefile: {makefile_path}")
     print(f"Function: {sig.name}")
     if fortran_text:
         # Count error branches (simple heuristic for display)
@@ -1268,6 +1286,24 @@ def cmd_test_validate(args, config):
             r'call\s+SetErrStat|call\s+Fatal',
             fortran_text, re.IGNORECASE))
         print(f"Detected ~{branch_count} error branches in Fortran source")
+
+    if args.run:
+        # Build and run the test harness
+        print(f"\nBuilding test harness...")
+        import subprocess
+        result = subprocess.run(
+            ["make", "-C", str(out_dir), "run"],
+            capture_output=True, text=True, timeout=60,
+        )
+        print(result.stdout)
+        if result.returncode != 0:
+            print(result.stderr)
+            print(f"✗ Test build/run failed (exit code {result.returncode})")
+            return 1
+        print(f"✓ Tests passed")
+        return 0
+
+    # Print prompt (only when not --run)
     print()
     print("=" * 72)
     print("TRANSLATION TEST PROMPT")
