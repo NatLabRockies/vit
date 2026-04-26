@@ -1,6 +1,6 @@
 # AFI_ComputeAirfoilCoefs: Translation In Progress — Spline Indexing Bug
 **Date:** 2026-04-26
-**Status:** in-progress
+**Status:** completed
 **Scope:** AFI_ComputeAirfoilCoefs translation + VIT infrastructure for multi-function translations
 
 ## What Was Done
@@ -58,7 +58,10 @@ The CubicSplineInterpM C++ implementation uses 0-based indexing throughout, but 
 - `vit.yaml` — added 1D, 2D, ExtrapInterp1, CubicSplineInterpM, MPi2Pi to translations registry
 - `kernel/AFI_ComputeAirfoilCoefs/` — extracted kernel (20 cases)
 
-## Next Steps
+## Resolution
 
-1. Debug spline indexing — add diagnostic printf to compare C++ vs Fortran intermediate values
-2. Once 20/20: integrate + 16/16 baselines
+The spline indexing bug was in `CubicSplineInterpM`: the SplineCoefs array has `NumAlf-1` rows (one fewer than the knot points), not `NumAlf`. The C++ was using `NumPts` (= `NumAlf`) as the column stride for the coefficient array, reading past the intended data. Fixed by adding a `nCoefRows` parameter to `CubicSplineInterpM` and passing `tab->n_SplineCoefs_dim1` (which is `NumAlf-1`).
+
+Also encountered a production build issue: `reset_to_clean.sh` for extraction replaced all `.cpp` files with stubs, and they weren't restored before integration. Required manual `git checkout HEAD -- modules/aerodyn/src/*.cpp` to restore.
+
+**Final result:** 20/20 kernel IDENTICAL + 16/16 baselines PASS. AFI_ComputeAirfoilCoefs integrated as 13th AirfoilInfo function.
