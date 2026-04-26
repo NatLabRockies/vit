@@ -24,6 +24,66 @@ from .interface_gen import build_c_params
 from .type_map import get_type_mapping
 
 
+def generate_fortran_bridge(
+    sig: FortranSignature,
+    kind_aliases: Optional[dict] = None,
+) -> str:
+    """Generate a BIND(C) Fortran bridge for calling the original function from C++.
+
+    The bridge allows the test harness to call the original Fortran validation
+    function for comparison against the C++ translation. Named <name>_f90 to
+    distinguish from the C++ function.
+
+    Args:
+        sig: Parsed Fortran function signature
+        kind_aliases: Project kind mappings
+
+    Returns:
+        Fortran source string for the bridge subroutine
+    """
+    func_name = sig.name
+    func_lower = func_name.lower()
+    bridge_name = f"{func_lower}_f90"
+
+    lines = []
+    lines.append(f"! VIT: Test-validate bridge for {func_name}")
+    lines.append(f"! Allows C++ test harness to call the original Fortran function.")
+    lines.append(f"    SUBROUTINE {bridge_name}({', '.join(a.name for a in sig.args)}) &")
+    lines.append(f"        BIND(C, NAME='{bridge_name}')")
+    lines.append(f"        USE ISO_C_BINDING")
+    if sig.module_name:
+        lines.append(f"        USE {sig.module_name}, ONLY: {func_name}")
+    lines.append(f"        IMPLICIT NONE")
+
+    # Declare arguments with C-compatible types
+    for arg in sig.args:
+        fortran_type = arg.fortran_type.upper()
+        intent = arg.intent.value if arg.intent else "INOUT"
+
+        if arg.is_derived_type:
+            # Derived types passed as opaque C_PTR — but for simple validation
+            # functions with BIND(C)-compatible structs, pass directly
+            type_name = arg.derived_type_name
+            lines.append(f"        TYPE({type_name}), INTENT({intent}) :: {arg.name}")
+        elif "CHARACTER" in fortran_type:
+            lines.append(f"        CHARACTER(C_CHAR), INTENT({intent}) :: {arg.name}(*)")
+        elif "INTEGER" in fortran_type:
+            lines.append(f"        INTEGER(C_INT), INTENT({intent}) :: {arg.name}")
+        elif "REAL" in fortran_type:
+            lines.append(f"        REAL(C_DOUBLE), INTENT({intent}) :: {arg.name}")
+        elif "LOGICAL" in fortran_type:
+            lines.append(f"        LOGICAL(C_BOOL), INTENT({intent}) :: {arg.name}")
+        else:
+            lines.append(f"        ! TODO: unsupported type {fortran_type} for {arg.name}")
+
+    # Call the original function
+    args_str = ", ".join(a.name for a in sig.args)
+    lines.append(f"        CALL {func_name}({args_str})")
+    lines.append(f"    END SUBROUTINE {bridge_name}")
+
+    return "\n".join(lines)
+
+
 def generate_test_harness_skeleton(
     sig: FortranSignature,
     kind_aliases: Optional[dict] = None,
@@ -87,12 +147,15 @@ def generate_test_harness_skeleton(
     lines.append("};")
     lines.append("")
 
-    # Function signature (build from parsed sig)
+    # Function signatures (build from parsed sig)
     c_params = build_c_params(sig, kind_aliases or {})
     # build_c_params returns list of (c_type, name) tuples
     param_str = ", ".join(f"{ctype} {name}" for ctype, name in c_params)
     lines.append(f"// C++ function under test:")
     lines.append(f"// void {func_name}({param_str});")
+    lines.append("")
+    lines.append(f"// Fortran reference (via BIND(C) bridge):")
+    lines.append(f'extern "C" void {func_lower}_f90({param_str});')
     lines.append("")
 
     # Placeholder sections for the LLM to fill in
@@ -102,7 +165,7 @@ def generate_test_harness_skeleton(
     lines.append("")
     lines.append("// --- TODO: Implement test functions ---")
     lines.append("// One test per error branch, plus test_happy_path().")
-    lines.append("// Each test: make_valid_input() → modify one field → call → assert error.")
+    lines.append("// Each test calls BOTH C++ and Fortran, asserts they agree.")
     lines.append("")
 
     # Main function
@@ -229,22 +292,33 @@ def generate_test_validate_prompt(
         sections.append("```\n")
 
     # Instructions
+    func_lower = sig.name.lower()
     sections.append("## Instructions\n")
+    sections.append(
+        "Each test must call **both** the C++ function and the Fortran "
+        "reference (via the `_f90` bridge declared in the skeleton) and "
+        "assert they produce the **same** error status. This proves the "
+        "translation agrees with the original Fortran on every branch — "
+        "the same verification principle as KGen kernel comparison.\n"
+    )
     sections.append(
         "1. Read the Fortran source to identify every condition that "
         "triggers an error.\n"
         "2. Read the C++ translation to understand how errors are "
-        "reported (what values are set, what output parameters indicate errors).\n"
+        "reported (what values are set, what output parameters indicate "
+        "errors).\n"
         "3. Implement `make_valid_input()`: return an input struct where "
-        "ALL validation checks pass. Set each checked field to a value "
-        "that satisfies its condition.\n"
-        "4. Implement `test_happy_path()`: call with valid input, assert "
-        "no error is reported.\n"
+        "ALL validation checks pass.\n"
+        "4. Implement `test_happy_path()`: call both C++ and Fortran "
+        "with valid input, assert both report no error.\n"
         "5. For each error branch, implement a test function:\n"
         "   - Start from `make_valid_input()`\n"
         "   - Modify the specific field(s) to trigger that error\n"
-        "   - Call the function\n"
-        "   - Assert the error is reported (check the error status output)\n"
+        f"   - Call C++ `{sig.name}(...)` → get error status\n"
+        f"   - Call Fortran `{func_lower}_f90(...)` with the same input → "
+        "get error status\n"
+        "   - Assert both return the same error status (agreement)\n"
+        "   - Assert the expected error condition (correctness)\n"
         "6. For conditional branches (only checked when a flag is set), "
         "also set the enabling flag in the test.\n"
         "7. Name each test after the field being validated "

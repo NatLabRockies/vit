@@ -1182,6 +1182,7 @@ def _cmd_scan_allocatable(args, config, source_dir):
 def cmd_test_validate(args, config):
     """Generate test prompt and harness for a validation function."""
     from .test_validate import (
+        generate_fortran_bridge,
         generate_test_harness_skeleton,
         generate_test_validate_prompt,
     )
@@ -1230,6 +1231,11 @@ def cmd_test_validate(args, config):
     out_path = out_dir / f"{sig.name.lower()}_test.cpp"
     out_path.write_text(skeleton)
 
+    # Generate and write Fortran bridge
+    bridge = generate_fortran_bridge(sig, config.kind_aliases)
+    bridge_path = out_dir / f"{sig.name.lower()}_bridge.f90"
+    bridge_path.write_text(bridge)
+
     # Extract Fortran source
     source_text = Path(args.file).read_text()
     fortran_text = _extract_function_text(source_text, args.function_name)
@@ -1252,6 +1258,7 @@ def cmd_test_validate(args, config):
 
     # Output
     print(f"Generated test skeleton: {out_path}")
+    print(f"Generated Fortran bridge: {bridge_path}")
     print(f"Function: {sig.name}")
     if fortran_text:
         # Count error branches (simple heuristic for display)
