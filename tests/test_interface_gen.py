@@ -483,10 +483,10 @@ class TestGenerateFortranWrapper:
         wrapper = generate_fortran_wrapper(sig, KIND_ALIASES)
         assert "PRESENT(x)" in wrapper
         assert "has_x_flag" in wrapper
-        # The arg declaration should have OPTIONAL
+        # The arg declaration should have OPTIONAL (kind may be resolved: REAL(8) instead of REAL(DbKi))
         found_optional = False
         for line in wrapper.split("\n"):
-            if ":: x" in line and "REAL(DbKi)" in line:
+            if ":: x" in line and "REAL" in line:
                 if "OPTIONAL" in line.upper():
                     found_optional = True
         assert found_optional, "x arg declaration should have OPTIONAL attribute"

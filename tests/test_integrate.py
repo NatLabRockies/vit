@@ -193,11 +193,12 @@ class TestGenerateStandaloneCpp:
                                            struct_headers=["vit_types.h"])
         assert '#include "vit_types.h"' in result
 
-    def test_no_struct_headers_no_includes(self):
-        """Without struct_headers, no #include for type headers."""
+    def test_no_struct_headers_still_includes_translated(self):
+        """Without struct_headers, vit_translated.h is still included (callee declarations)."""
         sig = self._make_sig()
         result = _generate_standalone_cpp(sig, CPP_IMPL)
-        assert '#include "' not in result
+        assert '#include "vit_translated.h"' in result
+        assert '#include "vit_types.h"' not in result
 
 
 # === _generate_cmake_patches tests ===

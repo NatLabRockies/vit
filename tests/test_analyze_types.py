@@ -173,13 +173,11 @@ class TestCharacterNTypeMapping:
             assert "CHARACTER(:)" in str(e)
             assert "analyze-types" in str(e)
 
-    def test_character_assumed_raises(self):
-        """CHARACTER(*) cannot be mapped — must raise."""
-        try:
-            get_type_mapping("CHARACTER(*)")
-            assert False, "Should have raised ValueError"
-        except ValueError as e:
-            assert "CHARACTER(*)" in str(e)
+    def test_character_assumed_maps_to_char(self):
+        """CHARACTER(*) maps to char with no fixed length."""
+        m = get_type_mapping("CHARACTER(*)")
+        assert m.c_type == "char"
+        assert m.character_length is None
 
     def test_c_int_alias(self):
         """C_INT should resolve to INTEGER(4) via DEFAULT_KIND_ALIASES."""
@@ -599,13 +597,14 @@ LOGICAL_NOT_SOURCE = textwrap.dedent("""\
 class TestFixLogical:
     """Test fix_logical_field() for LOGICAL → INTEGER(C_INT) conversion."""
 
-    def test_logical_field_is_blocker(self):
+    def test_logical_field_not_blocker(self):
+        """LOGICAL maps to int32_t — no longer a C-compatibility blocker."""
         info = parse_derived_type(LOGICAL_TYPE_SOURCE, "LocalVariables")
         assert info is not None
         aliases = {"IntKi": "INTEGER(4)", "DbKi": "REAL(8)"}
         blockers = classify_field_blockers(info, aliases)
         reasons = [b.reason for b in blockers]
-        assert "logical" in reasons
+        assert "logical" not in reasons
 
     def test_fix_logical_rewrites_type_definition(self, tmp_path):
         (tmp_path / "types.f90").write_text(LOGICAL_TYPE_SOURCE)

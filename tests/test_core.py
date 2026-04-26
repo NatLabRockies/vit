@@ -713,35 +713,36 @@ class TestOptionalArgs:
         """Wrapper arg declaration should have OPTIONAL attribute."""
         sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
         wrapper = generate_fortran_wrapper(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
+        # Look for the OPTIONAL declaration — not the local _val variable
         found = False
         for line in wrapper.split("\n"):
-            # Match the arg declaration, not the local variable
-            if ":: ResetValue" in line and "REAL(DbKi)" in line:
-                assert "OPTIONAL" in line.upper()
+            if "OPTIONAL" in line.upper() and "ResetValue" in line:
                 found = True
-        assert found, "Did not find ResetValue arg declaration"
+        assert found, "Did not find OPTIONAL :: ResetValue declaration"
 
 
 class TestLogicalType:
     """Phase 3: LOGICAL type handling."""
 
-    def test_logical_maps_to_int8(self):
+    def test_logical_maps_to_int32(self):
+        """LOGICAL maps to int32_t (4 bytes, matching Fortran default LOGICAL size)."""
         from vit.type_map import get_type_mapping
         m = get_type_mapping("LOGICAL")
-        assert m.c_type == "int8_t"  # C_BOOL is 1 byte
-        assert m.iso_c_type == "LOGICAL(C_BOOL)"
+        assert m.c_type == "int32_t"
 
     def test_ratelimit_reset_c_param(self):
         sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
         params = build_c_params(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
         param_dict = {name: ctype for ctype, name in params}
-        assert param_dict["reset"] == "int8_t"  # C_BOOL is 1 byte
+        assert param_dict["reset"] == "int32_t"
 
-    def test_wrapper_logical_conversion(self):
-        """LOGICAL args should get explicit LOGICAL(x, C_BOOL) conversion."""
+    def test_wrapper_logical_passthrough(self):
+        """LOGICAL args are passed through without C_BOOL conversion (4-byte default)."""
         sig = parse_signature_from_source(RATELIMIT_SOURCE, "ratelimit")
         wrapper = generate_fortran_wrapper(sig, ROSCO_KIND_ALIASES, RLPARAMS_REGISTRY)
-        assert "LOGICAL(reset, C_BOOL)" in wrapper
+        # Should have LOGICAL declaration but no LOGICAL(x, C_BOOL) conversion
+        assert "reset" in wrapper
+        assert "LOGICAL(reset, C_BOOL)" not in wrapper
 
 
 class TestRatelimitFullSignature:
