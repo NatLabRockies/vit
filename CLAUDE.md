@@ -25,12 +25,12 @@ This workspace contains three tools that work together to enable verified Fortra
 
 - **Workspace:** `vit_translation_openfast/` — sibling to the ROSCO workspace, with independent git clones of VIT, KGen, and OpenFAST (no symlinks). Both workspace VIT clones share the same `main` branch on the `NatLabRockies/vit` remote.
 - **Target:** translate all of AeroDyn to C++ — 507 hand-written procedures across 46,803 lines, plus a C++ code generator for the OpenFAST Registry (740 generated procedures / 28,490 lines), plus drivers and C-binding layer. End state: pure C++ AeroDyn module, no Fortran source, no libgfortran dependency. 42 Fortran source files, ~75,000 total lines.
-- **Current stage:** **Phase 1 in progress — 11 AirfoilInfo functions integrated** (including CalculateUACoeffs orchestrator). Full VIT pipeline proven. Phase 0 (Registry C++ generator) complete. Shared NWTC utility library (`vit_nwtc.h/.cpp`) with EqualRealNos, fZeros, InterpExtrapStp, InterpStp, kernelSmoothing. All infrastructure mature: view reverse-copy, callee bridges with INOUT re-sync + pre-call flush, auto-callee declarations, kernel repair, LOGICAL type support, array-returning function bridges. See "AeroDyn Workflow" section below.
+- **Current stage:** **Phase 1 in progress — 12 AirfoilInfo functions integrated** (including CalculateUACoeffs orchestrator and AFI_ValidateInitInput via test-validate). Full VIT pipeline proven. Phase 0 (Registry C++ generator) complete. Shared NWTC utility library (`vit_nwtc.h/.cpp`) with EqualRealNos, fZeros, InterpExtrapStp, InterpStp, kernelSmoothing. All infrastructure mature: view reverse-copy, callee bridges with INOUT re-sync + pre-call flush, auto-callee declarations, kernel repair, LOGICAL type support, array-returning function bridges, test-validate for validation functions. See "AeroDyn Workflow" section below.
 - **Scope decisions (committed 2026-04-23, dev note `202604232342`):**
   1. **Breadth:** All of AeroDyn — all 5 sub-systems (BEMT, FVW/OLAF, UnsteadyAero, AeroAcoustics, core AeroDyn), all 507 hand-written procedures
   2. **Registry types:** Build a C++ code generator for the OpenFAST Registry (replaces 740 auto-generated Fortran procedures)
   3. **Drivers/C-binding:** Translate everything — full C++, no Fortran remaining
-  4. **Verification:** Three-tier, same as ROSCO — KGen float64 kernel verification + 16-case simulation bit-identical + NREL regression 16/16
+  4. **Verification:** KGen float64 kernel verification (physics functions) + `vit test-validate` branch-coverage dual-call tests (validation functions) + 16-case simulation bit-identical + NREL regression 16/16
   5. **Done criteria:** Pure C++ AeroDyn module — no Fortran source in the build, no libgfortran, 16/16 regression pass, AeroDyn Driver functional, C-binding preserved
 - **Key architectural decisions (committed 2026-04-24, dev note `202604240012`):**
   1. **Type strategy:** Registry generator for Registry types, VIT `analyze-types` for hand-written types (clean tool separation)
@@ -40,10 +40,10 @@ This workspace contains three tools that work together to enable verified Fortra
   5. **NWTC Library:** Stays Fortran at the module level (shared framework, separate project to translate). Individual utility functions used by AeroDyn (EqualRealNos, fZeros, InterpExtrapStp) are translated to C++ in `vit_nwtc.h` — a shared header included by all AeroDyn translations. This prepares for pure-C++ AeroDyn while providing transitive verification via KGen kernel comparison.
   6. **External modules:** InflowWind, SeaState, LinDyn stay Fortran, accessed via C interop (read-only data providers)
 - **Translation boundary:** Everything inside AeroDyn → C++. Everything outside (NWTC Library, InflowWind, SeaState, LinDyn, OpenFAST glue code) → stays Fortran, crossed via BIND(C) / view structs. Exception: individual NWTC utility functions used by AeroDyn are translated to C++ in `vit_nwtc.h` (see KD5 and "Shared NWTC utility header" below).
-- **Open questions (10, dev note `202604240016`):** **Answered:** OQ1 (Registry feasible, dev note `202604240609`), OQ2 (KGen works on AeroDyn cmake, dev note `202604241004`), OQ3 (287 external callees, ~150 wrappers), OQ5 (OpenMP simple parallel DO), OQ6 (5 POINTERs, all non-owning, dev note `202604240609`), OQ7 (MeshType view struct ~80 lines, not needed until Phase 4, dev note `202604240640`). **Answered:** OQ4 (r-test coverage — gcov line coverage infrastructure provides definitive per-line data across all 17 test cases; `query_coverage.py --call-sites` is the standard extraction workflow). **Answered:** OQ8 (VIT on AeroDyn — 20+ fixes applied, derived types proven across 8 functions). **Open:** OQ9 (upstream sync), OQ10 (full OpenFAST build).
+- **Open questions (10, dev note `202604240016`):** **Answered:** OQ1 (Registry feasible, dev note `202604240609`), OQ2 (KGen works on AeroDyn cmake, dev note `202604241004`), OQ3 (287 external callees, ~150 wrappers), OQ5 (OpenMP simple parallel DO), OQ6 (5 POINTERs, all non-owning, dev note `202604240609`), OQ7 (MeshType view struct ~80 lines, not needed until Phase 4, dev note `202604240640`). **Answered:** OQ4 (r-test coverage — gcov line coverage infrastructure provides definitive per-line data across all 17 test cases; `query_coverage.py --call-sites` is the standard extraction workflow). **Answered:** OQ8 (VIT on AeroDyn — 20+ fixes applied, derived types proven across 12 functions). **Open:** OQ9 (upstream sync), OQ10 (full OpenFAST build).
 - **Structural inventory findings (dev note `202604232137`):** 507 hand-written top-level procedures, 247 leaf functions (first translation targets), 5 semi-independent sub-systems, 176 derived types (150 AeroDyn + 26 NWTC deps), 14 genuinely dead procedures (660 lines, excluded from scope), 3 confirmed framework interface procedures, 10 C-binding entry points, only 1 procedure with SAVE state. External dependencies: NWTC Library (framework), InflowWind, SeaState, LinDyn.
 - **Verification infrastructure:** 16 AeroDyn regression test cases with committed baselines (`openfast/baselines/aerodyn/`), regenerated 2026-04-24 with `-ffp-contract=off`. Three verification scripts: `verify_aerodyn_baselines.sh` (bit-identical gate), `run_nrel_regression.sh` (NREL 1e-2 correctness gate, 16/16 PASS), `check_aerodyn_nrel_drift.sh` (informational drift reporter). **After integrating any function, run `verify_aerodyn_baselines.sh all` to confirm 16/16 pass.**
-- **Next step:** AFI_ValidateInitInput (simulation-level verification), then DBEMT module. Eleven functions integrated and verified: Calculate_Cn, FindBoundingTables, Compute_iLoweriUpper, ComputeUA360_CnOffset, Calculate_C_alpha, ComputeUASeparationFunction_zero, ComputeUA360_updateCnSeparated, ComputeUA360_updateSeparationF, ComputeUASeparationFunction_onCl, ComputeUA360_AttachedFlow, CalculateUACoeffs. All 20/20 kernel verification + 16/16 baselines. See `PROJECT_PLAN_AERODYN.md` Phase 1 for full scope.
+- **Next step:** AFI_ComputeAirfoilCoefs (main coefficient lookup, view types with ALLOCATABLE), then DBEMT module. Twelve functions integrated and verified: Calculate_Cn, FindBoundingTables, Compute_iLoweriUpper, ComputeUA360_CnOffset, Calculate_C_alpha, ComputeUASeparationFunction_zero, ComputeUA360_updateCnSeparated, ComputeUA360_updateSeparationF, ComputeUASeparationFunction_onCl, ComputeUA360_AttachedFlow, CalculateUACoeffs (all 20/20 kernel + 16/16 baselines), AFI_ValidateInitInput (7/7 test-validate + 16/16 baselines). See `PROJECT_PLAN_AERODYN.md` Phase 1 for full scope.
 - **Methodology reference:** `CREATING_PROJECT_PLANS.md` — read this before drafting new plan documents.
 
 ### AeroDyn Workflow
@@ -87,13 +87,57 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 
 **`--reverse-copy` flag:** Use when the function modifies scalar fields in view-type INOUT arguments (e.g., `p%UA_BL.alphaBreakUpper`). VIT generates the reverse-copy subroutine in both kernel verification and production wrappers. Not needed when the function only modifies ALLOCATABLE arrays (those are visible through `C_LOC` pointers). VIT also auto-enables reverse-copy during kernel verification for all INOUT view-type arguments.
 
+### Test-Validate Workflow (Validation Functions)
+
+Validation functions (e.g., `AFI_ValidateInitInput`) check input parameters and report errors via `SetErrStat`. KGen kernel verification only exercises the happy path (valid inputs → ErrStat=0), leaving all error branches untested. `vit test-validate` is the alternative verification path for these functions.
+
+**When to use:** Functions whose interesting behavior is error-branch coverage, not floating-point arithmetic. Typically functions named `Validate*`, `Check*`, or functions that only call `SetErrStat` with no math.
+
+**How it works:** Prompt-based dual-call testing. VIT extracts raw materials (Fortran source, C++ translation, struct definitions), generates a test harness skeleton and a Fortran BIND(C) bridge, and assembles a prompt. The LLM writes branch-coverage tests using the prompt. Each test calls both the C++ translation and the original Fortran (via the bridge) and asserts they produce the same `ErrStat` — the same C++ ≡ Fortran principle as KGen kernel verification.
+
+**What VIT generates:**
+- **Test skeleton** (`<name>_test.cpp`) — boilerplate: includes, TestResult struct, main runner, extern "C" bridge declaration. LLM fills in `make_valid_input()` and per-branch test functions.
+- **Fortran bridge** (`<name>_bridge.f90`) — BIND(C) subroutine that receives derived types as `TYPE(C_PTR)` (converted via `C_F_POINTER`), handles CHARACTER args locally (only ErrStat returned to C++). Module USE statements derived from source file scan (no hardcoded conventions).
+- **Patched source** — if the function is PRIVATE, a local copy with `PUBLIC :: FuncName` added. Compiled locally to produce a `.mod` that overrides the production `.mod` for bridge compilation only.
+- **Makefile** — compiles patched source + bridge + test, links against production `.a` libraries (derived from CMake target's `link.txt`). No project rebuild needed.
+
+**Workflow:**
+```bash
+# 1. Translate (generates scaffold + prompt)
+vit translate FuncName -f modules/aerodyn/src/Source.f90 --module ModuleName
+
+# 2. Write the C++ implementation
+
+# 3. Generate test harness + prompt (does NOT overwrite existing test file)
+vit test-validate FuncName translations/Module/funcname.cpp \
+  -f modules/aerodyn/src/Source.f90 --module ModuleName
+
+# 4. Write test implementations using the prompt
+
+# 5. Build and run tests (inside container)
+vit test-validate FuncName translations/Module/funcname.cpp \
+  -f modules/aerodyn/src/Source.f90 --module ModuleName --run
+
+# 6. Integrate + rebuild + baselines (same as KGen path)
+vit integrate FuncName translations/Module/funcname.cpp \
+  -f modules/aerodyn/src/Source.f90 --apply
+cd build && cmake --build . --target aerodyn_driver -j$(nproc)
+cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
+```
+
+**File overwrite protection:** Re-running `vit test-validate` skips the test file if it contains real implementations (no `// --- TODO:` markers). Use `--force` to overwrite. Bridge, Makefile, and patched source are always regenerated (they're deterministic).
+
+**Test storage:** `translations/<Module>/<name>_test.cpp`, alongside the translation, bridge, and Makefile. Same directory convention as KGen kernel fixtures.
+
 **Shared NWTC utilities (`vit_nwtc.h` + `vit_nwtc.cpp`):** C++ translations of NWTC_Library functions used by AeroDyn translations. Located at `modules/aerodyn/src/`. Declarations in `vit_nwtc.h`, implementations compiled once in `vit_nwtc.cpp`. All translations `#include "vit_nwtc.h"` instead of inlining NWTC functions or constants. VIT automatically copies both files to kernel directories during verification and adds `vit_nwtc.o` to the kernel Makefile.
 
 Contents:
 - **Constants** (in header, `static constexpr`): `Pi`, `TwoPi`, `PiBy2`, `D2R`, `R2D`
 - **`EqualRealNos(a, b)`** — epsilon-based relative tolerance comparison (from `EqualRealNos8` in NWTC_Num.f90)
 - **`fZeros(x, f, n, roots, roots_size, nZeros, has_period, period)`** — zero-crossing finder with optional periodic wraparound (from `fZero_R8`). Arrays are 0-based. `has_period`/`period` replace the Fortran OPTIONAL parameter.
-- **`InterpExtrapStp(XVal, XAry, YAry, Ind, AryLen)`** — linear interpolation with stepping index search (from NWTC_Num.f90). `Ind` is **1-based** (Fortran convention) — caller initializes to 1. Arrays are 0-based.
+- **`InterpExtrapStp(XVal, XAry, YAry, Ind, AryLen)`** — linear interpolation/extrapolation with stepping index search (from NWTC_Num.f90). `Ind` is **1-based** (Fortran convention) — caller initializes to 1. Arrays are 0-based.
+- **`InterpStp(XVal, XAry, YAry, Ind, AryLen)`** — linear interpolation with stepping (no extrapolation, clamps to endpoint values). Same calling convention as InterpExtrapStp.
+- **`kernelSmoothing(x, f, n, bw, kernelType, xs, fs, ns)`** — kernel density smoothing with configurable kernel type (Epanechnikov, Quartic, Biweight, Triweight, Tricube, Gaussian). Constants: `kernelType_EPANECHINIKOV` through `kernelType_GAUSSIAN`.
 
 Design rationale: NWTC_Library stays Fortran as a module, but individual utility functions needed by AeroDyn are translated to C++ for the pure-C++ end state. Compiled as a separate unit (not header-only inline) so implementations exist once regardless of how many translations include the header. KGen kernel verification transitively validates these implementations against the Fortran originals. `reset_to_clean.sh` preserves `vit_nwtc.cpp` (it's a shared utility, not a per-function wrapper stub).
 
@@ -107,7 +151,7 @@ Design rationale: NWTC_Library stays Fortran as a module, but individual utility
 
 ### AeroDyn Test Case Coverage Map
 
-17 regression test cases with different mode combinations. Use this to pick the right test case for KGen extraction based on which code path the target function is on.
+17 test cases used for gcov line coverage data. 16 have committed baselines in `openfast/baselines/aerodyn/`; `ad_Sphere_OLAF` is in the coverage map but has no committed baseline (used for coverage only). Use this to pick the right test case for KGen extraction based on which code path the target function is on.
 
 | Test Case | UA | AFTab | Wake | DBEMT | Cavit | Notes |
 |-----------|-----|-------|------|-------|-------|-------|
@@ -433,7 +477,7 @@ Key fields (common to both projects):
 
 ## VIT CLI Commands Reference
 
-VIT ships 12 subcommands. The six primary commands (`extract`, `verify`, `integrate`, `translate`, `sim-compare`, `analyze-types`) are covered in detail above under "Full Workflow" and the Stage sections. This section lists the full surface so nothing is hidden.
+VIT ships 13 subcommands. The seven primary commands (`extract`, `verify`, `integrate`, `translate`, `test-validate`, `sim-compare`, `analyze-types`) are covered in detail above under "Full Workflow" and the Stage sections. This section lists the full surface so nothing is hidden.
 
 **Global flags** (accepted by every subcommand, must appear before the subcommand name):
 - `--config PATH` / `-c PATH` — use a non-default `vit.yaml` location.
@@ -448,6 +492,7 @@ VIT ships 12 subcommands. The six primary commands (`extract`, `verify`, `integr
 | `vit translate` | Generate C++ scaffold + translation prompt | `-f FILE`, `--module NAME` |
 | `vit sim-compare` | Compare two directories of `.npz` simulation arrays | `--tolerance FLOAT` |
 | `vit analyze-types` | Scan/fix derived types for C interop | `--fix {character,logical,complex,bind_c}`, `--scan-allocatable`, `--apply`, `--type`, `--field`, `--length`, `--rewrite` |
+| `vit test-validate` | Generate test harness + prompt for validation functions | `-f FILE`, `--module NAME`, `--run`, `--force` |
 
 **Utility and advanced commands** (less commonly used; full details via `vit <cmd> --help`):
 | Command | Purpose |
