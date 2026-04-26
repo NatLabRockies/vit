@@ -509,6 +509,64 @@ class TestGenerateFortranWrapper:
         assert "C_LOC(" in wrapper
 
 
+# === generate_kernel_callee_bridge tests ===
+
+class TestGenerateKernelCalleeBridge:
+
+    def test_scalar_args_bridge(self):
+        """Simple scalar args produce correct BIND(C) bridge."""
+        from vit.interface_gen import generate_kernel_callee_bridge
+        sig = FortranSignature(
+            name="MySub",
+            kind=SubprogramKind.SUBROUTINE,
+            args=[
+                FortranArg(name="x", fortran_type="REAL(DbKi)", intent=IntentKind.IN),
+                FortranArg(name="y", fortran_type="REAL(DbKi)", intent=IntentKind.OUT),
+            ],
+            module_name="TestModule",
+        )
+        bridge = generate_kernel_callee_bridge(sig, KIND_ALIASES)
+        assert "BIND(C, NAME='mysub_c')" in bridge
+        assert "CALL MySub" in bridge
+        assert "REAL(C_DOUBLE)" in bridge
+
+    def test_optional_arg_produces_has_flag(self):
+        """OPTIONAL arg generates has_flag/val pattern."""
+        from vit.interface_gen import generate_kernel_callee_bridge
+        sig = FortranSignature(
+            name="MyFunc",
+            kind=SubprogramKind.FUNCTION,
+            args=[
+                FortranArg(name="x", fortran_type="REAL(DbKi)", intent=IntentKind.IN),
+                FortranArg(name="opt", fortran_type="REAL(DbKi)",
+                           intent=IntentKind.IN, is_optional=True),
+            ],
+            result_type="REAL(DbKi)",
+            result_name="MyFunc",
+            module_name="TestModule",
+        )
+        bridge = generate_kernel_callee_bridge(sig, KIND_ALIASES)
+        assert "has_opt" in bridge
+        assert "has_opt /= 0" in bridge  # Bridge uses has_flag, not PRESENT
+
+    def test_function_returns_result(self):
+        """FUNCTION bridge returns result to C."""
+        from vit.interface_gen import generate_kernel_callee_bridge
+        sig = FortranSignature(
+            name="ComputeValue",
+            kind=SubprogramKind.FUNCTION,
+            args=[
+                FortranArg(name="x", fortran_type="REAL(DbKi)", intent=IntentKind.IN),
+            ],
+            result_type="REAL(DbKi)",
+            result_name="ComputeValue",
+            module_name="TestModule",
+        )
+        bridge = generate_kernel_callee_bridge(sig, KIND_ALIASES)
+        assert "RESULT" in bridge or "bridge_result" in bridge
+        assert "ComputeValue" in bridge
+
+
 # === Run tests ===
 
 if __name__ == "__main__":

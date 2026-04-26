@@ -8,6 +8,7 @@ Docker, KGen, or a real Fortran project.
 import os
 import pytest
 import sys
+import textwrap
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -519,6 +520,58 @@ class TestInferAssumedSizeArrays:
         assert len(result) == 1
         assert "no index evidence" in result[0].summary or "no evidence" in result[0].summary
         assert result[0].assumed_value == ""  # No proposal — hard error
+
+
+# === find_call_sites tests ===
+
+class TestFindCallSites:
+
+    def test_finds_call_statement(self, tmp_path):
+        """Finds CALL FuncName(...) in source files."""
+        from vit.extract import find_call_sites
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "main.f90").write_text(textwrap.dedent("""\
+            SUBROUTINE Driver()
+                CALL MyTarget(x, y, z)
+            END SUBROUTINE
+        """))
+        results = find_call_sites(str(src), "MyTarget")
+        assert len(results) == 1
+        assert results[0][1] == 2  # line number
+        assert "MyTarget" in results[0][2]
+
+    def test_case_insensitive(self, tmp_path):
+        """Finds call sites regardless of case."""
+        from vit.extract import find_call_sites
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "test.f90").write_text(textwrap.dedent("""\
+            SUBROUTINE Caller()
+                call mytarget(a, b)
+            END SUBROUTINE
+        """))
+        results = find_call_sites(str(src), "MyTarget")
+        assert len(results) == 1
+
+    def test_excludes_definition(self, tmp_path):
+        """Does not return the function's own definition line."""
+        from vit.extract import find_call_sites
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "funcs.f90").write_text(textwrap.dedent("""\
+            SUBROUTINE MyTarget(x)
+                INTEGER, INTENT(IN) :: x
+            END SUBROUTINE
+
+            SUBROUTINE Caller()
+                CALL MyTarget(42)
+            END SUBROUTINE
+        """))
+        results = find_call_sites(str(src), "MyTarget")
+        # Should find the CALL but not the SUBROUTINE definition
+        assert len(results) == 1
+        assert "CALL" in results[0][2].upper()
 
 
 if __name__ == "__main__":
