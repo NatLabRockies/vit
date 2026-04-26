@@ -797,6 +797,41 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
                 content_joined = content_joined.replace(old_rule, new_rule, 1)
         lines = content_joined.split("\n")
 
+    # 3d. Add inter-populator dependencies (parent populator USEs child populator)
+    # Detect by scanning populator source for 'USE vit_*_view' references to other populators.
+    if view_populator_sources:
+        content_joined = "\n".join(lines)
+        pop_obj_map = {}  # module_name → obj_name
+        for pop_entry in view_populator_sources:
+            pop_src = pop_entry[0] if isinstance(pop_entry, tuple) else pop_entry
+            pop_obj = pop_src.replace(".f90", ".o")
+            # Module name is filename without extension (e.g., vit_afi_parametertype_view)
+            mod_name = pop_src.replace(".f90", "")
+            pop_obj_map[mod_name] = pop_obj
+
+        for pop_entry in view_populator_sources:
+            pop_src = pop_entry[0] if isinstance(pop_entry, tuple) else pop_entry
+            pop_obj = pop_src.replace(".f90", ".o")
+            # Read the generated populator source to find child populator USE statements
+            pop_path = kernel / pop_src if isinstance(kernel, Path) else Path(kernel) / pop_src
+            if pop_path.exists():
+                pop_content = pop_path.read_text()
+                for mod_name, child_obj in pop_obj_map.items():
+                    if child_obj == pop_obj:
+                        continue  # Don't depend on self
+                    if f"USE {mod_name}" in pop_content or f"use {mod_name}" in pop_content:
+                        # Add child dependency to parent populator's Makefile rule
+                        rule_re = re.compile(
+                            rf'^({re.escape(pop_obj)}\s*:\s*)(.*)',
+                            re.MULTILINE,
+                        )
+                        m = rule_re.search(content_joined)
+                        if m and child_obj not in m.group(2):
+                            old_rule = m.group(0)
+                            new_rule = f"{m.group(1)}{m.group(2)} {child_obj}"
+                            content_joined = content_joined.replace(old_rule, new_rule, 1)
+        lines = content_joined.split("\n")
+
     # 4. Add -lstdc++ and -lmvec -lm to link flags
     # -lmvec provides vectorized cos/sin matching the production build.
     # Without it, the kernel uses scalar libm cos/sin which can differ by

@@ -637,10 +637,21 @@ def generate_view_struct_header(
         else:
             rank = 1
 
-        # ALLOCATABLE TYPE() fields — opaque void* pointer + size
+        # ALLOCATABLE TYPE() fields
         if f.fortran_type.upper().startswith("TYPE("):
             nested_name = f.fortran_type[5:-1].strip()
-            lines.append(f"    void* {f.name};  // TYPE({nested_name}), ALLOCATABLE — opaque")
+            # Check if the inner type is a view type — if so, use typed pointer
+            nested_info = None
+            if registry:
+                for k, v in registry.items():
+                    if k.upper() == nested_name.upper():
+                        nested_info = v
+                        break
+            if nested_info and getattr(nested_info, 'view_strategy', None) == 'view':
+                child_view_type = f"{nested_info.name.lower()}_view_t"
+                lines.append(f"    {child_view_type}* {f.name};  // Array of view structs, populated by Fortran")
+            else:
+                lines.append(f"    void* {f.name};  // TYPE({nested_name}), ALLOCATABLE — opaque")
             lines.append(f"    int32_t n_{f.name};")
             continue
 
