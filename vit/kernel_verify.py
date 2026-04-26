@@ -1516,6 +1516,14 @@ def _patch_field_value_logging(content: str) -> str:
             current_field = "__bare__"
             current_type = "bare_array"
 
+        # Reset field tracking on nested-type verify calls (CALL kv_*).
+        # The nested verify produces its own [VIT_FIELD] tags for its fields.
+        # Without this reset, check_result after the call gets tagged with
+        # the preceding scalar field name (e.g., "incluadata" instead of "ua_bl").
+        if re.match(r'\s*CALL\s+kv_\w+\s*\(', line, re.IGNORECASE):
+            current_field = None
+            current_type = None
+
         result.append(line)
 
         # Inject WRITE after check_result assignments
