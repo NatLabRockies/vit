@@ -285,6 +285,9 @@ def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
     if config.allocatable_helpers:
         data["allocatable"] = {"helpers": config.allocatable_helpers}
 
+    if config.shared_files:
+        data["shared_files"] = config.shared_files
+
     if HAS_YAML:
         with open(config_path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)

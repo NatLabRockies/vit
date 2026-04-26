@@ -111,15 +111,26 @@ def generate_test_makefile(
     defines = " ".join(f"-D{d}" for d in (preprocessor_defines or []))
 
     # Collect include paths for shared headers
+    # shared_files paths are relative to config_dir (project root).
+    # source_dir is already absolute (config.abs_source_dir).
+    # Derive config_dir from source_dir by going up one level.
     include_dirs = set()
     if shared_files:
+        # config_dir is the parent of source_dir (e.g., /workspace/openfast)
+        config_dir = str(Path(source_dir).parent) if source_dir else "."
         for f in shared_files:
             p = Path(f)
-            if not p.is_absolute() and source_dir:
-                p = Path(source_dir).parent / f  # relative to config_dir
+            if not p.is_absolute():
+                p = Path(config_dir) / f
             include_dirs.add(str(p.parent))
-    # Also include the translations directory (for vit_types.h)
+    # Include the current directory and the translations root directory.
+    # translations/vit_types.h has ALL types (including newly translated ones),
+    # while modules/aerodyn/src/vit_types.h only has already-integrated types.
+    # Put translations/ FIRST so the complete vit_types.h is found.
     include_dirs.add(".")
+    config_dir = str(Path(source_dir).parent) if source_dir else "."
+    translations_dir = str(Path(config_dir) / "translations")
+    include_dirs.add(translations_dir)
 
     cxx_includes = " ".join(f"-I{d}" for d in sorted(include_dirs))
 
