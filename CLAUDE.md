@@ -86,15 +86,15 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 
 **`--reverse-copy` flag:** Use when the function modifies scalar fields in view-type INOUT arguments (e.g., `p%UA_BL.alphaBreakUpper`). VIT generates the reverse-copy subroutine in both kernel verification and production wrappers. Not needed when the function only modifies ALLOCATABLE arrays (those are visible through `C_LOC` pointers). VIT also auto-enables reverse-copy during kernel verification for all INOUT view-type arguments.
 
-**Shared NWTC utility header (`vit_nwtc.h`):** C++ translations of NWTC_Library functions used by AeroDyn translations. Located at `modules/aerodyn/src/vit_nwtc.h`. All translations should `#include "vit_nwtc.h"` instead of inlining NWTC functions or constants. VIT automatically copies this header to kernel directories during verification.
+**Shared NWTC utilities (`vit_nwtc.h` + `vit_nwtc.cpp`):** C++ translations of NWTC_Library functions used by AeroDyn translations. Located at `modules/aerodyn/src/`. Declarations in `vit_nwtc.h`, implementations compiled once in `vit_nwtc.cpp`. All translations `#include "vit_nwtc.h"` instead of inlining NWTC functions or constants. VIT automatically copies both files to kernel directories during verification and adds `vit_nwtc.o` to the kernel Makefile.
 
 Contents:
-- **Constants:** `Pi`, `TwoPi`, `PiBy2`, `D2R`, `R2D` (all `static constexpr double`)
+- **Constants** (in header, `static constexpr`): `Pi`, `TwoPi`, `PiBy2`, `D2R`, `R2D`
 - **`EqualRealNos(a, b)`** — epsilon-based relative tolerance comparison (from `EqualRealNos8` in NWTC_Num.f90)
 - **`fZeros(x, f, n, roots, roots_size, nZeros, has_period, period)`** — zero-crossing finder with optional periodic wraparound (from `fZero_R8`). Arrays are 0-based. `has_period`/`period` replace the Fortran OPTIONAL parameter.
 - **`InterpExtrapStp(XVal, XAry, YAry, Ind, AryLen)`** — linear interpolation with stepping index search (from NWTC_Num.f90). `Ind` is **1-based** (Fortran convention) — caller initializes to 1. Arrays are 0-based.
 
-Design rationale: NWTC_Library stays Fortran as a module, but individual utility functions needed by AeroDyn are translated to C++ for the pure-C++ end state. KGen kernel verification transitively validates these implementations against the Fortran originals — every function that uses them gets the shared implementations verified as part of its own kernel test.
+Design rationale: NWTC_Library stays Fortran as a module, but individual utility functions needed by AeroDyn are translated to C++ for the pure-C++ end state. Compiled as a separate unit (not header-only inline) so implementations exist once regardless of how many translations include the header. KGen kernel verification transitively validates these implementations against the Fortran originals. `reset_to_clean.sh` preserves `vit_nwtc.cpp` (it's a shared utility, not a per-function wrapper stub).
 
 **Build flags:** The OpenFAST fork has `FP_CONTRACT_OFF=ON` (default) in `CMakeLists.txt`, which sets `-ffp-contract=off` on both Fortran and C++ compilers. This is required for bit-identical verification during the translation phase. For production pure-C++ builds after translation: `cmake .. -DFP_CONTRACT_OFF=OFF`.
 

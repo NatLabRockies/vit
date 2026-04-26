@@ -159,22 +159,27 @@ def setup_kernel_cpp(
     shutil.copy2(cpp_impl_path, impl_dest)
     result["files_modified"].append(str(impl_dest))
 
-    # --- Step 1a: Copy shared headers (if found near impl file or in source dir) ---
-    for header_name in ["rosco_constants.h", "vit_nwtc.h"]:
+    # --- Step 1a: Copy shared files (headers + sources) to kernel ---
+    extra_cpp_sources = []  # Track .cpp files for Makefile rules
+    for filename in ["rosco_constants.h", "vit_nwtc.h", "vit_nwtc.cpp"]:
         found = False
         for parent in [Path(cpp_impl_path).parent] + list(Path(cpp_impl_path).parent.parents):
-            candidate = parent / header_name
+            candidate = parent / filename
             if candidate.exists():
-                dest = kernel / header_name
+                dest = kernel / filename
                 shutil.copy2(str(candidate), str(dest))
                 result["files_modified"].append(str(dest))
                 found = True
+                if filename.endswith(".cpp"):
+                    extra_cpp_sources.append(filename)
                 break
         if not found and source_dir:
-            for candidate in sorted(Path(source_dir).rglob(header_name)):
-                dest = kernel / header_name
+            for candidate in sorted(Path(source_dir).rglob(filename)):
+                dest = kernel / filename
                 shutil.copy2(str(candidate), str(dest))
                 result["files_modified"].append(str(dest))
+                if filename.endswith(".cpp"):
+                    extra_cpp_sources.append(filename)
                 break
 
     # --- Step 1b: Generate consolidated type header ---
@@ -231,7 +236,8 @@ def setup_kernel_cpp(
         _patch_kernel_makefile(kernel, sig, wrapper_filename,
                                fortran_flags=fortran_flags,
                                view_populator_sources=view_populator_sources,
-                               wrapper_fortran_obj=wrapper_fortran_obj)
+                               wrapper_fortran_obj=wrapper_fortran_obj,
+                               extra_cpp_sources=extra_cpp_sources)
         result["files_modified"].append(str(kernel / "Makefile"))
     except Exception as e:
         result["errors"].append(f"Makefile patch failed: {e}")
@@ -631,7 +637,8 @@ def run_kernel_verify(kernel_dir: str, env: Optional[dict] = None,
 def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
                            cpp_source: str, fortran_flags: str = "",
                            view_populator_sources: Optional[list] = None,
-                           wrapper_fortran_obj: Optional[str] = None) -> None:
+                           wrapper_fortran_obj: Optional[str] = None,
+                           extra_cpp_sources: Optional[list] = None) -> None:
     """
     Patch the kernel Makefile to:
     1. Define FC_0 and FC_FLAGS_SET_0 (KGen bug: uses but never defines these)
@@ -679,18 +686,25 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
         lines.insert(0, fc_flags_line)
         lines.insert(0, "FC_0 ?= gfortran")
 
-    # 2. Add C++ object to ALL_OBJS FIRST (before checking obj_name in content)
+    # 2. Add C++ objects to ALL_OBJS FIRST (before checking obj_name in content)
     # This must happen before adding the CXX rule, because the CXX rule
     # also contains obj_name and would fool the "obj_name not in content" check
+    all_cpp_objs = [obj_name]
+    for extra_src in (extra_cpp_sources or []):
+        all_cpp_objs.append(extra_src.replace(".cpp", ".o"))
     content_joined = "\n".join(lines)
     all_objs_match = re.search(r'^(ALL_OBJS\s*[:?]?=\s*)(.*)', content_joined, re.MULTILINE)
-    if all_objs_match and obj_name not in all_objs_match.group(2):
-        old_line = all_objs_match.group(0)
-        new_line = f"{all_objs_match.group(1)}{obj_name} {all_objs_match.group(2)}"
-        content_joined = content_joined.replace(old_line, new_line, 1)
+    if all_objs_match:
+        for cpp_obj in all_cpp_objs:
+            if cpp_obj not in all_objs_match.group(2):
+                old_line = all_objs_match.group(0)
+                new_line = f"{all_objs_match.group(1)}{cpp_obj} {all_objs_match.group(2)}"
+                content_joined = content_joined.replace(old_line, new_line, 1)
+                # Re-match after modification
+                all_objs_match = re.search(r'^(ALL_OBJS\s*[:?]?=\s*)(.*)', content_joined, re.MULTILINE)
         lines = content_joined.split("\n")
 
-    # 3. Add CXX variable and C++ compilation rule
+    # 3. Add CXX variable and C++ compilation rules
     content_joined = "\n".join(lines)
     if "CXX" not in content_joined:
         cxx_lines = [
@@ -700,8 +714,16 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
             "",
             f"{obj_name}: {cpp_source}",
             f"\t$(CXX) $(CXXFLAGS) -c $< -o $@",
-            "",
         ]
+        # Add rules for extra shared C++ sources (e.g., vit_nwtc.cpp)
+        for extra_src in (extra_cpp_sources or []):
+            extra_obj = extra_src.replace(".cpp", ".o")
+            cxx_lines.extend([
+                "",
+                f"{extra_obj}: {extra_src}",
+                f"\t$(CXX) $(CXXFLAGS) -c $< -o $@",
+            ])
+        cxx_lines.append("")
         # Insert before "build:" target
         for i, line in enumerate(lines):
             if re.match(r'^build\s*:', line):
