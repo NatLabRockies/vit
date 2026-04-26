@@ -1185,6 +1185,7 @@ def cmd_test_validate(args, config):
     """Generate test prompt and harness for a validation function."""
     from .test_validate import (
         generate_fortran_bridge,
+        generate_public_patch,
         generate_test_harness_skeleton,
         generate_test_makefile,
         generate_test_validate_prompt,
@@ -1240,6 +1241,18 @@ def cmd_test_validate(args, config):
     bridge_path = out_dir / f"{sig.name.lower()}_bridge.f90"
     bridge_path.write_text(bridge)
 
+    # Check if function is PRIVATE — if so, create a patched source copy
+    patched_source_name = None
+    source_text = Path(args.file).read_text()
+    patched = generate_public_patch(source_text, args.function_name)
+    if patched:
+        # Function is PRIVATE — write patched source with PUBLIC added
+        patched_name = Path(args.file).name
+        patched_path = out_dir / patched_name
+        patched_path.write_text(patched)
+        patched_source_name = patched_name
+        print(f"  Function is PRIVATE — patched source: {patched_path}")
+
     # Generate and write Makefile
     cpp_file_abs = str(Path(args.cpp_file).resolve()) if args.cpp_file else None
     makefile_text = generate_test_makefile(
@@ -1250,12 +1263,12 @@ def cmd_test_validate(args, config):
         preprocessor_defines=config.preprocessor_defines,
         shared_files=shared_files,
         cpp_file=cpp_file_abs,
+        patched_source=patched_source_name,
     )
     makefile_path = out_dir / "Makefile"
     makefile_path.write_text(makefile_text)
 
-    # Extract Fortran source
-    source_text = Path(args.file).read_text()
+    # Extract Fortran source (source_text already read above for PRIVATE check)
     fortran_text = _extract_function_text(source_text, args.function_name)
 
     # Read C++ translation if provided

@@ -24,6 +24,66 @@ from .interface_gen import build_c_params
 from .type_map import get_type_mapping
 
 
+def generate_public_patch(source_text: str, function_name: str) -> Optional[str]:
+    """Patch Fortran source to make a PRIVATE function PUBLIC.
+
+    If the module has default PRIVATE access and the function is not
+    already PUBLIC, insert a PUBLIC declaration. Returns the patched
+    source, or None if no patch is needed (function is already public
+    or module doesn't use PRIVATE default).
+
+    Args:
+        source_text: Full Fortran source file content
+        function_name: Function to make PUBLIC
+
+    Returns:
+        Patched source string, or None if no patch needed
+    """
+    import re
+
+    lines = source_text.split("\n")
+
+    # Check if module has PRIVATE default
+    has_private_default = False
+    for line in lines:
+        stripped = line.strip().upper()
+        if "!" in stripped:
+            stripped = stripped[:stripped.index("!")]
+        # Match standalone PRIVATE (not PRIVATE :: something)
+        if re.match(r'^\s*PRIVATE\s*$', stripped):
+            has_private_default = True
+            break
+
+    if not has_private_default:
+        return None  # No patch needed
+
+    # Check if already PUBLIC
+    name_upper = function_name.upper()
+    for line in lines:
+        stripped = line.strip().upper()
+        if "!" in stripped:
+            stripped = stripped[:stripped.index("!")]
+        if "PUBLIC" in stripped and name_upper in stripped:
+            return None  # Already public
+
+    # Find the last PUBLIC declaration and insert after it
+    last_public_idx = None
+    for i, line in enumerate(lines):
+        stripped = line.strip().upper()
+        if "!" in stripped:
+            stripped = stripped[:stripped.index("!")]
+        if re.match(r'^\s*PUBLIC\s', stripped):
+            last_public_idx = i
+
+    if last_public_idx is not None:
+        indent = "   "  # Match typical OpenFAST indentation
+        public_line = f"{indent}PUBLIC                                       :: {function_name}"
+        lines.insert(last_public_idx + 1, public_line)
+        return "\n".join(lines)
+
+    return None  # Couldn't find where to insert
+
+
 def generate_fortran_bridge(
     sig: FortranSignature,
     kind_aliases: Optional[dict] = None,
@@ -48,37 +108,82 @@ def generate_fortran_bridge(
     lines = []
     lines.append(f"! VIT: Test-validate bridge for {func_name}")
     lines.append(f"! Allows C++ test harness to call the original Fortran function.")
-    lines.append(f"    SUBROUTINE {bridge_name}({', '.join(a.name for a in sig.args)}) &")
-    lines.append(f"        BIND(C, NAME='{bridge_name}')")
-    lines.append(f"        USE ISO_C_BINDING")
-    if sig.module_name:
-        lines.append(f"        USE {sig.module_name}, ONLY: {func_name}")
-    lines.append(f"        IMPLICIT NONE")
+    lines.append(f"! Handles C↔Fortran type conversions for derived types and CHARACTER.")
 
-    # Declare arguments with C-compatible types
+    # Build C-compatible parameter list for BIND(C)
+    c_params = []  # (fortran_decl, name)
+    local_decls = []  # Local Fortran variables for type conversion
+    pre_call = []  # Conversion before the call
+    post_call = []  # Conversion after the call
+    call_args = []  # Arguments to pass to the original function
+
     for arg in sig.args:
         fortran_type = arg.fortran_type.upper()
         intent = arg.intent.value if arg.intent else "INOUT"
 
         if arg.is_derived_type:
-            # Derived types passed as opaque C_PTR — but for simple validation
-            # functions with BIND(C)-compatible structs, pass directly
             type_name = arg.derived_type_name
-            lines.append(f"        TYPE({type_name}), INTENT({intent}) :: {arg.name}")
+            # Receive as C_PTR, convert via C_F_POINTER
+            c_params.append((f"        TYPE(C_PTR), VALUE :: {arg.name}_ptr", f"{arg.name}_ptr"))
+            local_decls.append(f"        TYPE({type_name}), POINTER :: {arg.name}")
+            pre_call.append(f"        CALL C_F_POINTER({arg.name}_ptr, {arg.name})")
+            call_args.append(arg.name)
         elif "CHARACTER" in fortran_type:
-            lines.append(f"        CHARACTER(C_CHAR), INTENT({intent}) :: {arg.name}(*)")
+            # CHARACTER(*) in Fortran, char* in C — use local buffer
+            c_params.append((f"        INTEGER(C_INT), INTENT(OUT) :: {arg.name}_stat", f"{arg.name}_stat"))
+            # We only pass ErrStat back; ErrMsg is handled locally
+            # (CHARACTER interop is complex; for test-validate we only need ErrStat)
+            local_decls.append(f"        CHARACTER(8196) :: {arg.name}")
+            call_args.append(arg.name)
         elif "INTEGER" in fortran_type:
-            lines.append(f"        INTEGER(C_INT), INTENT({intent}) :: {arg.name}")
+            c_params.append((f"        INTEGER(C_INT), INTENT({intent}) :: {arg.name}", arg.name))
+            call_args.append(arg.name)
         elif "REAL" in fortran_type:
-            lines.append(f"        REAL(C_DOUBLE), INTENT({intent}) :: {arg.name}")
+            c_params.append((f"        REAL(C_DOUBLE), INTENT({intent}) :: {arg.name}", arg.name))
+            call_args.append(arg.name)
         elif "LOGICAL" in fortran_type:
-            lines.append(f"        LOGICAL(C_BOOL), INTENT({intent}) :: {arg.name}")
+            c_params.append((f"        LOGICAL(C_BOOL), INTENT({intent}) :: {arg.name}", arg.name))
+            call_args.append(arg.name)
         else:
-            lines.append(f"        ! TODO: unsupported type {fortran_type} for {arg.name}")
+            c_params.append((f"        ! TODO: unsupported type {fortran_type}", arg.name))
+            call_args.append(arg.name)
+
+    # Build the bridge parameter names (for the SUBROUTINE declaration)
+    param_names = [name for _, name in c_params]
+
+    lines.append(f"    SUBROUTINE {bridge_name}({', '.join(param_names)}) &")
+    lines.append(f"        BIND(C, NAME='{bridge_name}')")
+    lines.append(f"        USE ISO_C_BINDING")
+    if sig.module_name:
+        lines.append(f"        USE {sig.module_name}")
+    # USE types modules for derived types
+    types_modules = set()
+    for arg in sig.args:
+        if arg.is_derived_type and sig.module_name:
+            types_modules.add(f"{sig.module_name}_Types")
+    for tm in sorted(types_modules):
+        lines.append(f"        USE {tm}")
+    lines.append(f"        IMPLICIT NONE")
+
+    # Parameter declarations
+    for decl, _ in c_params:
+        lines.append(decl)
+
+    # Local declarations
+    for decl in local_decls:
+        lines.append(decl)
+
+    # Pre-call conversions
+    for conv in pre_call:
+        lines.append(conv)
 
     # Call the original function
-    args_str = ", ".join(a.name for a in sig.args)
-    lines.append(f"        CALL {func_name}({args_str})")
+    lines.append(f"        CALL {func_name}({', '.join(call_args)})")
+
+    # Post-call conversions
+    for conv in post_call:
+        lines.append(conv)
+
     lines.append(f"    END SUBROUTINE {bridge_name}")
 
     return "\n".join(lines)
@@ -92,11 +197,13 @@ def generate_test_makefile(
     preprocessor_defines: Optional[list[str]] = None,
     shared_files: Optional[list[str]] = None,
     cpp_file: Optional[str] = None,
+    patched_source: Optional[str] = None,
 ) -> str:
     """Generate a Makefile for building the test-validate harness.
 
     Compiles the C++ test and Fortran bridge against the production build's
-    prebuilt .mod files and libraries. No project rebuild needed.
+    prebuilt .mod files and libraries. If the function is PRIVATE, a patched
+    copy of the source is compiled locally to produce a .mod that exports it.
 
     Args:
         sig: Parsed function signature
@@ -141,8 +248,9 @@ def generate_test_makefile(
     lines.append("")
     lines.append("FC = gfortran")
     lines.append("CXX = g++")
+    # Fortran flags: local .mod files first (for patched source), then production
     lines.append(f"FC_FLAGS = -fPIC -ffree-line-length-none {fortran_flags} {defines} \\")
-    lines.append(f"           -I{build_dir}/ftnmods")
+    lines.append(f"           -I. -I{build_dir}/ftnmods -J.")
     lines.append(f"CXX_FLAGS = -O2 -fPIC -ffp-contract=off {cxx_includes}")
     lines.append("")
     lines.append("# Production build libraries (link order matters)")
@@ -166,20 +274,36 @@ def generate_test_makefile(
     else:
         test_deps = f"{func_lower}_test.cpp"
 
-    lines.append(f"test: {func_lower}_test.o {func_lower}_bridge.o")
+    # If patched source exists, compile it locally for the .mod file
+    # (needed when the function is PRIVATE in the module)
+    link_objs = [f"{func_lower}_test.o", f"{func_lower}_bridge.o"]
+    if patched_source:
+        patched_name = Path(patched_source).name
+        patched_obj = Path(patched_name).stem + ".o"
+        link_objs.append(patched_obj)
+        lines.append(f"# Patched source: function made PUBLIC for bridge access")
+        lines.append(f"{patched_obj}: {patched_name}")
+        lines.append(f"\t$(FC) $(FC_FLAGS) -c $< -o $@")
+        lines.append("")
+        # Bridge depends on patched source (for the .mod file)
+        lines.append(f"{func_lower}_bridge.o: {func_lower}_bridge.f90 {patched_obj}")
+        lines.append(f"\t$(FC) $(FC_FLAGS) -c {func_lower}_bridge.f90 -o $@")
+    else:
+        lines.append(f"{func_lower}_bridge.o: {func_lower}_bridge.f90")
+        lines.append(f"\t$(FC) $(FC_FLAGS) -c $< -o $@")
+    lines.append("")
+
+    lines.append(f"test: {' '.join(link_objs)}")
     lines.append(f"\t$(CXX) -o $@ $^ $(LIBS)")
     lines.append("")
     lines.append(f"{func_lower}_test.o: {test_deps}")
     lines.append(f"\t$(CXX) $(CXX_FLAGS) -c {func_lower}_test.cpp -o $@")
     lines.append("")
-    lines.append(f"{func_lower}_bridge.o: {func_lower}_bridge.f90")
-    lines.append(f"\t$(FC) $(FC_FLAGS) -c $< -o $@")
-    lines.append("")
     lines.append("run: test")
     lines.append("\t./test")
     lines.append("")
     lines.append("clean:")
-    lines.append(f"\trm -f *.o test *.hpp")
+    lines.append(f"\trm -f *.o test *.hpp *.mod")
     lines.append("")
 
     return "\n".join(lines)
@@ -256,8 +380,24 @@ def generate_test_harness_skeleton(
     lines.append(f"// C++ function under test:")
     lines.append(f"// void {func_name}({param_str});")
     lines.append("")
+
+    # Fortran bridge has a different signature: derived types as void*,
+    # CHARACTER args replaced with int* for status only
+    bridge_params = []
+    for arg in sig.args:
+        if arg.is_derived_type:
+            bridge_params.append(f"void* {arg.name}_ptr")
+        elif "CHARACTER" in arg.fortran_type.upper():
+            bridge_params.append(f"int* {arg.name}_stat")
+        else:
+            # Find the matching C param from build_c_params
+            for ctype, cname in c_params:
+                if cname == arg.name:
+                    bridge_params.append(f"{ctype} {cname}")
+                    break
+    bridge_param_str = ", ".join(bridge_params)
     lines.append(f"// Fortran reference (via BIND(C) bridge):")
-    lines.append(f'extern "C" void {func_lower}_f90({param_str});')
+    lines.append(f'extern "C" void {func_lower}_f90({bridge_param_str});')
     lines.append("")
 
     # Placeholder sections for the LLM to fill in
