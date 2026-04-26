@@ -90,6 +90,7 @@ def generate_test_harness_skeleton(
     cpp_file: Optional[str] = None,
     struct_headers: Optional[list[str]] = None,
     shared_files: Optional[list[str]] = None,
+    derived_types: Optional[dict] = None,
 ) -> str:
     """Generate a C++ test harness skeleton for a validation function.
 
@@ -148,7 +149,7 @@ def generate_test_harness_skeleton(
     lines.append("")
 
     # Function signatures (build from parsed sig)
-    c_params = build_c_params(sig, kind_aliases or {})
+    c_params = build_c_params(sig, kind_aliases or {}, derived_types)
     # build_c_params returns list of (c_type, name) tuples
     param_str = ", ".join(f"{ctype} {name}" for ctype, name in c_params)
     lines.append(f"// C++ function under test:")

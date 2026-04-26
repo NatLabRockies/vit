@@ -1225,6 +1225,7 @@ def cmd_test_validate(args, config):
         cpp_file=args.cpp_file,
         struct_headers=struct_header_names,
         shared_files=shared_files,
+        derived_types=derived_types,
     )
 
     # Write skeleton
