@@ -161,6 +161,17 @@ def main():
     p_analyze.add_argument("--scan-allocatable", action="store_true",
                            help="Scan for ALLOCATABLE field size sources")
 
+    # --- test-validate ---
+    p_testval = subparsers.add_parser("test-validate",
+                                       help="Generate test prompt for validation functions")
+    p_testval.add_argument("function_name", help="Validation function name")
+    p_testval.add_argument("cpp_file", nargs="?", default=None,
+                           help="C++ translation file (optional, for including in prompt)")
+    p_testval.add_argument("--file", "-f", required=True,
+                           help="Fortran source file containing the function")
+    p_testval.add_argument("--module", "-m", dest="module_name", default=None,
+                           help="Module name (for organizing output)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -194,6 +205,8 @@ def main():
             return cmd_status(args, config)
         elif args.command == "analyze-types":
             return cmd_analyze_types(args, config)
+        elif args.command == "test-validate":
+            return cmd_test_validate(args, config)
         else:
             parser.print_help()
             return 1
@@ -1162,6 +1175,97 @@ def _cmd_scan_allocatable(args, config, source_dir):
     confirm_count = sum(1 for m in mappings if m.needs_confirm)
     if confirm_count:
         print(f"  {confirm_count} field(s) need confirmation (Type C)")
+
+    return 0
+
+
+def cmd_test_validate(args, config):
+    """Generate test prompt and harness for a validation function."""
+    from .test_validate import (
+        generate_test_harness_skeleton,
+        generate_test_validate_prompt,
+    )
+    from .translate import _extract_function_text
+
+    # Parse function signature
+    sig = find_function_in_file(args.file, args.function_name)
+
+    # Determine module name
+    module_name = args.module_name or sig.module_name
+    if not module_name:
+        module_name = Path(args.file).stem
+
+    derived_types = _build_registry(sig, config)
+
+    # Determine output directory
+    out_dir = Path("translations") / module_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate/update consolidated types header
+    struct_header_names = []
+    if derived_types:
+        from .derived_type_parser import generate_consolidated_types_header
+        types_path = Path("translations") / "vit_types.h"
+        existing = types_path.read_text() if types_path.exists() else ""
+        new_content = generate_consolidated_types_header(
+            derived_types, config.kind_aliases, existing)
+        if new_content != existing:
+            types_path.parent.mkdir(parents=True, exist_ok=True)
+            types_path.write_text(new_content)
+        struct_header_names = ["vit_types.h"]
+
+    # Read shared files from config
+    shared_files = getattr(config, 'shared_files', None) or []
+
+    # Generate skeleton
+    skeleton = generate_test_harness_skeleton(
+        sig=sig,
+        kind_aliases=config.kind_aliases,
+        cpp_file=args.cpp_file,
+        struct_headers=struct_header_names,
+        shared_files=shared_files,
+    )
+
+    # Write skeleton
+    out_path = out_dir / f"{sig.name.lower()}_test.cpp"
+    out_path.write_text(skeleton)
+
+    # Extract Fortran source
+    source_text = Path(args.file).read_text()
+    fortran_text = _extract_function_text(source_text, args.function_name)
+
+    # Read C++ translation if provided
+    cpp_text = None
+    if args.cpp_file and Path(args.cpp_file).is_file():
+        cpp_text = Path(args.cpp_file).read_text()
+
+    # Generate prompt
+    prompt = generate_test_validate_prompt(
+        sig=sig,
+        kind_aliases=config.kind_aliases,
+        source_file=args.file,
+        fortran_source_text=fortran_text,
+        cpp_translation_text=cpp_text,
+        skeleton_text=skeleton,
+        derived_types=derived_types,
+    )
+
+    # Output
+    print(f"Generated test skeleton: {out_path}")
+    print(f"Function: {sig.name}")
+    if fortran_text:
+        # Count error branches (simple heuristic for display)
+        import re
+        branch_count = len(re.findall(
+            r'call\s+SetErrStat|call\s+Fatal',
+            fortran_text, re.IGNORECASE))
+        print(f"Detected ~{branch_count} error branches in Fortran source")
+    print()
+    print("=" * 72)
+    print("TRANSLATION TEST PROMPT")
+    print("=" * 72)
+    print()
+    print(prompt)
 
     return 0
 
