@@ -16,12 +16,73 @@ from the codebase, assembles them into a prompt, and the LLM writes the
 actual test code with semantic understanding of the validation conditions.
 """
 
+import glob as globmod
 from pathlib import Path
 from typing import Optional
 
 from .fortran_parser import FortranSignature
 from .interface_gen import build_c_params
 from .type_map import get_type_mapping
+
+
+def _parse_link_libraries(build_dir: str, target_name: str) -> Optional[list[str]]:
+    """Parse CMake link.txt to extract library dependencies for a target.
+
+    Searches for the target's link.txt in the build directory, parses the
+    linker command, and returns all library references (.a paths and -l flags).
+
+    Args:
+        build_dir: Absolute path to the build directory
+        target_name: CMake target name (e.g., "aerodyn_driver")
+
+    Returns:
+        List of library strings for Makefile LIBS, or None if link.txt not found.
+    """
+    # Find link.txt for this target
+    pattern = f"{build_dir}/**/CMakeFiles/{target_name}.dir/link.txt"
+    matches = globmod.glob(pattern, recursive=True)
+    if not matches:
+        return None
+
+    link_txt = Path(matches[0])
+    link_dir = link_txt.parent  # CMakeFiles/<target>.dir/
+    # Libraries are relative to the directory containing the CMakeFiles/ dir
+    lib_base = link_dir.parent.parent  # e.g., build/modules/aerodyn/
+
+    content = link_txt.read_text().strip()
+    tokens = content.split()
+
+    libs = []
+    skip_next = False
+    for i, tok in enumerate(tokens):
+        if skip_next:
+            skip_next = False
+            continue
+        # Skip compiler, flags, object files, output target, -Wl options
+        if tok.endswith(".o"):
+            continue
+        if tok in ("-o",):
+            skip_next = True  # skip the output filename
+            continue
+        if tok.startswith("-Wl,"):
+            continue
+        if tok.startswith("-D") or tok.startswith("-f") or tok.startswith("-O"):
+            continue
+        if tok.startswith("/usr/bin/"):
+            continue
+        if tok == "-DNDEBUG":
+            continue
+
+        if tok.endswith(".a") or tok.endswith(".so"):
+            # Resolve relative paths against the lib_base directory
+            p = Path(tok)
+            if not p.is_absolute():
+                p = (lib_base / tok).resolve()
+            libs.append(str(p))
+        elif tok.startswith("-l"):
+            libs.append(tok)
+
+    return libs if libs else None
 
 
 def generate_public_patch(source_text: str, function_name: str) -> Optional[str]:
@@ -76,17 +137,62 @@ def generate_public_patch(source_text: str, function_name: str) -> Optional[str]
             last_public_idx = i
 
     if last_public_idx is not None:
-        indent = "   "  # Match typical OpenFAST indentation
-        public_line = f"{indent}PUBLIC                                       :: {function_name}"
+        # Auto-detect indentation and alignment from existing PUBLIC declaration
+        existing_line = lines[last_public_idx]
+        indent = existing_line[:len(existing_line) - len(existing_line.lstrip())]
+        # Match alignment of :: if present
+        if "::" in existing_line:
+            col = existing_line.index("::")
+            padding = " " * max(0, col - len(indent) - len("PUBLIC"))
+            public_line = f"{indent}PUBLIC{padding}:: {function_name}"
+        else:
+            public_line = f"{indent}PUBLIC :: {function_name}"
         lines.insert(last_public_idx + 1, public_line)
         return "\n".join(lines)
 
     return None  # Couldn't find where to insert
 
 
+def _get_module_use_statements(source_text: str) -> list[str]:
+    """Extract module-level USE statements from Fortran source.
+
+    Scans from MODULE declaration to the first CONTAINS, SUBROUTINE, or
+    FUNCTION to collect USE statements that import types at module scope.
+
+    Args:
+        source_text: Full Fortran source file content
+
+    Returns:
+        List of USE statement lines (stripped)
+    """
+    import re
+    lines = source_text.split("\n")
+    in_module = False
+    uses = []
+    for line in lines:
+        stripped = line.strip()
+        upper = stripped.upper()
+        # Remove comments
+        if "!" in upper:
+            upper = upper[:upper.index("!")]
+            stripped = stripped[:stripped.index("!")]
+        if not upper.strip():
+            continue
+        if re.match(r'^\s*MODULE\s+\w', upper) and "PROCEDURE" not in upper:
+            in_module = True
+            continue
+        if in_module:
+            if re.match(r'^\s*(CONTAINS|SUBROUTINE|FUNCTION)\b', upper):
+                break
+            if upper.strip().startswith("USE "):
+                uses.append(stripped.strip())
+    return uses
+
+
 def generate_fortran_bridge(
     sig: FortranSignature,
     kind_aliases: Optional[dict] = None,
+    source_file: Optional[str] = None,
 ) -> str:
     """Generate a BIND(C) Fortran bridge for calling the original function from C++.
 
@@ -97,6 +203,7 @@ def generate_fortran_bridge(
     Args:
         sig: Parsed Fortran function signature
         kind_aliases: Project kind mappings
+        source_file: Path to the Fortran source file (for extracting module USE statements)
 
     Returns:
         Fortran source string for the bridge subroutine
@@ -129,11 +236,9 @@ def generate_fortran_bridge(
             pre_call.append(f"        CALL C_F_POINTER({arg.name}_ptr, {arg.name})")
             call_args.append(arg.name)
         elif "CHARACTER" in fortran_type:
-            # CHARACTER(*) in Fortran, char* in C — use local buffer
-            c_params.append((f"        INTEGER(C_INT), INTENT(OUT) :: {arg.name}_stat", f"{arg.name}_stat"))
-            # We only pass ErrStat back; ErrMsg is handled locally
-            # (CHARACTER interop is complex; for test-validate we only need ErrStat)
-            local_decls.append(f"        CHARACTER(8196) :: {arg.name}")
+            # CHARACTER is not C-interoperable — handle locally in the bridge.
+            # No C-side parameter; only ErrStat is returned to C++.
+            local_decls.append(f"        CHARACTER(8192) :: {arg.name}  ! Local buffer (not compared across language boundary)")
             call_args.append(arg.name)
         elif "INTEGER" in fortran_type:
             c_params.append((f"        INTEGER(C_INT), INTENT({intent}) :: {arg.name}", arg.name))
@@ -156,13 +261,27 @@ def generate_fortran_bridge(
     lines.append(f"        USE ISO_C_BINDING")
     if sig.module_name:
         lines.append(f"        USE {sig.module_name}")
-    # USE types modules for derived types
-    types_modules = set()
-    for arg in sig.args:
-        if arg.is_derived_type and sig.module_name:
-            types_modules.add(f"{sig.module_name}_Types")
-    for tm in sorted(types_modules):
-        lines.append(f"        USE {tm}")
+    # USE modules that provide derived types.
+    # Scan module-level USE statements from the source file instead of
+    # guessing a naming convention (e.g., _Types).
+    if any(arg.is_derived_type for arg in sig.args) and source_file:
+        source_text = Path(source_file).read_text()
+        module_uses = _get_module_use_statements(source_text)
+        # Add all module-level USE statements — the bridge needs access
+        # to all types the module imports (PRIVATE default hides re-exports).
+        added = set()
+        for use_stmt in module_uses:
+            # Skip ISO_C_BINDING (already added) and the module itself
+            use_upper = use_stmt.upper()
+            if "ISO_C_BINDING" in use_upper or "ISO_FORTRAN_ENV" in use_upper:
+                continue
+            # Skip USE of the function's own module (already added above)
+            use_module = use_upper.replace("::", " ").split()[1].strip().rstrip(",")
+            if sig.module_name and use_module == sig.module_name.upper():
+                continue
+            if use_stmt not in added:
+                lines.append(f"        {use_stmt}")
+                added.add(use_stmt)
     lines.append(f"        IMPLICIT NONE")
 
     # Parameter declarations
@@ -193,6 +312,8 @@ def generate_test_makefile(
     sig: FortranSignature,
     build_dir: str,
     source_dir: str,
+    config_dir: str = ".",
+    target_name: str = "",
     fortran_flags: str = "",
     preprocessor_defines: Optional[list[str]] = None,
     shared_files: Optional[list[str]] = None,
@@ -209,6 +330,8 @@ def generate_test_makefile(
         sig: Parsed function signature
         build_dir: Absolute path to the production build directory
         source_dir: Absolute path to the project source directory
+        config_dir: Absolute path to the directory containing vit.yaml
+        target_name: CMake target name (for deriving library dependencies)
         fortran_flags: Fortran compiler flags from vit.yaml
         preprocessor_defines: List of preprocessor defines (e.g., ["OPENFAST_DOUBLE_PRECISION"])
         shared_files: Shared header/source paths (for -I includes)
@@ -218,13 +341,9 @@ def generate_test_makefile(
     defines = " ".join(f"-D{d}" for d in (preprocessor_defines or []))
 
     # Collect include paths for shared headers
-    # shared_files paths are relative to config_dir (project root).
-    # source_dir is already absolute (config.abs_source_dir).
-    # Derive config_dir from source_dir by going up one level.
+    # shared_files paths are relative to config_dir (directory containing vit.yaml).
     include_dirs = set()
     if shared_files:
-        # config_dir is the parent of source_dir (e.g., /workspace/openfast)
-        config_dir = str(Path(source_dir).parent) if source_dir else "."
         for f in shared_files:
             p = Path(f)
             if not p.is_absolute():
@@ -247,15 +366,18 @@ def generate_test_makefile(
     lines.append(f"           -I. -I{build_dir}/ftnmods -J.")
     lines.append(f"CXX_FLAGS = -O2 -fPIC -ffp-contract=off {cxx_includes}")
     lines.append("")
-    lines.append("# Production build libraries (link order matters)")
-    lines.append(f"LIBS = {build_dir}/modules/aerodyn/libbasicaerolib.a \\")
-    lines.append(f"       {build_dir}/modules/aerodyn/libaerodynlib.a \\")
-    lines.append(f"       {build_dir}/modules/aerodyn/libaeroacousticslib.a \\")
-    lines.append(f"       {build_dir}/modules/nwtc-library/libnwtclibs.a \\")
-    lines.append(f"       {build_dir}/modules/seastate/libseastlib.a \\")
-    lines.append(f"       {build_dir}/modules/inflowwind/libifwlib.a \\")
-    lines.append(f"       {build_dir}/modules/version/libversioninfolib.a \\")
-    lines.append(f"       -lopenblas -lstdc++ -lmvec -lm -ldl -lgfortran")
+    # Derive library dependencies from CMake target's link.txt
+    link_libs = _parse_link_libraries(build_dir, target_name) if target_name else None
+    if link_libs:
+        lines.append("# Libraries derived from CMake target (link order preserved)")
+        lines.append(f"LIBS = {link_libs[0]} \\")
+        for lib in link_libs[1:-1]:
+            lines.append(f"       {lib} \\")
+        lines.append(f"       {link_libs[-1]}")
+    else:
+        lines.append("# WARNING: Could not derive libraries from CMake target.")
+        lines.append("# Fill in LIBS manually with the libraries needed for linking.")
+        lines.append("LIBS =")
     lines.append("")
 
     # Copy translation .cpp to .hpp for inclusion
@@ -376,13 +498,13 @@ def generate_test_harness_skeleton(
     lines.append("")
 
     # Fortran bridge has a different signature: derived types as void*,
-    # CHARACTER args replaced with int* for status only
+    # CHARACTER args handled locally in the bridge (not exposed to C++)
     bridge_params = []
     for arg in sig.args:
         if arg.is_derived_type:
             bridge_params.append(f"void* {arg.name}_ptr")
         elif "CHARACTER" in arg.fortran_type.upper():
-            bridge_params.append(f"int* {arg.name}_stat")
+            continue  # CHARACTER handled locally in bridge, not passed from C++
         else:
             # Find the matching C param from build_c_params
             for ctype, cname in c_params:

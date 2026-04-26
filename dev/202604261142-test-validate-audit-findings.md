@@ -1,6 +1,6 @@
 # vit test-validate: Audit Findings — Issues to Fix
 **Date:** 2026-04-26
-**Status:** in-progress (issues identified, fixes pending)
+**Status:** completed (all 8 issues fixed)
 **Scope:** vit test-validate generality, hardcoded values, architectural cleanup
 
 ## Background

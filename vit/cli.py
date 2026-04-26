@@ -173,6 +173,8 @@ def main():
                            help="Module name (for organizing output)")
     p_testval.add_argument("--run", action="store_true",
                            help="Build and run the test harness after generating")
+    p_testval.add_argument("--force", action="store_true",
+                           help="Overwrite existing test file even if it has implementations")
 
     args = parser.parse_args()
 
@@ -1220,12 +1222,20 @@ def cmd_test_validate(args, config):
         derived_types=derived_types,
     )
 
-    # Write skeleton
+    # Write skeleton (skip if file has real implementations, unless --force)
     out_path = out_dir / f"{sig.name.lower()}_test.cpp"
-    out_path.write_text(skeleton)
+    if out_path.exists() and not getattr(args, 'force', False):
+        existing = out_path.read_text()
+        if "// --- TODO:" not in existing:
+            print(f"  Test file exists with implementation — skipping: {out_path}")
+            print(f"  Use --force to overwrite.")
+        else:
+            out_path.write_text(skeleton)
+    else:
+        out_path.write_text(skeleton)
 
     # Generate and write Fortran bridge
-    bridge = generate_fortran_bridge(sig, config.kind_aliases)
+    bridge = generate_fortran_bridge(sig, config.kind_aliases, source_file=args.file)
     bridge_path = out_dir / f"{sig.name.lower()}_bridge.f90"
     bridge_path.write_text(bridge)
 
@@ -1247,6 +1257,8 @@ def cmd_test_validate(args, config):
         sig=sig,
         build_dir=config.abs_build_dir,
         source_dir=config.abs_source_dir,
+        config_dir=config.config_dir,
+        target_name=config.target_name,
         fortran_flags=config.fortran_flags,
         preprocessor_defines=config.preprocessor_defines,
         shared_files=shared_files,
