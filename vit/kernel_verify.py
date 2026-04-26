@@ -679,7 +679,12 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
     # Include project-specific fortran_flags (e.g., -fdefault-real-8)
     # Without these, Fortran literals like 3.14159265359 may be truncated
     # to single precision in the kernel, causing coefficient mismatches.
-    base_flags = "-O2 -ffree-form -ffree-line-length-none"
+    # -fvect-cost-model=unlimited: Force vectorization matching the production
+    # CMake build. Without this, gfortran may skip vectorizing cos/sin loops
+    # in the reduced kernel module (different heuristic threshold than the full
+    # project). Vectorized cos/sin (libmvec) can differ by 1 ULP from scalar
+    # cos/sin (libm), causing cascading diffs in orchestrator functions.
+    base_flags = "-O2 -ffree-form -ffree-line-length-none -fvect-cost-model=unlimited"
     if fortran_flags:
         base_flags = f"{base_flags} {fortran_flags}"
     fc_flags_line = f"FC_FLAGS_SET_0 ?= {base_flags}"
@@ -792,13 +797,18 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
                 content_joined = content_joined.replace(old_rule, new_rule, 1)
         lines = content_joined.split("\n")
 
-    # 4. Add -lstdc++ to link flags (must be AFTER object files for gfortran)
+    # 4. Add -lstdc++ and -lmvec -lm to link flags
+    # -lmvec provides vectorized cos/sin matching the production build.
+    # Without it, the kernel uses scalar libm cos/sin which can differ by
+    # 1 ULP from the libmvec versions the production build uses.
     content_joined = "\n".join(lines)
-    if "-lstdc++" not in content_joined:
-        for i, line in enumerate(lines):
-            if ("-o kernel.exe" in line or "-o\tkernel.exe" in line) and "rm " not in line and "./" not in line:
+    for i, line in enumerate(lines):
+        if ("-o kernel.exe" in line or "-o\tkernel.exe" in line) and "rm " not in line and "./" not in line:
+            if "-lstdc++" not in line:
                 lines[i] = line.rstrip() + " -lstdc++"
-                break
+            if "-lmvec" not in line:
+                lines[i] = lines[i].rstrip() + " -lmvec -lm"
+            break
 
     makefile.write_text("\n".join(lines))
 
