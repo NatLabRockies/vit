@@ -94,6 +94,7 @@ class VitConfig:
     allocatable_helpers: list = field(default_factory=list)  # allocation helper patterns
     assumed_size_arrays: dict = field(default_factory=dict)  # varname → size for assumed-size (*) arrays
     dll_persistence: dict = field(default_factory=dict)  # DLL SAVE persistence workaround config
+    shared_files: list = field(default_factory=list)  # Shared headers/sources to copy to kernel (paths relative to project root)
 
     config_dir: str = "."  # Directory containing vit.yaml
 
@@ -174,6 +175,7 @@ def load_config(config_path: Optional[str] = None) -> VitConfig:
         allocatable_helpers=_parse_allocatable_helpers(data.get("allocatable", {})),
         assumed_size_arrays={str(k): int(v) for k, v in kgen.get("assumed_size_arrays", {}).items()},
         dll_persistence=kgen.get("dll_persistence", {}),
+        shared_files=data.get("shared_files", []),
         config_dir=config_dir,
     )
 

@@ -122,6 +122,7 @@ def setup_kernel_cpp(
     translations: Optional[dict] = None,
     source_dir: Optional[str] = None,
     fortran_compiler: str = "gfortran",
+    shared_files: Optional[list] = None,
 ) -> dict:
     """
     Wire a C++ translation into a KGen kernel directory for verification.
@@ -160,8 +161,13 @@ def setup_kernel_cpp(
     result["files_modified"].append(str(impl_dest))
 
     # --- Step 1a: Copy shared files (headers + sources) to kernel ---
+    # Use project-specific list from config, with legacy fallback
+    if shared_files:
+        shared_filenames = [Path(f).name for f in shared_files]
+    else:
+        shared_filenames = ["rosco_constants.h", "vit_nwtc.h", "vit_nwtc.cpp"]
     extra_cpp_sources = []  # Track .cpp files for Makefile rules
-    for filename in ["rosco_constants.h", "vit_nwtc.h", "vit_nwtc.cpp"]:
+    for filename in shared_filenames:
         found = False
         for parent in [Path(cpp_impl_path).parent] + list(Path(cpp_impl_path).parent.parents):
             candidate = parent / filename

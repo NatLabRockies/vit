@@ -658,6 +658,7 @@ def cmd_verify(args, config):
         translations=config.translations,
         source_dir=config.abs_source_dir,
         fortran_compiler=config.fortran_compiler,
+        shared_files=config.shared_files,
     )
 
     if not setup_result["success"]:
@@ -794,6 +795,7 @@ def cmd_run(args, config):
                 fortran_flags=config.fortran_flags,
                 source_dir=config.abs_source_dir,
                 fortran_compiler=config.fortran_compiler,
+                shared_files=config.shared_files,
             )
 
             if not setup_result["success"]:
