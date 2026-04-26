@@ -8,6 +8,7 @@ derived_type_parser, and TypeMapping handling for derived types.
 import os
 import pytest
 import sys
+import textwrap
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -989,6 +990,66 @@ class TestAllSevenTypes:
         header = generate_c_struct_header(info)
         assert "debugvariables_t" in header
         assert "double axisTilt_1P;" in header
+
+
+# === _dedup_guarded_blocks tests ===
+
+class TestDedupGuardedBlocks:
+    """Tests for duplicate include-guard block removal in consolidated headers."""
+
+    def test_duplicate_nested_block_removed(self):
+        """Second occurrence of a guarded block inside another block is removed."""
+        from vit.derived_type_parser import _dedup_guarded_blocks
+        content = textwrap.dedent("""\
+            #ifndef A_T_H
+            #define A_T_H
+            typedef struct { int x; } a_t;
+            #endif // A_T_H
+
+            #ifndef B_T_H
+            #define B_T_H
+
+            #ifndef A_T_H
+            #define A_T_H
+            typedef struct { int x; } a_t;
+            #endif // A_T_H
+
+            typedef struct { a_t nested; } b_t;
+            #endif // B_T_H
+        """)
+        result = _dedup_guarded_blocks(content)
+        # a_t typedef should appear exactly once
+        assert result.count("typedef struct { int x; } a_t;") == 1
+        # b_t should still be present
+        assert "b_t" in result
+        # The second A_T_H guard block should be gone
+        assert result.count("#ifndef A_T_H") == 1
+
+    def test_non_duplicate_blocks_preserved(self):
+        """Different guarded blocks are both preserved."""
+        from vit.derived_type_parser import _dedup_guarded_blocks
+        content = textwrap.dedent("""\
+            #ifndef A_T_H
+            #define A_T_H
+            typedef struct { int x; } a_t;
+            #endif // A_T_H
+
+            #ifndef B_T_H
+            #define B_T_H
+            typedef struct { int y; } b_t;
+            #endif // B_T_H
+        """)
+        result = _dedup_guarded_blocks(content)
+        assert "a_t" in result
+        assert "b_t" in result
+        assert result.count("#ifndef") == 2
+
+    def test_no_guards_passthrough(self):
+        """Content without guards passes through unchanged."""
+        from vit.derived_type_parser import _dedup_guarded_blocks
+        content = "// just a comment\ntypedef int foo;\n"
+        result = _dedup_guarded_blocks(content)
+        assert "foo" in result
 
 
 if __name__ == "__main__":
