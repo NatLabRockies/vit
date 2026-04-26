@@ -1062,20 +1062,44 @@ def _generate_callee_bridges(
                 ):
                     known_funcs.add(m.group(1))
 
+    # Build set of functions with C++ implementations (no Fortran bridge needed).
+    # Scan the translation file and shared headers/sources for function definitions.
+    cpp_implemented = set()
+
+    def _scan_cpp_for_functions(content: str):
+        """Extract function names from C/C++ source or header."""
+        import re as _re2
+        # Match function definitions/declarations: type name( or static type name(
+        for m in _re2.finditer(
+            r'(?:^|\n)\s*(?:static\s+)?(?:inline\s+)?'
+            r'(?:void|int|double|float|bool|char)\s+'
+            r'(\w+)\s*\(',
+            content,
+        ):
+            cpp_implemented.add(m.group(1).upper())
+
+    # Scan the C++ translation file
+    if target_cpp_file and Path(target_cpp_file).exists():
+        _scan_cpp_for_functions(Path(target_cpp_file).read_text())
+
+    # Scan shared header/source files
+    if shared_files:
+        config_dir = str(Path(source_dir).parent) if source_dir else "."
+        for sf in shared_files:
+            sf_path = Path(sf) if Path(sf).is_absolute() else Path(config_dir) / sf
+            if sf_path.exists():
+                _scan_cpp_for_functions(sf_path.read_text())
+
     # Detect all callees in the target function body
     callee_names = detect_callees(target_source, sig.name, known_functions=known_funcs)
 
-    # Also detect callees from same-file helper functions (functions in the
-    # same C++ translation that are called by the target). These functions'
-    # callees also need bridges since the C++ calls them directly.
-    if translations and target_cpp_file:
-        same_file_funcs = []
-        for tname, tinfo in translations.items():
-            if isinstance(tinfo, dict) and tinfo.get("cpp_file") == target_cpp_file:
-                if tname.upper() != sig.name.upper():
-                    same_file_funcs.append(tname)
-        for helper_name in same_file_funcs:
-            helper_callees = detect_callees(target_source, helper_name, known_functions=known_funcs)
+    # Also detect callees from same-file helper functions.
+    # If the C++ file defines helpers that the target calls, those helpers'
+    # Fortran callees also need bridges.
+    for cname in list(callee_names):
+        if cname.upper() in cpp_implemented:
+            # This callee is implemented in C++ — scan its Fortran body for ITS callees
+            helper_callees = detect_callees(target_source, cname, known_functions=known_funcs)
             for hc in helper_callees:
                 if hc not in callee_names:
                     callee_names.append(hc)
@@ -1086,33 +1110,11 @@ def _generate_callee_bridges(
     bridge_sources = []
     callee_sigs = []
 
-    # Build set of shared C++ files — functions in these don't need bridges
-    shared_cpp = set()
-    if shared_files:
-        for sf in shared_files:
-            if sf.endswith(".cpp") or sf.endswith(".h") or sf.endswith(".hpp"):
-                shared_cpp.add(sf)
-
     for callee_name in callee_names:
-        # Skip callees that are in the same C++ file as the target function
-        # or in a shared C++ file (vit_nwtc.cpp) — no Fortran bridge needed.
-        if translations:
-            callee_upper = callee_name.upper()
-            for tname, tinfo in translations.items():
-                if tname.upper() == callee_upper:
-                    callee_cpp = tinfo.get("cpp_file") if isinstance(tinfo, dict) else None
-                    if callee_cpp:
-                        # Same file as target — internal helper
-                        if target_cpp_file and callee_cpp == target_cpp_file:
-                            callee_name = None
-                            break
-                        # In shared utility file — C++ implementation exists
-                        if callee_cpp in shared_cpp:
-                            callee_name = None
-                            break
-                    break
-            if callee_name is None:
-                continue
+        # Skip callees that have C++ implementations (defined in the translation
+        # file or shared headers). No Fortran bridge needed.
+        if callee_name.upper() in cpp_implemented:
+            continue
 
         # Find the callee's definition in the source directory.
         # NOTE: Source must be clean (pre-integration) — integrated source has
