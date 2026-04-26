@@ -42,9 +42,11 @@ FORTRAN_TO_C = {
     "INTEGER(2)": TypeMapping("INTEGER(2)", "2", "C_SHORT", "short", "INTEGER(C_SHORT)", 2),
     "INTEGER(1)": TypeMapping("INTEGER(1)", "1", "C_SIGNED_CHAR", "signed char", "INTEGER(C_SIGNED_CHAR)", 1),
 
-    # Logical — C_BOOL is 1 byte (_Bool in C, int8_t for struct layout compatibility)
-    "LOGICAL": TypeMapping("LOGICAL", "", "C_BOOL", "int8_t", "LOGICAL(C_BOOL)", 1),
-    "LOGICAL(4)": TypeMapping("LOGICAL(4)", "4", "C_BOOL", "int8_t", "LOGICAL(C_BOOL)", 1),
+    # Logical — default Fortran LOGICAL is 4 bytes (matches INTEGER(4)).
+    # View struct populators handle LOGICAL(C_BOOL) conversion explicitly;
+    # this mapping is for non-view BIND(C)-compatible struct generation.
+    "LOGICAL": TypeMapping("LOGICAL", "", "C_INT", "int32_t", "INTEGER(C_INT)", 4),
+    "LOGICAL(4)": TypeMapping("LOGICAL(4)", "4", "C_INT", "int32_t", "INTEGER(C_INT)", 4),
 
     # Character (single)
     "CHARACTER": TypeMapping("CHARACTER", "", "C_CHAR", "char", "CHARACTER(C_CHAR)", 1),

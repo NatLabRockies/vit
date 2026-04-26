@@ -454,13 +454,19 @@ def generate_c_struct_header(type_info: DerivedTypeInfo,
             continue
 
         mapping = get_type_mapping(f.fortran_type, kind_aliases)
+        # View types use LOGICAL(C_BOOL) = int8_t in their Fortran populator,
+        # so the C struct must match. Non-view types use native LOGICAL = int32_t.
+        c_type = mapping.c_type
+        if (f.fortran_type.upper().startswith("LOGICAL") and
+                getattr(type_info, 'view_strategy', None) == 'view'):
+            c_type = "int8_t"
         if mapping.character_length:
-            lines.append(f"    {mapping.c_type} {f.name}[{mapping.character_length}];")
+            lines.append(f"    {c_type} {f.name}[{mapping.character_length}];")
         elif f.is_array and f.array_dims:
             c_dims = _fortran_dims_to_c(f.array_dims)
-            lines.append(f"    {mapping.c_type} {f.name}{c_dims};")
+            lines.append(f"    {c_type} {f.name}{c_dims};")
         else:
-            lines.append(f"    {mapping.c_type} {f.name};")
+            lines.append(f"    {c_type} {f.name};")
 
     lines.append(f"}} {type_info.name.lower()}_t;")
     lines.append("")
@@ -604,13 +610,17 @@ def generate_view_struct_header(
             continue
 
         mapping = get_type_mapping(f.fortran_type, kind_aliases)
+        # View structs use LOGICAL(C_BOOL) = int8_t via the Fortran populator
+        c_type = mapping.c_type
+        if f.fortran_type.upper().startswith("LOGICAL"):
+            c_type = "int8_t"
         if mapping.character_length:
             lines.append(f"    char {f.name}[{mapping.character_length}];")
         elif f.is_array and f.array_dims:
             c_dims = _fortran_dims_to_c(f.array_dims)
-            lines.append(f"    {mapping.c_type} {f.name}{c_dims};")
+            lines.append(f"    {c_type} {f.name}{c_dims};")
         else:
-            lines.append(f"    {mapping.c_type} {f.name};")
+            lines.append(f"    {c_type} {f.name};")
 
     # --- ALL ALLOCATABLE fields as pointer + size ---
     alloc_fields = [f for f in type_info.fields if f.is_allocatable]
@@ -791,16 +801,8 @@ def classify_field_blockers(type_info: DerivedTypeInfo,
                 reason="nested_type",
                 fix_suggestion=f"Nested derived type {f.fortran_type} must also be C-compatible",
             ))
-        elif normalized.startswith("LOGICAL"):
-            blockers.append(FieldBlocker(
-                field_name=f.name,
-                fortran_type=f.fortran_type,
-                reason="logical",
-                fix_suggestion=(
-                    f"Convert to INTEGER(C_INT) with: vit analyze-types --fix logical "
-                    f"--type {type_info.name} --field {f.name} --apply"
-                ),
-            ))
+        # LOGICAL: no longer blocked — mapped to int32_t (4 bytes, matches
+        # Fortran default LOGICAL). View populators handle C_BOOL conversion.
         elif normalized.startswith("COMPLEX"):
             blockers.append(FieldBlocker(
                 field_name=f.name,

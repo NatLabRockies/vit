@@ -1046,11 +1046,8 @@ def _generate_callee_bridges(
             if updated != existing:
                 vit_types_path.write_text(updated)
 
-            # Skip array-returning functions — bridges for these require
-            # allocatable temporaries that we can't generate reliably.
-            # If the C++ actually calls them, it'll get a linker error.
-            if callee_sig.is_function and callee_sig.result_is_array:
-                continue
+            # Array-returning functions are handled by generate_kernel_callee_bridge
+            # with an output buffer parameter (same pattern as production wrappers).
 
             # Propagate view strategies from the target's registry to the callee's.
             # The target's registry has view_strategy applied from vit.yaml, but
@@ -1461,6 +1458,12 @@ def _patch_field_value_logging(content: str) -> str:
         r'\s*IF\s*\(\(var%(\w+)\s*==\s*kgenref_var%\w+\)\s*\.OR\.',
         re.IGNORECASE,
     )
+    # Logical scalar: IF (var%FIELD .EQV. kgenref_var%FIELD) THEN
+    # KGen uses .EQV. for LOGICAL comparisons (not ==)
+    logical_re = re.compile(
+        r'\s*IF\s*\(var%(\w+)\s*\.EQV\.\s*kgenref_var%\w+\)',
+        re.IGNORECASE,
+    )
     # Array: IF (ALL(var%FIELD == kgenref_var%FIELD)) THEN
     array_re = re.compile(
         r'\s*IF\s*\(ALL\(var%(\w+)\s*==\s*kgenref_var%',
@@ -1489,6 +1492,13 @@ def _patch_field_value_logging(content: str) -> str:
         if m:
             current_field = m.group(1)
             current_type = "scalar"
+
+        # Detect logical scalar comparison start (KGen uses .EQV. for LOGICAL fields)
+        # Treated as "logical" type — never has diff_ variables (only IDENTICAL/OUT_TOL)
+        m = logical_re.match(line)
+        if m:
+            current_field = m.group(1)
+            current_type = "logical"
 
         # Detect array comparison start
         m = array_re.match(line)
@@ -1541,6 +1551,19 @@ def _patch_field_value_logging(content: str) -> str:
                                 f'{indent}WRITE(*, *) "[VIT_FIELD] {f} | OUT_TOL | ", '
                                 f'var%{f}, " | ", kgenref_var%{f}'
                             )
+
+                elif current_type == "logical":
+                    # LOGICAL fields: only IDENTICAL or OUT_TOL, never has diff_ variable
+                    if check_type == "CHECK_IDENTICAL":
+                        result.append(
+                            f'{indent}WRITE(*, *) "[VIT_FIELD] {f} | IDENTICAL | ", '
+                            f'var%{f}, " | ", kgenref_var%{f}'
+                        )
+                    elif check_type == "CHECK_OUT_TOL":
+                        result.append(
+                            f'{indent}WRITE(*, *) "[VIT_FIELD] {f} | OUT_TOL | ", '
+                            f'var%{f}, " | ", kgenref_var%{f}'
+                        )
 
                 elif current_type == "array":
                     if check_type == "CHECK_IDENTICAL":

@@ -1052,6 +1052,18 @@ def generate_kernel_callee_bridge(
             else:
                 struct_args.append((arg, mapping))
 
+    # For array-returning functions, identify the result buffer and size params.
+    # The result buffer parameter is already added by _build_interface_args (line 848+).
+    result_buffer_name = None
+    result_size_param = None
+    if sig.is_function and sig.result_is_array:
+        result_buffer_name = f"{sig.name}_result"
+        # Use first array arg's size as result size (VIT convention)
+        for a in sig.args:
+            if a.is_array and a.is_assumed_shape:
+                result_size_param = f"n_{a.name}"
+                break
+
     if sig.is_function and not sig.result_is_array:
         # Scalar-returning function
         ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
@@ -1082,7 +1094,8 @@ def generate_kernel_callee_bridge(
         if needs_resync:
             view_type = f"{type_lower}_view_t"
             populator = f"vit_populate_{type_lower}"
-            lines.append(f"        USE {module_name}, ONLY: {stash_name}, {view_type}, {populator}")
+            reverse_copy = f"vit_copy_scalars_to_{type_lower}"
+            lines.append(f"        USE {module_name}, ONLY: {stash_name}, {view_type}, {populator}, {reverse_copy}")
         else:
             lines.append(f"        USE {module_name}, ONLY: {stash_name}")
     lines.append(f"        IMPLICIT NONE")
@@ -1104,11 +1117,40 @@ def generate_kernel_callee_bridge(
             type_lower = mapping.c_type.lower()
             lines.append(f"        TYPE({type_lower}_view_t), POINTER :: {arg.name}_view")
 
+    # Declare local CHARACTER buffers for CHARACTER OUT/INOUT args.
+    # Fortran expects CHARACTER(*) but BIND(C) bridge receives CHARACTER(C_CHAR) array.
+    # Use a local buffer and pass that to the Fortran callee instead.
+    char_buffer_args = []
+    for arg in sig.args:
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+        if (mapping.iso_c_type.startswith("CHARACTER") and
+                arg.intent and arg.intent.value.upper() in ("OUT", "INOUT")):
+            lines.append(f"        CHARACTER(1024) :: local_{arg.name}")
+            char_buffer_args.append(arg.name)
+
     # Convert C struct pointers to Fortran pointers (regular structs only)
     if struct_args:
         lines.append(f"        ! Convert C pointers to Fortran pointers")
     for arg, mapping in struct_args:
         lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_f)")
+
+    # Flush C++ view modifications to Fortran type before calling the callee.
+    # The C++ caller may have modified view scalars (e.g., setting default
+    # parameter values) BEFORE this callee call. Without flushing, the post-call
+    # re-sync would overwrite those modifications with stale values from the
+    # original Fortran type.
+    inout_view_args_for_flush = [
+        (arg, mapping) for arg, mapping in view_struct_args
+        if arg.intent and arg.intent.value.upper() in ("INOUT", "OUT")
+    ]
+    if inout_view_args_for_flush:
+        lines.append(f"        ! Flush C++ modifications to Fortran before callee call")
+        for arg, mapping in inout_view_args_for_flush:
+            type_lower = mapping.c_type.lower()
+            stash_name = f"vit_original_{type_lower}"
+            reverse_copy = f"vit_copy_scalars_to_{type_lower}"
+            lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_view)")
+            lines.append(f"        CALL {reverse_copy}({arg.name}_view, {stash_name})")
 
     # Build the call to the original Fortran function.
     # OPTIONAL args require IF/ELSE branching — Fortran uses argument
@@ -1122,7 +1164,11 @@ def generate_kernel_callee_bridge(
     def _make_call(func_name, args_str, is_function, result_name=None,
                    ret_mapping=None):
         """Generate a single CALL or assignment line."""
-        if is_function and not sig.result_is_array:
+        if is_function and sig.result_is_array:
+            # Array-returning function: assign result to output buffer
+            size_expr = result_size_param or "SIZE(alpha)"
+            return f"        {result_buffer_name}(1:{size_expr}) = {func_name}({args_str})"
+        elif is_function and not sig.result_is_array:
             ret_type = sig.result_type or sig.args[0].fortran_type if sig.args else "REAL(8)"
             if ret_mapping and ret_mapping.c_kind != ret_mapping.fortran_kind and ret_mapping.fortran_kind:
                 return f"        {result_name} = {ret_mapping.iso_c_type.split('(')[0]}({func_name}({args_str}), {ret_mapping.c_kind})"
@@ -1146,17 +1192,23 @@ def generate_kernel_callee_bridge(
         lines.append(f"        IF (has_{opt.name} /= 0) THEN")
         if sig.is_function and not sig.result_is_array:
             lines.append(_make_call(sig.name, args_with, True, result_name, ret_mapping))
+        elif sig.is_function and sig.result_is_array:
+            lines.append(_make_call(sig.name, args_with, True))
         else:
             lines.append(_make_call(sig.name, args_with, False))
         lines.append(f"        ELSE")
         if sig.is_function and not sig.result_is_array:
             lines.append(_make_call(sig.name, args_without, True, result_name, ret_mapping))
+        elif sig.is_function and sig.result_is_array:
+            lines.append(_make_call(sig.name, args_without, True))
         else:
             lines.append(_make_call(sig.name, args_without, False))
         lines.append(f"        END IF")
     else:
         if sig.is_function and not sig.result_is_array:
             lines.append(_make_call(sig.name, required_str, True, result_name, ret_mapping))
+        elif sig.is_function and sig.result_is_array:
+            lines.append(_make_call(sig.name, required_str, True))
         else:
             lines.append(_make_call(sig.name, required_str, False))
 
@@ -1261,8 +1313,13 @@ def _build_bridge_call_args(sig: FortranSignature,
         # Scalar args — INOUT args must be passed directly (no conversion wrapping).
         # VALUE args may need kind conversion for LOGICAL.
         if arg.intent in (IntentKind.OUT, IntentKind.INOUT):
-            # INOUT/OUT: pass directly — can't wrap in conversion function
-            call_args.append(arg.name)
+            # CHARACTER OUT/INOUT: use local buffer (bridge receives C_CHAR array,
+            # Fortran expects CHARACTER(*) — incompatible without local buffer)
+            if mapping.iso_c_type.startswith("CHARACTER"):
+                call_args.append(f"local_{arg.name}")
+            else:
+                # INOUT/OUT: pass directly — can't wrap in conversion function
+                call_args.append(arg.name)
         elif mapping.iso_c_type.startswith("LOGICAL("):
             # LOGICAL(C_BOOL) → LOGICAL: explicit conversion needed
             call_args.append(f"LOGICAL({arg.name})")
@@ -1306,6 +1363,7 @@ def generate_callee_declarations_header(
             ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
             lines.append(f"{ret_mapping.c_type} {sig.c_func_name}({param_str});")
         else:
+            # Subroutine or array-returning function (result buffer already in params)
             lines.append(f"void {sig.c_func_name}({param_str});")
 
     lines.append("")

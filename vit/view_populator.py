@@ -309,8 +309,11 @@ def _field_to_iso_c_decl(f: DerivedTypeField, kind_aliases: Optional[dict]) -> O
         return f"{mapping.iso_c_type} :: {f.name}({dims})"
 
     # Scalar — use type-appropriate default
-    if mapping.iso_c_type.startswith("LOGICAL"):
-        return f"{mapping.iso_c_type} :: {f.name} = .FALSE."
+    # LOGICAL fields use LOGICAL(C_BOOL) in view structs regardless of the
+    # global type_map (which maps LOGICAL→int32_t for non-view struct compat).
+    # The populator handles the conversion explicitly.
+    if f.fortran_type.upper().startswith("LOGICAL"):
+        return f"LOGICAL(C_BOOL) :: {f.name} = .FALSE."
     return f"{mapping.iso_c_type} :: {f.name} = 0"
 
 
@@ -328,6 +331,11 @@ def _scalar_assignment(f: DerivedTypeField, kind_aliases: Optional[dict]) -> Opt
         return f"view%{f.name} = src%{f.name}"
 
     # Scalar with kind conversion
+    # LOGICAL fields: always convert via LOGICAL(src, C_BOOL) regardless of
+    # type_map (view structs use C_BOOL for LOGICALs, non-view use int32_t)
+    if f.fortran_type.upper().startswith("LOGICAL"):
+        return f"view%{f.name} = LOGICAL(src%{f.name}, C_BOOL)"
+
     iso_type = mapping.iso_c_type  # e.g., "REAL(C_DOUBLE)", "INTEGER(C_INT)"
     if iso_type.startswith("REAL("):
         c_kind = mapping.c_kind  # e.g., "C_DOUBLE"
@@ -335,8 +343,6 @@ def _scalar_assignment(f: DerivedTypeField, kind_aliases: Optional[dict]) -> Opt
     elif iso_type.startswith("INTEGER("):
         c_kind = mapping.c_kind
         return f"view%{f.name} = INT(src%{f.name}, {c_kind})"
-    elif iso_type.startswith("LOGICAL("):
-        return f"view%{f.name} = LOGICAL(src%{f.name}, C_BOOL)"
 
     # Fallback: direct copy
     return f"view%{f.name} = src%{f.name}"
@@ -354,6 +360,10 @@ def _nested_scalar_assignment(
     if nf.is_array and nf.array_dims:
         return f"view%{parent_field}%{nf.name} = src%{parent_field}%{nf.name}"
 
+    # LOGICAL: always use LOGICAL(C_BOOL) conversion in view populators
+    if nf.fortran_type.upper().startswith("LOGICAL"):
+        return f"view%{parent_field}%{nf.name} = LOGICAL(src%{parent_field}%{nf.name}, C_BOOL)"
+
     iso_type = mapping.iso_c_type
     if iso_type.startswith("REAL("):
         c_kind = mapping.c_kind
@@ -361,8 +371,6 @@ def _nested_scalar_assignment(
     elif iso_type.startswith("INTEGER("):
         c_kind = mapping.c_kind
         return f"view%{parent_field}%{nf.name} = INT(src%{parent_field}%{nf.name}, {c_kind})"
-    elif iso_type.startswith("LOGICAL("):
-        return f"view%{parent_field}%{nf.name} = LOGICAL(src%{parent_field}%{nf.name}, C_BOOL)"
 
     return f"view%{parent_field}%{nf.name} = src%{parent_field}%{nf.name}"
 
@@ -388,6 +396,10 @@ def _reverse_scalar_assignment(f: DerivedTypeField, kind_aliases: Optional[dict]
         return [f"dest%{f.name} = view%{f.name}"]
 
     # Scalar with kind conversion (reverse direction)
+    # LOGICAL: view has C_BOOL, dest has default LOGICAL — direct assign works
+    if f.fortran_type.upper().startswith("LOGICAL"):
+        return [f"dest%{f.name} = view%{f.name}"]
+
     # Use ISO C kinds (C_DOUBLE, C_INT) — the populator module only USEs ISO_C_BINDING,
     # not project-specific kind modules (ReKi, IntKi, etc.)
     iso_type = mapping.iso_c_type
@@ -397,8 +409,6 @@ def _reverse_scalar_assignment(f: DerivedTypeField, kind_aliases: Optional[dict]
     elif iso_type.startswith("INTEGER("):
         c_kind = mapping.c_kind  # e.g., "C_INT"
         return [f"dest%{f.name} = INT(view%{f.name}, {c_kind})"]
-    elif iso_type.startswith("LOGICAL("):
-        return [f"dest%{f.name} = view%{f.name}"]
 
     # Fallback: direct copy
     return [f"dest%{f.name} = view%{f.name}"]
@@ -421,6 +431,10 @@ def _nested_reverse_assignment(
     if nf.is_array and nf.array_dims:
         return [f"dest%{parent_field}%{nf.name} = view%{parent_field}%{nf.name}"]
 
+    # LOGICAL: view has C_BOOL, dest has default LOGICAL — direct assign works
+    if nf.fortran_type.upper().startswith("LOGICAL"):
+        return [f"dest%{parent_field}%{nf.name} = view%{parent_field}%{nf.name}"]
+
     iso_type = mapping.iso_c_type
     if iso_type.startswith("REAL("):
         c_kind = mapping.c_kind
@@ -428,8 +442,6 @@ def _nested_reverse_assignment(
     elif iso_type.startswith("INTEGER("):
         c_kind = mapping.c_kind
         return [f"dest%{parent_field}%{nf.name} = INT(view%{parent_field}%{nf.name}, {c_kind})"]
-    elif iso_type.startswith("LOGICAL("):
-        return [f"dest%{parent_field}%{nf.name} = view%{parent_field}%{nf.name}"]
 
     return [f"dest%{parent_field}%{nf.name} = view%{parent_field}%{nf.name}"]
 
