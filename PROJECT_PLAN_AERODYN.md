@@ -222,7 +222,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [x] ComputeUASeparationFunction_onCl: 20/20 IDENTICAL, first callee-dependent function (calls ComputeUASeparationFunction_zero via bridge), callee bridge INOUT view re-sync fix (dev note `202604251821`)
 - [x] Shared NWTC utility header (`vit_nwtc.h`): C++ translations of EqualRealNos, fZeros, InterpExtrapStp + constants (Pi, TwoPi, PiBy2, D2R, R2D). Replaces inlined duplicates in 6 translations. VIT enhanced to copy shared headers to kernel. All 9 functions re-verified. (dev note `202604251943`)
 - [x] ComputeUA360_AttachedFlow: 20/20 IDENTICAL, first function using NWTC utility callees from `vit_nwtc.h` (fZeros, InterpExtrapStp, EqualRealNos) + callee bridge to Compute_iLoweriUpper, `--reverse-copy` for 9 UA_BL scalars (dev note `202604251943`)
-- [x] CalculateUACoeffs: 15/20 kernel (1-ULP bridge artifact in 5 cases), 16/16 baselines PASS. 326-line orchestrator, 7 callee bridges, 2 NWTC utilities (InterpStp, kernelSmoothing), LOGICAL type support, array-returning function bridges, callee flush-reload, Calculate_C_alpha buffer overflow fix. 8 VIT infrastructure fixes. (dev notes `202604252257`, `202604252345`)
+- [x] CalculateUACoeffs: 20/20 kernel IDENTICAL (libmvec vectorization fix + clean re-extraction), 16/16 baselines PASS. 326-line orchestrator, 7 callee bridges, 2 NWTC utilities (InterpStp, kernelSmoothing), LOGICAL type support, array-returning function bridges, callee flush-reload, Calculate_C_alpha buffer overflow fix. 8 VIT infrastructure fixes. Previous 15/20 was caused by KGen-reduced module not vectorizing cos/sin loop → scalar libm vs production's vectorized libmvec (1-ULP trig diff cascading to 1.24e-14 in cnBreakUpper). Fixed by adding `-fvect-cost-model=unlimited` + `-lmvec -lm` to VIT kernel flags. (dev notes `202604252257`, `202604252345`, `202604260357`)
 - [ ] Translate remaining AirfoilInfo functions: AFI_ValidateInitInput (simulation-level)
 - [ ] Translate DBEMT leaf functions (5 leaves)
 - [ ] Translate DBEMT mid-level functions (9 remaining)
@@ -390,7 +390,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 
 **Status:** Phase 0 complete. Phase 1 in progress — 11 AirfoilInfo functions integrated (including CalculateUACoeffs orchestrator), shared NWTC utility library (`vit_nwtc.h/.cpp`) with 5 functions. Next: AFI_ValidateInitInput (simulation-level), then DBEMT.
 
-**Next action:** AFI_ValidateInitInput (simulation-level verification — no KGen kernel), then DBEMT module. CalculateUACoeffs has 5/20 kernel cases with 1-ULP bridge artifact (production 16/16 passes) — investigation ongoing.
+**Next action:** AFI_ValidateInitInput (simulation-level verification — no KGen kernel), then DBEMT module. All 11 AirfoilInfo functions verified: 20/20 kernel + 16/16 baselines.
 
 **Completed milestones:**
 - [x] Docker container (`vit-dev-openfast`) built and verified
@@ -422,6 +422,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [x] Phase 1: Shared NWTC utility header (`vit_nwtc.h`) — C++ translations of EqualRealNos, fZeros, InterpExtrapStp + NWTC constants. 6 translations refactored, 9/9 re-verified. VIT enhanced to copy shared headers to kernel.
 - [x] Phase 1: ComputeUA360_AttachedFlow (20/20) — first function using NWTC utility callees from shared header, `--reverse-copy`, 16/16 regression. integrate_all.sh: 10/10.
 - [x] Phase 1: CalculateUACoeffs (15/20 kernel, 16/16 baselines) — orchestrator, 8 VIT infrastructure fixes, Calculate_C_alpha buffer overflow fix, InterpStp + kernelSmoothing in vit_nwtc
+- [x] Phase 1: CalculateUACoeffs 20/20 (libmvec fix, clean re-extraction, shared_files config) — root cause: KGen-reduced module changed gfortran vectorization heuristics → scalar vs vectorized cos/sin (1-ULP trig diff). Fix: `-fvect-cost-model=unlimited` + `-lmvec -lm` in VIT kernel flags. Dev note `202604260357`.
 
 ## 8. Change Log
 
@@ -445,4 +446,5 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 | 2026-04-25 | ComputeUASeparationFunction_onCl | 20/20 IDENTICAL. First callee-dependent function. Discovered and fixed callee bridge INOUT view re-sync bug. Created integrate_all.sh. |
 | 2026-04-25 | Shared NWTC utility header | `vit_nwtc.h` with EqualRealNos, fZeros (zero-crossing finder), InterpExtrapStp (linear interpolation), Pi/TwoPi/PiBy2/D2R/R2D. Replaces inlined duplicates in 6 translations. VIT enhanced to copy shared headers to kernel directories. Design decision: translate NWTC utilities to C++ (for pure-C++ AeroDyn future) rather than bridge to Fortran. |
 | 2026-04-25 | ComputeUA360_AttachedFlow | 20/20 IDENTICAL. First function using shared NWTC utilities. Calls fZeros + InterpExtrapStp from `vit_nwtc.h`, compute_iloweriupper_c via callee bridge, --reverse-copy for 9 UA_BL scalars. 10/10 integrate_all.sh, 16/16 regression. |
-| 2026-04-25/26 | CalculateUACoeffs + 8 infrastructure fixes | 326-line orchestrator (11th function). 8 VIT fixes: LOGICAL mapping (int32_t), .EQV. comparison, CHARACTER bridge buffers, array-returning FUNCTION bridges, callee pre-call flush, nested-type field tracking, integer exponentiation. Calculate_C_alpha buffer overflow fix (8196→1024 memset). InterpStp + kernelSmoothing added to vit_nwtc. Kernel 15/20 (1-ULP bridge artifact), production 16/16 PASS. |
+| 2026-04-25/26 | CalculateUACoeffs + 8 infrastructure fixes | 326-line orchestrator (11th function). 8 VIT fixes: LOGICAL mapping (int32_t), .EQV. comparison, CHARACTER bridge buffers, array-returning FUNCTION bridges, callee pre-call flush, nested-type field tracking, integer exponentiation. Calculate_C_alpha buffer overflow fix (8196→1024 memset). InterpStp + kernelSmoothing added to vit_nwtc. Initially 15/20 kernel (libmvec issue, see next entry), production 16/16 PASS. |
+| 2026-04-26 | CalculateUACoeffs 20/20 + libmvec fix | Root cause: KGen-reduced module changed gfortran vectorization heuristics → kernel used scalar libm cos/sin instead of production's vectorized libmvec. 1-ULP trig diff cascaded through CnSlopeUpper→alphaBreakUpper→CnBreakUpper. Fix: VIT adds `-fvect-cost-model=unlimited` + `-lmvec -lm` to kernel builds. Kernel re-extracted from clean source. `shared_files` config added to vit.yaml. All 11 functions now 20/20 + 16/16. |

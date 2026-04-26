@@ -1,6 +1,6 @@
 # CalculateUACoeffs: Buffer Overflow Fix + 1-ULP Bridge Artifact
 **Date:** 2026-04-25/26
-**Status:** in-progress (16/16 baselines pass; 5/20 kernel cases remain for investigation)
+**Status:** resolved (see dev note `202604260357` for root cause and fix)
 **Scope:** CalculateUACoeffs integration, Calculate_C_alpha buffer overflow, kernel bridge precision
 
 ## Problem
@@ -153,3 +153,13 @@ The 1-ULP diff in `alphabreakupper` originates in ComputeUA360_AttachedFlow (For
 | VIT | `5693b2f` | Nested-type field tag reset + dev note |
 | OpenFAST | `d6bab33e9` | CalculateUACoeffs translation + kernel fixture |
 | OpenFAST | `a8fd0efbc` | Buffer overflow fix + clean up + 16/16 baselines |
+
+## Resolution (2026-04-26)
+
+Root cause was NOT a bridge artifact, C++ translation bug, or compiler optimization difference. It was **glibc libmvec** — the production build vectorized the `Calculate_Cn` cos/sin loop using SIMD implementations from `libmvec.so`, while the KGen-reduced kernel module's smaller compilation unit caused gfortran's cost model to skip vectorization, using scalar `libm` cos/sin instead. Vectorized and scalar trig differ by 1 ULP for certain alpha values.
+
+**Proof:** Pure Fortran kernel (no C++ at all) at `-O0` produced the same 5 failures. Golden-vs-golden comparison gave 20/20 (state data correct). Adding `-fvect-cost-model=unlimited` + `-lmvec -lm` to the kernel build gave 20/20.
+
+**Fix:** VIT's `kernel_verify.py` now adds these flags to all kernel builds. CalculateUACoeffs kernel re-extracted from clean source: **20/20 IDENTICAL + 16/16 baselines**.
+
+See dev note `202604260357` for the full investigation.
