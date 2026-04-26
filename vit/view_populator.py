@@ -259,14 +259,14 @@ def generate_view_populator(
             lines.append(f"            view%{f.name} = C_NULL_PTR  ! TYPE() — opaque, not interoperable")
             lines.append(f"            view%n_{f.name} = INT(SIZE(src%{f.name}), C_INT32_T)")
         elif rank == 1:
-            lines.append(f"            view%{f.name} = C_LOC(src%{f.name}(1))")
+            lines.append(f"            view%{f.name} = C_LOC(src%{f.name}(LBOUND(src%{f.name},1)))")
             lines.append(f"            view%n_{f.name} = INT(SIZE(src%{f.name}), C_INT32_T)")
         elif rank == 2:
-            lines.append(f"            view%{f.name} = C_LOC(src%{f.name}(1,1))")
+            lines.append(f"            view%{f.name} = C_LOC(src%{f.name}(LBOUND(src%{f.name},1),LBOUND(src%{f.name},2)))")
             lines.append(f"            view%n_{f.name}_rows = INT(SIZE(src%{f.name}, 1), C_INT32_T)")
             lines.append(f"            view%n_{f.name}_cols = INT(SIZE(src%{f.name}, 2), C_INT32_T)")
         elif rank >= 3:
-            lines.append(f"            view%{f.name} = C_LOC(src%{f.name}(1,1,1))")
+            lines.append(f"            view%{f.name} = C_LOC(src%{f.name}(LBOUND(src%{f.name},1),LBOUND(src%{f.name},2),LBOUND(src%{f.name},3)))")
             lines.append(f"            view%n_{f.name}_dim1 = INT(SIZE(src%{f.name}, 1), C_INT32_T)")
             lines.append(f"            view%n_{f.name}_dim2 = INT(SIZE(src%{f.name}, 2), C_INT32_T)")
             lines.append(f"            view%n_{f.name}_dim3 = INT(SIZE(src%{f.name}, 3), C_INT32_T)")
