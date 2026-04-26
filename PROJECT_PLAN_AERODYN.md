@@ -222,7 +222,8 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [x] ComputeUASeparationFunction_onCl: 20/20 IDENTICAL, first callee-dependent function (calls ComputeUASeparationFunction_zero via bridge), callee bridge INOUT view re-sync fix (dev note `202604251821`)
 - [x] Shared NWTC utility header (`vit_nwtc.h`): C++ translations of EqualRealNos, fZeros, InterpExtrapStp + constants (Pi, TwoPi, PiBy2, D2R, R2D). Replaces inlined duplicates in 6 translations. VIT enhanced to copy shared headers to kernel. All 9 functions re-verified. (dev note `202604251943`)
 - [x] ComputeUA360_AttachedFlow: 20/20 IDENTICAL, first function using NWTC utility callees from `vit_nwtc.h` (fZeros, InterpExtrapStp, EqualRealNos) + callee bridge to Compute_iLoweriUpper, `--reverse-copy` for 9 UA_BL scalars (dev note `202604251943`)
-- [ ] Translate remaining AirfoilInfo functions: CalculateUACoeffs (orchestrator), AFI_ValidateInitInput (simulation-level)
+- [x] CalculateUACoeffs: 15/20 kernel (1-ULP bridge artifact in 5 cases), 16/16 baselines PASS. 326-line orchestrator, 7 callee bridges, 2 NWTC utilities (InterpStp, kernelSmoothing), LOGICAL type support, array-returning function bridges, callee flush-reload, Calculate_C_alpha buffer overflow fix. 8 VIT infrastructure fixes. (dev notes `202604252257`, `202604252345`)
+- [ ] Translate remaining AirfoilInfo functions: AFI_ValidateInitInput (simulation-level)
 - [ ] Translate DBEMT leaf functions (5 leaves)
 - [ ] Translate DBEMT mid-level functions (9 remaining)
 - [ ] Verify: KGen kernel pass for all 37 functions
@@ -233,7 +234,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - **~~ALLOCATABLE TYPE() array access~~:** Resolved — functions accessing `p%Table(i)%field` patterns work with current view struct infrastructure (proven by ComputeUA360_CnOffset, 21/21 IDENTICAL). The view struct populator handles single-table access. Array-of-structs marshalling may still be needed for functions that iterate over all tables.
 - **Nested TYPE() embedding is single-level:** Inline struct generation skips TYPE() fields inside nested types. If a nested type contains another C-compatible nested type, it won't be embedded. Not triggered by current AirfoilInfo types (AFI_UA_BL_Type is all scalars). Will need recursion if deeper nesting appears (likely Phase 2 or Phase 4).
 
-**Revisit trigger:** After KGen/VIT validation — if extraction fails or VIT needs major enhancements, reassess timeline and approach before continuing. **Status: POC passed, no showstoppers. 10 functions integrated including LAPACK dependencies, callee bridges, view reverse-copy, CSHIFT translation, shared NWTC utility header, and NWTC Library function translations (fZeros, InterpExtrapStp).**
+**Revisit trigger:** After KGen/VIT validation — if extraction fails or VIT needs major enhancements, reassess timeline and approach before continuing. **Status: POC passed, no showstoppers. 11 functions integrated including the CalculateUACoeffs orchestrator (326 lines, 7 callee bridges). 8 VIT infrastructure fixes for LOGICAL types, array-returning bridges, callee flush-reload, CHARACTER bridge buffers, and nested-type field tracking. Shared NWTC utility library (vit_nwtc.h/.cpp) with 5 functions + constants.**
 
 **Dev notes:** `202604241004` (first extraction), `202604241026` (precision mismatch), `202604241051` (VIT adaptation issues), `202604241122` (first verification), `202604241337` (FMA confirmed), `202604241400` (first full verification), `202604241415` (full pipeline proven), `202604241459` (four infrastructure fixes), `202604241905` (derived type functions proven), `202604251125` (cross-module instrumentation), `202604251317` (kernel repair), `202604251331` (Calculate_C_alpha complete), `202604251425` (view reverse-copy fix), `202604251451` (three functions + two fixes), `202604251503` (auto-callee declarations), `202604251821` (onCl + callee bridge re-sync + integrate_all.sh), `202604251943` (vit_nwtc.h + AttachedFlow)
 
@@ -387,9 +388,9 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 
 **Date:** 2026-04-25
 
-**Status:** Phase 0 complete. Phase 1 in progress — 10 AirfoilInfo functions integrated (all leaf + callee-dependent functions done), shared NWTC utility header established (`vit_nwtc.h`). Next: CalculateUACoeffs orchestrator, then AFI_ValidateInitInput, then DBEMT.
+**Status:** Phase 0 complete. Phase 1 in progress — 11 AirfoilInfo functions integrated (including CalculateUACoeffs orchestrator), shared NWTC utility library (`vit_nwtc.h/.cpp`) with 5 functions. Next: AFI_ValidateInitInput (simulation-level), then DBEMT.
 
-**Next action:** CalculateUACoeffs (orchestrator, ~365 lines, calls most integrated functions + fZeros with array slicing), then AFI_ValidateInitInput (simulation-level verification), then DBEMT module.
+**Next action:** AFI_ValidateInitInput (simulation-level verification — no KGen kernel), then DBEMT module. CalculateUACoeffs has 5/20 kernel cases with 1-ULP bridge artifact (production 16/16 passes) — investigation ongoing.
 
 **Completed milestones:**
 - [x] Docker container (`vit-dev-openfast`) built and verified
@@ -420,6 +421,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [x] Phase 1: ComputeUASeparationFunction_onCl (20/20) — first callee-dependent function, callee bridge INOUT view re-sync fix
 - [x] Phase 1: Shared NWTC utility header (`vit_nwtc.h`) — C++ translations of EqualRealNos, fZeros, InterpExtrapStp + NWTC constants. 6 translations refactored, 9/9 re-verified. VIT enhanced to copy shared headers to kernel.
 - [x] Phase 1: ComputeUA360_AttachedFlow (20/20) — first function using NWTC utility callees from shared header, `--reverse-copy`, 16/16 regression. integrate_all.sh: 10/10.
+- [x] Phase 1: CalculateUACoeffs (15/20 kernel, 16/16 baselines) — orchestrator, 8 VIT infrastructure fixes, Calculate_C_alpha buffer overflow fix, InterpStp + kernelSmoothing in vit_nwtc
 
 ## 8. Change Log
 
@@ -443,3 +445,4 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 | 2026-04-25 | ComputeUASeparationFunction_onCl | 20/20 IDENTICAL. First callee-dependent function. Discovered and fixed callee bridge INOUT view re-sync bug. Created integrate_all.sh. |
 | 2026-04-25 | Shared NWTC utility header | `vit_nwtc.h` with EqualRealNos, fZeros (zero-crossing finder), InterpExtrapStp (linear interpolation), Pi/TwoPi/PiBy2/D2R/R2D. Replaces inlined duplicates in 6 translations. VIT enhanced to copy shared headers to kernel directories. Design decision: translate NWTC utilities to C++ (for pure-C++ AeroDyn future) rather than bridge to Fortran. |
 | 2026-04-25 | ComputeUA360_AttachedFlow | 20/20 IDENTICAL. First function using shared NWTC utilities. Calls fZeros + InterpExtrapStp from `vit_nwtc.h`, compute_iloweriupper_c via callee bridge, --reverse-copy for 9 UA_BL scalars. 10/10 integrate_all.sh, 16/16 regression. |
+| 2026-04-25/26 | CalculateUACoeffs + 8 infrastructure fixes | 326-line orchestrator (11th function). 8 VIT fixes: LOGICAL mapping (int32_t), .EQV. comparison, CHARACTER bridge buffers, array-returning FUNCTION bridges, callee pre-call flush, nested-type field tracking, integer exponentiation. Calculate_C_alpha buffer overflow fix (8196→1024 memset). InterpStp + kernelSmoothing added to vit_nwtc. Kernel 15/20 (1-ULP bridge artifact), production 16/16 PASS. |
