@@ -9,9 +9,9 @@
 **Done criteria:**
 - [ ] All AeroDyn Fortran source files removed from the build
 - [ ] No libgfortran dependency (confirmed via `ldd` or equivalent)
-- [ ] 16 regression test cases pass bit-identical against committed baselines
+- [ ] 17 regression test cases pass bit-identical against committed baselines
 - [ ] NREL regression 17/17 pass at rtol=2, atol=1.9
-- [ ] AeroDyn Driver executable functional for all 16 test cases
+- [ ] AeroDyn Driver executable functional for all 17 test cases
 - [ ] C-binding layer functional (Exawind interface preserved)
 - [ ] C++ Registry generator produces all `_Types` equivalents
 
@@ -23,8 +23,8 @@
 
 **Target verification rigor:** Three-tier, same as ROSCO:
 - Tier 0: KGen float64 kernel verification per function
-- Tier 1: 16-case simulation comparison, bit-identical against committed baselines
-- Tier 2: NREL regression at 1e-2 tolerance (correctness gate, 16/16)
+- Tier 1: 17-case simulation comparison, bit-identical against committed baselines
+- Tier 2: NREL regression at 1e-2 tolerance (correctness gate, 17/17)
 
 **Scope decisions:** dev note `202604232342`
 
@@ -226,14 +226,14 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [x] AFI_ValidateInitInput: 7/7 test-validate PASS (C++ ≡ Fortran on all 6 error branches + happy path), 16/16 baselines PASS. First function using `vit test-validate` — prompt-based branch-coverage testing with BIND(C) Fortran bridge, PRIVATE function patching, production-build linking. No KGen extraction needed. (dev notes `202604261044`, `202604261131`, `202604261142`, `202604261328`)
 - [x] CheckValuesAreUniqueMonotonicIncreasing: 11/11 test-validate PASS, 17/17 baselines PASS. Trivial validator using `vit test-validate` with FUNCTION return type support (LOGICAL→C_BOOL via vit_result output parameter) and assumed-shape array bridging. (dev note `202604270158`)
 - [x] ReadAFfile: 17/17 baselines PASS. Idiomatic C++ file parser with two-pass architecture (Pass 1: parse + return sizes, Pass 2: fill Fortran-allocated arrays from cache). Keyword-based `AirfoilFileParser` class matching Fortran `ParseVar` semantics (non-consuming on keyword mismatch). Three bugs fixed: (1) heap corruption from uninitialized `FileInfo` cleanup, (2) `ParseVar` keyword-check-before-consume semantics for files with missing UA parameters, (3) conditional Cpmin column mapping when `InCol_Cm=0`. Verified across 9 airfoil file formats (BAR, MHK, OLAF, Kite). (dev notes `202604270158`, `202604270219`, `202604270333`)
-- [ ] **Remaining AirfoilInfo (4 functions, ~549 lines):**
-  - [ ] AFI_Init (~246 lines, module init entry point — calls ReadAFfile (C++) + AFI_ValidateInitInput (C++) + NWTC spline setup, allocation of SplineCoefs)
+- [x] AFI_Init: 17/17 baselines PASS + 11/11 test-validate PASS (C++ ≡ Fortran on all error branches). Two-pass orchestrator: pass 1 handles multi-table validation and secondVals computation (AFITable_2Re log(Re), AFITable_2User UserProp), pass 2 computes cubic spline coefficients via new CubicSplineInitM/CubicLinSplineInitM in vit_nwtc. Fortran wrapper allocates secondVals and SplineCoefs between passes. ColUAf overwrite bug caught and fixed during initial verification (pass 1 was resetting ColUAf=0, overwriting ReadAFfile's value). (dev notes `202604271433`, `202604271455`)
+- [ ] **Remaining AirfoilInfo (3 debug-output functions, ~303 lines):**
   - [ ] AFI_WrTables (~128 lines, debugging output orchestrator — lower priority, only called from UA driver)
   - [ ] AFI_WrHeader (~102 lines, output file header)
   - [ ] AFI_WrData (~73 lines, output data rows)
-  - **Infrastructure needed:** NWTC spline setup (CubicSplineInitM/CubicLinSplineInitM) — either bridge to Fortran or translate. NWTC file I/O for Wr* functions (GetNewUnit, OpenFOutFile, WrScr).
-  - **Verification:** Simulation-level (no KGen — init functions called once at startup). Build clean Fortran baseline, verify C++ matches.
-  - **Note:** AFI_ComputeAirfoilCoefs1D/2D and AFI_ComputeUACoefs2D are already translated as static helpers inside their parent translation files. CalculateUACoeffs and ComputeUA360_CnOffset are already integrated. Registry-generated routines (Pack/Unpack/Copy/Destroy/ExtrapInterp in AirfoilInfo_Types.f90) are handled by the Phase 0 Registry C++ generator, not hand translation.
+  - **Infrastructure needed:** NWTC file I/O for Wr* functions (GetNewUnit, OpenFOutFile, WrScr).
+  - **Verification:** Simulation-level. These are debug-only functions (commented out in production AeroDyn.f90). Can be deferred.
+  - **Note:** All production AirfoilInfo functions are now in C++. AFI_ComputeAirfoilCoefs1D/2D and AFI_ComputeUACoefs2D are already translated as static helpers inside their parent translation files. CalculateUACoeffs and ComputeUA360_CnOffset are already integrated. Registry-generated routines (Pack/Unpack/Copy/Destroy/ExtrapInterp in AirfoilInfo_Types.f90) are handled by the Phase 0 Registry C++ generator, not hand translation.
 - [ ] Translate DBEMT leaf functions (5 leaves)
 - [ ] Translate DBEMT mid-level functions (9 remaining)
 - [ ] Verify: KGen kernel pass for all Phase 1 functions
@@ -244,9 +244,9 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - **~~ALLOCATABLE TYPE() array access~~:** Resolved — functions accessing `p%Table(i)%field` patterns work with current view struct infrastructure (proven by ComputeUA360_CnOffset, 21/21 IDENTICAL). The view struct populator handles single-table access. Array-of-structs marshalling may still be needed for functions that iterate over all tables.
 - **Nested TYPE() embedding is single-level:** Inline struct generation skips TYPE() fields inside nested types. If a nested type contains another C-compatible nested type, it won't be embedded. Not triggered by current AirfoilInfo types (AFI_UA_BL_Type is all scalars). Will need recursion if deeper nesting appears (likely Phase 2 or Phase 4).
 
-**Revisit trigger:** After KGen/VIT validation — if extraction fails or VIT needs major enhancements, reassess timeline and approach before continuing. **Status: POC passed, no showstoppers. 16 functions integrated including CalculateUACoeffs orchestrator (326 lines, 7 callee bridges), AFI_ValidateInitInput (test-validate), CheckValuesAreUniqueMonotonicIncreasing (test-validate with FUNCTION return types), AFI_ComputeAirfoilCoefs (first Table array marshalling, SplineCoefs dimension fix), AFI_ComputeUACoefs (2D UA interpolation with angle wrapping), and ReadAFfile (two-pass file parser, keyword-checked ParseVar semantics, conditional column mapping). Infrastructure: ALLOCATABLE TYPE() array marshalling, LBOUND fix for 0-based dimensions, C++ callee auto-detection (same-file/shared-file skip), 10 NWTC utility functions + constants, `vit test-validate` for validation/FUNCTION return types. 17 regression baselines (ad_MHK_RM1_Fixed_UA added for 2D UA path). 636 unit tests passing.**
+**Revisit trigger:** After KGen/VIT validation — if extraction fails or VIT needs major enhancements, reassess timeline and approach before continuing. **Status: POC passed, no showstoppers. All 17 production AirfoilInfo functions integrated (3 debug-output Wr* functions deferred). Infrastructure: ALLOCATABLE TYPE() array marshalling, LBOUND fix for 0-based dimensions, C++ callee auto-detection (same-file/shared-file skip), 12 NWTC utility functions + constants in vit_nwtc.h (including CubicSplineInitM/CubicLinSplineInitM), `vit test-validate` for validation/FUNCTION return types, two-pass orchestrator pattern (ReadAFfile + AFI_Init). 17 regression baselines (ad_MHK_RM1_Fixed_UA added for 2D UA path).**
 
-**Dev notes:** `202604241004` (first extraction), `202604241026` (precision mismatch), `202604241051` (VIT adaptation issues), `202604241122` (first verification), `202604241337` (FMA confirmed), `202604241400` (first full verification), `202604241415` (full pipeline proven), `202604241459` (four infrastructure fixes), `202604241905` (derived type functions proven), `202604251125` (cross-module instrumentation), `202604251317` (kernel repair), `202604251331` (Calculate_C_alpha complete), `202604251425` (view reverse-copy fix), `202604251451` (three functions + two fixes), `202604251503` (auto-callee declarations), `202604251821` (onCl + callee bridge re-sync + integrate_all.sh), `202604251943` (vit_nwtc.h + AttachedFlow), `202604270158` (ReadAFfile in-progress), `202604270219` (ReadAFfile approach pivot), `202604270333` (ReadAFfile integration — three root causes), `202604270354` (ReadAFfile reflection + path forward)
+**Dev notes:** `202604241004` (first extraction), `202604241026` (precision mismatch), `202604241051` (VIT adaptation issues), `202604241122` (first verification), `202604241337` (FMA confirmed), `202604241400` (first full verification), `202604241415` (full pipeline proven), `202604241459` (four infrastructure fixes), `202604241905` (derived type functions proven), `202604251125` (cross-module instrumentation), `202604251317` (kernel repair), `202604251331` (Calculate_C_alpha complete), `202604251425` (view reverse-copy fix), `202604251451` (three functions + two fixes), `202604251503` (auto-callee declarations), `202604251821` (onCl + callee bridge re-sync + integrate_all.sh), `202604251943` (vit_nwtc.h + AttachedFlow), `202604270158` (ReadAFfile in-progress), `202604270219` (ReadAFfile approach pivot), `202604270333` (ReadAFfile integration — three root causes), `202604270354` (ReadAFfile reflection + path forward), `202604271433` (AFI_Init integration — two-pass orchestrator + CubicSplineInitM), `202604271455` (AFI_Init test-validate — 11/11 multi-table validation)
 
 ### Phase 2: BEMTUncoupled + UnsteadyAero [planned]
 
@@ -262,7 +262,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [ ] Translate BEMTUncoupled (29 procedures, includes `mod_root1dim`)
 - [ ] Translate UnsteadyAero (44 procedures)
 - [ ] Verify: KGen kernel pass for all 73 functions
-- [ ] Verify: 16-case baseline bit-identical
+- [ ] Verify: 17-case baseline bit-identical
 - [ ] Verify: NREL regression 17/17
 
 ### Phase 3: BEMT [planned]
@@ -278,7 +278,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 **Work:**
 - [ ] Translate BEMT procedures (37)
 - [ ] Verify: KGen kernel pass
-- [ ] Verify: 16-case baseline bit-identical (9 BEMT-path cases are the primary gate)
+- [ ] Verify: 17-case baseline bit-identical (9 BEMT-path cases are the primary gate)
 - [ ] Verify: NREL regression 17/17
 
 **Revisit trigger:** BEMT path complete — re-examine FVW/OLAF scope and sub-phasing before continuing. FVW is the largest sub-system (137 procs) and may need to be broken into sub-phases.
@@ -302,7 +302,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [ ] Sub-phase: FVW core (22 procedures)
 - [ ] Sub-phase: FVW_Tests (5 test utilities — translate if time permits, genuinely dead are excluded)
 - [ ] Verify: KGen kernel pass
-- [ ] Verify: 16-case baseline bit-identical (8 OLAF-path cases)
+- [ ] Verify: 17-case baseline bit-identical (8 OLAF-path cases)
 - [ ] Verify: NREL regression 17/17
 
 ### Phase 5: AeroAcoustics [speculative]
@@ -342,7 +342,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [ ] Translate AeroDyn core (64 procedures, includes `AD_Init`, `AD_CalcOutput`, `AD_UpdateStates`)
 - [ ] Translate framework interface procedures (3 — requires full OpenFAST KGen extraction)
 - [ ] Verify: KGen kernel pass
-- [ ] Verify: 16-case baseline bit-identical
+- [ ] Verify: 17-case baseline bit-identical
 - [ ] Verify: NREL regression 17/17
 
 ### Phase 7: Inflow / C-binding / Drivers [speculative]
@@ -360,7 +360,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [ ] Translate C-binding layer (20 procedures, 10 entry points)
 - [ ] Translate AeroDyn Driver (22 procedures)
 - [ ] Translate UA Driver + AA Driver (remaining standalone procedures)
-- [ ] Verify: all 16 test cases run with C++ driver
+- [ ] Verify: all 17 test cases run with C++ driver
 - [ ] Verify: C-binding entry points callable from C
 
 ### Phase 8: Integration + Cleanup [unknown]
@@ -396,11 +396,11 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 
 ## 7. Current State
 
-**Date:** 2026-04-26
+**Date:** 2026-04-27
 
-**Status:** Phase 0 complete. Phase 1 in progress — **16 AirfoilInfo functions integrated** (including CalculateUACoeffs orchestrator, AFI_ValidateInitInput via test-validate, CheckValuesAreUniqueMonotonicIncreasing via test-validate, AFI_ComputeAirfoilCoefs with Table array marshalling, AFI_ComputeUACoefs with angle-aware 2D interpolation, and ReadAFfile with two-pass idiomatic file parser), shared NWTC utility library (`vit_nwtc.h/.cpp`) with 10 functions. 17 regression baselines (including ad_MHK_RM1_Fixed_UA for 2D UA path coverage). Next: remaining AirfoilInfo (AFI_Init — 246 lines, last structural function) or DBEMT module.
+**Status:** Phase 0 complete. Phase 1 in progress — **17 AirfoilInfo functions integrated** (all production functions; 3 debug-output Wr* functions deferred). Shared NWTC utility library (`vit_nwtc.h/.cpp`) with 12 functions (including CubicSplineInitM/CubicLinSplineInitM added for AFI_Init). 17 regression baselines all passing bit-identical. Next: remaining AirfoilInfo Wr* debug functions (optional) or DBEMT module.
 
-**Next action:** Remaining AirfoilInfo (AFI_Init — 246 lines, module init entry point, calls ReadAFfile + AFI_ValidateInitInput + spline setup) or DBEMT module (14 procedures, mostly leaf math). All 16 AirfoilInfo functions verified: 11 via 20/20 kernel + 17/17 baselines, 1 via 7/7 test-validate + 17/17 baselines (AFI_ValidateInitInput), 1 via 11/11 test-validate + 17/17 baselines (CheckValuesAreUniqueMonotonicIncreasing), 1 via 20/20 kernel + 17/17 baselines (AFI_ComputeAirfoilCoefs — first Table array access from C++), 1 via 20/20 kernel + 17/17 baselines (AFI_ComputeUACoefs — 2D UA interpolation), 1 via 17/17 baselines (ReadAFfile — two-pass file parser, keyword-checked ParseVar semantics).
+**Next action:** DBEMT module (14 procedures, mostly leaf math) is the natural next sub-module. The 3 remaining AirfoilInfo functions (AFI_WrTables, AFI_WrHeader, AFI_WrData) are debug-output only (commented out in production AeroDyn.f90) and can be deferred. All 17 production AirfoilInfo functions verified: 11 via 20/20 kernel + 17/17 baselines, 1 via 7/7 test-validate + 17/17 baselines (AFI_ValidateInitInput), 1 via 11/11 test-validate + 17/17 baselines (CheckValuesAreUniqueMonotonicIncreasing), 1 via 20/20 kernel + 17/17 baselines (AFI_ComputeAirfoilCoefs — first Table array access from C++), 1 via 20/20 kernel + 17/17 baselines (AFI_ComputeUACoefs — 2D UA interpolation), 1 via 17/17 baselines (ReadAFfile — two-pass file parser), 1 via 17/17 baselines + 11/11 test-validate (AFI_Init — two-pass orchestrator with spline init).
 
 **Completed milestones:**
 - [x] Docker container (`vit-dev-openfast`) built and verified
@@ -472,3 +472,4 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 | 2026-04-26 | ad_MHK_RM1_Fixed_UA regression test | 17th baseline. Copy of ad_MHK_RM1_Fixed with CavitCheck=False, UA_Mod=4, InclUAdata=True (9 airfoils × 7 Re tables, UA params vary with Re). Exercises AFI_ComputeUACoefs2D → FindBoundingTables → AFI_UA_BL_Type_ExtrapInterp1 → Angles_ExtrapInterp1. UAStartRad=4 bug found via diagnostic instrumentation (inherited from UA_Mod=0 config, silently disabled UA). Baseline generated from clean Fortran. |
 | 2026-04-27 | CheckValuesAreUniqueMonotonicIncreasing integrated | 15th AirfoilInfo function. VIT test-validate enhanced for FUNCTION return types (LOGICAL→C_BOOL via `vit_result` output parameter) and assumed-shape array bridging (assumed-size `(*)` + size parameter + explicit section in call). 11/11 dual-call tests + 17/17 baselines. |
 | 2026-04-27 | ReadAFfile integrated | 16th AirfoilInfo function. Core airfoil file parser (~459 lines). Two-pass architecture with idiomatic C++ `AirfoilFileParser` class. Three critical bugs discovered and fixed: (1) heap corruption from uninitialized `FileInfo` in `Cleanup()` — fixed by eliminating entire CONTAINS section, (2) Fortran `ParseVar` does keyword checking and does NOT consume lines on keyword mismatch — C++ `parseVarDouble`/`parseVarDoubleWDefault` now match this behavior, (3) conditional Cpmin output column mapping (`ColCpmin=3` when `ColCm=0`) — C++ now computes column indices using same AFI_Init logic. 17/17 baselines across 9 airfoil file formats. |
+| 2026-04-27 | AFI_Init integrated | 17th AirfoilInfo function. Module initialization orchestrator (~258 lines). Two-pass architecture: pass 1 handles multi-table validation (Re/UserProp consistency, monotonicity) and secondVals computation, pass 2 computes cubic spline coefficients. CubicSplineInitM + CubicLinSplineInitM added to vit_nwtc (12th/13th utility functions — tridiagonal Gaussian elimination, no LAPACK). ColUAf overwrite bug caught during initial 15/17 failure (pass 1 resetting ColUAf=0, overwriting ReadAFfile's value). 17/17 baselines + 11/11 test-validate (all 7 error branches + 3 happy paths + 1 warning path). All production AirfoilInfo functions now in C++. |

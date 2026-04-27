@@ -79,7 +79,7 @@ vit integrate FuncName translations/Module/funcname.cpp -f modules/aerodyn/src/F
 # 6. Rebuild
 cd build && cmake .. && cmake --build . --target aerodyn_driver -j$(nproc)
 
-# 7. Regression test (16/16 must pass)
+# 7. Regression test (17/17 must pass)
 cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 ```
 
@@ -543,7 +543,7 @@ For re-extraction, check the golden fixture's `kernel_driver.f90` for the actual
 
 ### Regression Testing
 
-**AeroDyn:** After integrating any function, run `bash scripts/verify_aerodyn_baselines.sh all` (16/16 must pass). For VIT code changes, re-verify golden kernel fixtures with `vit verify`.
+**AeroDyn:** After integrating any function, run `bash scripts/verify_aerodyn_baselines.sh all` (17/17 must pass). For VIT code changes, re-verify golden kernel fixtures with `vit verify`.
 
 **When to re-extract (either project):**
 ### Development Workflow
