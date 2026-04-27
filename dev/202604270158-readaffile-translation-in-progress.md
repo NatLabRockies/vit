@@ -1,6 +1,6 @@
 # ReadAFfile Translation — In Progress
 **Date:** 2026-04-27
-**Status:** in-progress
+**Status:** completed
 **Scope:** C++ translation of ReadAFfile (16th AirfoilInfo function)
 
 ## What's Done
