@@ -1,0 +1,78 @@
+# AFI_ComputeUACoefs Translation Complete (14th Function)
+**Date:** 2026-04-26
+**Status:** completed
+**Scope:** AFI_ComputeUACoefs translation, 2 NWTC utilities, callee bridge fix
+
+## What Was Done
+
+Translated AFI_ComputeUACoefs — the Beddoes-Leishman UA parameter lookup function. This is the sibling to AFI_ComputeAirfoilCoefs (function #13), sharing the same 3-way dispatch on AFTabMod but returning 44 UA_BL parameters instead of 9 aerodynamic coefficients.
+
+### Function Structure
+
+Three functions in one translation file (`translations/AirfoilInfo/afi_computeuacoefs.cpp`):
+
+1. **AFI_ComputeUACoefs** (dispatcher, AirfoilInfo.f90:1825-1860):
+   - AFITable_1: struct copy `*UA_BL = p->Table[0].UA_BL` → early return
+   - AFITable_2Re: `log(Re)` → AFI_ComputeUACoefs2D
+   - AFITable_2User: UserProp → AFI_ComputeUACoefs2D
+   - Post-dispatch: `MPi2Pi()` on alpha0, alpha1, alpha2 (only 2D paths)
+
+2. **AFI_ComputeUACoefs2D** (AirfoilInfo.f90:1614-1657):
+   - Boundary clamp: copy from first/last table if out of range
+   - FindBoundingTables (already translated, via `findboundingtables_c`)
+   - AFI_UA_BL_Type_ExtrapInterp1 between bounding tables
+
+3. **AFI_UA_BL_Type_ExtrapInterp1** (AirfoilInfo_Types.f90:1267-1354):
+   - Lagrange polynomial weights for linear interpolation
+   - 8 angle fields via `Angles_ExtrapInterp1()` (handles ±2π wrapping)
+   - 36 numeric fields via `a1*u1.field + a2*u2.field`
+
+### Key Difference from AFI_ComputeAirfoilCoefs
+
+No AOA dependency, no cubic spline. UA parameters are per-table constants — the 1D case is a trivial struct copy and the 2D case is just linear interpolation between tables. Much simpler than the sibling function.
+
+### New NWTC Utilities (2 new → 10 total in vit_nwtc.h/.cpp)
+
+- **AddOrSub2Pi(OldAngle, NewAngle\*)** — adjusts NewAngle to within π of OldAngle. Coarse jump via `int(delta/2π)`, then iterative ±2π fine adjustment (max 10 steps). Source: NWTC_Num.f90:328 (AddOrSub2Pi_R8).
+
+- **Angles_ExtrapInterp1(Angle1, Angle2, tin[2], Angle_out\*, tin_out)** — angle-aware linear interpolation. Short-circuits if angles equal, calls AddOrSub2Pi to adjust Angle2, then standard linear interp. Source: NWTC_Num.f90:6746 (Angles_ExtrapInterp1_R8).
+
+### Issues Encountered and Resolved
+
+**1. Extraction call site selection:**
+Initial extraction from UnsteadyAero.f90:397 (ComputeKelvinChain) captured zero state — that call site is in the BV (Beddoes-Vertol) code path, but the `ad_BAR_SineMotion_UA4_DBEMT3` test case uses UA_Mod=4 (HGM). Used `query_coverage.py` to find the correct call site: line 2714 (UA_CalcContStateDeriv, HGM path, 33,495 hits). The lesson: gcov line coverage distinguishes which call site is reached by which test case — the function definition line can show high hit counts while specific call sites show zero.
+
+**2. AFI_CopyUA_BL_Type bridge failure:**
+VIT scans the original Fortran source for callees and generates Fortran bridges for each. The Fortran calls `AFI_CopyUA_BL_Type` (Registry-generated struct copy), so VIT tried to bridge it. The bridge failed with `undefined_symbol 'dstua_bl_typedata_f'` because the Registry routine has complex dependencies not available in the kernel context. Fix: added a static C++ implementation `AFI_CopyUA_BL_Type(src, dst) { *dst = src; }` in the translation file. The C++ callee auto-detection finds this definition and skips bridge generation. The function is semantically correct (struct assignment ≡ field-by-field copy for POD types) even though the C++ code uses inline struct copy instead of calling it.
+
+**3. Coverage limitation (documented, not fixed):**
+No test case exercises the 2D interpolation path. All UA-enabled tests (ad_BAR_SineMotion_UA4_DBEMT3, ad_Kite_OLAF) use AFTabMod=1. The MHK tests use AFTabMod=2Re but don't enable UA. KGen only verifies the struct-copy path. The 2D path is validated by: structural equivalence to the kernel-verified AFI_ComputeAirfoilCoefs2D, shared FindBoundingTables callee, same Lagrange weight pattern, and 16/16 baseline regression.
+
+## Verification
+
+- **20/20 kernel IDENTICAL** — all cases exercise AFITable_1 path (struct copy)
+- **16/16 baselines PASS** — bit-identical including UA test case (ad_BAR_SineMotion_UA4_DBEMT3)
+- **636/636 unit tests** passing
+
+## Current State
+
+**14 AirfoilInfo functions integrated.** All verified (12 via 20/20 kernel, 1 via 7/7 test-validate, 1 via 20/20 kernel with Table array marshalling). Plus AFI_ComputeUACoefs: 20/20 kernel + 16/16 baselines.
+
+**10 NWTC utilities** in vit_nwtc.h/.cpp: EqualRealNos, fZeros, InterpExtrapStp, InterpStp, kernelSmoothing, MPi2Pi, LocateBin, CubicSplineInterpM, AddOrSub2Pi, Angles_ExtrapInterp1.
+
+## Files Modified
+
+### OpenFAST repo
+- `modules/aerodyn/src/vit_nwtc.h` — AddOrSub2Pi + Angles_ExtrapInterp1 declarations
+- `modules/aerodyn/src/vit_nwtc.cpp` — implementations
+- `translations/AirfoilInfo/afi_computeuacoefs.cpp` — NEW (dispatcher + 2D + ExtrapInterp1)
+- `modules/aerodyn/src/afi_computeuacoefs.cpp` — generated by `vit integrate`
+- `modules/aerodyn/src/AirfoilInfo.f90` — integration wrapper
+- `modules/aerodyn/src/vit_translated.h` — afi_computeuacoefs_c declaration
+- `modules/aerodyn/CMakeLists.txt` — add source file
+- `vit.yaml` — add AFI_ComputeUACoefs entry, restore run_cmd
+- `kernel/AFI_ComputeUACoefs/` — 20-case golden fixture
+
+## What's Next
+
+Decision point: continue AirfoilInfo (AFI_Init, ReadAFfile — Stage B file I/O, qualitatively different) or start DBEMT (14 procedures, mostly leaf math, closer to what we've been doing successfully).
