@@ -331,3 +331,88 @@ class TestGenerateTestValidatePrompt:
         assert "Instructions" in prompt
         assert "SUBROUTINE Test" in prompt
         assert "void Test" in prompt
+
+
+# === FUNCTION return type and assumed-shape array tests ===
+
+def _make_function_sig():
+    """Create a FUNCTION signature returning LOGICAL with assumed-shape array arg."""
+    return FortranSignature(
+        name="CheckValuesAreUniqueMonotonicIncreasing",
+        kind=SubprogramKind.FUNCTION,
+        result_type="LOGICAL",
+        args=[
+            FortranArg(name="secondVals", fortran_type="REAL(ReKi)",
+                       intent=IntentKind.IN,
+                       is_array=True, array_dims="(:)"),
+        ],
+        module_name="AirfoilInfo",
+    )
+
+
+class TestFunctionBridge:
+
+    def test_function_gets_result_parameter(self):
+        """FUNCTION bridge adds vit_result output parameter."""
+        sig = _make_function_sig()
+        bridge = generate_fortran_bridge(sig)
+        assert "vit_result" in bridge
+        assert "LOGICAL(C_BOOL), INTENT(OUT) :: vit_result" in bridge
+
+    def test_function_call_captures_return(self):
+        """FUNCTION bridge uses assignment, not CALL."""
+        sig = _make_function_sig()
+        bridge = generate_fortran_bridge(sig)
+        assert "CALL CheckValuesAreUniqueMonotonicIncreasing" not in bridge
+        assert "vit_result = LOGICAL(CheckValuesAreUniqueMonotonicIncreasing(" in bridge
+
+    def test_logical_return_uses_c_bool_conversion(self):
+        """LOGICAL return is converted via LOGICAL(..., C_BOOL)."""
+        sig = _make_function_sig()
+        bridge = generate_fortran_bridge(sig)
+        assert "C_BOOL)" in bridge
+
+    def test_subroutine_still_uses_call(self):
+        """SUBROUTINE bridge still uses CALL (not affected by FUNCTION changes)."""
+        sig = _make_sig()
+        bridge = generate_fortran_bridge(sig)
+        assert "CALL TestFunc" in bridge
+        assert "vit_result" not in bridge
+
+
+class TestAssumedShapeArrayBridge:
+
+    def test_assumed_shape_gets_size_parameter(self):
+        """Assumed-shape array arg adds n_<name> size parameter."""
+        sig = _make_function_sig()
+        bridge = generate_fortran_bridge(sig)
+        assert "n_secondVals" in bridge
+        assert "INTEGER(C_INT), VALUE" in bridge
+
+    def test_assumed_shape_declared_assumed_size(self):
+        """Assumed-shape array is declared as assumed-size (*) in BIND(C)."""
+        sig = _make_function_sig()
+        bridge = generate_fortran_bridge(sig)
+        assert "secondVals(*)" in bridge
+
+    def test_assumed_shape_explicit_section_in_call(self):
+        """Call passes explicit section secondVals(1:n_secondVals)."""
+        sig = _make_function_sig()
+        bridge = generate_fortran_bridge(sig)
+        assert "secondVals(1:n_secondVals)" in bridge
+
+    def test_integer_array_uses_c_int(self):
+        """INTEGER assumed-shape array uses INTEGER(C_INT)."""
+        sig = FortranSignature(
+            name="TestFunc",
+            kind=SubprogramKind.SUBROUTINE,
+            args=[
+                FortranArg(name="indices", fortran_type="INTEGER(IntKi)",
+                           intent=IntentKind.IN,
+                           is_array=True, array_dims="(:)"),
+            ],
+            module_name="TestMod",
+        )
+        bridge = generate_fortran_bridge(sig)
+        assert "INTEGER(C_INT), INTENT(IN) :: indices(*)" in bridge
+        assert "n_indices" in bridge

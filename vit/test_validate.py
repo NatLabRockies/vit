@@ -240,6 +240,15 @@ def generate_fortran_bridge(
             # No C-side parameter; only ErrStat is returned to C++.
             local_decls.append(f"        CHARACTER(8192) :: {arg.name}  ! Local buffer (not compared across language boundary)")
             call_args.append(arg.name)
+        elif arg.is_array and arg.is_assumed_shape:
+            # Assumed-shape arrays: receive as assumed-size (*) + size parameter.
+            # Pass explicit section to the Fortran function (which expects assumed-shape).
+            c_type = "REAL(C_DOUBLE)" if "REAL" in fortran_type else \
+                     "INTEGER(C_INT)" if "INTEGER" in fortran_type else \
+                     "LOGICAL(C_BOOL)" if "LOGICAL" in fortran_type else f"! TODO: array of {fortran_type}"
+            c_params.append((f"        {c_type}, INTENT({intent}) :: {arg.name}(*)", arg.name))
+            c_params.append((f"        INTEGER(C_INT), VALUE, INTENT(IN) :: n_{arg.name}", f"n_{arg.name}"))
+            call_args.append(f"{arg.name}(1:n_{arg.name})")
         elif "INTEGER" in fortran_type:
             c_params.append((f"        INTEGER(C_INT), INTENT({intent}) :: {arg.name}", arg.name))
             call_args.append(arg.name)
@@ -252,6 +261,18 @@ def generate_fortran_bridge(
         else:
             c_params.append((f"        ! TODO: unsupported type {fortran_type}", arg.name))
             call_args.append(arg.name)
+
+    # FUNCTION return type: add output parameter for the return value
+    if sig.is_function:
+        result_type_upper = (sig.result_type or "").upper()
+        if "LOGICAL" in result_type_upper:
+            c_params.append((f"        LOGICAL(C_BOOL), INTENT(OUT) :: vit_result", "vit_result"))
+        elif "INTEGER" in result_type_upper:
+            c_params.append((f"        INTEGER(C_INT), INTENT(OUT) :: vit_result", "vit_result"))
+        elif "REAL" in result_type_upper:
+            c_params.append((f"        REAL(C_DOUBLE), INTENT(OUT) :: vit_result", "vit_result"))
+        else:
+            c_params.append((f"        ! TODO: unsupported return type {sig.result_type}", "vit_result"))
 
     # Build the bridge parameter names (for the SUBROUTINE declaration)
     param_names = [name for _, name in c_params]
@@ -297,7 +318,14 @@ def generate_fortran_bridge(
         lines.append(conv)
 
     # Call the original function
-    lines.append(f"        CALL {func_name}({', '.join(call_args)})")
+    if sig.is_function:
+        result_type_upper = (sig.result_type or "").upper()
+        if "LOGICAL" in result_type_upper:
+            lines.append(f"        vit_result = LOGICAL({func_name}({', '.join(call_args)}), C_BOOL)")
+        else:
+            lines.append(f"        vit_result = {func_name}({', '.join(call_args)})")
+    else:
+        lines.append(f"        CALL {func_name}({', '.join(call_args)})")
 
     # Post-call conversions
     for conv in post_call:
