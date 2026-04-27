@@ -49,10 +49,11 @@ A keyword-based parser with fallback-to-positional for the coefficient data rows
 
 ## Status
 
-- C++ translation file exists at `translations/AirfoilInfo/readaffile.cpp` — has correct two-pass structure, static cache, extern "C" wrappers, but parser needs rewrite
-- Fortran wrapper was reverted — original ReadAFfile is back in AirfoilInfo.f90
-- 17/17 baselines passing (reverted to working state)
-- Next: rewrite the parser section with keyword-based approach
+- C++ translation rewritten with keyword-based `AirfoilFileParser` class — compiles clean, has `tryParseDouble` for optional fields (RelThickness), extern "C" two-pass wrappers
+- Fortran wrapper written but hits heap corruption (`free(): invalid pointer` in NWTC cleanup during `ad_init`). Root cause: the view struct population and two-pass allocation sequence has a memory management issue — likely related to how the Fortran view struct interacts with ALLOCATABLE arrays during the between-pass allocation step. Need to investigate the exact corruption source with address sanitizer or GDB.
+- Source reverted to working state — original Fortran ReadAFfile is back
+- C++ translation preserved at `translations/AirfoilInfo/readaffile.cpp` (ready to integrate once wrapper is fixed)
+- 17/17 baselines passing (reverted)
 
 ## ROSCO Precedent
 
