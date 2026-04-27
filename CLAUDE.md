@@ -129,6 +129,38 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 
 **Test storage:** `translations/<Module>/<name>_test.cpp`, alongside the translation, bridge, and Makefile. Same directory convention as KGen kernel fixtures.
 
+### File-Output Verification (Debug/Write Functions)
+
+Debug-output functions (e.g., `AFI_WrTables`, `AFI_WrHeader`, `AFI_WrData`) write formatted data to files. Neither KGen nor test-validate works for these: KGen doesn't capture them (they're not in the simulation timestep loop), and test-validate compares ErrStat which is always 0 for valid input — the interesting behavior is the file content, not the error code.
+
+**When to use:** Functions whose purpose is writing formatted output to files. Typically functions named `Wr*`, `Write*`, `Debug*`, or `Output*`.
+
+**How it works:** Same dual-call principle as test-validate, but compares file output instead of ErrStat. The test constructs mock data, calls both C++ and Fortran implementations, each writing to a separate file, then diffs the files.
+
+**What to write (hand-crafted, no VIT command):**
+
+- **Test harness** (`<name>_filetest.cpp`) — constructs mock data (view structs with known values), calls C++ implementation which writes to `output_cpp.dat`, calls Fortran bridge which writes to `output_f90.dat`, runs byte-level comparison of the two files. Reports PASS/FAIL.
+- **Fortran bridge** (`<name>_filetest_bridge.f90`) — BIND(C) subroutine that receives mock data as C-compatible types, builds native Fortran types, calls the original Fortran function with a specified output file path. Compiles against the patched source in `translations/` which retains the original Fortran implementations.
+- **Makefile rules** — same pattern as test-validate (compile bridge against patched source, link against production libraries). Add to the existing `translations/<Module>/Makefile`.
+
+**Key challenges:**
+- **Format string matching:** Fortran `WRITE` format descriptors (`F20.6`, `I17`, `ES17.8`) must be matched exactly by C++ `fprintf`/`snprintf` format strings. Field widths, decimal places, and spacing must be identical.
+- **Timestamp lines:** Fortran `CurDate()`/`CurTime()` produce timestamps that differ between runs. Either skip these lines in the diff, or mock the timestamp in both implementations.
+- **NWTC I/O utilities:** Fortran uses `GetNewUnit`, `OpenFOutFile`, `WrFileNR` from NWTC Library. C++ uses `fopen`/`fprintf` or `std::ofstream` directly — the bridge handles the Fortran I/O, the C++ handles its own.
+
+**Workflow:**
+```bash
+# 1. Write C++ translation (using vit translate scaffold)
+# 2. Write Fortran bridge (receives mock data, calls original Fortran)
+# 3. Write C++ test harness (constructs mock data, calls both, diffs files)
+# 4. Add Makefile rules
+# 5. Build and run (inside container):
+cd /workspace/openfast/translations/AirfoilInfo && make test_<name>_filetest && ./test_<name>_filetest
+# 6. Integrate + rebuild + baselines (same as other paths)
+```
+
+**Test storage:** Same directory as test-validate: `translations/<Module>/`. Files named `<name>_filetest.cpp`, `<name>_filetest_bridge.f90`.
+
 **Shared NWTC utilities (`vit_nwtc.h` + `vit_nwtc.cpp`):** C++ translations of NWTC_Library functions used by AeroDyn translations. Located at `modules/aerodyn/src/`. Declarations in `vit_nwtc.h`, implementations compiled once in `vit_nwtc.cpp`. All translations `#include "vit_nwtc.h"` instead of inlining NWTC functions or constants. VIT automatically copies both files to kernel directories during verification and adds `vit_nwtc.o` to the kernel Makefile.
 
 Contents:
