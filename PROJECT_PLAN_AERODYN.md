@@ -224,10 +224,20 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [x] ComputeUA360_AttachedFlow: 20/20 IDENTICAL, first function using NWTC utility callees from `vit_nwtc.h` (fZeros, InterpExtrapStp, EqualRealNos) + callee bridge to Compute_iLoweriUpper, `--reverse-copy` for 9 UA_BL scalars (dev note `202604251943`)
 - [x] CalculateUACoeffs: 20/20 kernel IDENTICAL (libmvec vectorization fix + clean re-extraction), 16/16 baselines PASS. 326-line orchestrator, 7 callee bridges, 2 NWTC utilities (InterpStp, kernelSmoothing), LOGICAL type support, array-returning function bridges, callee flush-reload, Calculate_C_alpha buffer overflow fix. 8 VIT infrastructure fixes. Previous 15/20 was caused by KGen-reduced module not vectorizing cos/sin loop → scalar libm vs production's vectorized libmvec (1-ULP trig diff cascading to 1.24e-14 in cnBreakUpper). Fixed by adding `-fvect-cost-model=unlimited` + `-lmvec -lm` to VIT kernel flags. (dev notes `202604252257`, `202604252345`, `202604260357`)
 - [x] AFI_ValidateInitInput: 7/7 test-validate PASS (C++ ≡ Fortran on all 6 error branches + happy path), 16/16 baselines PASS. First function using `vit test-validate` — prompt-based branch-coverage testing with BIND(C) Fortran bridge, PRIVATE function patching, production-build linking. No KGen extraction needed. (dev notes `202604261044`, `202604261131`, `202604261142`, `202604261328`)
+- [ ] **Remaining AirfoilInfo (6 functions, ~1,027 lines):**
+  - [ ] CheckValuesAreUniqueMonotonicIncreasing (~19 lines, trivial validator, unblocks AFI_Init/ReadAFfile)
+  - [ ] ReadAFfile (~459 lines, core file parser — NWTC file I/O utilities needed in C++, dynamic allocation, line-by-line parsing, calls CalculateUACoeffs which is already in C++)
+  - [ ] AFI_Init (~246 lines, module init entry point — calls ReadAFfile + AFI_ValidateInitInput (C++) + LAPACK spline setup, allocation of SplineCoefs)
+  - [ ] AFI_WrTables (~128 lines, debugging output orchestrator — lower priority, only called from UA driver)
+  - [ ] AFI_WrHeader (~102 lines, output file header)
+  - [ ] AFI_WrData (~73 lines, output data rows)
+  - **Infrastructure needed:** C++ equivalents of NWTC file I/O utilities (OpenFInpFile, ReadStr, ReadVar, ReadAry, Conv2UC, Num2LStr, GetNewUnit). LAPACK spline setup (DCSPLINE_SETWORKSPACE_DPL) — either link Fortran LAPACK or reimplement tridiagonal solve.
+  - **Verification:** Simulation-level (no KGen — init functions called once at startup). Build clean Fortran baseline, verify C++ matches.
+  - **Note:** AFI_ComputeAirfoilCoefs1D/2D and AFI_ComputeUACoefs2D are already translated as static helpers inside their parent translation files. CalculateUACoeffs and ComputeUA360_CnOffset are already integrated. Registry-generated routines (Pack/Unpack/Copy/Destroy/ExtrapInterp in AirfoilInfo_Types.f90) are handled by the Phase 0 Registry C++ generator, not hand translation.
 - [ ] Translate DBEMT leaf functions (5 leaves)
 - [ ] Translate DBEMT mid-level functions (9 remaining)
-- [ ] Verify: KGen kernel pass for all 37 functions
-- [ ] Verify: 16-case baseline bit-identical
+- [ ] Verify: KGen kernel pass for all Phase 1 functions
+- [ ] Verify: 17-case baseline bit-identical
 - [ ] Verify: NREL regression 17/17
 
 **Known VIT limitations (to be resolved as needed during Phase 1):**
