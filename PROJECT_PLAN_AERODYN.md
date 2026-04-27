@@ -10,7 +10,7 @@
 - [ ] All AeroDyn Fortran source files removed from the build
 - [ ] No libgfortran dependency (confirmed via `ldd` or equivalent)
 - [ ] 16 regression test cases pass bit-identical against committed baselines
-- [ ] NREL regression 16/16 pass at rtol=2, atol=1.9
+- [ ] NREL regression 17/17 pass at rtol=2, atol=1.9
 - [ ] AeroDyn Driver executable functional for all 16 test cases
 - [ ] C-binding layer functional (Exawind interface preserved)
 - [ ] C++ Registry generator produces all `_Types` equivalents
@@ -228,13 +228,13 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [ ] Translate DBEMT mid-level functions (9 remaining)
 - [ ] Verify: KGen kernel pass for all 37 functions
 - [ ] Verify: 16-case baseline bit-identical
-- [ ] Verify: NREL regression 16/16
+- [ ] Verify: NREL regression 17/17
 
 **Known VIT limitations (to be resolved as needed during Phase 1):**
 - **~~ALLOCATABLE TYPE() array access~~:** Resolved — functions accessing `p%Table(i)%field` patterns work with current view struct infrastructure (proven by ComputeUA360_CnOffset, 21/21 IDENTICAL). The view struct populator handles single-table access. Array-of-structs marshalling may still be needed for functions that iterate over all tables.
 - **Nested TYPE() embedding is single-level:** Inline struct generation skips TYPE() fields inside nested types. If a nested type contains another C-compatible nested type, it won't be embedded. Not triggered by current AirfoilInfo types (AFI_UA_BL_Type is all scalars). Will need recursion if deeper nesting appears (likely Phase 2 or Phase 4).
 
-**Revisit trigger:** After KGen/VIT validation — if extraction fails or VIT needs major enhancements, reassess timeline and approach before continuing. **Status: POC passed, no showstoppers. 13 functions integrated including CalculateUACoeffs orchestrator (326 lines, 7 callee bridges), AFI_ValidateInitInput (test-validate), and AFI_ComputeAirfoilCoefs (first Table array marshalling, SplineCoefs dimension fix). Infrastructure: ALLOCATABLE TYPE() array marshalling, LBOUND fix for 0-based dimensions, C++ callee auto-detection (same-file/shared-file skip), 8 NWTC utility functions + constants, `vit test-validate` for validation functions. 636 unit tests passing.**
+**Revisit trigger:** After KGen/VIT validation — if extraction fails or VIT needs major enhancements, reassess timeline and approach before continuing. **Status: POC passed, no showstoppers. 14 functions integrated including CalculateUACoeffs orchestrator (326 lines, 7 callee bridges), AFI_ValidateInitInput (test-validate), AFI_ComputeAirfoilCoefs (first Table array marshalling, SplineCoefs dimension fix), and AFI_ComputeUACoefs (2D UA interpolation with angle wrapping). Infrastructure: ALLOCATABLE TYPE() array marshalling, LBOUND fix for 0-based dimensions, C++ callee auto-detection (same-file/shared-file skip), 10 NWTC utility functions + constants, `vit test-validate` for validation functions. 17 regression baselines (ad_MHK_RM1_Fixed_UA added for 2D UA path). 636 unit tests passing.**
 
 **Dev notes:** `202604241004` (first extraction), `202604241026` (precision mismatch), `202604241051` (VIT adaptation issues), `202604241122` (first verification), `202604241337` (FMA confirmed), `202604241400` (first full verification), `202604241415` (full pipeline proven), `202604241459` (four infrastructure fixes), `202604241905` (derived type functions proven), `202604251125` (cross-module instrumentation), `202604251317` (kernel repair), `202604251331` (Calculate_C_alpha complete), `202604251425` (view reverse-copy fix), `202604251451` (three functions + two fixes), `202604251503` (auto-callee declarations), `202604251821` (onCl + callee bridge re-sync + integrate_all.sh), `202604251943` (vit_nwtc.h + AttachedFlow)
 
@@ -253,7 +253,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [ ] Translate UnsteadyAero (44 procedures)
 - [ ] Verify: KGen kernel pass for all 73 functions
 - [ ] Verify: 16-case baseline bit-identical
-- [ ] Verify: NREL regression 16/16
+- [ ] Verify: NREL regression 17/17
 
 ### Phase 3: BEMT [planned]
 
@@ -269,7 +269,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [ ] Translate BEMT procedures (37)
 - [ ] Verify: KGen kernel pass
 - [ ] Verify: 16-case baseline bit-identical (9 BEMT-path cases are the primary gate)
-- [ ] Verify: NREL regression 16/16
+- [ ] Verify: NREL regression 17/17
 
 **Revisit trigger:** BEMT path complete — re-examine FVW/OLAF scope and sub-phasing before continuing. FVW is the largest sub-system (137 procs) and may need to be broken into sub-phases.
 
@@ -293,7 +293,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [ ] Sub-phase: FVW_Tests (5 test utilities — translate if time permits, genuinely dead are excluded)
 - [ ] Verify: KGen kernel pass
 - [ ] Verify: 16-case baseline bit-identical (8 OLAF-path cases)
-- [ ] Verify: NREL regression 16/16
+- [ ] Verify: NREL regression 17/17
 
 ### Phase 5: AeroAcoustics [speculative]
 
@@ -333,7 +333,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [ ] Translate framework interface procedures (3 — requires full OpenFAST KGen extraction)
 - [ ] Verify: KGen kernel pass
 - [ ] Verify: 16-case baseline bit-identical
-- [ ] Verify: NREL regression 16/16
+- [ ] Verify: NREL regression 17/17
 
 ### Phase 7: Inflow / C-binding / Drivers [speculative]
 
@@ -366,8 +366,8 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 **Work:**
 - [ ] Remove all Fortran source files from the build
 - [ ] Confirm no libgfortran dependency
-- [ ] Full 16/16 regression pass (bit-identical)
-- [ ] NREL regression 16/16
+- [ ] Full 17/17 regression pass (bit-identical)
+- [ ] NREL regression 17/17
 - [ ] Upstream sync decision (OQ9)
 - [ ] Clean up translation artifacts (metadata, scaffolding, `_c` indirection)
 - [ ] Restructure source into module subdirectories (as done for ROSCO's `integrated` branch)
@@ -388,16 +388,16 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 
 **Date:** 2026-04-26
 
-**Status:** Phase 0 complete. Phase 1 in progress — 13 AirfoilInfo functions integrated (including CalculateUACoeffs orchestrator, AFI_ValidateInitInput via test-validate, and AFI_ComputeAirfoilCoefs with Table array marshalling), shared NWTC utility library (`vit_nwtc.h/.cpp`) with 8 functions. Next: AFI_ComputeUACoefs (same 1D/2D pattern), then DBEMT.
+**Status:** Phase 0 complete. Phase 1 in progress — 14 AirfoilInfo functions integrated (including CalculateUACoeffs orchestrator, AFI_ValidateInitInput via test-validate, AFI_ComputeAirfoilCoefs with Table array marshalling, and AFI_ComputeUACoefs with angle-aware 2D interpolation), shared NWTC utility library (`vit_nwtc.h/.cpp`) with 10 functions. 17 regression baselines (including ad_MHK_RM1_Fixed_UA for 2D UA path coverage). Next: DBEMT module or remaining AirfoilInfo (AFI_Init, ReadAFfile).
 
-**Next action:** AFI_ComputeUACoefs (returns UA_BL parameters, same dispatch pattern as AFI_ComputeAirfoilCoefs), then DBEMT module. All 13 AirfoilInfo functions verified: 11 via 20/20 kernel + 16/16 baselines, 1 via 7/7 test-validate + 16/16 baselines, 1 via 20/20 kernel + 16/16 baselines (AFI_ComputeAirfoilCoefs — first Table array access from C++).
+**Next action:** DBEMT module (14 procedures, mostly leaf math) or remaining AirfoilInfo (AFI_Init, ReadAFfile — Stage B file I/O). All 14 AirfoilInfo functions verified: 11 via 20/20 kernel + 17/17 baselines, 1 via 7/7 test-validate + 17/17 baselines, 1 via 20/20 kernel + 17/17 baselines (AFI_ComputeAirfoilCoefs — first Table array access from C++), 1 via 20/20 kernel + 17/17 baselines (AFI_ComputeUACoefs — 2D UA interpolation confirmed via diagnostic instrumentation).
 
 **Completed milestones:**
 - [x] Docker container (`vit-dev-openfast`) built and verified
 - [x] OpenFAST builds, AeroDyn Driver runs 16 regression test cases
 - [x] Platform-specific baselines committed for all 16 test cases
 - [x] Baselines regenerated with `-ffp-contract=off` (2026-04-24)
-- [x] NREL regression 16/16 PASS with wrapper script
+- [x] NREL regression 17/17 PASS with wrapper script
 - [x] Three-tier verification infrastructure operational
 - [x] fparser2 structural inventory (7 JSON data files)
 - [x] All 67 uncalled procedures fully classified (0 unknowns)
@@ -423,6 +423,10 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [x] Phase 1: ComputeUA360_AttachedFlow (20/20) — first function using NWTC utility callees from shared header, `--reverse-copy`, 16/16 regression. integrate_all.sh: 10/10.
 - [x] Phase 1: CalculateUACoeffs (15/20 kernel, 16/16 baselines) — orchestrator, 8 VIT infrastructure fixes, Calculate_C_alpha buffer overflow fix, InterpStp + kernelSmoothing in vit_nwtc
 - [x] Phase 1: CalculateUACoeffs 20/20 (libmvec fix, clean re-extraction, shared_files config) — root cause: KGen-reduced module changed gfortran vectorization heuristics → scalar vs vectorized cos/sin (1-ULP trig diff). Fix: `-fvect-cost-model=unlimited` + `-lmvec -lm` in VIT kernel flags. Dev note `202604260357`.
+- [x] Phase 1: AFI_ValidateInitInput — 7/7 test-validate, 16/16 baselines. First `vit test-validate` function. Test-validate audit: all 8 issues fixed. (dev notes `202604261044`, `202604261142`)
+- [x] Phase 1: AFI_ComputeAirfoilCoefs — 20/20 kernel, 16/16 baselines. 4 infrastructure additions (ALLOCATABLE TYPE() array marshalling, LBOUND fix, C++ callee auto-detection, 3 NWTC utilities). SplineCoefs dimension fix. (dev note `202604262013`)
+- [x] Phase 1: AFI_ComputeUACoefs — 20/20 kernel, 17/17 baselines. 2 NWTC utilities (AddOrSub2Pi, Angles_ExtrapInterp1). Static AFI_CopyUA_BL_Type to prevent Registry bridge. (dev note `202604262231`)
+- [x] Phase 1: ad_MHK_RM1_Fixed_UA regression test — 17th baseline. Exercises 2D UA interpolation (AFTabMod=2Re + UA_Mod=4). UAStartRad bug found and fixed. Baseline generated from clean Fortran. (dev note `202604262336`)
 
 ## 8. Change Log
 
@@ -452,3 +456,5 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 | 2026-04-26 | AFI_ValidateInitInput integrated | 12th AirfoilInfo function. First to use `vit test-validate` instead of KGen. 7/7 branch-coverage tests (C++ ≡ Fortran), 16/16 baselines. Eliminated dual vit_types.h architecture (translations/ copy was unused by all tools). |
 | 2026-04-26 | AFI_ComputeAirfoilCoefs integrated | 13th AirfoilInfo function. Main airfoil coefficient lookup (1D/2D cubic spline). Required 4 infrastructure additions: (1) ALLOCATABLE TYPE() array marshalling in view populator (Table array as typed pointer), (2) LBOUND fix for 0-based dimensions (SplineCoefs), (3) same-file/shared-file callee bridge skip + helper callee detection, (4) MPi2Pi + LocateBin + CubicSplineInterpM in vit_nwtc. SplineCoefs dimension bug found and fixed (NumAlf-1 rows, not NumAlf). C++ callee auto-detection from source replaces manual vit.yaml helper entries. 20/20 kernel + 16/16 baselines. |
 | 2026-04-26 | Stale test fixes + 38 new tests | Fixed 8 stale tests (LOGICAL int32_t, OPTIONAL has_flag, vit_translated.h include, CHARACTER(*) mapping). Added 38 new tests covering test_validate.py (22), callee detection (7), dedup (3), callee bridge generation (3), find_call_sites (3). Total: 636 passed, 0 failed. |
+| 2026-04-26 | AFI_ComputeUACoefs integrated | 14th AirfoilInfo function. UA Beddoes-Leishman parameter lookup (1D struct copy + 2D table interpolation). 2 NWTC utilities: AddOrSub2Pi, Angles_ExtrapInterp1 (angle-aware linear interpolation for 8 of 44 UA_BL fields). Static AFI_CopyUA_BL_Type prevents bridge for Registry-generated routine. 20/20 kernel (AFITable_1 path only) + 17/17 baselines. |
+| 2026-04-26 | ad_MHK_RM1_Fixed_UA regression test | 17th baseline. Copy of ad_MHK_RM1_Fixed with CavitCheck=False, UA_Mod=4, InclUAdata=True (9 airfoils × 7 Re tables, UA params vary with Re). Exercises AFI_ComputeUACoefs2D → FindBoundingTables → AFI_UA_BL_Type_ExtrapInterp1 → Angles_ExtrapInterp1. UAStartRad=4 bug found via diagnostic instrumentation (inherited from UA_Mod=0 config, silently disabled UA). Baseline generated from clean Fortran. |
