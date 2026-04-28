@@ -229,17 +229,88 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 - [x] AFI_Init: 17/17 baselines PASS + 11/11 test-validate PASS (C++ ≡ Fortran on all error branches). Two-pass orchestrator: pass 1 handles multi-table validation and secondVals computation (AFITable_2Re log(Re), AFITable_2User UserProp), pass 2 computes cubic spline coefficients via new CubicSplineInitM/CubicLinSplineInitM in vit_nwtc. Fortran wrapper allocates secondVals and SplineCoefs between passes. ColUAf overwrite bug caught and fixed during initial verification (pass 1 was resetting ColUAf=0, overwriting ReadAFfile's value). (dev notes `202604271433`, `202604271455`)
 - [x] AFI_WrHeader + AFI_WrData + AFI_WrTables: file-output PASS (C++ data ≡ Fortran data). Debug-output functions with native C++ file I/O (fopen/fprintf). WrTables self-contained; WrHeader+WrData use stashed filename for Fortran→C++ file path passing. NWTC_Init required for R2D constant (runtime-initialized, not PARAMETER). CHARACTER(17) left-justify padding. File-output verification: two test harnesses comparing data lines (skipping timestamps/headers/blanks, trimming trailing whitespace). (dev note `202604271730`)
   - **Note:** AirfoilInfo module is now COMPLETE — all 20 hand-written functions in C++. AFI_ComputeAirfoilCoefs1D/2D and AFI_ComputeUACoefs2D are static helpers inside their parent files. Registry-generated routines (Pack/Unpack/Copy/Destroy/ExtrapInterp in AirfoilInfo_Types.f90) are handled by the Phase 0 Registry C++ generator.
-- [ ] Translate DBEMT leaf functions (5 leaves)
-- [ ] Translate DBEMT mid-level functions (9 remaining)
-- [ ] Verify: KGen kernel pass for all Phase 1 functions
-- [ ] Verify: 17-case baseline bit-identical
-- [ ] Verify: NREL regression 17/17
+**DBEMT Module** (14 procedures, 926 lines in DBEMT.f90). Dynamic inflow corrections for blade element momentum theory. Pure computation — no file I/O, no SAVE variables, no OpenMP. Three modes: finite difference filtering (Modes 1/2, analytical exponential solution) and continuous ODE integration via ABM4 (Mode 3). Called exclusively by BEMT. 7 PUBLIC / 7 PRIVATE procedures.
 
-**Known VIT limitations (to be resolved as needed during Phase 1):**
-- **~~ALLOCATABLE TYPE() array access~~:** Resolved — functions accessing `p%Table(i)%field` patterns work with current view struct infrastructure (proven by ComputeUA360_CnOffset, 21/21 IDENTICAL). The view struct populator handles single-table access. Array-of-structs marshalling may still be needed for functions that iterate over all tables.
-- **Nested TYPE() embedding is single-level:** Inline struct generation skips TYPE() fields inside nested types. If a nested type contains another C-compatible nested type, it won't be embedded. Not triggered by current AirfoilInfo types (AFI_UA_BL_Type is all scalars). Will need recursion if deeper nesting appears (likely Phase 2 or Phase 4).
+**DBEMT Prerequisites:**
+- [ ] Add DBEMT_Mod constants to `vit_aerodyn_constants.h` (DBEMT_frozen=-1, DBEMT_none=0, DBEMT_tauConst=1, DBEMT_tauVaries=2, DBEMT_cont_tauConst=3)
+- [ ] Add `num2lstr` equivalent to `vit_nwtc.h` (inline `std::to_string` wrapper — only used in ComputeTau1 warning messages)
+- [ ] Create `translations/DBEMT/` directory
+- [ ] Add 5 view struct type strategies to `vit.yaml` (DBEMT_ParameterType, DBEMT_InputType, DBEMT_ContinuousStateType, DBEMT_OtherStateType, DBEMT_InitInputType)
 
-**Revisit trigger:** After KGen/VIT validation — if extraction fails or VIT needs major enhancements, reassess timeline and approach before continuing. **Status: POC passed, no showstoppers. All 17 production AirfoilInfo functions integrated (3 debug-output Wr* functions deferred). Infrastructure: ALLOCATABLE TYPE() array marshalling, LBOUND fix for 0-based dimensions, C++ callee auto-detection (same-file/shared-file skip), 12 NWTC utility functions + constants in vit_nwtc.h (including CubicSplineInitM/CubicLinSplineInitM), `vit test-validate` for validation/FUNCTION return types, two-pass orchestrator pattern (ReadAFfile + AFI_Init). 17 regression baselines (ad_MHK_RM1_Fixed_UA added for 2D UA path).**
+**DBEMT Type System:**
+
+| Type | Strategy | Key Fields | Notes |
+|------|----------|------------|-------|
+| DBEMT_ParameterType | view | DT, NumBlades, NumNodes, k_0ye, tau1_const, DBEMT_Mod, **spanRatio(:,:)** | ALLOCATABLE spanRatio |
+| DBEMT_InputType | view | AxInd_disk, Un_disk, R_disk, **element(:,:)** | ALLOCATABLE array of ElementInputType |
+| DBEMT_ContinuousStateType | view | **element(:,:)** | ALLOCATABLE array of ElementContinuousStateType |
+| DBEMT_OtherStateType | view | tau1, tau2, **areStatesInitialized(:,:)**, **n(:,:)**, **xdot(1:4)** | Most complex: ALLOCATABLE arrays + fixed-size array of ContinuousStateType. View exposes 4 embedded ContinuousState sub-views for xdot. |
+| DBEMT_InitInputType | view | NumBlades, NumNodes, tau1_const, DBEMT_Mod, **rLocal(:,:)** | Init-only |
+| DBEMT_ElementInputType | BIND(C) | vind_s(1:2), spanRatio | Fixed-size, C-compatible |
+| DBEMT_ElementContinuousStateType | BIND(C) | vind(1:2), vind_1(1:2) | Fixed-size, C-compatible |
+| DBEMT_MiscVarType | BIND(C) | FirstWarn_tau1 (LOGICAL) | Single field |
+
+**DBEMT Phase A — Leaf Math (5 functions, ~197 lines, KGen verified):**
+- [ ] ComputeTau2 (26 lines, PRIVATE) — secondary time constant. Pure math, OPTIONAL `k_tau_out` (has_X/X pair). Reads `p%spanRatio(i,j)` or `u%spanRatio` depending on mode. Test case: `ad_MHK_RM1_Fixed` (38,400 hits).
+- [ ] ComputeTau1 (66 lines, PRIVATE) — rotor time constant. Two paths: constant (trivial, Modes 1/3) or time-varying (Mode 2, clamping + one-time warnings via `num2lstr`). Writes `m%FirstWarn_tau1`. Test case: `ad_MHK_RM1_Fixed` (38,400 hits). Note: only constant path exercised by MHK_RM1.
+- [ ] DBEMT_InitStates (26 lines, PRIVATE) — per-node state init. Sets vind=vind_s, vind_1 depends on mode. Writes `OtherState%areStatesInitialized(i,j)`. Test case: `ad_MHK_RM1_Fixed` (38,400 hits).
+- [ ] DBEMT_CalcOutput (35 lines, PUBLIC) — output filtered velocity. If not initialized: return unfiltered input. Else: return state. Test case: `ad_MHK_RM1_Fixed` (72,060 hits).
+- [ ] DBEMT_CalcContStateDeriv (44 lines, PUBLIC) — ODE derivatives (Mode 3 only). Calls ComputeTau2 (C++ direct). Computes d(vind_1)/dt and d(vind)/dt. Test case: `ad_BAR_SineMotion_UA4_DBEMT3` (34,650 hits — ONLY test with Mode 3 coverage).
+- [ ] Rebuild + verify 17/17 baselines
+
+**DBEMT Phase B — Time Integrators (3 functions, ~241 lines, KGen verified):**
+
+All three are ONLY exercised by `ad_BAR_SineMotion_UA4_DBEMT3` (Mode 3).
+
+Key decision: **`DBEMT_ElementInputType_ExtrapInterp` inlined in C++** — the Registry-generated interpolation routine is only 6 lines of Lagrange interpolation on 3 scalars (vind_s[0], vind_s[1], spanRatio). Inlining avoids a callee bridge to Registry-generated Fortran and is verified transitively through kernel tests.
+
+- [ ] DBEMT_RK4 (100 lines, PRIVATE) — 4th-order Runge-Kutta. 4 CalcContStateDeriv evals + 3 ExtrapInterp calls. Self-starting. Test case: `ad_BAR_SineMotion_UA4_DBEMT3` (270 hits — startup only, n≤2).
+- [ ] DBEMT_AB4 (77 lines, PRIVATE) — Adams-Bashforth predictor. Uses RK4 for startup, then 4-level xdot history from `OtherState%xdot(1..4)%element(i,j)`. Shifts xdot history on each call. Test case: `ad_BAR_SineMotion_UA4_DBEMT3` (16,920 hits).
+- [ ] DBEMT_ABM4 (64 lines, PRIVATE) — Adams-Bashforth-Moulton predictor-corrector. Calls AB4 for prediction, then applies correction formula. Test case: `ad_BAR_SineMotion_UA4_DBEMT3` (16,920 hits).
+- [ ] Rebuild + verify 17/17 baselines
+
+**DBEMT Phase C — Orchestrators (2 functions, ~85 lines, simulation verified):**
+- [ ] DBEMT_UpdateStates (67 lines, PUBLIC, hot path) — main entry called by BEMT per blade/node. Calls ComputeTau1/Tau2/InitStates (all C++ direct), then branches: Mode 3 → ABM4 (C++ direct), Modes 1/2 → inline finite difference math (~20 lines, analytical exponential filter). Needs two InputType views (inputs at t and t+dt). Hand-integrated.
+- [ ] DBEMT_InitStates_AllNodes (18 lines, PUBLIC) — trivial double loop calling DBEMT_InitStates per node. Hand-integrated.
+- [ ] Rebuild + verify 17/17 baselines
+
+**DBEMT Phase D — Init/Validation/End (3 translated + 1 skipped, ~221 lines translated, mixed verification):**
+- [ ] DBEMT_ValidateInitInp (49 lines, PRIVATE) — **test-validate** (8 error branches: interval, DBEMT_Mod, numBlades, numNodes, tau1_const, rLocal allocated, rLocal values, max rLocal). Needs DBEMT_InitInputType view.
+- [ ] DBEMT_ReInit (45 lines, PUBLIC) — simulation verified. Zeros all state arrays, sets areStatesInitialized=false, sets tau1 from mode. Replace Registry `CopyElementContinuousStateType` with inline copy (4 doubles per element).
+- [ ] DBEMT_Init (127 lines, PUBLIC) — simulation verified. Contains ALLOCATABLE operations (allocate u%element, p%spanRatio, x%element, OtherState%n, areStatesInitialized). Two-pass architecture if needed (same pattern as AFI_Init). Calls ValidateInitInp + ReInit. **Translate last; could remain Fortran if time-constrained** — allocated arrays are visible through view structs regardless, and the key algorithmic content (spanRatio computation) is 10 lines.
+- [ ] ~~DBEMT_End (47 lines, PUBLIC)~~ — **DO NOT TRANSLATE.** Calls only Registry-generated Destroy routines (DBEMT_DestroyInput, DestroyParam, DestroyContState, DestroyMisc, DestroyOtherState). Framework cleanup, not algorithmic. Fortran continues to own deallocation of Fortran-allocated memory.
+- [ ] Rebuild + verify 17/17 baselines. **DBEMT module COMPLETE (13/14 translated, 1 skipped).**
+
+**DBEMT Key Decisions:**
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| ExtrapInterp | Inline 6-line Lagrange in C++ | Avoid callee bridge to Registry-generated code; verified transitively |
+| DBEMT_End | Do not translate | Only calls Registry Destroy; C++ should not own Fortran deallocation |
+| DBEMT_Init | Translate last, two-pass if needed | Allocation-heavy; runs once; arrays visible through views regardless |
+| OtherState%xdot(1:4) | 4 embedded ContinuousState views | Cleanest mapping for fixed-array of ALLOCATABLE-containing types |
+| OPTIONAL in ComputeTau2 | has_X/X pair in bridge | Established VIT pattern from AirfoilInfo |
+| num2lstr | std::to_string() | Only in warning messages; exact Fortran format match not critical |
+| PRIVATE functions | C++-to-C++ direct calls | No Fortran wrapper overhead on hot path; wrappers only for PUBLIC functions called by BEMT |
+
+**DBEMT Coverage Data (hits per test case):**
+
+| Function | ad_MHK_RM1_Fixed | ad_BAR_SineMotion_UA4_DBEMT3 | ad_BAR_SineMotion |
+|----------|-----------------|-------------------------------|-------------------|
+| DBEMT_UpdateStates | 38,400 | 16,920 | 6,300 |
+| ComputeTau1 | 38,400 | 16,920 | 6,300 |
+| ComputeTau2 | 38,400 | 51,570 | 6,300 |
+| DBEMT_InitStates | 38,400 | 16,920 | 6,300 |
+| DBEMT_CalcOutput | 72,060 | 47,460 | 11,844 |
+| DBEMT_CalcContStateDeriv | 0 | 34,650 | 0 |
+| DBEMT_ABM4 | 0 | 16,920 | 0 |
+| DBEMT_AB4 | 0 | 16,920 | 0 |
+| DBEMT_RK4 | 0 | 270 | 0 |
+| DBEMT_ValidateInitInp | 1 | 1 | 1 |
+
+Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Continuous ODE path (Mode 3): **ONLY** `ad_BAR_SineMotion_UA4_DBEMT3`.
+
+**Revisit trigger:** After DBEMT Phase A — if view struct infrastructure for DBEMT types proves more complex than expected (especially OtherState%xdot(1:4)), reassess Phase B/C/D approach. **Status: AirfoilInfo COMPLETE (20/20). All VIT infrastructure mature: KGen kernel, test-validate, simulation baselines, file-output comparison, view structs (AFI_ParameterType + AFI_Table_Type), shared NWTC header (12 functions), two-pass orchestrator pattern, error constants consolidated. 17 regression baselines. Ready for DBEMT.**
 
 **Dev notes:** `202604241004` (first extraction), `202604241026` (precision mismatch), `202604241051` (VIT adaptation issues), `202604241122` (first verification), `202604241337` (FMA confirmed), `202604241400` (first full verification), `202604241415` (full pipeline proven), `202604241459` (four infrastructure fixes), `202604241905` (derived type functions proven), `202604251125` (cross-module instrumentation), `202604251317` (kernel repair), `202604251331` (Calculate_C_alpha complete), `202604251425` (view reverse-copy fix), `202604251451` (three functions + two fixes), `202604251503` (auto-callee declarations), `202604251821` (onCl + callee bridge re-sync + integrate_all.sh), `202604251943` (vit_nwtc.h + AttachedFlow), `202604270158` (ReadAFfile in-progress), `202604270219` (ReadAFfile approach pivot), `202604270333` (ReadAFfile integration — three root causes), `202604270354` (ReadAFfile reflection + path forward), `202604271433` (AFI_Init integration — two-pass orchestrator + CubicSplineInitM), `202604271455` (AFI_Init test-validate — 11/11 multi-table validation)
 
@@ -393,7 +464,7 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 
 **Date:** 2026-04-27
 
-**Status:** Phase 0 complete. Phase 1 in progress — **17 AirfoilInfo functions integrated** (all production functions; 3 debug-output Wr* functions deferred). Shared NWTC utility library (`vit_nwtc.h/.cpp`) with 12 functions (including CubicSplineInitM/CubicLinSplineInitM added for AFI_Init). 17 regression baselines all passing bit-identical. Next: remaining AirfoilInfo Wr* debug functions (optional) or DBEMT module.
+**Status:** Phase 0 complete. Phase 1 in progress — **AirfoilInfo sub-module COMPLETE (all 20 functions in C++).** Shared NWTC utility library (`vit_nwtc.h/.cpp`) with 12 functions. Error constants and helpers consolidated into shared header. 17 regression baselines all passing bit-identical. Next: DBEMT module.
 
 **Next action:** DBEMT module (14 procedures, ~1,028 lines, mostly leaf math). AirfoilInfo is COMPLETE — all 20 hand-written functions in C++, verified via 4 approaches (KGen kernel, test-validate, simulation baselines, file-output comparison). This is the first complete OpenFAST module.
 
@@ -480,3 +551,4 @@ Items that are safe in the current state but need attention before or during a s
 | **vit_wr_stashed_filename SAVE variable** | AirfoilInfo.f90 line 48 | Module-level SAVE variable passes filename from AFI_WrHeader to AFI_WrData. Works because callers (UnsteadyAero `UA_WriteAFIParamsToFile`) are single-threaded and follow a strict WrHeader→WrData×N→close sequence. | Phase 2 (UnsteadyAero translation) or any multi-threaded caller | Second concurrent WrHeader call overwrites the stashed filename, causing WrData to write to the wrong file. **Fix:** Pass filename through WrData's interface directly, or eliminate the stash when callers are translated to C++. |
 | **CheckValuesAreUniqueMonotonicIncreasing dual existence** | afi_init.cpp (static inline) + AirfoilInfo.f90 (Fortran original) | C++ version inlined in afi_init.cpp; Fortran version remains for any external Fortran callers. Both produce identical results (verified 11/11 test-validate). | Phase 6 (core AeroDyn) if any Fortran caller is translated | Divergence risk if either copy is modified independently. **Fix:** When all callers are in C++, compile the standalone translation and remove the Fortran version. |
 | **NWTC_Init required for R2D/D2R in test bridges** | All file-output and test-validate Fortran bridges | `R2D`, `D2R`, `Pi` etc. are runtime-initialized module variables in NWTC_Library, not compile-time PARAMETERs. Test bridges must call `NWTC_Init()` before using Fortran functions that depend on these constants. | Any new test-validate or file-output bridge | Fortran output uses R2D=0.0, producing silently wrong results. **Fix:** Always include `CALL NWTC_Init()` in bridge setup. Already documented in CLAUDE.md. |
+| **Two integration conventions in translations/** | `translations/AirfoilInfo/` vs `modules/aerodyn/src/` | 9 early functions (Calculate_Cn through ComputeUASeparationFunction_onCl) went through `vit integrate`, so `translations/` holds the raw scaffold and `src/` has the VIT-generated wrapper + `extern "C"` shim. 10 later functions (AFI_ComputeAirfoilCoefs onward) were hand-integrated because they needed custom Fortran wrappers (two-pass architecture for AFI_Init/ReadAFfile, I/O interop for Wr*), so `translations/` = `src/` with the `_c` entry point defined directly. Both patterns work correctly. | DBEMT and future modules | No consequence — informational only. **Recommendation:** Use the later style (direct `_c` entry point, hand-integration) for DBEMT onward, since `vit integrate` cannot generate two-pass or custom I/O wrappers. |
