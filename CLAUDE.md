@@ -87,6 +87,29 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 
 **`--reverse-copy` flag:** Use when the function modifies scalar fields in view-type INOUT arguments (e.g., `p%UA_BL.alphaBreakUpper`). VIT generates the reverse-copy subroutine in both kernel verification and production wrappers. Not needed when the function only modifies ALLOCATABLE arrays (those are visible through `C_LOC` pointers). VIT also auto-enables reverse-copy during kernel verification for all INOUT view-type arguments.
 
+### Integration State Management (reset + integrate_all)
+
+Extraction requires clean (pre-integration) Fortran source. `reset_to_clean.sh` restores AirfoilInfo.f90 to upstream clean and stubs all .cpp files. After extraction, `integrate_all.sh` restores the fully-integrated state.
+
+**The pair must be used together.** Without `integrate_all.sh`, the early leaf function wrappers are lost after reset, leaving original Fortran bodies that bypass the C++ translations.
+
+```bash
+# Run on Mac (git commands + docker exec for vit):
+bash scripts/reset_to_clean.sh                    # clean source for extraction
+# ... run extraction inside container ...
+bash scripts/integrate_all.sh                      # restore all 20 AirfoilInfo wrappers
+# Rebuild inside container:
+docker exec vit-dev-openfast bash -c "cd /workspace/openfast/build && cmake .. && cmake --build . --target aerodyn_driver -j\$(nproc)"
+docker exec vit-dev-openfast bash -c "cd /workspace/openfast && bash scripts/verify_aerodyn_baselines.sh all"
+```
+
+**What `integrate_all.sh` does:**
+1. Restores committed source files from git (`AirfoilInfo.f90` with hand-integrated wrappers for AFI_Init, ReadAFfile, AFI_ComputeUACoefs, Wr* functions; view populator .f90 modules; `vit_nwtc.cpp`)
+2. Runs `vit integrate` for 13 leaf/orchestrator functions (generates Fortran wrappers in AirfoilInfo.f90)
+3. Restores committed .cpp files (VIT's generated versions have duplicate `extern "C"` wrappers; committed versions are correct)
+
+**The script runs on the Mac** (needs git for checkout + docker exec for vit integrate). To run entirely inside the container, replace the `docker exec ... vit integrate` calls with direct `vit integrate` calls (git is now installed in the container).
+
 ### Test-Validate Workflow (Validation Functions)
 
 Validation functions (e.g., `AFI_ValidateInitInput`) check input parameters and report errors via `SetErrStat`. KGen kernel verification only exercises the happy path (valid inputs → ErrStat=0), leaving all error branches untested. `vit test-validate` is the alternative verification path for these functions.
