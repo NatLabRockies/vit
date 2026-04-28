@@ -83,6 +83,8 @@ Extraction requires clean (pre-integration) Fortran source. `reset_to_clean.sh` 
 
 **The pair must be used together.** Without `integrate_all.sh`, early leaf function wrappers are lost.
 
+**After every successful integration (17/17 baselines pass), update both scripts** to include the new function's source files. Add the integrated .f90 to `reset_to_clean.sh`'s restoration loop and the .f90/.cpp to `integrate_all.sh`'s restore steps. Commit the script updates alongside the integration. This ensures the reset/restore cycle works for the next extraction.
+
 ```bash
 # Run on Mac (git commands + docker exec for vit):
 bash scripts/reset_to_clean.sh                    # clean source for extraction
