@@ -313,9 +313,20 @@ def _fortran_dims_to_c(dims: str) -> str:
     "1024"  → "[1024]"
     "3,3"   → "[3][3]"
     "3,1"   → "[3][1]"
+    "1:2"   → "[2]"
+    "0:3"   → "[4]"
+    "1:2,1:3" → "[2][3]"
     """
     parts = [d.strip() for d in dims.split(",")]
-    return "".join(f"[{p}]" for p in parts)
+    result = []
+    for p in parts:
+        if ":" in p:
+            lower, upper = p.split(":")
+            size = int(upper.strip()) - int(lower.strip()) + 1
+            result.append(f"[{size}]")
+        else:
+            result.append(f"[{p}]")
+    return "".join(result)
 
 
 def find_and_parse_derived_type(type_name: str, source_dir: str) -> Optional[DerivedTypeInfo]:

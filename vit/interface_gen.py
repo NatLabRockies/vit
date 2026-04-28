@@ -387,11 +387,15 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     # CHARACTER local var declarations (before any executable statements)
     lines.extend(_generate_character_declarations(sig, kind_aliases, derived_types))
 
-    # OPTIONAL preamble
+    # View type declarations (must be before any executable statements)
+    if view_args:
+        lines.extend(_generate_view_declarations(view_args))
+
+    # OPTIONAL preamble (declarations + executable IF-PRESENT checks)
     if optional_forwarded:
         lines.extend(_generate_optional_preamble(optional_forwarded, kind_aliases, derived_types))
 
-    # Auto-extracted ALLOCATE statements (before view preamble, so C_LOC has valid memory)
+    # Auto-extracted ALLOCATE statements (before view populate, so C_LOC has valid memory)
     if allocations:
         safe_allocs = [a for a in allocations if a.category == "safe"]
         unsafe_allocs = [a for a in allocations if a.category != "safe"]
@@ -410,9 +414,9 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
                 reason = "same argument" if a.category == "same_arg" else "local/computed size"
                 lines.append(f"        !   {a.target_arg}%{a.field_name}({dims}) — {reason} [{a.source}]")
 
-    # View type preamble: local view structs + populator calls
+    # View type executables: populator calls + stash assignments
     if view_args:
-        lines.extend(_generate_view_preamble(view_args, is_kernel))
+        lines.extend(_generate_view_executables(view_args, is_kernel))
 
     # CHARACTER copy loops (executable, before the C call)
     lines.extend(_generate_character_copy_loops(sig, kind_aliases, derived_types))
@@ -421,6 +425,14 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     call_args = _build_wrapper_call_args(sig, kind_aliases, derived_types)
     call_str = ", ".join(call_args)
     lines.append(f"        CALL {c_func_name}({call_str})")
+
+    # Copy OPTIONAL INTENT(OUT/INOUT) values back to the actual arguments
+    if optional_forwarded:
+        for oarg in optional_forwarded:
+            omapping = get_type_mapping(oarg.fortran_type, kind_aliases, derived_types)
+            if oarg.intent in (IntentKind.OUT, IntentKind.INOUT):
+                if not oarg.is_array and not (omapping.is_derived and omapping.is_c_compatible):
+                    lines.append(f"        IF (PRESENT({oarg.name})) {oarg.name} = {oarg.name}_val")
 
     # Reverse CHARACTER copy: C_CHAR → CHARACTER for INTENT(OUT/INOUT)
     lines.extend(_generate_character_reverse_copy_loops(sig, kind_aliases, derived_types))
@@ -527,33 +539,39 @@ def _generate_view_preamble(view_args: list[tuple], is_kernel: bool = False) -> 
     Generate USE statements, local declarations, and populator calls
     for view-type arguments.
 
-    Args:
-        view_args: List of (arg, mapping) tuples from _get_view_type_args()
-        is_kernel: If True, also generates stash pointer assignments for callee bridges
-
-    Returns:
-        List of Fortran lines to insert into the wrapper
+    Returns all lines (declarations + executables) for callers that don't
+    need to interleave other declarations between them. For callers that do,
+    use _generate_view_declarations() and _generate_view_executables().
     """
     if not view_args:
         return []
+    decls = _generate_view_declarations(view_args)
+    execs = _generate_view_executables(view_args, is_kernel)
+    return decls + execs
 
+
+def _generate_view_declarations(view_args: list[tuple]) -> list[str]:
+    """Generate local TYPE declarations for view-type arguments."""
+    if not view_args:
+        return []
     lines = []
-    # Local view struct declarations
     for arg, mapping in view_args:
         type_lower = mapping.c_type.lower()
         view_type = f"{type_lower}_view_t"
         lines.append(f"        TYPE({view_type}), TARGET :: {arg.name}_view")
+    return lines
 
-    # Populator calls (before the C function call)
+
+def _generate_view_executables(view_args: list[tuple], is_kernel: bool = False) -> list[str]:
+    """Generate populator calls and stash assignments for view-type arguments."""
+    if not view_args:
+        return []
+    lines = []
     lines.append(f"        ! Populate view structs from Fortran types")
     for arg, mapping in view_args:
         type_lower = mapping.c_type.lower()
         lines.append(f"        CALL vit_populate_{type_lower}({arg.name}, {arg.name}_view)")
 
-    # Stash original Fortran pointers for callee bridges (kernel only).
-    # Bridges can't C_F_POINTER the view back to the original type (different layout).
-    # Instead, they USE this module variable to get the original type directly.
-    # In integration context, there are no callee bridges — C++ calls C++ directly.
     if is_kernel:
         lines.append(f"        ! Stash original Fortran pointers for callee bridges")
         for arg, mapping in view_args:
@@ -694,7 +712,10 @@ def build_c_params(sig: FortranSignature,
                     else:
                         raise ValueError(f"Unsupported array rank {arg.array_rank} for {arg.name}")
             else:
-                params.append((mapping.c_type, arg.name))
+                if arg.intent in (IntentKind.OUT, IntentKind.INOUT):
+                    params.append((f"{mapping.c_type}*", arg.name))
+                else:
+                    params.append((mapping.c_type, arg.name))
             continue
 
         # C-compatible derived type → struct pointer
@@ -783,11 +804,17 @@ def _build_interface_args(sig: FortranSignature,
                         "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}",
                     })
             else:
-                # OPTIONAL scalar → VALUE (always IN for OPTIONAL)
-                args.append({
-                    "iface_name": arg.name,
-                    "iface_decl": f"{mapping.iso_c_type}, VALUE :: {arg.name}",
-                })
+                if arg.intent in (IntentKind.OUT, IntentKind.INOUT):
+                    intent_str = arg.intent.value
+                    args.append({
+                        "iface_name": arg.name,
+                        "iface_decl": f"{mapping.iso_c_type}, INTENT({intent_str}) :: {arg.name}",
+                    })
+                else:
+                    args.append({
+                        "iface_name": arg.name,
+                        "iface_decl": f"{mapping.iso_c_type}, VALUE :: {arg.name}",
+                    })
             continue
 
         # C-compatible derived type → TYPE(C_PTR), VALUE
