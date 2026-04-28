@@ -61,9 +61,21 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 
 **`--reverse-copy` flag:** Use when the function modifies scalar fields in view-type INOUT arguments. Not needed when only ALLOCATABLE arrays are modified (those work through `C_LOC` pointers).
 
+**Vectorization fix for DBEMT:** `CMakeLists.txt` sets `-fno-tree-loop-vectorize` on `DBEMT.f90`. Replacing a module-internal function body with a wrapper changes gfortran's vectorization decision for the caller's `exp()` loop (scalar libm vs SIMD libmvec, 1 ULP difference). The DBEMT exponential filter feedback loop amplifies this through UA-coupled timesteps. The flag ensures consistent scalar `exp()` regardless of wrapper insertion. Same root cause as the kernel verification libmvec issue (dev note `202604260357`). Other modules with similar sensitive feedback loops may need the same treatment.
+
 **Verification methods:** See `docs/VERIFICATION_METHODS.md` for test-validate, file-output comparison, simulation baselines, and FMA debugging.
 
 **VIT reference:** See `docs/VIT_REFERENCE.md` for CLI commands, config fields, exit codes, and known limitations.
+
+## Workflow Discipline
+
+**Follow the established workflow steps exactly.** The 7-step translation workflow (extract → translate → write → verify → integrate → rebuild → baselines) exists because each step was validated through hard-won debugging. Every step matters — skipping integration, deferring baselines, or changing the verification approach leads to hidden problems that compound later.
+
+**If something seems like it shouldn't work (e.g., integration causes divergence), the workflow is probably right and the assumption is wrong.** Before proposing any deviation from the workflow:
+1. Investigate thoroughly — check for translation bugs, compiler flag issues, stale state, wrong test case
+2. Verify your hypothesis with evidence (assembly diffs, debug prints, isolated tests)
+3. Only after exhausting the investigation, bring the question to the user with your findings
+4. Never conclude "the workflow doesn't work for this case" without rigorous proof — the ROSCO project integrated 52 functions using this exact workflow
 
 ## Integration State Management (reset + integrate_all)
 

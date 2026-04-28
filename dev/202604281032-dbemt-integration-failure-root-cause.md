@@ -1,66 +1,49 @@
-# DBEMT ComputeTau2 Integration Failure — Root Cause Analysis
+# DBEMT ComputeTau2 Integration — Root Cause and Fix
 **Date:** 2026-04-28
-**Status:** in-progress
-**Scope:** Integration architecture, AirfoilInfo audit finding
+**Status:** completed
+**Scope:** Integration architecture, translation bug, vectorization fix
 
 ## Summary
 
-Attempting to integrate ComputeTau2 (first DBEMT function, 20/20 KGen IDENTICAL) into DBEMT.f90 caused ad_MHK_RM1_Fixed_UA to diverge catastrophically (max_abs=5.73e+06). Investigation revealed the root cause is NOT a translation bug — it's a fundamental misunderstanding of what the AirfoilInfo "integration" actually did.
+Integrating ComputeTau2 (20/20 IDENTICAL KGen kernel) into DBEMT.f90 caused `ad_MHK_RM1_Fixed_UA` to diverge catastrophically (max_abs=5.73e+06). Two root causes identified and fixed. **17/17 baselines now pass bit-identical.**
 
-## Key Finding: AirfoilInfo Leaf Functions Were Never Replaced
+## Root Cause 1: Translation Bug — Operator Precedence
 
-The current AirfoilInfo.f90 has **original Fortran bodies** for all 11 early leaf functions:
+The C++ translation used `0.26 * spanRatio * spanRatio` which C++ evaluates left-to-right as `(0.26 * spanRatio) * spanRatio`. The Fortran `0.26*spanRatio**2` computes `spanRatio**2` first, then multiplies by 0.26. The different intermediate rounding produces 1-3 ULP differences in `k_tau` for certain `spanRatio` values.
 
-- `FindBoundingTables` (line 1194): original binary search, no C++ call
-- `AFI_ComputeAirfoilCoefs` (line 1402): original, delegates to 1D/2D in Fortran
-- `AFI_ComputeAirfoilCoefs1D` (line 1320): original
-- `AFI_ComputeAirfoilCoefs2D` (line 1271): original
-- `ComputeUA360_CnOffset`, `Calculate_Cn`, etc.: not even present in AirfoilInfo.f90 (defined only in .cpp files)
+**Fix:** `0.26 * (spanRatio * spanRatio)` — parentheses force Fortran-equivalent evaluation order.
 
-Only **public entry points called from outside the module** have C++ wrappers:
-- `AFI_ComputeUACoefs` (line 1437) → `afi_computeuacoefs_c`
-- `AFI_Init` (~line 200) → `afi_init_pass1_c` / `afi_init_pass2_c`
-- `ReadAFfile` (~line 370) → `readaffile_pass1_c` / `readaffile_fill_c`
-- `AFI_WrHeader/WrData/WrTables` → respective `_c` functions
+**Why KGen missed it:** The 20 captured invocations happened to use spanRatio values that don't produce a ULP difference, or the difference didn't propagate to the verified fields in UpdateStates. The mismatch manifests at specific node indices (26, 27, 30) with specific spanRatio values.
 
-The early leaf functions' C++ code is compiled (in basicaerolib .cpp files) but called only via C++-to-C++ from the orchestrator wrappers. The Fortran bodies are dead code.
+**Lesson:** Fortran `x**2` is NOT the same as C++ `a * x * x` when `a` is a preceding coefficient. The exponentiation binds tighter than multiplication in Fortran, so `a*x**2` means `a * (x*x)`. In C++, `a * x * x` means `(a*x) * x`. Always parenthesize: `a * (x * x)`.
 
-## How This Happened
+## Root Cause 2: Vectorization Divergence
 
-The `reset_to_clean.sh` extraction workflow caused it:
+After fixing the translation bug, `ad_MHK_RM1_Fixed_UA` still failed. Assembly comparison revealed:
+- **Clean source:** gfortran inlines ComputeTau2 → loop body is large → NOT vectorized → scalar `bl exp`
+- **Integrated source:** ComputeTau2 is a wrapper call → loop body is small → vectorized → SIMD `bl _ZGVnN2v_exp`
 
-1. Integrate Calculate_Cn → wrapper replaces body in AirfoilInfo.f90
-2. Need to extract FindBoundingTables → `reset_to_clean.sh` reverts AirfoilInfo.f90
-3. Integrate FindBoundingTables → wrapper replaces body
-4. Need to extract next function → `reset_to_clean.sh` reverts again
-5. ... repeat for all leaf functions
-6. Finally integrate orchestrators (AFI_ComputeUACoefs, AFI_Init, etc.) → wrappers remain because no subsequent extractions needed them reverted
+The glibc libmvec SIMD `exp()` and scalar libm `exp()` produce different results (1 ULP) for certain inputs. The DBEMT exponential filter feedback loop amplifies this through 600 UA-coupled timesteps.
 
-The final state has only the LAST integrations (orchestrators/public functions), with all early leaf wrapper insertions reverted by `reset_to_clean.sh`.
+**Fix:** `set_source_files_properties(src/DBEMT.f90 PROPERTIES COMPILE_FLAGS "-fno-tree-loop-vectorize")` in CMakeLists.txt. This ensures consistent scalar `exp()` regardless of whether function bodies are present or replaced by wrappers.
 
-## Why 17/17 Baselines Passed for AirfoilInfo
+**Why this is the same issue as kernel verification:** Dev note `202604260357` documented the identical scalar-vs-SIMD exp divergence in KGen kernel verification. The kernel fix was `-fvect-cost-model=unlimited` (force vectorization in kernels to match production). The production fix is `-fno-tree-loop-vectorize` (prevent vectorization from changing when wrappers are inserted).
 
-The early "integrations" didn't change any live Fortran code path. The .cpp files were compiled and linked, but the Fortran ran unchanged. Baselines matched trivially because nothing changed in the executable code path.
+## Investigation Timeline
 
-The live call paths are:
-- **Fortran path:** BEMT → `AFI_ComputeAirfoilCoefs` (original Fortran) → `AFI_ComputeAirfoilCoefs1D` (original) → `FindBoundingTables` (original) → all Fortran
-- **C++ path:** BEMT → `AFI_ComputeUACoefs` (C++ wrapper) → `afi_computeuacoefs_c` → `calculateuacoeffs_c` → `computeua360_attachedflow_c` → all C++
+1. Initial attempt: integration → 16/17 pass, `ad_MHK_RM1_Fixed_UA` diverges (max_abs=5.73e+06)
+2. NREL regression: passes at 1e-2 → physics correct, not a fundamental error
+3. Assembly comparison: clean has 2x `bl exp` (scalar), integrated has 2x `bl _ZGVnN2v_exp` (SIMD)
+4. Tried `-fno-tree-loop-vectorize` → still fails (5.56e+06)
+5. Tried `-fno-inline` → still fails
+6. Tried `-O2` → still fails
+7. Added dual-computation debug prints → found 7,833 k_tau/tau2 mismatches between Fortran and C++
+8. Identified `0.26 * spanRatio * spanRatio` vs `0.26*spanRatio**2` operator precedence bug
+9. Fixed parentheses → zero mismatches, but baselines still fail (vectorization)
+10. Applied `-fno-tree-loop-vectorize` + parentheses fix → **17/17 pass bit-identical**
 
-## Why ComputeTau2 Integration Failed
+## Files Changed
 
-ComputeTau2 is the **first time we actually replaced a PRIVATE function body** inside a module where the CALLER (DBEMT_UpdateStates) is still Fortran. This changes the module's compiled code.
-
-Debugging confirmed: adding ANY subroutine call (even empty) inside ComputeTau2 causes ad_MHK_RM1_Fixed_UA to diverge. The change prevents gfortran from optimizing DBEMT_UpdateStates the same way, and the exponential expressions (lines 381-385) are extremely sensitive to evaluation-order changes. The UA feedback loop amplifies sub-ULP differences into full divergence.
-
-## Implications
-
-1. **AirfoilInfo "integration" for early functions is incomplete** — the C++ code exists but is only exercised via C++-to-C++ paths, not via Fortran wrappers
-2. **The integration status in vit.yaml is misleading** — `status: integrated` for early leaf functions means "compiled and linked" not "actively called from Fortran"
-3. **The correct integration pattern is orchestrator-level only**: replace PUBLIC entry points with C++ wrappers, call leaf _c functions from C++ via vit_translated.h
-4. **Private leaf functions should NOT have their Fortran bodies replaced individually** — this changes the module's compilation landscape
-
-## Open Questions
-
-1. Should we fix AirfoilInfo by re-integrating the early leaf function wrappers? Or is the current state (dead Fortran code) acceptable since the C++ IS exercised via the orchestrator paths?
-2. For DBEMT, should we translate all functions first and integrate only at the public orchestrator level?
-3. Does this affect the PROJECT_PLAN's per-function integration milestones?
+- `openfast/translations/DBEMT/computetau2.cpp` — parentheses fix
+- `openfast/modules/aerodyn/CMakeLists.txt` — `-fno-tree-loop-vectorize` on DBEMT.f90
+- `openfast/baselines/aerodyn/` — all 17 regenerated from clean with new flag
