@@ -1134,10 +1134,15 @@ def _generate_callee_bridges(
     if not callee_names:
         return []
 
-    # Read C++ source to check which callees are actually referenced
+    # Read C++ source (comments stripped) to check which callees are actually referenced
     cpp_source_text = ""
     if target_cpp_file and Path(target_cpp_file).exists():
-        cpp_source_text = Path(target_cpp_file).read_text()
+        import re as _re_cpp
+        raw = Path(target_cpp_file).read_text()
+        # Strip C++ line comments (// ...) and block comments (/* ... */)
+        raw = _re_cpp.sub(r'//[^\n]*', '', raw)
+        raw = _re_cpp.sub(r'/\*.*?\*/', '', raw, flags=_re_cpp.DOTALL)
+        cpp_source_text = raw
 
     bridge_sources = []
     callee_sigs = []
