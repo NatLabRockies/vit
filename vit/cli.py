@@ -20,7 +20,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from .config import load_config, init_config, record_translation
+from .config import load_config, init_config, record_translation, save_config
 from .derived_type_parser import build_derived_type_registry
 from .fortran_parser import find_function_in_file, FortranSignature
 from .interface_gen import (
@@ -483,6 +483,22 @@ def cmd_translate(args, config):
 
     derived_types = _build_registry(sig, config)
 
+    # Auto-detect new view type strategies for types with ALLOCATABLE fields.
+    # If a type has ALLOCATABLE fields and no strategy configured, set view
+    # and persist to vit.yaml so subsequent commands (verify, integrate) use it.
+    new_strategies = []
+    for type_name, type_info in derived_types.items():
+        alloc_fields = [f for f in type_info.fields if f.is_allocatable]
+        existing_keys_upper = {k.upper() for k in config.type_strategies}
+        if alloc_fields and type_name.upper() not in existing_keys_upper:
+            config.type_strategies[type_name] = 'view'
+            new_strategies.append(type_name)
+    if new_strategies:
+        save_config(config)
+        derived_types = _build_registry(sig, config)
+        for tn in new_strategies:
+            print(f"  Auto-configured view strategy for {tn} (ALLOCATABLE fields detected)")
+
     # Determine output directory
     if args.output:
         out_dir = Path(args.output)
@@ -506,7 +522,44 @@ def cmd_translate(args, config):
 
     # Write scaffold
     out_path = out_dir / f"{sig.name.lower()}.cpp"
-    out_path.write_text(scaffold)
+    if out_path.exists():
+        existing_scaffold = out_path.read_text()
+        if "// TODO:" not in existing_scaffold:
+            out_path.write_text(scaffold)
+        # else: don't overwrite an existing implementation
+    else:
+        out_path.write_text(scaffold)
+
+    # Write/update vit_types.h and view populator modules in the source directory.
+    # These are needed for compilation. vit verify and vit integrate also generate
+    # them, but creating them here means the translator can build locally.
+    if derived_types:
+        src_dir = Path(args.file).parent
+        from .derived_type_parser import generate_consolidated_types_header
+        types_path = src_dir / "vit_types.h"
+        existing = types_path.read_text() if types_path.exists() else ""
+        new_content = generate_consolidated_types_header(
+            derived_types, config.kind_aliases, existing_content=existing)
+        if new_content != existing:
+            types_path.write_text(new_content)
+            print(f"  Updated: {types_path}")
+
+        from .view_populator import generate_view_populator
+        for type_name, type_info in derived_types.items():
+            if getattr(type_info, 'view_strategy', None) != 'view':
+                continue
+            populator_path = src_dir / f"vit_{type_name.lower()}_view.f90"
+            if populator_path.exists():
+                continue
+            mappings = getattr(type_info, 'field_mappings', None) or []
+            source_module = type_info.source_module
+            if not source_module:
+                continue
+            content = generate_view_populator(
+                type_info, mappings, config.kind_aliases,
+                source_module=source_module, registry=derived_types)
+            populator_path.write_text(content)
+            print(f"  Created: {populator_path}")
 
     # Extract Fortran function source for the prompt
     source_text = Path(args.file).read_text()
