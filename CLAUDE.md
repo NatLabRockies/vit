@@ -15,7 +15,7 @@ This workspace contains three tools for verified Fortran→C++ translation in sc
 ## Project Status — AeroDyn
 
 - **Phase 1 — AirfoilInfo COMPLETE, DBEMT in progress.** AirfoilInfo: all 20 functions in C++. Phase 0 (Registry C++ generator) also complete. Shared NWTC utility library (`vit_nwtc.h/.cpp`) with 12 functions. Four verification approaches proven.
-- **DBEMT Phase A (leaf math): 2/5 complete.** ComputeTau2 and ComputeTau1 integrated, 17/17 baselines PASS. Next: DBEMT_InitStates, DBEMT_CalcOutput, DBEMT_CalcContStateDeriv.
+- **DBEMT Phase A (leaf math): 3/5 complete.** ComputeTau2, ComputeTau1, and DBEMT_InitStates integrated, 17/17 baselines PASS. Next: DBEMT_CalcOutput, DBEMT_CalcContStateDeriv.
 - **Scope:** All of AeroDyn — 507 hand-written procedures, Registry C++ generator (740 generated procedures), drivers/C-binding. End state: pure C++ AeroDyn module, no Fortran, no libgfortran.
 - **Verification:** KGen float64 kernel + `vit test-validate` branch-coverage + 17-case simulation bit-identical + NREL regression 17/17.
 - **Translation boundary:** Everything inside AeroDyn → C++. Everything outside (NWTC Library, InflowWind, SeaState, LinDyn) → stays Fortran, crossed via BIND(C) / view structs. Individual NWTC utility functions used by AeroDyn translated in `vit_nwtc.h`.
@@ -107,7 +107,7 @@ docker exec vit-dev-openfast bash -c "cd /workspace/openfast && bash scripts/ver
 
 **What `integrate_all.sh` does:**
 1. Restores committed source files from git (AirfoilInfo.f90 and DBEMT.f90 with wrappers, view populator modules, all .cpp files)
-2. Runs `vit integrate` for 14 AirfoilInfo leaf/orchestrator functions
+2. Runs `vit integrate` for 14 AirfoilInfo leaf/orchestrator functions + 1 DBEMT function (DBEMT_InitStates)
 3. Restores committed .cpp files (VIT's generated versions have duplicate `extern "C"` wrappers; committed versions are correct)
 
 The script runs on the Mac (needs git + docker exec). To run inside the container, replace `docker exec ... vit integrate` with direct `vit integrate`.
