@@ -1069,11 +1069,12 @@ def _generate_callee_bridges(
     def _scan_cpp_for_functions(content: str):
         """Extract function names from C/C++ source or header."""
         import re as _re2
-        # Match function definitions/declarations: type name( or static type name(
+        # Match function definitions/declarations and lambdas.
+        # Covers: void name(, static inline std::string name(, auto name = [
         for m in _re2.finditer(
             r'(?:^|\n)\s*(?:static\s+)?(?:inline\s+)?'
-            r'(?:void|int|double|float|bool|char)\s+'
-            r'(\w+)\s*\(',
+            r'(?:void|int|double|float|bool|char|std::\w+|auto)\s+'
+            r'(\w+)\s*(?:\(|=)',
             content,
         ):
             cpp_implemented.add(m.group(1).upper())
@@ -1394,6 +1395,32 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
             '! VIT: removed STOP from kgen_array_sumcheck (false positives from subnormal values)',
             content,
             flags=re.IGNORECASE,
+        )
+
+        # Fix KGen's CHARACTER(*) code generation bugs.
+        # KGen generates verify subroutine names containing '*' from
+        # CHARACTER(*) arguments (e.g., kv_..._character_*_), which is an
+        # illegal Fortran identifier. Also generates assumed-length local
+        # variables (CHARACTER(LEN=*) :: kgenref_...) which are only valid
+        # for dummy arguments. Fix both: replace '*' in identifiers with
+        # 'chr', and replace assumed-length locals with fixed-length buffers.
+        content = re.sub(
+            r'(kv_\w+_character)_\*_',
+            r'\1_chr_',
+            content,
+        )
+        # Replace assumed-length locals — match CHARACTER(LEN=*) :: <name>
+        # but NOT lines with INTENT (those are dummy args, which are legal).
+        def _fix_assumed_len_char(m):
+            if re.search(r'INTENT', m.group(0), re.IGNORECASE):
+                return m.group(0)
+            return re.sub(r'CHARACTER\s*\(\s*LEN\s*=\s*\*\s*\)',
+                          'CHARACTER(LEN=8196)', m.group(0), flags=re.IGNORECASE)
+        content = re.sub(
+            r'^.*CHARACTER\s*\(\s*LEN\s*=\s*\*\s*\)\s*::.*$',
+            _fix_assumed_len_char,
+            content,
+            flags=re.MULTILINE | re.IGNORECASE,
         )
 
         # Increase verboseLevel so NaN differences are visible in output.

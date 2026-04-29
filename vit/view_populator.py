@@ -254,10 +254,18 @@ def generate_view_populator(
             lines.append(f"                CALL {child_populate_sub}(src%{f.name}(vit_i), {save_array_name}(vit_i))")
             lines.append(f"            END DO")
             lines.append(f"            view%{f.name} = C_LOC({save_array_name}(1))")
-            lines.append(f"            view%n_{f.name} = INT(SIZE(src%{f.name}), C_INT32_T)")
+            if rank == 1:
+                lines.append(f"            view%n_{f.name} = INT(SIZE(src%{f.name}), C_INT32_T)")
+            elif rank == 2:
+                lines.append(f"            view%n_{f.name}_rows = INT(SIZE(src%{f.name}, 1), C_INT32_T)")
+                lines.append(f"            view%n_{f.name}_cols = INT(SIZE(src%{f.name}, 2), C_INT32_T)")
         elif is_type_alloc:
             lines.append(f"            view%{f.name} = C_NULL_PTR  ! TYPE() — opaque, not interoperable")
-            lines.append(f"            view%n_{f.name} = INT(SIZE(src%{f.name}), C_INT32_T)")
+            if rank == 1:
+                lines.append(f"            view%n_{f.name} = INT(SIZE(src%{f.name}), C_INT32_T)")
+            elif rank == 2:
+                lines.append(f"            view%n_{f.name}_rows = INT(SIZE(src%{f.name}, 1), C_INT32_T)")
+                lines.append(f"            view%n_{f.name}_cols = INT(SIZE(src%{f.name}, 2), C_INT32_T)")
         elif rank == 1:
             lines.append(f"            view%{f.name} = C_LOC(src%{f.name}(LBOUND(src%{f.name},1)))")
             lines.append(f"            view%n_{f.name} = INT(SIZE(src%{f.name}), C_INT32_T)")
@@ -272,7 +280,13 @@ def generate_view_populator(
             lines.append(f"            view%n_{f.name}_dim3 = INT(SIZE(src%{f.name}, 3), C_INT32_T)")
         lines.append(f"        ELSE")
         lines.append(f"            view%{f.name} = C_NULL_PTR")
-        if is_type_alloc or rank == 1:
+        if is_type_alloc:
+            if rank == 1:
+                lines.append(f"            view%n_{f.name} = 0")
+            elif rank == 2:
+                lines.append(f"            view%n_{f.name}_rows = 0")
+                lines.append(f"            view%n_{f.name}_cols = 0")
+        elif rank == 1:
             lines.append(f"            view%n_{f.name} = 0")
         elif rank == 2:
             lines.append(f"            view%n_{f.name}_rows = 0")

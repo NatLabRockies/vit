@@ -663,7 +663,15 @@ def generate_view_struct_header(
                 lines.append(f"    {child_view_type}* {f.name};  // Array of view structs, populated by Fortran")
             else:
                 lines.append(f"    void* {f.name};  // TYPE({nested_name}), ALLOCATABLE — opaque")
-            lines.append(f"    int32_t n_{f.name};")
+            if rank == 1:
+                lines.append(f"    int32_t n_{f.name};")
+            elif rank == 2:
+                lines.append(f"    int32_t n_{f.name}_rows;")
+                lines.append(f"    int32_t n_{f.name}_cols;")
+            elif rank >= 3:
+                lines.append(f"    int32_t n_{f.name}_dim1;")
+                lines.append(f"    int32_t n_{f.name}_dim2;")
+                lines.append(f"    int32_t n_{f.name}_dim3;")
             continue
 
         mapping = get_type_mapping(f.fortran_type, kind_aliases)

@@ -236,6 +236,34 @@ class AllocatableFieldMapping:
     needs_confirm: bool = False  # True for Type C
 
 
+def _extract_allocate_dims(line: str, field_name: str) -> Optional[str]:
+    """Extract dimension text from an ALLOCATE statement by paren counting.
+
+    Handles: ALLOCATE(var%field(dim1, dim2), stat=ErrStat)
+    Returns the dimension text (e.g., "dim1, dim2") or None if not found.
+    """
+    line_lower = line.lower()
+    field_lower = field_name.lower()
+    idx = line_lower.find('%' + field_lower)
+    if idx < 0:
+        return None
+    start = idx + len(field_name) + 1
+    while start < len(line) and line[start] in ' \t':
+        start += 1
+    if start >= len(line) or line[start] != '(':
+        return None
+    depth = 0
+    dim_start = start + 1
+    for i in range(start, len(line)):
+        if line[i] == '(':
+            depth += 1
+        elif line[i] == ')':
+            depth -= 1
+            if depth == 0:
+                return line[dim_start:i].strip()
+    return None
+
+
 def scan_allocatable_sizes(
     source_dir: str,
     type_name: str,
@@ -309,22 +337,21 @@ def _scan_field_size(
 
     # --- Try ALLOCATE ---
     # Pattern: ALLOCATE(Var%field(dim1)) or ALLOCATE(Var%field(dim1, dim2))
-    # Use a pattern that handles one level of nested parens (e.g., PerfTableSize(2))
-    allocate_re = re.compile(
-        r'(?<!\!)\s*ALLOCATE\s*\(\s*\w+%' + re.escape(field_name) +
-        r'\s*\(((?:[^()]*|\([^()]*\))*)\)\s*\)',
-        re.IGNORECASE,
-    )
+    # Two-step approach to avoid catastrophic regex backtracking:
+    # 1. Quick string check for field name
+    # 2. Extract dimension text by counting parentheses (not regex)
+    field_lower = field_name.lower()
 
     for f90_file, content in source_files.items():
         for line_num, line in enumerate(content.split("\n"), 1):
-            # Skip commented-out lines
             stripped = line.lstrip()
             if stripped.startswith("!"):
                 continue
-            m = allocate_re.search(line)
-            if m:
-                dims_str = m.group(1).strip()
+            line_lower = line.lower()
+            if 'allocate' not in line_lower or ('%' + field_lower) not in line_lower:
+                continue
+            dims_str = _extract_allocate_dims(line, field_name)
+            if dims_str is not None:
                 dims = _split_dims_aware(dims_str)
                 evidence = f"ALLOCATE(%{field_name}({dims_str})) in {f90_file.name}:{line_num}"
 
