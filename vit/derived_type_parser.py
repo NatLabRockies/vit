@@ -329,6 +329,21 @@ def _fortran_dims_to_c(dims: str) -> str:
     return "".join(result)
 
 
+def _extract_fixed_sizes(dims: str) -> list[int]:
+    """Extract integer sizes from fixed-size Fortran dimension spec.
+    '1:4' → [4], '0:3' → [4], '4' → [4], '1:2,1:3' → [2, 3]
+    """
+    sizes = []
+    for p in dims.split(","):
+        p = p.strip()
+        if ":" in p:
+            lo, hi = p.split(":")
+            sizes.append(int(hi.strip()) - int(lo.strip()) + 1)
+        else:
+            sizes.append(int(p))
+    return sizes
+
+
 def find_and_parse_derived_type(type_name: str, source_dir: str) -> Optional[DerivedTypeInfo]:
     """
     Search a source directory for a TYPE definition and parse it.
@@ -608,16 +623,25 @@ def generate_view_struct_header(
     if scalar_fields:
         lines.append(f"    // --- Scalar and fixed-size fields ---")
     for f in scalar_fields:
-        # Nested TYPE(X) — embed if C-compatible, skip if not
+        # Nested TYPE(X) — embed if C-compatible, use view array if view type, skip otherwise
         if f.fortran_type.upper().startswith("TYPE("):
             nested_name = f.fortran_type[5:-1].strip()
-            # Check if we have an inline definition for this type
             is_embedded = any(ni.name.upper() == nested_name.upper()
                               for _, ni in nested_inline_types)
             if is_embedded:
-                lines.append(f"    {nested_name.lower()}_t {f.name};")
+                if f.is_array and f.array_dims:
+                    c_dims = _fortran_dims_to_c(f.array_dims)
+                    lines.append(f"    {nested_name.lower()}_t {f.name}{c_dims};")
+                else:
+                    lines.append(f"    {nested_name.lower()}_t {f.name};")
             else:
-                lines.append(f"    // TYPE({nested_name}) {f.name}; // nested type — not in view (not C-compatible)")
+                nested_info = _lookup_type(registry, nested_name) if registry else None
+                if (nested_info and getattr(nested_info, 'view_strategy', None) == 'view'
+                        and f.is_array and f.array_dims):
+                    c_dims = _fortran_dims_to_c(f.array_dims)
+                    lines.append(f"    {nested_name.lower()}_view_t {f.name}{c_dims};")
+                else:
+                    lines.append(f"    // TYPE({nested_name}) {f.name}; // nested type — not in view (not C-compatible)")
             continue
 
         mapping = get_type_mapping(f.fortran_type, kind_aliases)
@@ -828,6 +852,10 @@ def classify_field_blockers(type_info: DerivedTypeInfo,
                         break
                 if nested_info is not None and nested_info.is_c_compatible_recursive(registry):
                     continue  # Compatible nested type — not a blocker
+                if (nested_info is not None
+                        and getattr(nested_info, 'view_strategy', None) == 'view'
+                        and f.is_array and f.array_dims):
+                    continue  # Fixed-size array of view type — handled by VIT
             blockers.append(FieldBlocker(
                 field_name=f.name,
                 fortran_type=f.fortran_type,
