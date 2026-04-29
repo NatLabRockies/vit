@@ -925,6 +925,27 @@ def detect_callees(source: str, target_name: str,
     if known_functions:
         callees = {c for c in callees if c.upper() in {f.upper() for f in known_functions}}
 
+    # Remove Fortran keywords and intrinsics that may appear as user-defined
+    # function names in other modules but are actually language constructs
+    # when they appear in the target function body.
+    _fortran_skip = {
+        'CHARACTER', 'INTEGER', 'REAL', 'DOUBLE', 'LOGICAL', 'COMPLEX',
+        'TYPE', 'CLASS', 'LEN', 'LEN_TRIM', 'TRIM', 'ADJUSTL', 'ADJUSTR',
+        'INT', 'NINT', 'FLOAT', 'DBLE', 'CMPLX', 'MOD', 'MODULO',
+        'SIN', 'COS', 'TAN', 'ASIN', 'ACOS', 'ATAN', 'ATAN2',
+        'EXP', 'LOG', 'LOG10', 'SQRT', 'ABS', 'SIGN', 'DIM',
+        'MIN', 'MAX', 'MINVAL', 'MAXVAL', 'MINLOC', 'MAXLOC',
+        'SUM', 'PRODUCT', 'DOT_PRODUCT', 'MATMUL', 'TRANSPOSE',
+        'SIZE', 'SHAPE', 'LBOUND', 'UBOUND', 'ALLOCATED', 'ASSOCIATED',
+        'MERGE', 'PACK', 'UNPACK', 'SPREAD', 'RESHAPE', 'CSHIFT',
+        'PRESENT', 'TRANSFER', 'C_LOC', 'C_F_POINTER', 'C_FUNLOC',
+        'EPSILON', 'HUGE', 'TINY', 'PRECISION', 'RANGE', 'KIND',
+        'SELECTED_REAL_KIND', 'SELECTED_INT_KIND',
+        'WRITE', 'READ', 'PRINT', 'OPEN', 'CLOSE', 'STOP',
+        'ALLOCATE', 'DEALLOCATE', 'NULLIFY',
+    }
+    callees = {c for c in callees if c.upper() not in _fortran_skip}
+
     # Remove the target function itself (recursive calls shouldn't be bridged)
     callees.discard(target_name)
     callees = {c for c in callees if c.upper() != target_name.upper()}
@@ -1069,12 +1090,17 @@ def _generate_callee_bridges(
     def _scan_cpp_for_functions(content: str):
         """Extract function names from C/C++ source or header."""
         import re as _re2
-        # Match function definitions/declarations and lambdas.
-        # Covers: void name(, static inline std::string name(, auto name = [
+        # Match function definitions/declarations: type name(
         for m in _re2.finditer(
-            r'(?:^|\n)\s*(?:static\s+)?(?:inline\s+)?'
-            r'(?:void|int|double|float|bool|char|std::\w+|auto)\s+'
-            r'(\w+)\s*(?:\(|=)',
+            r'(?:^|\n)\s*(?:static\s+)?(?:inline\s+)?(?:const\s+)?'
+            r'(?:void|int|double|float|bool|char|unsigned\s+\w+|std::\w+)\s+'
+            r'(\w+)\s*\(',
+            content,
+        ):
+            cpp_implemented.add(m.group(1).upper())
+        # Match lambda assignments: auto name = [
+        for m in _re2.finditer(
+            r'(?:^|\n)\s*auto\s+(\w+)\s*=\s*\[',
             content,
         ):
             cpp_implemented.add(m.group(1).upper())
@@ -1409,15 +1435,21 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
             r'\1_chr_',
             content,
         )
-        # Replace assumed-length locals — match CHARACTER(LEN=*) :: <name>
-        # but NOT lines with INTENT (those are dummy args, which are legal).
+        # Replace assumed-length locals — match CHARACTER(LEN=*) or
+        # CHARACTER(*) declarations, but NOT lines with INTENT (those are
+        # dummy args, which are legal). Use a large fixed buffer (Fortran's
+        # typical error message length) since the original assumed-length
+        # is only valid for dummy args.
+        _char_star_re = re.compile(
+            r'CHARACTER\s*\(\s*(?:LEN\s*=\s*)?\*\s*\)',
+            re.IGNORECASE,
+        )
         def _fix_assumed_len_char(m):
             if re.search(r'INTENT', m.group(0), re.IGNORECASE):
                 return m.group(0)
-            return re.sub(r'CHARACTER\s*\(\s*LEN\s*=\s*\*\s*\)',
-                          'CHARACTER(LEN=8196)', m.group(0), flags=re.IGNORECASE)
+            return _char_star_re.sub('CHARACTER(LEN=4096)', m.group(0))
         content = re.sub(
-            r'^.*CHARACTER\s*\(\s*LEN\s*=\s*\*\s*\)\s*::.*$',
+            r'^.*CHARACTER\s*\(.*\*.*\)\s*::.*$',
             _fix_assumed_len_char,
             content,
             flags=re.MULTILINE | re.IGNORECASE,

@@ -286,6 +286,10 @@ def generate_view_populator(
             elif rank == 2:
                 lines.append(f"            view%n_{f.name}_rows = 0")
                 lines.append(f"            view%n_{f.name}_cols = 0")
+            elif rank >= 3:
+                lines.append(f"            view%n_{f.name}_dim1 = 0")
+                lines.append(f"            view%n_{f.name}_dim2 = 0")
+                lines.append(f"            view%n_{f.name}_dim3 = 0")
         elif rank == 1:
             lines.append(f"            view%n_{f.name} = 0")
         elif rank == 2:
