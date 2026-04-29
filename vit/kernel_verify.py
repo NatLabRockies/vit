@@ -986,9 +986,10 @@ def _make_callees_public_in_kernel(
                 continue
 
         # Find which callees are defined in this file's CONTAINS section
-        contains_pos = content_upper.find("\nCONTAINS")
-        if contains_pos < 0:
+        contains_match = re.search(r'^\s*CONTAINS\s*$', content, re.MULTILINE | re.IGNORECASE)
+        if not contains_match:
             continue
+        contains_pos = contains_match.start()
 
         callees_in_file = []
         for m in re.finditer(
@@ -1131,6 +1132,22 @@ def _generate_callee_bridges(
                 if hc not in callee_names:
                     callee_names.append(hc)
 
+    # Also detect callees from the C++ source — on integrated source, the Fortran
+    # body is a wrapper with no CALL statements, so Fortran detection finds nothing.
+    # Scan for _c( patterns (the BIND(C) wrapper names) and map back to function names.
+    if target_cpp_file and Path(target_cpp_file).exists():
+        import re as _re_cpp2
+        raw_cpp = Path(target_cpp_file).read_text()
+        raw_cpp = _re_cpp2.sub(r'//[^\n]*', '', raw_cpp)
+        raw_cpp = _re_cpp2.sub(r'/\*.*?\*/', '', raw_cpp, flags=_re_cpp2.DOTALL)
+        for m in _re_cpp2.finditer(r'\b(\w+)_c\s*\(', raw_cpp):
+            base_name = m.group(1)
+            for known in known_funcs:
+                if known.lower() == base_name:
+                    if known not in callee_names:
+                        callee_names.append(known)
+                    break
+
     if not callee_names:
         return []
 
@@ -1215,9 +1232,6 @@ def _generate_callee_bridges(
             callee_sigs.append(callee_sig)
             result["files_modified"].append(str(bridge_path))
         except (ValueError, TypeError) as e:
-            # Skip callees whose signatures can't be bridged (e.g., CHARACTER
-            # args, unsupported types). The C++ will get a linker error only
-            # if it actually calls this callee — which is the right behavior.
             pass
 
     # Ensure callee functions are PUBLIC in kernel modules.

@@ -1079,6 +1079,22 @@ def generate_kernel_callee_bridge(
             else:
                 struct_args.append((arg, mapping))
 
+    # Fall back to registry source_module for struct args whose types weren't
+    # found in the function's own USE statements (module procedures inherit
+    # USE from the parent module, so their own use_statements may be empty).
+    if derived_types and struct_args:
+        covered = {t.upper() for stmt in use_stmts for t in
+                   [a.derived_type_name for a in sig.args if a.is_derived_type]
+                   if t.upper() in stmt.upper()}
+        for arg, mapping in struct_args:
+            t_upper = arg.derived_type_name.upper()
+            if t_upper not in covered:
+                for k, v in derived_types.items():
+                    if k.upper() == t_upper and v.source_module:
+                        use_stmts.append(
+                            f"USE {v.source_module}, ONLY: {arg.derived_type_name}")
+                        break
+
     # For array-returning functions, identify the result buffer and size params.
     # The result buffer parameter is already added by _build_interface_args (line 848+).
     result_buffer_name = None
