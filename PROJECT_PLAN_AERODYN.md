@@ -151,9 +151,9 @@ Simple `!$OMP PARALLEL DO` loops in FVW_BiotSavart.f90. Embarrassingly parallel 
 
 **Answer:** MeshType interop uses a view struct populator pattern (~80 lines total), not NWTC Library translation. AeroDyn physics code only reads mesh data fields (Position, TranslationVel, Orientation, etc.) — it never calls mesh lifecycle operations. A C++ `MeshType_View` struct (~50 lines) holds pointers to the data arrays; a Fortran BIND(C) populator (~30 lines) fills it from the real MeshType using `C_LOC()`. Phases 1-3 and 5 have zero mesh dereferences — the view struct is not needed until Phase 4 (11 accesses in FVW). Phase 6 is heaviest (271 accesses). See dev note `202604240640`.
 
-### OQ8: VIT enhancements for AeroDyn [answered 2026-04-25]
+### OQ8: VIT enhancements for AeroDyn [answered 2026-04-25, updated 2026-04-28]
 
-**Answer:** VIT works on AeroDyn. 14 VIT fixes were needed (12 for initial AeroDyn adaptation, 2 more for derived type infrastructure). Proven across 4 functions with increasing type complexity: scalar/array (Calculate_Cn), AFI_ParameterType view struct (FindBoundingTables), nested TYPE embedding (Compute_iLoweriUpper), AFI_Table_Type with tanh math (ComputeUA360_CnOffset). All 16/16 regression pass. Known limitation: ALLOCATABLE TYPE() array access (`p%Table(i)%field`) needs marshalling solution for mid-level functions.
+**Answer:** VIT works on AeroDyn. 19 VIT fixes total (12 for initial AeroDyn adaptation, 2 for derived type infrastructure, 5 during DBEMT Phase A). Proven across 22 functions spanning two modules. DBEMT added: rank-2 TYPE() ALLOCATABLE view structs, error handling (ErrStat/ErrMsg), CHARACTER(*) kernel repair, Fortran intrinsic callee filtering, auto-type infrastructure in `vit translate`. Known limitation resolved: ALLOCATABLE TYPE() array access proven via typed pointer marshalling (AFI_ParameterType.Table).
 
 ### OQ9: Upstream sync strategy [unknown — decision needed]
 
@@ -171,7 +171,19 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 
 ## 5. Phase Roadmap
 
-### Phase 0: Registry C++ Generator [speculative]
+### KD7: Vectorization flag for sensitive feedback loops (committed 2026-04-28)
+
+`-fno-tree-loop-vectorize` on DBEMT.f90. Replacing a PRIVATE function body with a C++ wrapper changes gfortran's vectorization decision for the caller's `exp()` loop (scalar libm vs SIMD libmvec, 1 ULP difference). The DBEMT exponential filter feedback loop amplifies this through 600 UA-coupled timesteps into catastrophic divergence (max_abs=5.73e+06). The flag ensures consistent scalar `exp()` regardless of wrapper insertion. Same root cause as the kernel verification libmvec issue (KD4/dev note `202604260357`). Other modules with similar sensitive feedback loops may need the same treatment.
+
+**Dev note:** `202604281854`
+
+### KD8: Auto-type infrastructure in `vit translate` (committed 2026-04-28)
+
+`vit translate` auto-detects derived types with ALLOCATABLE fields, sets `strategy: view` in vit.yaml, writes/updates vit_types.h, and creates view populator .f90 files. No manual type prerequisites needed before translation. `vit integrate` auto-adds populator .f90 to CMakeLists.txt.
+
+**Dev note:** `202604282134`
+
+### Phase 0: Registry C++ Generator [complete]
 
 **Goal:** Build a C++ code generator that produces C-compatible struct headers from Registry schema files, so translated C++ physics code has type definitions to work with.
 
@@ -232,10 +244,15 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 **DBEMT Module** (14 procedures, 926 lines in DBEMT.f90). Dynamic inflow corrections for blade element momentum theory. Pure computation — no file I/O, no SAVE variables, no OpenMP. Three modes: finite difference filtering (Modes 1/2, analytical exponential solution) and continuous ODE integration via ABM4 (Mode 3). Called exclusively by BEMT. 7 PUBLIC / 7 PRIVATE procedures.
 
 **DBEMT Prerequisites:**
-- [ ] Add DBEMT_Mod constants to `vit_aerodyn_constants.h` (DBEMT_frozen=-1, DBEMT_none=0, DBEMT_tauConst=1, DBEMT_tauVaries=2, DBEMT_cont_tauConst=3)
-- [ ] Add `num2lstr` equivalent to `vit_nwtc.h` (inline `std::to_string` wrapper — only used in ComputeTau1 warning messages)
-- [ ] Create `translations/DBEMT/` directory
-- [ ] Add 5 view struct type strategies to `vit.yaml` (DBEMT_ParameterType, DBEMT_InputType, DBEMT_ContinuousStateType, DBEMT_OtherStateType, DBEMT_InitInputType)
+- [x] Add DBEMT_Mod constants to `vit_aerodyn_constants.h` — all 5 constants defined
+- [x] Add `num2lstr` equivalent to `vit_nwtc.h` — inline function, `snprintf` + left-trim
+- [x] Add `ErrID_Severe` to `vit_nwtc.h` — value 3, was missing between Warn(2) and Fatal(4)
+- [x] Create `translations/DBEMT/` directory
+- [x] DBEMT_ParameterType view struct + populator — done during ComputeTau2
+- [x] DBEMT_InputType view struct + populator — done during ComputeTau1
+- [x] DBEMT_MiscVarType C struct (int32_t FirstWarn_tau1) — done during ComputeTau1
+- [x] `-fno-tree-loop-vectorize` on DBEMT.f90 — prevents vectorization divergence after integration (KD7)
+- [ ] Remaining view type strategies (DBEMT_ContinuousStateType, DBEMT_OtherStateType, DBEMT_InitInputType) — auto-generated by `vit translate` when needed (KD8)
 
 **DBEMT Type System:**
 
@@ -251,16 +268,16 @@ What's needed to build full OpenFAST for coupled-mode extraction? How long? What
 | DBEMT_MiscVarType | BIND(C) | FirstWarn_tau1 (LOGICAL) | Single field |
 
 **DBEMT Phase A — Leaf Math (5 functions, ~197 lines, KGen verified):**
-- [ ] ComputeTau2 (26 lines, PRIVATE) — secondary time constant. Pure math, OPTIONAL `k_tau_out` (has_X/X pair). Reads `p%spanRatio(i,j)` or `u%spanRatio` depending on mode. Test case: `ad_MHK_RM1_Fixed` (38,400 hits).
-- [ ] ComputeTau1 (66 lines, PRIVATE) — rotor time constant. Two paths: constant (trivial, Modes 1/3) or time-varying (Mode 2, clamping + one-time warnings via `num2lstr`). Writes `m%FirstWarn_tau1`. Test case: `ad_MHK_RM1_Fixed` (38,400 hits). Note: only constant path exercised by MHK_RM1.
-- [ ] DBEMT_InitStates (26 lines, PRIVATE) — per-node state init. Sets vind=vind_s, vind_1 depends on mode. Writes `OtherState%areStatesInitialized(i,j)`. Test case: `ad_MHK_RM1_Fixed` (38,400 hits).
+- [x] ComputeTau2 (26 lines, PRIVATE) — 20/20 IDENTICAL, 17/17 baselines PASS. Translation bug found: `0.26 * spanRatio * spanRatio` ≠ Fortran `0.26*spanRatio**2` (operator precedence — C++ left-to-right vs Fortran `**` binding tighter). Fix: parentheses `0.26 * (spanRatio * spanRatio)`. Also required `-fno-tree-loop-vectorize` on DBEMT.f90 (KD7). KGen's 20/20 IDENTICAL missed the bug — input-dependent, only triggers on specific spanRatio bit patterns. Baselines caught it. (dev notes `202604281854`, `202604281859`, `202604281913`)
+- [x] ComputeTau1 (66 lines, PRIVATE) — 20/20 IDENTICAL, 17/17 baselines PASS. First DBEMT function with error handling (ErrStat/ErrMsg, SetErrStat lambda). Surfaced 3 VIT bugs: (1) catastrophic regex backtracking in `scan_allocatable_sizes`, (2) TYPE() ALLOCATABLE rank mismatch in view populator, (3) KGen CHARACTER(*) code generation. All fixed. (dev note `202604282039`)
+- [ ] DBEMT_InitStates (26 lines, PRIVATE) — per-node state init. Sets vind=vind_s, vind_1 depends on mode. Writes `OtherState%areStatesInitialized(i,j)`. Test case: `ad_MHK_RM1_Fixed` (38,400 hits). Needs DBEMT_ContinuousStateType + DBEMT_OtherStateType views (auto-generated by `vit translate`).
 - [ ] DBEMT_CalcOutput (35 lines, PUBLIC) — output filtered velocity. If not initialized: return unfiltered input. Else: return state. Test case: `ad_MHK_RM1_Fixed` (72,060 hits).
 - [ ] DBEMT_CalcContStateDeriv (44 lines, PUBLIC) — ODE derivatives (Mode 3 only). Calls ComputeTau2 (C++ direct). Computes d(vind_1)/dt and d(vind)/dt. Test case: `ad_BAR_SineMotion_UA4_DBEMT3` (34,650 hits — ONLY test with Mode 3 coverage).
 - [ ] Rebuild + verify 17/17 baselines
 
 **DBEMT Phase B — Time Integrators (3 functions, ~241 lines, KGen verified):**
 
-All three are ONLY exercised by `ad_BAR_SineMotion_UA4_DBEMT3` (Mode 3).
+All three are ONLY exercised by `ad_BAR_SineMotion_UA4_DBEMT3` (Mode 3). Extraction must use this test case (DBEMT_Mod=3). `vit translate` will auto-generate DBEMT_OtherStateType and DBEMT_ContinuousStateType view structs when first encountered. The OtherStateType is the most complex DBEMT type — ALLOCATABLE arrays + fixed-size `xdot(1:4)` array of ContinuousStateType. The xdot field needs 4 embedded ContinuousState sub-views for the ABM4 history buffer.
 
 Key decision: **`DBEMT_ElementInputType_ExtrapInterp` inlined in C++** — the Registry-generated interpolation routine is only 6 lines of Lagrange interpolation on 3 scalars (vind_s[0], vind_s[1], spanRatio). Inlining avoids a callee bridge to Registry-generated Fortran and is verified transitively through kernel tests.
 
@@ -291,7 +308,7 @@ Key decision: **`DBEMT_ElementInputType_ExtrapInterp` inlined in C++** — the R
 | OtherState%xdot(1:4) | 4 embedded ContinuousState views | Cleanest mapping for fixed-array of ALLOCATABLE-containing types |
 | OPTIONAL in ComputeTau2 | has_X/X pair in bridge | Established VIT pattern from AirfoilInfo |
 | num2lstr | std::to_string() | Only in warning messages; exact Fortran format match not critical |
-| PRIVATE functions | C++-to-C++ direct calls | No Fortran wrapper overhead on hot path; wrappers only for PUBLIC functions called by BEMT |
+| PRIVATE functions | Integrate each individually via `vit integrate` | PRIVATE function bodies ARE replaced with wrappers (proven by ComputeTau2/ComputeTau1). Previous concern about optimization sensitivity was a misdiagnosis — actual root cause was a translation bug + vectorization flag (KD7). The workflow works exactly as it did for ROSCO. |
 
 **DBEMT Coverage Data (hits per test case):**
 
@@ -310,7 +327,9 @@ Key decision: **`DBEMT_ElementInputType_ExtrapInterp` inlined in C++** — the R
 
 Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Continuous ODE path (Mode 3): **ONLY** `ad_BAR_SineMotion_UA4_DBEMT3`.
 
-**Revisit trigger:** After DBEMT Phase A — if view struct infrastructure for DBEMT types proves more complex than expected (especially OtherState%xdot(1:4)), reassess Phase B/C/D approach. **Status: AirfoilInfo COMPLETE (20/20). All VIT infrastructure mature: KGen kernel, test-validate, simulation baselines, file-output comparison, view structs (AFI_ParameterType + AFI_Table_Type), shared NWTC header (12 functions), two-pass orchestrator pattern, error constants consolidated. 17 regression baselines. Ready for DBEMT.**
+**Revisit trigger:** After DBEMT Phase A — if view struct infrastructure for DBEMT types proves more complex than expected (especially OtherState%xdot(1:4)), reassess Phase B/C/D approach.
+
+**Phase A status (2026-04-28):** 2/5 leaf functions integrated (ComputeTau2, ComputeTau1). Infrastructure proven: DBEMT view structs (ParameterType, InputType), error handling (ErrStat/ErrMsg with SetErrStat lambda), MiscVarType C struct, `-fno-tree-loop-vectorize` prevents vectorization divergence, auto-type generation eliminates manual prerequisites. 5 VIT bugs fixed during DBEMT: regex backtracking, TYPE() rank mismatch, CHARACTER(*) kernel repair, C++ function scan false positives, Fortran intrinsic callee detection. Remaining 3 functions (InitStates, CalcOutput, CalcContStateDeriv) should be fast — infrastructure is hardened.
 
 **Dev notes:** `202604241004` (first extraction), `202604241026` (precision mismatch), `202604241051` (VIT adaptation issues), `202604241122` (first verification), `202604241337` (FMA confirmed), `202604241400` (first full verification), `202604241415` (full pipeline proven), `202604241459` (four infrastructure fixes), `202604241905` (derived type functions proven), `202604251125` (cross-module instrumentation), `202604251317` (kernel repair), `202604251331` (Calculate_C_alpha complete), `202604251425` (view reverse-copy fix), `202604251451` (three functions + two fixes), `202604251503` (auto-callee declarations), `202604251821` (onCl + callee bridge re-sync + integrate_all.sh), `202604251943` (vit_nwtc.h + AttachedFlow), `202604270158` (ReadAFfile in-progress), `202604270219` (ReadAFfile approach pivot), `202604270333` (ReadAFfile integration — three root causes), `202604270354` (ReadAFfile reflection + path forward), `202604271433` (AFI_Init integration — two-pass orchestrator + CubicSplineInitM), `202604271455` (AFI_Init test-validate — 11/11 multi-table validation)
 
@@ -462,11 +481,11 @@ Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Con
 
 ## 7. Current State
 
-**Date:** 2026-04-27
+**Date:** 2026-04-28
 
-**Status:** Phase 0 complete. Phase 1 in progress — **AirfoilInfo sub-module COMPLETE (all 20 functions in C++).** Shared NWTC utility library (`vit_nwtc.h/.cpp`) with 12 functions. Error constants and helpers consolidated into shared header. 17 regression baselines all passing bit-identical. Next: DBEMT module.
+**Status:** Phase 0 complete. Phase 1 in progress — **AirfoilInfo COMPLETE (20/20), DBEMT Phase A 2/5.** ComputeTau2 and ComputeTau1 integrated, 17/17 baselines PASS. VIT infrastructure hardened with 5 bug fixes during DBEMT. Auto-type generation eliminates manual prerequisites. Verification methodology clarified: KGen = smoke test (structural), baselines = ground truth (correctness).
 
-**Next action:** DBEMT module (14 procedures, ~1,028 lines, mostly leaf math). AirfoilInfo is COMPLETE — all 20 hand-written functions in C++, verified via 4 approaches (KGen kernel, test-validate, simulation baselines, file-output comparison). This is the first complete OpenFAST module.
+**Next action:** DBEMT_InitStates (26 lines, simple state initialization). Then DBEMT_CalcOutput and DBEMT_CalcContStateDeriv to complete Phase A. All infrastructure is in place — remaining functions should be fast.
 
 **Completed milestones:**
 - [x] Docker container (`vit-dev-openfast`) built and verified
@@ -505,6 +524,12 @@ Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Con
 - [x] Phase 1: ad_MHK_RM1_Fixed_UA regression test — 17th baseline. Exercises 2D UA interpolation (AFTabMod=2Re + UA_Mod=4). UAStartRad bug found and fixed. Baseline generated from clean Fortran. (dev note `202604262336`)
 - [x] Phase 1: CheckValuesAreUniqueMonotonicIncreasing — 11/11 test-validate, 17/17 baselines. VIT test-validate enhanced for FUNCTION return types (LOGICAL→C_BOOL) and assumed-shape arrays. 15th AirfoilInfo function. (dev note `202604270158`)
 - [x] Phase 1: ReadAFfile — 17/17 baselines. Two-pass idiomatic C++ file parser with keyword-based `AirfoilFileParser`. Three bugs found and fixed: uninitialized FileInfo cleanup, ParseVar keyword-check-before-consume, conditional Cpmin column mapping. 16th AirfoilInfo function. (dev notes `202604270158`, `202604270219`, `202604270333`)
+- [x] CLAUDE.md refactored — 819 → 194 lines. Reference material extracted to docs/. Context window freed for active workflow.
+- [x] Phase 1: ComputeTau2 integrated — 20/20 KGen, 17/17 baselines. Translation bug (operator precedence `a*x**2`) + vectorization fix (`-fno-tree-loop-vectorize`). All 17 baselines regenerated. (dev notes `202604281854`, `202604281859`, `202604281913`)
+- [x] Phase 1: ComputeTau1 integrated — 20/20 KGen, 17/17 baselines. First DBEMT function with error handling. 3 VIT bugs fixed (regex, rank mismatch, CHARACTER(*)). (dev note `202604282039`)
+- [x] VIT: auto-type infrastructure — `vit translate` auto-detects view types, writes vit_types.h + populator .f90. No manual prerequisites. (dev note `202604282134`)
+- [x] VIT: 5 bug fixes during DBEMT — regex backtracking, TYPE() rank mismatch, CHARACTER(*) kernel repair, C++ scan false positives, Fortran intrinsic callee detection
+- [x] Workflow discipline documented — two-layer verification, dual-computation debug technique, operator precedence warning in CLAUDE.md + TRANSLATION_TIPS.md + memory
 
 ## 8. Change Log
 
@@ -541,6 +566,13 @@ Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Con
 | 2026-04-27 | AFI_Init integrated | 17th AirfoilInfo function. Module initialization orchestrator (~258 lines). Two-pass architecture: pass 1 handles multi-table validation (Re/UserProp consistency, monotonicity) and secondVals computation, pass 2 computes cubic spline coefficients. CubicSplineInitM + CubicLinSplineInitM added to vit_nwtc (12th/13th utility functions — tridiagonal Gaussian elimination, no LAPACK). ColUAf overwrite bug caught during initial 15/17 failure (pass 1 resetting ColUAf=0, overwriting ReadAFfile's value). 17/17 baselines + 11/11 test-validate (all 7 error branches + 3 happy paths + 1 warning path). |
 | 2026-04-27 | AFI_WrHeader + AFI_WrData + AFI_WrTables integrated | 18th-20th AirfoilInfo functions. Debug-output trio with native C++ file I/O. WrTables computes derived quantities (cn, cc, cl_lin, cn_lin) + calls kernelSmoothing. File-output verification: two test harnesses compare data lines between C++ and Fortran (skipping timestamps/headers). Bugs: NWTC_Init required for R2D, CHARACTER(17) padding direction, trailing whitespace. **AirfoilInfo module COMPLETE — all 20 functions in C++.** |
 | 2026-04-27 | Consolidate duplicate constants | Error constants (ErrID_None/Warn/Fatal) and setErrMsg helper moved from 8 .cpp files to vit_nwtc.h. UA model constants in calculateuacoeffs.cpp replaced with vit_aerodyn_constants.h include. CheckValues vit.yaml corrected to status:verified (inlined in afi_init.cpp). |
+| 2026-04-28 | CLAUDE.md refactor | 819 → 194 lines. Extracted reference material to 4 docs/ files (VERIFICATION_METHODS, VIT_REFERENCE, CONTAINER_SETUP, NWTC_UTILITIES). CLAUDE.md retains only operational workflow content. |
+| 2026-04-28 | ComputeTau2 integrated | First DBEMT function. Two root causes found: (1) translation bug — C++ `a*x*x` ≠ Fortran `a*x**2` operator precedence, fix: parentheses; (2) vectorization divergence — replacing function body changes gfortran vectorization (scalar vs SIMD exp, 1 ULP diff amplified by UA feedback). Fix: `-fno-tree-loop-vectorize` on DBEMT.f90 (KD7). All 17 baselines regenerated with new flag. Dev notes `202604281854`, `202604281859`, `202604281913`. |
+| 2026-04-28 | KGen verification methodology clarified | ComputeTau2's `a*x**2` bug passed 20/20 KGen IDENTICAL but caused catastrophic baseline divergence. Root cause: KGen's 20-invocation sample missed input-dependent rounding differences. Lesson: KGen = structural smoke test, baselines = ground truth. When they disagree, investigate the translation. Dev notes `202604281859`, `202604281913`. |
+| 2026-04-28 | ComputeTau1 integrated | Second DBEMT function. First with error handling (ErrStat/ErrMsg). Surfaced 3 VIT bugs: (1) catastrophic regex backtracking in `scan_allocatable_sizes` (field name `element` triggered exponential backtracking — replaced with paren counting), (2) TYPE() ALLOCATABLE rank mismatch (rank-2 `element(:,:)` got 1D size field — fixed for all ranks), (3) KGen CHARACTER(*) code generation (illegal `*` in identifiers + assumed-length locals — added kernel repair rules). Code audit found 4 more edge cases. Dev note `202604282039`. |
+| 2026-04-28 | Auto-type infrastructure in `vit translate` | `vit translate` now auto-detects ALLOCATABLE types, sets view strategy in vit.yaml, writes vit_types.h, creates populator .f90 files. Eliminates 3-4 manual prerequisite steps per new type. KD8. Dev note `202604282134`. |
+| 2026-04-28 | reset_to_clean.sh + integrate_all.sh updated | Both scripts now manage DBEMT.f90 + computetau1.cpp + computetau2.cpp alongside AirfoilInfo files. Verified: full reset → integrate_all → rebuild → 17/17 PASS. |
+| 2026-04-28 | Workflow discipline documented | CLAUDE.md updated with two-layer verification understanding, dual-computation debug technique, operator precedence warning, and workflow discipline rules. Memory saved for future sessions. |
 
 ## 9. Deferred Technical Items
 
