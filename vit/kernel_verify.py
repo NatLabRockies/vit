@@ -1134,6 +1134,11 @@ def _generate_callee_bridges(
     if not callee_names:
         return []
 
+    # Read C++ source to check which callees are actually referenced
+    cpp_source_text = ""
+    if target_cpp_file and Path(target_cpp_file).exists():
+        cpp_source_text = Path(target_cpp_file).read_text()
+
     bridge_sources = []
     callee_sigs = []
 
@@ -1142,6 +1147,13 @@ def _generate_callee_bridges(
         # file or shared headers). No Fortran bridge needed.
         if callee_name.upper() in cpp_implemented:
             continue
+
+        # Skip callees not referenced in the C++ source (e.g., inlined callees
+        # that appear in the Fortran source but not in the C++ translation)
+        if cpp_source_text:
+            c_name = callee_name.lower() + "_c"
+            if callee_name not in cpp_source_text and c_name not in cpp_source_text:
+                continue
 
         # Find the callee's definition in the source directory.
         # NOTE: Source must be clean (pre-integration) — integrated source has
