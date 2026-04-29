@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -63,11 +64,16 @@ def query_line(coverage: dict, file_path: str, line_no: int) -> dict[str, int]:
     return result
 
 
-def find_call_sites(source_root: str, func_name: str) -> list[tuple[str, int, str]]:
+def find_call_sites(
+    source_root: str, func_name: str, source_commit: str = None
+) -> list[tuple[str, int, str]]:
     """Find all call sites for a function in AeroDyn source files.
 
     Returns list of (relative_file_path, line_number, line_text) tuples.
     Searches for both CALL statements and function-call expressions.
+
+    If source_commit is provided, reads source from that git commit
+    (via `git show`) to match the line numbers in coverage data.
     """
     aerodyn_src = os.path.join(source_root, "modules", "aerodyn", "src")
     if not os.path.isdir(aerodyn_src):
@@ -77,27 +83,59 @@ def find_call_sites(source_root: str, func_name: str) -> list[tuple[str, int, st
         rf"(?:call\s+{re.escape(func_name)}\b|=\s*{re.escape(func_name)}\s*\()",
         re.IGNORECASE,
     )
-    # Exclude function/subroutine definitions
     def_pattern = re.compile(
         rf"^\s*(SUBROUTINE|FUNCTION)\s+{re.escape(func_name)}\b", re.IGNORECASE
     )
 
+    def _read_lines(rel_path: str) -> list[str]:
+        """Read file lines, using git show if source_commit is set."""
+        if source_commit:
+            try:
+                result = subprocess.run(
+                    ["git", "-C", source_root, "show", f"{source_commit}:{rel_path}"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode == 0:
+                    return result.stdout.splitlines()
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
+        abs_path = os.path.join(source_root, rel_path)
+        if os.path.isfile(abs_path):
+            with open(abs_path) as f:
+                return f.read().splitlines()
+        return []
+
     results = []
     for f90 in sorted(Path(aerodyn_src).glob("*.f90")):
         rel_path = os.path.relpath(str(f90), source_root)
-        with open(f90) as f:
-            for i, line in enumerate(f, 1):
-                if pattern.search(line) and not def_pattern.search(line):
-                    results.append((rel_path, i, line.strip()))
+        lines = _read_lines(rel_path)
+        for i, line in enumerate(lines, 1):
+            if pattern.search(line) and not def_pattern.search(line):
+                results.append((rel_path, i, line.strip()))
     return results
 
 
 def find_enclosing_function(
-    source_file: str, line_no: int
+    source_file: str, line_no: int,
+    source_root: str = None, source_commit: str = None, rel_path: str = None,
 ) -> str:
     """Find the function/subroutine that contains a given line number."""
-    if not os.path.isfile(source_file):
-        return "unknown"
+    lines = None
+    if source_commit and source_root and rel_path:
+        try:
+            result = subprocess.run(
+                ["git", "-C", source_root, "show", f"{source_commit}:{rel_path}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                lines = result.stdout.splitlines()
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+    if lines is None:
+        if not os.path.isfile(source_file):
+            return "unknown"
+        with open(source_file) as f:
+            lines = f.read().splitlines()
 
     current_func = "module-level"
     func_pattern = re.compile(
@@ -110,17 +148,16 @@ def find_enclosing_function(
         r"^\s*END\s+(?:SUBROUTINE|FUNCTION)\b", re.IGNORECASE
     )
 
-    with open(source_file) as f:
-        for i, line in enumerate(f, 1):
-            m = func_pattern.match(line)
-            if m:
-                current_func = m.group(1)
-            if end_pattern.match(line):
-                if i >= line_no:
-                    return current_func
-                current_func = "module-level"
-            if i == line_no:
+    for i, line in enumerate(lines, 1):
+        m = func_pattern.match(line)
+        if m:
+            current_func = m.group(1)
+        if end_pattern.match(line):
+            if i >= line_no:
                 return current_func
+            current_func = "module-level"
+        if i == line_no:
+            return current_func
     return current_func
 
 
@@ -163,19 +200,22 @@ def cmd_call_sites(args, coverage):
     """Handle --call-sites FUNC_NAME query."""
     source_root = args.source_root
     if not source_root:
-        # Try to infer from coverage metadata
         source_root = coverage.get("metadata", {}).get("source_root", ".")
 
-    sites = find_call_sites(source_root, args.call_sites)
+    source_commit = coverage.get("metadata", {}).get("source_commit")
+
+    sites = find_call_sites(source_root, args.call_sites, source_commit=source_commit)
     if not sites:
         print(f"No call sites found for {args.call_sites} in AeroDyn source")
         return
 
     print(f"Call sites for {args.call_sites}:")
     for file_path, line_no, line_text in sites:
-        # Find enclosing function
         abs_path = os.path.join(source_root, file_path)
-        caller = find_enclosing_function(abs_path, line_no)
+        caller = find_enclosing_function(
+            abs_path, line_no,
+            source_root=source_root, source_commit=source_commit, rel_path=file_path,
+        )
 
         hits = query_line(coverage, file_path, line_no)
         if hits:

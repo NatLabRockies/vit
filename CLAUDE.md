@@ -57,7 +57,7 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 
 **Callee declarations:** VIT handles these automatically. During kernel verification: `vit_kernel_callees.h`. During integration: `vit_translated.h`. No `extern "C"` boilerplate needed.
 
-**Always use `vit translate` to seed translations.** Do not write C++ from scratch. The scaffold includes callee `_c` signatures with OPTIONAL parameter handling that isn't obvious from the Fortran source. Skipping it leads to signature mismatches. `vit translate` also includes `openfast/TRANSLATION_TIPS.md` in the prompt automatically — add lessons learned from translation failures there so future prompts get smarter.
+**Always use `vit translate` to seed translations.** Do not write C++ from scratch. The scaffold includes callee `_c` signatures with OPTIONAL parameter handling that isn't obvious from the Fortran source. Skipping it leads to signature mismatches. `vit translate` also includes `openfast/TRANSLATION_TIPS.md` in the prompt automatically — add lessons learned from translation failures there so future prompts get smarter. **Warning:** `vit translate` overwrites the scaffold file every time. Do not re-run it after writing the C++ implementation unless you have saved the implementation elsewhere.
 
 **`vit translate` auto-generates type infrastructure.** When it encounters a derived type with ALLOCATABLE fields that has no strategy configured in vit.yaml, it automatically: (1) sets `strategy: view` in vit.yaml, (2) writes/updates `vit_types.h` with the C view struct, (3) creates the Fortran view populator module (.f90). No manual type setup needed before translating. `vit integrate` then auto-adds the populator .f90 to CMakeLists.txt.
 
@@ -94,6 +94,8 @@ Extraction requires clean (pre-integration) Fortran source. `reset_to_clean.sh` 
 **The pair must be used together.** Without `integrate_all.sh`, early leaf function wrappers are lost.
 
 **After every successful integration (17/17 baselines pass), update both scripts** to include the new function's source files. Add the integrated .f90 to `reset_to_clean.sh`'s restoration loop and the .f90/.cpp to `integrate_all.sh`'s restore steps. Commit the script updates alongside the integration. This ensures the reset/restore cycle works for the next extraction.
+
+**Commit before testing the reset+integrate cycle.** `integrate_all.sh` uses `git checkout HEAD --` to restore files. If new files (view populators, .cpp) haven't been committed yet, the restore fails. Always: integrate → baselines → commit → then verify reset+integrate works.
 
 ```bash
 # Run on Mac (git commands + docker exec for vit):

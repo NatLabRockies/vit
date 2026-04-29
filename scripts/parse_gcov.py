@@ -17,6 +17,7 @@ import datetime
 import gzip
 import json
 import os
+import subprocess
 from pathlib import Path
 
 
@@ -125,11 +126,24 @@ def main():
             }
         }
 
+    # Capture the git commit hash of the source used for coverage
+    source_commit = None
+    try:
+        result = subprocess.run(
+            ["git", "-C", source_root, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            source_commit = result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
     output = {
         "metadata": {
             "generated": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "test_cases": test_cases,
             "source_root": source_root,
+            "source_commit": source_commit,
             "file_count": len(files_output),
         },
         "files": files_output,
