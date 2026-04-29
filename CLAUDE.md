@@ -14,8 +14,8 @@ This workspace contains three tools for verified Fortran→C++ translation in sc
 
 ## Project Status — AeroDyn
 
-- **Phase 1 — AirfoilInfo module COMPLETE (all 20 functions in C++).** Phase 0 (Registry C++ generator) also complete. Shared NWTC utility library (`vit_nwtc.h/.cpp`) with 12 functions. Four verification approaches proven.
-- **Next step:** DBEMT module (14 procedures, ~1,028 lines, mostly leaf math).
+- **Phase 1 — AirfoilInfo COMPLETE, DBEMT in progress.** AirfoilInfo: all 20 functions in C++. Phase 0 (Registry C++ generator) also complete. Shared NWTC utility library (`vit_nwtc.h/.cpp`) with 12 functions. Four verification approaches proven.
+- **DBEMT Phase A (leaf math): 2/5 complete.** ComputeTau2 and ComputeTau1 integrated, 17/17 baselines PASS. Next: DBEMT_InitStates, DBEMT_CalcOutput, DBEMT_CalcContStateDeriv.
 - **Scope:** All of AeroDyn — 507 hand-written procedures, Registry C++ generator (740 generated procedures), drivers/C-binding. End state: pure C++ AeroDyn module, no Fortran, no libgfortran.
 - **Verification:** KGen float64 kernel + `vit test-validate` branch-coverage + 17-case simulation bit-identical + NREL regression 17/17.
 - **Translation boundary:** Everything inside AeroDyn → C++. Everything outside (NWTC Library, InflowWind, SeaState, LinDyn) → stays Fortran, crossed via BIND(C) / view structs. Individual NWTC utility functions used by AeroDyn translated in `vit_nwtc.h`.
@@ -59,7 +59,11 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 
 **Always use `vit translate` to seed translations.** Do not write C++ from scratch. The scaffold includes callee `_c` signatures with OPTIONAL parameter handling that isn't obvious from the Fortran source. Skipping it leads to signature mismatches. `vit translate` also includes `openfast/TRANSLATION_TIPS.md` in the prompt automatically — add lessons learned from translation failures there so future prompts get smarter.
 
+**`vit translate` auto-generates type infrastructure.** When it encounters a derived type with ALLOCATABLE fields that has no strategy configured in vit.yaml, it automatically: (1) sets `strategy: view` in vit.yaml, (2) writes/updates `vit_types.h` with the C view struct, (3) creates the Fortran view populator module (.f90). No manual type setup needed before translating. `vit integrate` then auto-adds the populator .f90 to CMakeLists.txt.
+
 **`--reverse-copy` flag:** Use when the function modifies scalar fields in view-type INOUT arguments. Not needed when only ALLOCATABLE arrays are modified (those work through `C_LOC` pointers).
+
+**Operator precedence: Fortran `a*x**2` ≠ C++ `a * x * x`.** Fortran's `**` binds tighter than `*`, so `a*x**2` means `a * (x*x)`. C++ evaluates `a * x * x` left-to-right as `(a*x) * x`. The different intermediate rounding produces 1-3 ULP differences for certain values. Always parenthesize: `a * (x * x)`. See `TRANSLATION_TIPS.md` for this and other lessons.
 
 **Vectorization fix for DBEMT:** `CMakeLists.txt` sets `-fno-tree-loop-vectorize` on `DBEMT.f90`. Replacing a module-internal function body with a wrapper changes gfortran's vectorization decision for the caller's `exp()` loop (scalar libm vs SIMD libmvec, 1 ULP difference). The DBEMT exponential filter feedback loop amplifies this through UA-coupled timesteps. The flag ensures consistent scalar `exp()` regardless of wrapper insertion. Same root cause as the kernel verification libmvec issue (dev note `202604260357`). Other modules with similar sensitive feedback loops may need the same treatment.
 
@@ -77,9 +81,15 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 3. Only after exhausting the investigation, bring the question to the user with your findings
 4. Never conclude "the workflow doesn't work for this case" without rigorous proof — the ROSCO project integrated 52 functions using this exact workflow
 
+**Two verification layers, both essential:**
+- **KGen kernel (step 4, 20 cases):** Fast smoke test. Catches structural bugs — wrong types, wrong indexing, wrong control flow. Per-field diagnostics tell you exactly which output diverged. But 20/20 IDENTICAL does not prove correctness — it only covers 20 inputs out of tens of thousands of simulation calls. Input-dependent bugs (e.g., operator precedence rounding at specific values) can hide in the sample gap.
+- **Baselines (step 7, 17 test cases):** Ground truth. Catches everything that reaches simulation output, including feedback-amplified sub-ULP differences. When KGen passes but baselines fail, **investigate the translation first** — not the compiler, not the infrastructure. The ComputeTau2 `a*x**2` bug (dev note `202604281854`) was exactly this: 20/20 IDENTICAL in KGen, catastrophic divergence in baselines, root cause was a parenthesis in the C++ translation.
+
+**When baselines fail after integration:** Add a dual-computation debug print to the Fortran wrapper — compute the result using both original Fortran expressions AND the C++ call, compare per-invocation. This finds value-level mismatches in seconds.
+
 ## Integration State Management (reset + integrate_all)
 
-Extraction requires clean (pre-integration) Fortran source. `reset_to_clean.sh` restores AirfoilInfo.f90 to upstream clean and stubs all .cpp files. After extraction, `integrate_all.sh` restores the fully-integrated state.
+Extraction requires clean (pre-integration) Fortran source. `reset_to_clean.sh` restores AirfoilInfo.f90 and DBEMT.f90 to upstream clean and stubs all .cpp files. After extraction, `integrate_all.sh` restores the fully-integrated state (AirfoilInfo wrappers + DBEMT wrappers + all .cpp files).
 
 **The pair must be used together.** Without `integrate_all.sh`, early leaf function wrappers are lost.
 
@@ -96,8 +106,8 @@ docker exec vit-dev-openfast bash -c "cd /workspace/openfast && bash scripts/ver
 ```
 
 **What `integrate_all.sh` does:**
-1. Restores committed source files from git (AirfoilInfo.f90 with hand-integrated wrappers, view populator modules, `vit_nwtc.cpp`)
-2. Runs `vit integrate` for 13 leaf/orchestrator functions
+1. Restores committed source files from git (AirfoilInfo.f90 and DBEMT.f90 with wrappers, view populator modules, all .cpp files)
+2. Runs `vit integrate` for 14 AirfoilInfo leaf/orchestrator functions
 3. Restores committed .cpp files (VIT's generated versions have duplicate `extern "C"` wrappers; committed versions are correct)
 
 The script runs on the Mac (needs git + docker exec). To run inside the container, replace `docker exec ... vit integrate` with direct `vit integrate`.
@@ -133,7 +143,8 @@ The script runs on the Mac (needs git + docker exec). To run inside the containe
 - **Multi-table interpolation:** `ad_MHK_RM1_Fixed`
 - **2D UA interpolation:** `ad_MHK_RM1_Fixed_UA`
 - **OLAF/FVW functions:** `ad_BAR_OLAF` or `ad_Kite_OLAF`
-- **DBEMT functions:** `ad_BAR_SineMotion` (DBEMT_Mod=1) or `ad_BAR_SineMotion_UA4_DBEMT3` (DBEMT_Mod=3)
+- **DBEMT functions (Modes 1/2):** `ad_MHK_RM1_Fixed` (DBEMT_Mod=2, 38,400 hits — highest coverage)
+- **DBEMT functions (Mode 3 only):** `ad_BAR_SineMotion_UA4_DBEMT3` (DBEMT_Mod=3, ONLY test with Mode 3)
 
 ## Extraction Workflow (AeroDyn)
 
@@ -170,7 +181,7 @@ cd /workspace/openfast && vit extract FunctionName -f modules/aerodyn/src/Source
 
 **Step 6 — Restore integrated source:**
 ```bash
-git checkout -- modules/aerodyn/src/AirfoilInfo.f90    # Run on Mac
+bash scripts/integrate_all.sh    # Run on Mac — restores all AirfoilInfo + DBEMT wrappers
 ```
 Then rebuild.
 
