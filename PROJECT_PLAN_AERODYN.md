@@ -153,7 +153,7 @@ Simple `!$OMP PARALLEL DO` loops in FVW_BiotSavart.f90. Embarrassingly parallel 
 
 ### OQ8: VIT enhancements for AeroDyn [answered 2026-04-25, updated 2026-04-28]
 
-**Answer:** VIT works on AeroDyn. 22 VIT fixes total (12 for initial AeroDyn adaptation, 2 for derived type infrastructure, 8 during DBEMT Phase A). Proven across 23 functions spanning two modules. DBEMT added: rank-2 TYPE() ALLOCATABLE view structs, error handling (ErrStat/ErrMsg), CHARACTER(*) kernel repair, Fortran intrinsic callee filtering, auto-type infrastructure in `vit translate`, typed pointers for C-compatible ALLOCATABLE TYPE() fields, callee detection excluding field access, fixed-size arrays of view types (KD9). Known limitation resolved: ALLOCATABLE TYPE() array access proven via typed pointer marshalling (AFI_ParameterType.Table).
+**Answer:** VIT works on AeroDyn. 25 VIT fixes total (12 for initial AeroDyn adaptation, 2 for derived type infrastructure, 11 during DBEMT Phase A). Proven across 25 functions spanning two modules. DBEMT added: rank-2 TYPE() ALLOCATABLE view structs, error handling (ErrStat/ErrMsg), CHARACTER(*) kernel repair, Fortran intrinsic callee filtering, auto-type infrastructure in `vit translate`, typed pointers for C-compatible ALLOCATABLE TYPE() fields, callee detection excluding field access, fixed-size arrays of view types (KD9). Known limitation resolved: ALLOCATABLE TYPE() array access proven via typed pointer marshalling (AFI_ParameterType.Table).
 
 ### OQ9: Upstream sync strategy [unknown — decision needed]
 
@@ -278,9 +278,9 @@ VIT now handles `TYPE(Foo), DIMENSION(1:N) :: bar` where Foo has ALLOCATABLE fie
 - [x] ComputeTau2 (26 lines, PRIVATE) — 20/20 IDENTICAL, 17/17 baselines PASS. Translation bug found: `0.26 * spanRatio * spanRatio` ≠ Fortran `0.26*spanRatio**2` (operator precedence — C++ left-to-right vs Fortran `**` binding tighter). Fix: parentheses `0.26 * (spanRatio * spanRatio)`. Also required `-fno-tree-loop-vectorize` on DBEMT.f90 (KD7). KGen's 20/20 IDENTICAL missed the bug — input-dependent, only triggers on specific spanRatio bit patterns. Baselines caught it. (dev notes `202604281854`, `202604281859`, `202604281913`)
 - [x] ComputeTau1 (66 lines, PRIVATE) — 20/20 IDENTICAL, 17/17 baselines PASS. First DBEMT function with error handling (ErrStat/ErrMsg, SetErrStat lambda). Surfaced 3 VIT bugs: (1) catastrophic regex backtracking in `scan_allocatable_sizes`, (2) TYPE() ALLOCATABLE rank mismatch in view populator, (3) KGen CHARACTER(*) code generation. All fixed. (dev note `202604282039`)
 - [x] DBEMT_InitStates (26 lines, PRIVATE) — 20/20 IDENTICAL, 17/17 baselines PASS. First function with INOUT state types (ContinuousStateType, OtherStateType). Surfaced 3 VIT bugs: (1) void* for C-compatible ALLOCATABLE TYPE() fields, (2) C_NULL_PTR for same in populator, (3) callee detection matching field access `%element(i,j)`. Also fixed integrate_all.sh missing InputType view restore. (dev note `202604291005`)
-- [ ] DBEMT_CalcOutput (35 lines, PUBLIC) — output filtered velocity. If not initialized: return unfiltered input. Else: return state. Test case: `ad_MHK_RM1_Fixed` (72,060 hits).
-- [ ] DBEMT_CalcContStateDeriv (44 lines, PUBLIC) — ODE derivatives (Mode 3 only). Calls ComputeTau2 (C++ direct). Computes d(vind_1)/dt and d(vind)/dt. Test case: `ad_BAR_SineMotion_UA4_DBEMT3` (34,650 hits — ONLY test with Mode 3 coverage).
-- [ ] Rebuild + verify 17/17 baselines
+- [x] DBEMT_CalcOutput (35 lines, PUBLIC) — 20/20 IDENTICAL, 17/17 baselines PASS. Cross-module extraction from BEMT.f90:1215. ErrMsg blank-padding lesson: Fortran `ErrMsg=""` fills with spaces, C++ must `memset(errMsg,' ',ErrMsgLen)`. Added to TRANSLATION_TIPS.md. (dev note `202604291756`)
+- [x] DBEMT_CalcContStateDeriv (44 lines, PUBLIC) — 20/20 IDENTICAL, 17/17 baselines PASS. First function with translated callee (ComputeTau2 via bridge). Surfaced 3 VIT bugs in callee bridge generation: (1) missing USE for inherited types, (2) no C++ callee detection on integrated source, (3) CONTAINS whitespace in PUBLIC patching. All fixed. (dev notes `202604291824`, `202604291859`)
+- [x] **Phase A COMPLETE** — all 5 leaf functions integrated, 17/17 baselines PASS.
 
 **DBEMT Phase B — Time Integrators (3 functions, ~241 lines, KGen verified):**
 
@@ -336,7 +336,7 @@ Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Con
 
 **Revisit trigger:** OtherState%xdot(1:4) infrastructure resolved (KD9). Phase B ready to proceed.
 
-**Phase A status (2026-04-29):** 3/5 leaf functions integrated (ComputeTau2, ComputeTau1, DBEMT_InitStates). Infrastructure proven: all DBEMT view structs (ParameterType, InputType, ContinuousStateType, OtherStateType with xdot[4]), error handling, MiscVarType, vectorization fix, auto-type, fixed-size view arrays. 8 VIT bugs fixed during DBEMT. Remaining 2 functions (CalcOutput, CalcContStateDeriv) should be fast.
+**Phase A status (2026-04-29): COMPLETE.** All 5 leaf functions integrated (ComputeTau2, ComputeTau1, DBEMT_InitStates, DBEMT_CalcOutput, DBEMT_CalcContStateDeriv). 11 VIT bugs fixed during DBEMT Phase A. Infrastructure proven: all DBEMT view structs, error handling, auto-type, fixed-size view arrays (KD9), callee bridges for view-type parameters, C++ callee detection on integrated source.
 
 **Dev notes:** `202604241004` (first extraction), `202604241026` (precision mismatch), `202604241051` (VIT adaptation issues), `202604241122` (first verification), `202604241337` (FMA confirmed), `202604241400` (first full verification), `202604241415` (full pipeline proven), `202604241459` (four infrastructure fixes), `202604241905` (derived type functions proven), `202604251125` (cross-module instrumentation), `202604251317` (kernel repair), `202604251331` (Calculate_C_alpha complete), `202604251425` (view reverse-copy fix), `202604251451` (three functions + two fixes), `202604251503` (auto-callee declarations), `202604251821` (onCl + callee bridge re-sync + integrate_all.sh), `202604251943` (vit_nwtc.h + AttachedFlow), `202604270158` (ReadAFfile in-progress), `202604270219` (ReadAFfile approach pivot), `202604270333` (ReadAFfile integration — three root causes), `202604270354` (ReadAFfile reflection + path forward), `202604271433` (AFI_Init integration — two-pass orchestrator + CubicSplineInitM), `202604271455` (AFI_Init test-validate — 11/11 multi-table validation)
 
@@ -490,9 +490,9 @@ Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Con
 
 **Date:** 2026-04-29
 
-**Status:** Phase 0 complete. Phase 1 in progress — **AirfoilInfo COMPLETE (20/20), DBEMT Phase A 3/5.** ComputeTau2, ComputeTau1, and DBEMT_InitStates integrated, 17/17 baselines PASS. VIT infrastructure hardened with 8 bug fixes during DBEMT + 2 enhancements (auto-type KD8, fixed-size view arrays KD9). Phase B xdot infrastructure ready.
+**Status:** Phase 0 complete. Phase 1 in progress — **AirfoilInfo COMPLETE (20/20), DBEMT Phase A COMPLETE (5/5).** All leaf math functions integrated, 17/17 baselines PASS. VIT infrastructure hardened with 11 bug fixes + 3 enhancements (auto-type KD8, fixed-size view arrays KD9, callee bridge fixes). Phase B xdot infrastructure and callee bridge infrastructure ready.
 
-**Next action:** DBEMT_CalcOutput (35 lines) and DBEMT_CalcContStateDeriv (44 lines) to complete Phase A.
+**Next action:** DBEMT Phase B — time integrators (DBEMT_RK4, DBEMT_AB4, DBEMT_ABM4).
 
 **Completed milestones:**
 - [x] Docker container (`vit-dev-openfast`) built and verified
@@ -541,6 +541,11 @@ Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Con
 - [x] VIT: typed pointers for C-compatible ALLOCATABLE TYPE() fields — void* → typed* in C structs, C_NULL_PTR → C_LOC in populators
 - [x] VIT: callee detection excludes field access — (?<!%) lookbehind prevents %element(i,j) matching
 - [x] VIT: fixed-size arrays of view types (KD9) — xdot[4] pattern, 7 instances across 4 modules. Embeds child_view_t arrays + populate/reverse-copy loops. Unblocks Phase B. (dev note `202604291527`)
+- [x] Phase 1: DBEMT_CalcOutput integrated — 20/20 KGen, 17/17 baselines. Cross-module extraction from BEMT.f90. ErrMsg blank-padding lesson added to TRANSLATION_TIPS.md. (dev note `202604291756`)
+- [x] Phase 1: DBEMT_CalcContStateDeriv integrated — 20/20 KGen, 17/17 baselines. First translated callee (ComputeTau2 via bridge). 3 callee bridge VIT fixes. (dev notes `202604291824`, `202604291859`)
+- [x] **DBEMT Phase A COMPLETE** — all 5 leaf functions integrated. 11 VIT bug fixes + 3 enhancements during Phase A.
+- [x] VIT: callee bridge fixes — USE fallback for inherited types, C++ callee detection on integrated source, CONTAINS whitespace in PUBLIC patching. (dev note `202604291859`)
+- [x] VIT: coverage query reads clean source via git show — line numbers match coverage data regardless of integration state. (dev note `202604291005`)
 
 ## 8. History
 
@@ -550,7 +555,7 @@ Detailed change history is in dev notes (`vit/dev/YYYYMMDDHHMM-descriptor.md`). 
 
 **Phase 1 — AirfoilInfo:** `202604241004` (first extraction), `202604241905` (derived types), `202604251943` (vit_nwtc.h), `202604260357` (libmvec vectorization), `202604261142` (test-validate audit), `202604270333` (ReadAFfile root causes), `202604271433` (AFI_Init two-pass)
 
-**Phase 1 — DBEMT:** `202604281854` (ComputeTau2 integration — operator precedence + vectorization fix), `202604281859` (KGen coverage gap), `202604281913` (the case for KGen), `202604282039` (ComputeTau1 + 3 VIT bugs), `202604282134` (auto-type infrastructure), `202604282138` (session reflection), `202604291005` (DBEMT_InitStates + 3 VIT fixes), `202604291527` (fixed-size view type arrays enhancement)
+**Phase 1 — DBEMT:** `202604281854` (ComputeTau2 integration — operator precedence + vectorization fix), `202604281859` (KGen coverage gap), `202604281913` (the case for KGen), `202604282039` (ComputeTau1 + 3 VIT bugs), `202604282134` (auto-type infrastructure), `202604282138` (session reflection), `202604291005` (DBEMT_InitStates + 3 VIT fixes), `202604291527` (fixed-size view type arrays enhancement), `202604291756` (CalcOutput + ErrMsg blank-padding), `202604291824` (Phase A complete), `202604291831` (session reflection), `202604291859` (callee bridge fixes — 3 root causes)
 
 ## 9. Deferred Technical Items
 
