@@ -917,7 +917,7 @@ def detect_callees(source: str, target_name: str,
     # Use known_functions to filter if available
     if known_functions:
         for func_name in known_functions:
-            pattern = rf'\b{_re.escape(func_name)}\s*\('
+            pattern = rf'(?<!%)\b{_re.escape(func_name)}\s*\('
             if _re.search(pattern, body_text, _re.IGNORECASE):
                 callees.add(func_name)
 

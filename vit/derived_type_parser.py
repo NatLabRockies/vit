@@ -661,6 +661,9 @@ def generate_view_struct_header(
             if nested_info and getattr(nested_info, 'view_strategy', None) == 'view':
                 child_view_type = f"{nested_info.name.lower()}_view_t"
                 lines.append(f"    {child_view_type}* {f.name};  // Array of view structs, populated by Fortran")
+            elif nested_info and nested_info.is_c_compatible_recursive(registry or {}):
+                child_type = f"{nested_info.name.lower()}_t"
+                lines.append(f"    {child_type}* {f.name};")
             else:
                 lines.append(f"    void* {f.name};  // TYPE({nested_name}), ALLOCATABLE — opaque")
             if rank == 1:
