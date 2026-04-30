@@ -2203,6 +2203,8 @@ def _fix_undefined_symbol(
     # Check if it's a PARAMETER in the project source — inline it
     value = _find_constant_in_source(symbol, source_dir)
     if value is not None:
+        if re.search(rf'PARAMETER\s*::\s*{symbol}\b', content, re.IGNORECASE):
+            return False
         lines = content.split("\n")
         insert_idx = None
         for i, line in enumerate(lines):
@@ -2348,13 +2350,13 @@ def _repair_kernel_build(
     source_dir: str,
     fortran_compiler: str,
     env: dict,
-    max_iterations: int = 5,
 ) -> dict:
     """Compile-error-driven kernel repair loop.
 
     Attempts to build the kernel, parses compiler/linker errors, applies
-    fixes from the project source tree, and retries. Stops when the build
-    succeeds or no more fixes can be applied.
+    fixes from the project source tree, and retries. Terminates when the
+    build succeeds or no more fixes can be applied (all fix functions are
+    idempotent, so the loop always converges).
 
     Returns:
         dict with 'success' (bool), 'modified' (list of files), 'errors' (list),
@@ -2368,8 +2370,10 @@ def _repair_kernel_build(
         "log": [],
     }
 
-    for iteration in range(max_iterations):
-        result["iterations"] = iteration + 1
+    iteration = 0
+    while True:
+        iteration += 1
+        result["iterations"] = iteration
 
         # Clean and build (merge stderr into stdout for coherent error parsing)
         subprocess.run("make clean", shell=True, cwd=str(kernel),
@@ -2381,7 +2385,7 @@ def _repair_kernel_build(
 
         if build.returncode == 0:
             result["success"] = True
-            result["log"].append(f"Build succeeded on iteration {iteration + 1}")
+            result["log"].append(f"Build succeeded on iteration {iteration}")
             return result
 
         # Parse errors
@@ -2409,7 +2413,7 @@ def _repair_kernel_build(
                 fixes_applied += 1
                 result["modified"].append(error.file)
                 result["log"].append(
-                    f"[iter {iteration + 1}] Fixed {error.category}: "
+                    f"[iter {iteration}] Fixed {error.category}: "
                     f"{error.symbol} in {error.file}"
                 )
 
@@ -2419,9 +2423,6 @@ def _repair_kernel_build(
                 f"First unfixed: {errors[0].category} '{errors[0].symbol}' in {errors[0].file}"
             )
             return result
-
-    result["errors"].append(f"Reached max iterations ({max_iterations})")
-    return result
 
 
 def _fix_use_ordering(content: str) -> str:

@@ -444,7 +444,12 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
             # Only reverse-copy INOUT args (not IN-only)
             if arg.intent and arg.intent.value.upper() in ("INOUT", "OUT"):
                 type_lower = mapping.c_type.lower()
-                lines.append(f"        CALL vit_copy_scalars_to_{type_lower}({arg.name}_view, {arg.name})")
+                if arg.is_array and not arg.is_assumed_shape and arg.array_dims:
+                    lines.append(f"        DO vit_view_i = 1, {arg.array_dims}")
+                    lines.append(f"            CALL vit_copy_scalars_to_{type_lower}({arg.name}_view(vit_view_i), {arg.name}(vit_view_i))")
+                    lines.append(f"        END DO")
+                else:
+                    lines.append(f"        CALL vit_copy_scalars_to_{type_lower}({arg.name}_view, {arg.name})")
 
     lines.append(f"    END SUBROUTINE {sig.name}")
     return lines
@@ -555,10 +560,17 @@ def _generate_view_declarations(view_args: list[tuple]) -> list[str]:
     if not view_args:
         return []
     lines = []
+    need_loop_var = False
     for arg, mapping in view_args:
         type_lower = mapping.c_type.lower()
         view_type = f"{type_lower}_view_t"
-        lines.append(f"        TYPE({view_type}), TARGET :: {arg.name}_view")
+        if arg.is_array and not arg.is_assumed_shape and arg.array_dims:
+            lines.append(f"        TYPE({view_type}), TARGET :: {arg.name}_view({arg.array_dims})")
+            need_loop_var = True
+        else:
+            lines.append(f"        TYPE({view_type}), TARGET :: {arg.name}_view")
+    if need_loop_var:
+        lines.append(f"        INTEGER :: vit_view_i")
     return lines
 
 
@@ -570,14 +582,22 @@ def _generate_view_executables(view_args: list[tuple], is_kernel: bool = False) 
     lines.append(f"        ! Populate view structs from Fortran types")
     for arg, mapping in view_args:
         type_lower = mapping.c_type.lower()
-        lines.append(f"        CALL vit_populate_{type_lower}({arg.name}, {arg.name}_view)")
+        if arg.is_array and not arg.is_assumed_shape and arg.array_dims:
+            lines.append(f"        DO vit_view_i = 1, {arg.array_dims}")
+            lines.append(f"            CALL vit_populate_{type_lower}({arg.name}(vit_view_i), {arg.name}_view(vit_view_i))")
+            lines.append(f"        END DO")
+        else:
+            lines.append(f"        CALL vit_populate_{type_lower}({arg.name}, {arg.name}_view)")
 
     if is_kernel:
         lines.append(f"        ! Stash original Fortran pointers for callee bridges")
         for arg, mapping in view_args:
             type_lower = mapping.c_type.lower()
             stash_name = f"vit_original_{type_lower}"
-            lines.append(f"        {stash_name} => {arg.name}")
+            if arg.is_array and not arg.is_assumed_shape and arg.array_dims:
+                lines.append(f"        {stash_name} => {arg.name}(1)")
+            else:
+                lines.append(f"        {stash_name} => {arg.name}")
 
     return lines
 
@@ -728,7 +748,7 @@ def build_c_params(sig: FortranSignature,
         if mapping.is_derived and mapping.is_c_compatible:
             suffix = "_view_t" if mapping.is_view_type else "_t"
             params.append((f"{mapping.c_type.lower()}{suffix}*", arg.name))
-            if arg.is_array and arg.is_assumed_shape:
+            if arg.is_array:
                 if arg.array_rank == 1:
                     params.append(("int", f"n_{arg.name}"))
                 elif arg.array_rank == 2:
@@ -860,7 +880,7 @@ def _build_interface_args(sig: FortranSignature,
                 "iface_name": arg.name,
                 "iface_decl": f"TYPE(C_PTR), VALUE :: {arg.name}",
             })
-            if arg.is_array and arg.is_assumed_shape:
+            if arg.is_array:
                 if arg.array_rank == 1:
                     args.append({
                         "iface_name": f"n_{arg.name}",
@@ -1000,6 +1020,10 @@ def _build_wrapper_call_args(sig: FortranSignature,
                     elif arg.array_rank == 2:
                         call_args.append(f"SIZE({arg.name}, 1)")
                         call_args.append(f"SIZE({arg.name}, 2)")
+                elif arg.is_array:
+                    dims = [d.strip() for d in arg.array_dims.split(',')]
+                    for d in dims:
+                        call_args.append(d)
             elif mapping.is_view_type:
                 call_args.append(f"C_LOC({arg.name}_view)")
             else:

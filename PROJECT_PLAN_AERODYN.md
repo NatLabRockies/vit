@@ -293,9 +293,9 @@ Key decision: **`DBEMT_ElementInputType_ExtrapInterp` via production bridge** �
 - [x] DBEMT_ABM4 (64 lines, PRIVATE) — Adams-Bashforth-Moulton predictor-corrector. Calls AB4 for prediction, then applies correction formula. 20/20 KGen, 17/17 baselines. KGen extraction required CHARACTER(*) length resolution fix in VIT. (dev notes `202604300017`, `202604300138`, `202604300149`)
 - [x] Rebuild + verify 17/17 baselines
 
-**DBEMT Phase C — Orchestrators (2 functions, ~85 lines, simulation verified):**
-- [ ] DBEMT_UpdateStates (67 lines, PUBLIC, hot path) — main entry called by BEMT per blade/node. Calls ComputeTau1/Tau2/InitStates (all C++ direct), then branches: Mode 3 → ABM4 (C++ direct), Modes 1/2 → inline finite difference math (~20 lines, analytical exponential filter). Needs two InputType views (inputs at t and t+dt). Hand-integrated.
-- [ ] DBEMT_InitStates_AllNodes (18 lines, PUBLIC) — trivial double loop calling DBEMT_InitStates per node. Hand-integrated.
+**DBEMT Phase C — Orchestrators (2 functions, ~85 lines, KGen verified):**
+- [x] DBEMT_UpdateStates (67 lines, PUBLIC, hot path) — 20/20 KGen, 17/17 baselines. Main entry called by BEMT per blade/node. Calls all 4 translated callees + inline finite difference math. VIT fixed for fixed-size view-type array parameters (`u(2)` pattern). Cross-module extraction from BEMT.f90:939 with ad_MHK_RM1_Fixed (DBEMT_Mod=2, 38,400 hits). `--reverse-copy` for OtherState scalars (tau1, tau2).
+- [ ] DBEMT_InitStates_AllNodes (18 lines, PUBLIC) — trivial double loop calling DBEMT_InitStates per node. Standard VIT workflow.
 - [ ] Rebuild + verify 17/17 baselines
 
 **DBEMT Phase D — Init/Validation/End (3 translated + 1 skipped, ~221 lines translated, mixed verification):**
@@ -334,7 +334,7 @@ Key decision: **`DBEMT_ElementInputType_ExtrapInterp` via production bridge** �
 
 Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Continuous ODE path (Mode 3): **ONLY** `ad_BAR_SineMotion_UA4_DBEMT3`.
 
-**Revisit trigger:** Phase B complete. Phase C next — DBEMT_UpdateStates is the hot path orchestrator that calls all translated functions. Hand-integrated (not via `vit integrate`).
+**Revisit trigger:** Phase B complete. Phase C next — DBEMT_UpdateStates is the hot path orchestrator that calls all translated functions. Standard VIT workflow.
 
 **Phase A status (2026-04-29): COMPLETE.** All 5 leaf functions integrated (ComputeTau2, ComputeTau1, DBEMT_InitStates, DBEMT_CalcOutput, DBEMT_CalcContStateDeriv). 11 VIT bugs fixed during DBEMT Phase A. Infrastructure proven: all DBEMT view structs, error handling, auto-type, fixed-size view arrays (KD9), callee bridges for view-type parameters, C++ callee detection on integrated source.
 
