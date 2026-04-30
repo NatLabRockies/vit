@@ -253,7 +253,8 @@ def setup_kernel_cpp(
     try:
         modified = _patch_kernel_fortran(kernel, sig, kind_aliases,
                                          field_log=field_log,
-                                         derived_types=derived_types)
+                                         derived_types=derived_types,
+                                         source_dir=source_dir)
         result["files_modified"].extend(modified)
     except Exception as e:
         result["errors"].append(f"Fortran patch failed: {e}")
@@ -1359,7 +1360,8 @@ def _patch_kind_constants(kernel: Path, kind_aliases: dict,
 def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
                           kind_aliases: Optional[dict] = None,
                           field_log: bool = True,
-                          derived_types: Optional[dict] = None) -> list[str]:
+                          derived_types: Optional[dict] = None,
+                          source_dir: Optional[str] = None) -> list[str]:
     """
     Patch kernel Fortran source files.
 
@@ -1468,17 +1470,22 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
         )
         # Replace assumed-length locals — match CHARACTER(LEN=*) or
         # CHARACTER(*) declarations, but NOT lines with INTENT (those are
-        # dummy args, which are legal). Use a large fixed buffer (Fortran's
-        # typical error message length) since the original assumed-length
-        # is only valid for dummy args.
+        # dummy args, which are legal). Resolve the actual length for each
+        # variable by tracing it through the enclosing function's parameter
+        # list to the caller's actual argument declaration.
         _char_star_re = re.compile(
             r'CHARACTER\s*\(\s*(?:LEN\s*=\s*)?\*\s*\)',
             re.IGNORECASE,
         )
+        _char_len_cache = _resolve_character_star_lengths(content, source_dir)
         def _fix_assumed_len_char(m):
-            if re.search(r'INTENT', m.group(0), re.IGNORECASE):
-                return m.group(0)
-            return _char_star_re.sub('CHARACTER(LEN=4096)', m.group(0))
+            line = m.group(0)
+            if re.search(r'INTENT', line, re.IGNORECASE):
+                return line
+            var_m = re.search(r'::\s*(\w+)', line)
+            var_name = var_m.group(1).lower() if var_m else None
+            length = _char_len_cache.get(var_name, 4096) if var_name else 4096
+            return _char_star_re.sub(f'CHARACTER(LEN={length})', line)
         content = re.sub(
             r'^.*CHARACTER\s*\(.*\*.*\)\s*::.*$',
             _fix_assumed_len_char,
@@ -1964,6 +1971,136 @@ def _parse_build_errors(output: str) -> list[KernelBuildError]:
             seen.add(key)
             unique.append(e)
     return unique
+
+
+def _resolve_character_star_lengths(
+    kernel_content: str, source_dir: Optional[str]
+) -> dict:
+    """Resolve actual lengths for each CHARACTER(LEN=*) variable in a kernel.
+
+    Returns dict mapping lowercase variable name → integer length.
+    For each variable, traces: kernel local → enclosing function parameter →
+    caller's actual argument → resolved constant from source tree.
+    """
+    result = {}
+    default = 4096
+
+    if not source_dir:
+        return result
+
+    # Collect all CHARACTER(LEN=*) variable names (non-INTENT, i.e., locals)
+    star_vars = []
+    for m in re.finditer(
+        r'^[^!]*CHARACTER\s*\(.*\*.*\)\s*::\s*(\w+)',
+        kernel_content, re.MULTILINE | re.IGNORECASE,
+    ):
+        line = m.group(0)
+        if re.search(r'INTENT', line, re.IGNORECASE):
+            continue
+        star_vars.append(m.group(1).lower())
+
+    if not star_vars:
+        return result
+
+    # Find the enclosing function name from CALL <func>(kgen_unit, kgen_measure, ...)
+    call_m = re.search(
+        r'CALL\s+(\w+)\s*\(\s*kgen_unit\s*,\s*kgen_measure',
+        kernel_content, re.IGNORECASE,
+    )
+    if not call_m:
+        return result
+    enclosing_name = call_m.group(1)
+
+    # Find the enclosing function's signature in the source tree
+    from .fortran_parser import find_function_in_file
+    source_path = Path(source_dir)
+    enclosing_sig = None
+    for f90 in sorted(source_path.rglob("*.[fF]90")):
+        try:
+            enclosing_sig = find_function_in_file(str(f90), enclosing_name)
+            break
+        except (ValueError, FileNotFoundError):
+            continue
+
+    if not enclosing_sig:
+        return result
+
+    # Build map: enclosing function's CHARACTER parameter name → position index
+    char_params = {}
+    for idx, arg in enumerate(enclosing_sig.args):
+        if arg.fortran_type.upper().startswith("CHARACTER"):
+            char_params[arg.name.lower()] = (idx, arg.fortran_type)
+
+    # For each kernel variable, find the matching enclosing parameter
+    def _resolve_len_spec(len_spec: str) -> Optional[int]:
+        """Resolve a CHARACTER length specifier to an integer."""
+        try:
+            return int(len_spec)
+        except ValueError:
+            pass
+        search_dir = Path(source_dir)
+        while search_dir != search_dir.parent:
+            val = _find_constant_in_source(len_spec, str(search_dir))
+            if val is not None:
+                return val
+            search_dir = search_dir.parent
+        return None
+
+    for var_name in star_vars:
+        # Match kernel variable to enclosing function parameter by name
+        # (kernel variables are named after the function parameters, possibly
+        # with kgenref_ prefix)
+        base_name = var_name.replace("kgenref_", "")
+        if base_name not in char_params:
+            continue
+        _, fortran_type = char_params[base_name]
+
+        # Try to resolve directly from the parameter declaration
+        len_m = re.search(
+            r'CHARACTER\s*\(\s*(?:LEN\s*=\s*)?(\w+)\s*\)',
+            fortran_type, re.IGNORECASE,
+        )
+        if len_m and len_m.group(1) != '*':
+            resolved = _resolve_len_spec(len_m.group(1))
+            if resolved is not None:
+                result[var_name] = resolved
+                continue
+
+        # Parameter is CHARACTER(*) — find callers and trace the actual argument
+        param_idx = char_params[base_name][0]
+        call_re = re.compile(
+            rf'CALL\s+{re.escape(enclosing_name)}\s*\(([^)]*)\)',
+            re.IGNORECASE,
+        )
+        resolved_from_caller = None
+        for f90 in sorted(source_path.rglob("*.[fF]90")):
+            if resolved_from_caller is not None:
+                break
+            try:
+                src = f90.read_text()
+            except (UnicodeDecodeError, PermissionError):
+                continue
+            for cm in call_re.finditer(src):
+                args_str = cm.group(1)
+                args = [a.strip() for a in args_str.split(",")]
+                if param_idx >= len(args):
+                    continue
+                actual_arg = args[param_idx]
+                # Find this argument's CHARACTER declaration in the same file
+                decl_re = re.compile(
+                    rf'CHARACTER\s*\(\s*(?:LEN\s*=\s*)?([A-Za-z_]\w*)\s*\)'
+                    rf'[^:]*::[^!]*\b{re.escape(actual_arg)}\b',
+                    re.IGNORECASE,
+                )
+                dm = decl_re.search(src)
+                if dm:
+                    resolved_from_caller = _resolve_len_spec(dm.group(1))
+                    if resolved_from_caller is not None:
+                        break
+        if resolved_from_caller is not None:
+            result[var_name] = resolved_from_caller
+
+    return result
 
 
 def _find_constant_in_source(symbol: str, source_dir: str) -> Optional[int]:
