@@ -293,10 +293,10 @@ Key decision: **`DBEMT_ElementInputType_ExtrapInterp` via production bridge** �
 - [x] DBEMT_ABM4 (64 lines, PRIVATE) — Adams-Bashforth-Moulton predictor-corrector. Calls AB4 for prediction, then applies correction formula. 20/20 KGen, 17/17 baselines. KGen extraction required CHARACTER(*) length resolution fix in VIT. (dev notes `202604300017`, `202604300138`, `202604300149`)
 - [x] Rebuild + verify 17/17 baselines
 
-**DBEMT Phase C — Orchestrators (2 functions, ~85 lines, KGen verified):**
-- [x] DBEMT_UpdateStates (67 lines, PUBLIC, hot path) — 20/20 KGen, 17/17 baselines. Main entry called by BEMT per blade/node. Calls all 4 translated callees + inline finite difference math. VIT fixed for fixed-size view-type array parameters (`u(2)` pattern). Cross-module extraction from BEMT.f90:939 with ad_MHK_RM1_Fixed (DBEMT_Mod=2, 38,400 hits). `--reverse-copy` for OtherState scalars (tau1, tau2).
-- [ ] DBEMT_InitStates_AllNodes (18 lines, PUBLIC) — trivial double loop calling DBEMT_InitStates per node. Standard VIT workflow.
-- [ ] Rebuild + verify 17/17 baselines
+**DBEMT Phase C — Orchestrators (2 functions, ~85 lines) [COMPLETE]:**
+- [x] DBEMT_UpdateStates (67 lines, PUBLIC, hot path) — 20/20 KGen, 17/17 baselines. Main entry called by BEMT per blade/node. Calls all 4 translated callees + inline finite difference math. VIT fixed for fixed-size view-type array parameters (`u(2)` pattern). Cross-module extraction from BEMT.f90:939 with ad_MHK_RM1_Fixed (DBEMT_Mod=2, 38,400 hits). `--reverse-copy` for OtherState scalars (tau1, tau2). (dev note `202604301041`)
+- [x] DBEMT_InitStates_AllNodes (18 lines, PUBLIC) — 4/4 test-validate, 17/17 baselines. Double loop calling DBEMT_InitStates per node. Zero gcov coverage (Jacobian path, DBEMT guard never true). Verified via custom Fortran test harness: dual-call comparison (C++ vs Fortran) on 4 scenarios (all-uninitialized 3×5, partial-init, continuous mode DBEMT_Mod=3, 1×1 edge case).
+- [x] Rebuild + verify 17/17 baselines
 
 **DBEMT Phase D — Init/Validation/End (3 translated + 1 skipped, ~221 lines translated, mixed verification):**
 - [ ] DBEMT_ValidateInitInp (49 lines, PRIVATE) — **test-validate** (8 error branches: interval, DBEMT_Mod, numBlades, numNodes, tau1_const, rLocal allocated, rLocal values, max rLocal). Needs DBEMT_InitInputType view.
