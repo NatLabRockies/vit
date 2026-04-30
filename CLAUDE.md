@@ -14,9 +14,9 @@ This workspace contains three tools for verified Fortran→C++ translation in sc
 
 ## Project Status — AeroDyn
 
-- **Phase 1 — AirfoilInfo COMPLETE, DBEMT in progress.** AirfoilInfo: all 20 functions in C++. Phase 0 (Registry C++ generator) also complete. Shared NWTC utility library (`vit_nwtc.h/.cpp`) with 12 functions. Four verification approaches proven.
+- **Phase 1 — AirfoilInfo COMPLETE, DBEMT in progress.** AirfoilInfo: all 20 functions in C++. Phase 0 (Registry C++ generator) also complete. Shared NWTC utility library (`vit_nwtc.h/.cpp`) with 13 functions. Four verification approaches proven.
 - **DBEMT Phase A (leaf math): COMPLETE (5/5).** ComputeTau2, ComputeTau1, DBEMT_InitStates, DBEMT_CalcOutput, DBEMT_CalcContStateDeriv all integrated, 17/17 baselines PASS.
-- **DBEMT Phase B (time integrators): IN PROGRESS (1/3).** DBEMT_RK4 integrated, 20/20 KGen + 17/17 baselines PASS. Next: AB4, ABM4. New infrastructure: derived-type-array support, production bridges for untranslated Fortran callees (ExtrapInterp).
+- **DBEMT Phase B (time integrators): COMPLETE (3/3).** RK4, AB4, ABM4 all integrated, 20/20 KGen + 17/17 baselines PASS. New infrastructure: derived-type-array support, production bridges, CHARACTER(*) length resolution, shared SetErrStat + Fortran intrinsics. Next: Phase C (orchestrators).
 - **Scope:** All of AeroDyn — 507 hand-written procedures, Registry C++ generator (740 generated procedures), drivers/C-binding. End state: pure C++ AeroDyn module, no Fortran, no libgfortran.
 - **Verification:** KGen float64 kernel + `vit test-validate` branch-coverage + 17-case simulation bit-identical + NREL regression 17/17.
 - **Translation boundary:** Everything inside AeroDyn → C++. Everything outside (NWTC Library, InflowWind, SeaState, LinDyn) → stays Fortran, crossed via BIND(C) / view structs. Individual NWTC utility functions used by AeroDyn translated in `vit_nwtc.h`.
@@ -112,7 +112,7 @@ docker exec vit-dev-openfast bash -c "cd /workspace/openfast && bash scripts/ver
 
 **What `integrate_all.sh` does:**
 1. Restores committed source files from git (AirfoilInfo.f90 and DBEMT.f90 with wrappers, view populator modules, production bridges, all .cpp files)
-2. Runs `vit integrate` for 14 AirfoilInfo leaf/orchestrator functions + 4 DBEMT functions (InitStates, CalcOutput, CalcContStateDeriv, RK4)
+2. Runs `vit integrate` for 14 AirfoilInfo leaf/orchestrator functions + 6 DBEMT functions (InitStates, CalcOutput, CalcContStateDeriv, RK4, AB4, ABM4)
 3. Restores committed .cpp files (VIT's generated versions have duplicate `extern "C"` wrappers; committed versions are correct)
 
 The script runs on the Mac (needs git + docker exec). To run inside the container, replace `docker exec ... vit integrate` with direct `vit integrate`.

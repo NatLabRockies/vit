@@ -8,9 +8,11 @@ NWTC_Library stays Fortran as a module, but individual utility functions needed 
 
 ## Constants (header, `static constexpr`)
 
-`Pi`, `TwoPi`, `PiBy2`, `D2R`, `R2D`
+`Pi`, `TwoPi`, `PiBy2`, `D2R`, `R2D`, `ErrMsgLen`, `ErrID_None`, `ErrID_Warn`, `ErrID_Severe`, `ErrID_Fatal`, `AbortErrLev`
 
-## Functions (12 total)
+## Functions (13 total)
+
+- **`SetErrStat(errStatLcl, errMsgLcl, errStat*, errMsg*, routineName)`** — accumulate errors from callee calls (from NWTC_Base.f90). Keeps highest severity, concatenates messages with routine name prefix. Has `const char*` and `std::string` overloads. See TRANSLATION_TIPS.md for usage pattern.
 
 - **`EqualRealNos(a, b)`** — epsilon-based relative tolerance comparison (from `EqualRealNos8` in NWTC_Num.f90)
 

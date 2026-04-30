@@ -289,9 +289,9 @@ All three are ONLY exercised by `ad_BAR_SineMotion_UA4_DBEMT3` (Mode 3). Extract
 Key decision: **`DBEMT_ElementInputType_ExtrapInterp` via production bridge** — a permanent BIND(C) wrapper (`vit_bridge_extrapinterp.f90`) calls the Fortran routine from C++. This avoids translating Registry-generated code and is verified transitively through kernel tests. The bridge handles assumed-shape array parameters (`u(:)` of derived type) via the derived-type-array infrastructure (dev note `202604292127`).
 
 - [x] DBEMT_RK4 (100 lines, PRIVATE) — 4th-order Runge-Kutta. 4 CalcContStateDeriv evals + 3 ExtrapInterp calls. Self-starting. Test case: `ad_BAR_SineMotion_UA4_DBEMT3` (270 hits — startup only, n≤2). 20/20 KGen, 17/17 baselines. 7 VIT infrastructure fixes (derived-type-array support, case-insensitive view propagation, bridge ErrMsg copy-back, stale KGen cleanup). (dev notes `202604292127`, `202604292152`, `202604292220`)
-- [ ] DBEMT_AB4 (77 lines, PRIVATE) — Adams-Bashforth predictor. Uses RK4 for startup, then 4-level xdot history from `OtherState%xdot(1..4)%element(i,j)`. Shifts xdot history on each call. Test case: `ad_BAR_SineMotion_UA4_DBEMT3` (16,920 hits).
-- [ ] DBEMT_ABM4 (64 lines, PRIVATE) — Adams-Bashforth-Moulton predictor-corrector. Calls AB4 for prediction, then applies correction formula. Test case: `ad_BAR_SineMotion_UA4_DBEMT3` (16,920 hits).
-- [ ] Rebuild + verify 17/17 baselines
+- [x] DBEMT_AB4 (77 lines, PRIVATE) — Adams-Bashforth predictor. Uses RK4 for startup, then 4-level xdot history from `OtherState%xdot(1..4)%element(i,j)`. First C++-calls-C++ callee pattern. 20/20 KGen, 17/17 baselines. (dev note `202604292325`)
+- [x] DBEMT_ABM4 (64 lines, PRIVATE) — Adams-Bashforth-Moulton predictor-corrector. Calls AB4 for prediction, then applies correction formula. 20/20 KGen, 17/17 baselines. KGen extraction required CHARACTER(*) length resolution fix in VIT. (dev notes `202604300017`, `202604300138`, `202604300149`)
+- [x] Rebuild + verify 17/17 baselines
 
 **DBEMT Phase C — Orchestrators (2 functions, ~85 lines, simulation verified):**
 - [ ] DBEMT_UpdateStates (67 lines, PUBLIC, hot path) — main entry called by BEMT per blade/node. Calls ComputeTau1/Tau2/InitStates (all C++ direct), then branches: Mode 3 → ABM4 (C++ direct), Modes 1/2 → inline finite difference math (~20 lines, analytical exponential filter). Needs two InputType views (inputs at t and t+dt). Hand-integrated.
@@ -334,7 +334,7 @@ Key decision: **`DBEMT_ElementInputType_ExtrapInterp` via production bridge** �
 
 Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Continuous ODE path (Mode 3): **ONLY** `ad_BAR_SineMotion_UA4_DBEMT3`.
 
-**Revisit trigger:** Phase B in progress. RK4 complete. AB4 next — uses xdot(1..4) history (first exercise of KD9 in translation), calls RK4 for bootstrap (C++-calls-C++ bridge pattern).
+**Revisit trigger:** Phase B complete. Phase C next — DBEMT_UpdateStates is the hot path orchestrator that calls all translated functions. Hand-integrated (not via `vit integrate`).
 
 **Phase A status (2026-04-29): COMPLETE.** All 5 leaf functions integrated (ComputeTau2, ComputeTau1, DBEMT_InitStates, DBEMT_CalcOutput, DBEMT_CalcContStateDeriv). 11 VIT bugs fixed during DBEMT Phase A. Infrastructure proven: all DBEMT view structs, error handling, auto-type, fixed-size view arrays (KD9), callee bridges for view-type parameters, C++ callee detection on integrated source.
 
@@ -488,11 +488,11 @@ Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Con
 
 ## 7. Current State
 
-**Date:** 2026-04-29
+**Date:** 2026-04-30
 
-**Status:** Phase 0 complete. Phase 1 in progress — **AirfoilInfo COMPLETE (20/20), DBEMT Phase A COMPLETE (5/5), Phase B IN PROGRESS (1/3).** DBEMT_RK4 integrated, 20/20 KGen + 17/17 baselines PASS. VIT infrastructure hardened with 18 bug fixes + 3 enhancements (auto-type KD8, fixed-size view arrays KD9, callee bridge fixes, derived-type-array support, case-insensitive view propagation, bridge ErrMsg copy-back). Production bridge pattern established for untranslated Fortran callees.
+**Status:** Phase 0 complete. Phase 1 in progress — **AirfoilInfo COMPLETE (20/20), DBEMT Phase A COMPLETE (5/5), Phase B COMPLETE (3/3).** All 8 DBEMT leaf + integrator functions in C++, 17/17 baselines PASS. VIT infrastructure hardened with 20 bug fixes + 3 enhancements (auto-type KD8, fixed-size view arrays KD9, callee bridge fixes, derived-type-array support, case-insensitive view propagation, bridge ErrMsg copy-back, CHARACTER(*) length resolution). Production bridge pattern established. Shared utilities: SetErrStat, Fortran intrinsics header.
 
-**Next action:** DBEMT Phase B — remaining time integrators (DBEMT_AB4, DBEMT_ABM4).
+**Next action:** DBEMT Phase C — orchestrators (DBEMT_UpdateStates, DBEMT_InitStates_AllNodes).
 
 **Completed milestones:**
 - [x] Docker container (`vit-dev-openfast`) built and verified
@@ -547,6 +547,10 @@ Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Con
 - [x] VIT: callee bridge fixes — USE fallback for inherited types, C++ callee detection on integrated source, CONTAINS whitespace in PUBLIC patching. (dev note `202604291859`)
 - [x] VIT: coverage query reads clean source via git show — line numbers match coverage data regardless of integration state. (dev note `202604291005`)
 - [x] Phase B: DBEMT_RK4 integrated — 20/20 KGen, 17/17 baselines. First Phase B time integrator. 7 VIT infrastructure fixes: derived-type-array support (5 fixes in interface_gen.py), case-insensitive view strategy propagation, bridge ErrMsg copy-back. Production bridge pattern for ExtrapInterp. Stale KGen artifacts cleaned from NWTC_Base.f90. AbortErrLev constant added to vit_nwtc.h. (dev notes `202604292127`, `202604292152`, `202604292220`)
+- [x] Shared utilities refactor — SetErrStat extracted from per-file lambdas to shared function in vit_nwtc.h. vit_fortran_intrinsics.h created with fortran_minloc/maxloc/cshift templates, replacing 14 inline loops across 5 files. (dev note `202604292256`)
+- [x] Phase B: DBEMT_AB4 integrated — 20/20 KGen, 17/17 baselines. First C++-calls-C++ callee (RK4 from AB4). First xdot[4] history access in translation. (dev note `202604292325`)
+- [x] Phase B: DBEMT_ABM4 integrated — 20/20 KGen, 17/17 baselines. KGen kernel crashed due to CHARACTER(*) length mismatch (4096 vs 8196). Root cause: VIT hardcoded CHARACTER buffer length; state data used ErrMsgLen. Fix: per-variable length resolution tracing kernel local → enclosing function parameter → caller's actual argument → resolved constant from source tree. (dev notes `202604300017`, `202604300138`, `202604300149`)
+- [x] **DBEMT Phase B COMPLETE** — all 3 time integrators translated and integrated. 20 VIT bug fixes total.
 
 ## 8. History
 
