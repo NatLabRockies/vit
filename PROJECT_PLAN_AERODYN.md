@@ -286,9 +286,9 @@ VIT now handles `TYPE(Foo), DIMENSION(1:N) :: bar` where Foo has ALLOCATABLE fie
 
 All three are ONLY exercised by `ad_BAR_SineMotion_UA4_DBEMT3` (Mode 3). Extraction must use this test case (DBEMT_Mod=3). `vit translate` will auto-generate DBEMT_OtherStateType and DBEMT_ContinuousStateType view structs when first encountered. The OtherStateType is the most complex DBEMT type — ALLOCATABLE arrays + fixed-size `xdot(1:4)` array of ContinuousStateType. The xdot field needs 4 embedded ContinuousState sub-views for the ABM4 history buffer.
 
-Key decision: **`DBEMT_ElementInputType_ExtrapInterp` inlined in C++** — the Registry-generated interpolation routine is only 6 lines of Lagrange interpolation on 3 scalars (vind_s[0], vind_s[1], spanRatio). Inlining avoids a callee bridge to Registry-generated Fortran and is verified transitively through kernel tests.
+Key decision: **`DBEMT_ElementInputType_ExtrapInterp` via production bridge** — a permanent BIND(C) wrapper (`vit_bridge_extrapinterp.f90`) calls the Fortran routine from C++. This avoids translating Registry-generated code and is verified transitively through kernel tests. The bridge handles assumed-shape array parameters (`u(:)` of derived type) via the derived-type-array infrastructure (dev note `202604292127`).
 
-- [ ] DBEMT_RK4 (100 lines, PRIVATE) — 4th-order Runge-Kutta. 4 CalcContStateDeriv evals + 3 ExtrapInterp calls. Self-starting. Test case: `ad_BAR_SineMotion_UA4_DBEMT3` (270 hits — startup only, n≤2).
+- [x] DBEMT_RK4 (100 lines, PRIVATE) — 4th-order Runge-Kutta. 4 CalcContStateDeriv evals + 3 ExtrapInterp calls. Self-starting. Test case: `ad_BAR_SineMotion_UA4_DBEMT3` (270 hits — startup only, n≤2). 20/20 KGen, 17/17 baselines. 7 VIT infrastructure fixes (derived-type-array support, case-insensitive view propagation, bridge ErrMsg copy-back, stale KGen cleanup). (dev notes `202604292127`, `202604292152`, `202604292220`)
 - [ ] DBEMT_AB4 (77 lines, PRIVATE) — Adams-Bashforth predictor. Uses RK4 for startup, then 4-level xdot history from `OtherState%xdot(1..4)%element(i,j)`. Shifts xdot history on each call. Test case: `ad_BAR_SineMotion_UA4_DBEMT3` (16,920 hits).
 - [ ] DBEMT_ABM4 (64 lines, PRIVATE) — Adams-Bashforth-Moulton predictor-corrector. Calls AB4 for prediction, then applies correction formula. Test case: `ad_BAR_SineMotion_UA4_DBEMT3` (16,920 hits).
 - [ ] Rebuild + verify 17/17 baselines
@@ -309,7 +309,7 @@ Key decision: **`DBEMT_ElementInputType_ExtrapInterp` inlined in C++** — the R
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| ExtrapInterp | Inline 6-line Lagrange in C++ | Avoid callee bridge to Registry-generated code; verified transitively |
+| ExtrapInterp | Production bridge (`vit_bridge_extrapinterp.f90`) | BIND(C) wrapper calls Fortran; avoids translating Registry-generated code; verified transitively |
 | DBEMT_End | Do not translate | Only calls Registry Destroy; C++ should not own Fortran deallocation |
 | DBEMT_Init | Translate last, two-pass if needed | Allocation-heavy; runs once; arrays visible through views regardless |
 | OtherState%xdot(1:4) | 4 embedded ContinuousState views | VIT now auto-generates this (KD9). Pattern appears 7× across 4 modules. |
@@ -334,7 +334,7 @@ Key decision: **`DBEMT_ElementInputType_ExtrapInterp` inlined in C++** — the R
 
 Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Continuous ODE path (Mode 3): **ONLY** `ad_BAR_SineMotion_UA4_DBEMT3`.
 
-**Revisit trigger:** OtherState%xdot(1:4) infrastructure resolved (KD9). Phase B ready to proceed.
+**Revisit trigger:** Phase B in progress. RK4 complete. AB4 next — uses xdot(1..4) history (first exercise of KD9 in translation), calls RK4 for bootstrap (C++-calls-C++ bridge pattern).
 
 **Phase A status (2026-04-29): COMPLETE.** All 5 leaf functions integrated (ComputeTau2, ComputeTau1, DBEMT_InitStates, DBEMT_CalcOutput, DBEMT_CalcContStateDeriv). 11 VIT bugs fixed during DBEMT Phase A. Infrastructure proven: all DBEMT view structs, error handling, auto-type, fixed-size view arrays (KD9), callee bridges for view-type parameters, C++ callee detection on integrated source.
 
@@ -490,9 +490,9 @@ Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Con
 
 **Date:** 2026-04-29
 
-**Status:** Phase 0 complete. Phase 1 in progress — **AirfoilInfo COMPLETE (20/20), DBEMT Phase A COMPLETE (5/5).** All leaf math functions integrated, 17/17 baselines PASS. VIT infrastructure hardened with 11 bug fixes + 3 enhancements (auto-type KD8, fixed-size view arrays KD9, callee bridge fixes). Phase B xdot infrastructure and callee bridge infrastructure ready.
+**Status:** Phase 0 complete. Phase 1 in progress — **AirfoilInfo COMPLETE (20/20), DBEMT Phase A COMPLETE (5/5), Phase B IN PROGRESS (1/3).** DBEMT_RK4 integrated, 20/20 KGen + 17/17 baselines PASS. VIT infrastructure hardened with 18 bug fixes + 3 enhancements (auto-type KD8, fixed-size view arrays KD9, callee bridge fixes, derived-type-array support, case-insensitive view propagation, bridge ErrMsg copy-back). Production bridge pattern established for untranslated Fortran callees.
 
-**Next action:** DBEMT Phase B — time integrators (DBEMT_RK4, DBEMT_AB4, DBEMT_ABM4).
+**Next action:** DBEMT Phase B — remaining time integrators (DBEMT_AB4, DBEMT_ABM4).
 
 **Completed milestones:**
 - [x] Docker container (`vit-dev-openfast`) built and verified
@@ -546,6 +546,7 @@ Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Con
 - [x] **DBEMT Phase A COMPLETE** — all 5 leaf functions integrated. 11 VIT bug fixes + 3 enhancements during Phase A.
 - [x] VIT: callee bridge fixes — USE fallback for inherited types, C++ callee detection on integrated source, CONTAINS whitespace in PUBLIC patching. (dev note `202604291859`)
 - [x] VIT: coverage query reads clean source via git show — line numbers match coverage data regardless of integration state. (dev note `202604291005`)
+- [x] Phase B: DBEMT_RK4 integrated — 20/20 KGen, 17/17 baselines. First Phase B time integrator. 7 VIT infrastructure fixes: derived-type-array support (5 fixes in interface_gen.py), case-insensitive view strategy propagation, bridge ErrMsg copy-back. Production bridge pattern for ExtrapInterp. Stale KGen artifacts cleaned from NWTC_Base.f90. AbortErrLev constant added to vit_nwtc.h. (dev notes `202604292127`, `202604292152`, `202604292220`)
 
 ## 8. History
 

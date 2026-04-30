@@ -701,6 +701,12 @@ def build_c_params(sig: FortranSignature,
             if mapping.is_derived and mapping.is_c_compatible:
                 suffix = "_view_t" if mapping.is_view_type else "_t"
                 params.append((f"{mapping.c_type.lower()}{suffix}*", arg.name))
+                if arg.is_array and arg.is_assumed_shape:
+                    if arg.array_rank == 1:
+                        params.append(("int", f"n_{arg.name}"))
+                    elif arg.array_rank == 2:
+                        params.append(("int", f"n_{arg.name}_rows"))
+                        params.append(("int", f"n_{arg.name}_cols"))
             elif arg.is_array:
                 params.append((f"{mapping.c_type}*", arg.name))
                 if arg.is_assumed_shape:
@@ -722,6 +728,12 @@ def build_c_params(sig: FortranSignature,
         if mapping.is_derived and mapping.is_c_compatible:
             suffix = "_view_t" if mapping.is_view_type else "_t"
             params.append((f"{mapping.c_type.lower()}{suffix}*", arg.name))
+            if arg.is_array and arg.is_assumed_shape:
+                if arg.array_rank == 1:
+                    params.append(("int", f"n_{arg.name}"))
+                elif arg.array_rank == 2:
+                    params.append(("int", f"n_{arg.name}_rows"))
+                    params.append(("int", f"n_{arg.name}_cols"))
             continue
 
         if arg.is_array:
@@ -792,6 +804,21 @@ def _build_interface_args(sig: FortranSignature,
                     "iface_name": arg.name,
                     "iface_decl": f"TYPE(C_PTR), VALUE :: {arg.name}",
                 })
+                if arg.is_array and arg.is_assumed_shape:
+                    if arg.array_rank == 1:
+                        args.append({
+                            "iface_name": f"n_{arg.name}",
+                            "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}",
+                        })
+                    elif arg.array_rank == 2:
+                        args.append({
+                            "iface_name": f"n_{arg.name}_rows",
+                            "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}_rows",
+                        })
+                        args.append({
+                            "iface_name": f"n_{arg.name}_cols",
+                            "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}_cols",
+                        })
             elif arg.is_array:
                 intent_str = arg.intent.value or "IN"
                 args.append({
@@ -799,10 +826,20 @@ def _build_interface_args(sig: FortranSignature,
                     "iface_decl": f"{mapping.iso_c_type}, INTENT({intent_str}) :: {arg.name}(*)",
                 })
                 if arg.is_assumed_shape:
-                    args.append({
-                        "iface_name": f"n_{arg.name}",
-                        "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}",
-                    })
+                    if arg.array_rank == 1:
+                        args.append({
+                            "iface_name": f"n_{arg.name}",
+                            "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}",
+                        })
+                    elif arg.array_rank == 2:
+                        args.append({
+                            "iface_name": f"n_{arg.name}_rows",
+                            "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}_rows",
+                        })
+                        args.append({
+                            "iface_name": f"n_{arg.name}_cols",
+                            "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}_cols",
+                        })
             else:
                 if arg.intent in (IntentKind.OUT, IntentKind.INOUT):
                     intent_str = arg.intent.value
@@ -823,6 +860,21 @@ def _build_interface_args(sig: FortranSignature,
                 "iface_name": arg.name,
                 "iface_decl": f"TYPE(C_PTR), VALUE :: {arg.name}",
             })
+            if arg.is_array and arg.is_assumed_shape:
+                if arg.array_rank == 1:
+                    args.append({
+                        "iface_name": f"n_{arg.name}",
+                        "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}",
+                    })
+                elif arg.array_rank == 2:
+                    args.append({
+                        "iface_name": f"n_{arg.name}_rows",
+                        "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}_rows",
+                    })
+                    args.append({
+                        "iface_name": f"n_{arg.name}_cols",
+                        "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}_cols",
+                    })
             continue
 
         if arg.is_array:
@@ -908,7 +960,18 @@ def _build_wrapper_call_args(sig: FortranSignature,
         if arg.is_optional:
             call_args.append(f"has_{arg.name}_flag")
             if mapping.is_derived and mapping.is_c_compatible:
-                if mapping.is_view_type:
+                if arg.is_array:
+                    if mapping.is_view_type:
+                        call_args.append(f"C_LOC({arg.name}_view(1))")
+                    else:
+                        call_args.append(f"C_LOC({arg.name}(1))")
+                    if arg.is_assumed_shape:
+                        if arg.array_rank == 1:
+                            call_args.append(f"SIZE({arg.name})")
+                        elif arg.array_rank == 2:
+                            call_args.append(f"SIZE({arg.name}, 1)")
+                            call_args.append(f"SIZE({arg.name}, 2)")
+                elif mapping.is_view_type:
                     call_args.append(f"C_LOC({arg.name}_view)")
                 else:
                     call_args.append(f"C_LOC({arg.name})")
@@ -926,8 +989,18 @@ def _build_wrapper_call_args(sig: FortranSignature,
 
         # C-compatible derived type → C_LOC()
         if mapping.is_derived and mapping.is_c_compatible:
-            if mapping.is_view_type:
-                # View type: pass local view struct, not original arg
+            if arg.is_array:
+                if mapping.is_view_type:
+                    call_args.append(f"C_LOC({arg.name}_view(1))")
+                else:
+                    call_args.append(f"C_LOC({arg.name}(1))")
+                if arg.is_assumed_shape:
+                    if arg.array_rank == 1:
+                        call_args.append(f"SIZE({arg.name})")
+                    elif arg.array_rank == 2:
+                        call_args.append(f"SIZE({arg.name}, 1)")
+                        call_args.append(f"SIZE({arg.name}, 2)")
+            elif mapping.is_view_type:
                 call_args.append(f"C_LOC({arg.name}_view)")
             else:
                 call_args.append(f"C_LOC({arg.name})")
@@ -1123,7 +1196,7 @@ def generate_kernel_callee_bridge(
     # USE the module that defines the callee so we can call it
     if sig.module_name:
         lines.append(f"        USE {sig.module_name}, ONLY: {sig.name}")
-    for use_stmt in use_stmts:
+    for use_stmt in dict.fromkeys(use_stmts):
         lines.append(f"        {use_stmt}")
     # USE view stash modules for view-type args (bridges use the stash instead of C_F_POINTER).
     # For INOUT/OUT view args, also import the populator + view type for post-call re-sync
@@ -1153,7 +1226,10 @@ def generate_kernel_callee_bridge(
 
     # Declare local Fortran pointer variables for regular struct args (not view types)
     for arg, mapping in struct_args:
-        lines.append(f"        TYPE({arg.derived_type_name}), POINTER :: {arg.name}_f")
+        if arg.is_array:
+            lines.append(f"        TYPE({arg.derived_type_name}), POINTER :: {arg.name}_f(:)")
+        else:
+            lines.append(f"        TYPE({arg.derived_type_name}), POINTER :: {arg.name}_f")
     # Declare local view pointers for post-call re-sync (INOUT/OUT only)
     for arg, mapping in view_struct_args:
         if arg.intent and arg.intent.value.upper() in ("INOUT", "OUT"):
@@ -1170,12 +1246,21 @@ def generate_kernel_callee_bridge(
                 arg.intent and arg.intent.value.upper() in ("OUT", "INOUT")):
             lines.append(f"        CHARACTER(1024) :: local_{arg.name}")
             char_buffer_args.append(arg.name)
+    if char_buffer_args:
+        lines.append(f"        INTEGER :: vit_i")
 
     # Convert C struct pointers to Fortran pointers (regular structs only)
     if struct_args:
         lines.append(f"        ! Convert C pointers to Fortran pointers")
     for arg, mapping in struct_args:
-        lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_f)")
+        if arg.is_array and arg.is_assumed_shape:
+            if arg.array_rank == 1:
+                lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_f, [n_{arg.name}])")
+            elif arg.array_rank == 2:
+                lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_f, "
+                             f"[n_{arg.name}_rows, n_{arg.name}_cols])")
+        else:
+            lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_f)")
 
     # Flush C++ view modifications to Fortran type before calling the callee.
     # The C++ caller may have modified view scalars (e.g., setting default
@@ -1274,6 +1359,13 @@ def generate_kernel_callee_bridge(
             lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_view)")
             lines.append(f"        CALL {populator}({stash_name}, {arg.name}_view)")
 
+    # Copy local CHARACTER buffers back to C_CHAR arrays after the call
+    if char_buffer_args:
+        for buf_name in char_buffer_args:
+            lines.append(f"        DO vit_i = 1, MIN(LEN_TRIM(local_{buf_name}), 1024)")
+            lines.append(f"            {buf_name}(vit_i) = local_{buf_name}(vit_i:vit_i)")
+            lines.append(f"        END DO")
+
     if sig.is_function and not sig.result_is_array:
         lines.append(f"    END FUNCTION {bridge_name}")
     else:
@@ -1324,7 +1416,14 @@ def _build_bridge_call_args(sig: FortranSignature,
 
         # C-compatible derived type
         if mapping.is_derived and mapping.is_c_compatible:
-            if mapping.is_view_type:
+            if arg.is_array and arg.is_assumed_shape:
+                if arg.array_rank == 1:
+                    call_args.append(f"{arg.name}_f(1:n_{arg.name})")
+                elif arg.array_rank == 2:
+                    call_args.append(
+                        f"RESHAPE({arg.name}_f(1:n_{arg.name}_rows*n_{arg.name}_cols), "
+                        f"(/ n_{arg.name}_rows, n_{arg.name}_cols /))")
+            elif mapping.is_view_type:
                 # View type → use module stash variable (not C_F_POINTER'd local,
                 # because the view struct has a different memory layout)
                 type_lower = mapping.c_type.lower()

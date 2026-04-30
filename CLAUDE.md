@@ -15,7 +15,8 @@ This workspace contains three tools for verified Fortran→C++ translation in sc
 ## Project Status — AeroDyn
 
 - **Phase 1 — AirfoilInfo COMPLETE, DBEMT in progress.** AirfoilInfo: all 20 functions in C++. Phase 0 (Registry C++ generator) also complete. Shared NWTC utility library (`vit_nwtc.h/.cpp`) with 12 functions. Four verification approaches proven.
-- **DBEMT Phase A (leaf math): COMPLETE (5/5).** ComputeTau2, ComputeTau1, DBEMT_InitStates, DBEMT_CalcOutput, DBEMT_CalcContStateDeriv all integrated, 17/17 baselines PASS. Next: Phase B (time integrators RK4, AB4, ABM4).
+- **DBEMT Phase A (leaf math): COMPLETE (5/5).** ComputeTau2, ComputeTau1, DBEMT_InitStates, DBEMT_CalcOutput, DBEMT_CalcContStateDeriv all integrated, 17/17 baselines PASS.
+- **DBEMT Phase B (time integrators): IN PROGRESS (1/3).** DBEMT_RK4 integrated, 20/20 KGen + 17/17 baselines PASS. Next: AB4, ABM4. New infrastructure: derived-type-array support, production bridges for untranslated Fortran callees (ExtrapInterp).
 - **Scope:** All of AeroDyn — 507 hand-written procedures, Registry C++ generator (740 generated procedures), drivers/C-binding. End state: pure C++ AeroDyn module, no Fortran, no libgfortran.
 - **Verification:** KGen float64 kernel + `vit test-validate` branch-coverage + 17-case simulation bit-identical + NREL regression 17/17.
 - **Translation boundary:** Everything inside AeroDyn → C++. Everything outside (NWTC Library, InflowWind, SeaState, LinDyn) → stays Fortran, crossed via BIND(C) / view structs. Individual NWTC utility functions used by AeroDyn translated in `vit_nwtc.h`.
@@ -87,6 +88,8 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 
 **When baselines fail after integration:** Add a dual-computation debug print to the Fortran wrapper — compute the result using both original Fortran expressions AND the C++ call, compare per-invocation. This finds value-level mismatches in seconds.
 
+**Never inline a function to work around an infrastructure problem.** If a callee bridge fails, a type doesn't map, or a Fortran pattern doesn't translate cleanly — fix the infrastructure. Inlining a callee's logic into the caller violates DRY, hides the real bug, and means the next function that calls the same callee hits the same wall. Every instance of "I'll just inline this" in this project has been wrong: ComputeTau2 inlining masked three callee bridge bugs; MINLOC/MAXLOC inline loops were copy-pasted 14 times before extraction. If a function exists in Fortran, call it through a bridge or translate it — don't copy its body.
+
 ## Integration State Management (reset + integrate_all)
 
 Extraction requires clean (pre-integration) Fortran source. `reset_to_clean.sh` restores AirfoilInfo.f90 and DBEMT.f90 to upstream clean and stubs all .cpp files. After extraction, `integrate_all.sh` restores the fully-integrated state (AirfoilInfo wrappers + DBEMT wrappers + all .cpp files).
@@ -108,8 +111,8 @@ docker exec vit-dev-openfast bash -c "cd /workspace/openfast && bash scripts/ver
 ```
 
 **What `integrate_all.sh` does:**
-1. Restores committed source files from git (AirfoilInfo.f90 and DBEMT.f90 with wrappers, view populator modules, all .cpp files)
-2. Runs `vit integrate` for 14 AirfoilInfo leaf/orchestrator functions + 3 DBEMT functions (InitStates, CalcOutput, CalcContStateDeriv)
+1. Restores committed source files from git (AirfoilInfo.f90 and DBEMT.f90 with wrappers, view populator modules, production bridges, all .cpp files)
+2. Runs `vit integrate` for 14 AirfoilInfo leaf/orchestrator functions + 4 DBEMT functions (InitStates, CalcOutput, CalcContStateDeriv, RK4)
 3. Restores committed .cpp files (VIT's generated versions have duplicate `extern "C"` wrappers; committed versions are correct)
 
 The script runs on the Mac (needs git + docker exec). To run inside the container, replace `docker exec ... vit integrate` with direct `vit integrate`.
@@ -218,4 +221,10 @@ Run `git add` and `git commit` directly when asked. Do not run `git push` unless
 
 **Container setup:** See `docs/CONTAINER_SETUP.md` for Docker containers, rebuild instructions, and container management.
 
-**NWTC utilities:** See `docs/NWTC_UTILITIES.md` for the `vit_nwtc.h` function reference (12 functions, constants, array conventions).
+**Shared C++ headers:** Translations share three headers (all listed in `vit.yaml` `shared_files` so VIT copies them to kernel directories):
+
+- **`vit_nwtc.h` / `vit_nwtc.cpp`** — C++ translations of NWTC Library utility functions (SetErrStat, EqualRealNos, InterpStp, CubicSplineInitM, etc.) and constants (ErrID_None, AbortErrLev, Pi, ErrMsgLen). Small functions are `inline` in the `.h`; larger functions (cubic spline, fZeros, kernelSmoothing) are in the `.cpp` and compiled once. See `docs/NWTC_UTILITIES.md` for the full reference.
+- **`vit_fortran_intrinsics.h`** — Header-only templates for Fortran array intrinsics with no C++ standard library equivalent: `fortran_minloc`, `fortran_maxloc` (templated on value/mask lambdas), `fortran_cshift`. Use these instead of writing inline loops. See `TRANSLATION_TIPS.md`.
+- **`vit_aerodyn_constants.h`** — AeroDyn module-level constants (DBEMT_Mod values, UA_Mod values, column indices).
+
+When adding a new shared function: if it's small enough to inline (under ~15 lines, no complex loops), put it `inline` in the `.h`. If it's larger, declare in the `.h` and implement in the `.cpp`.

@@ -1216,11 +1216,11 @@ def _generate_callee_bridges(
             # (like ControlParameters) would be treated as passthrough instead
             # of using the module stash variable.
             if derived_types and callee_registry:
+                parent_upper = {k.upper(): v for k, v in derived_types.items()}
                 for type_name, type_info in callee_registry.items():
-                    if type_name in derived_types:
-                        parent_info = derived_types[type_name]
-                        if getattr(parent_info, 'view_strategy', None) == "view":
-                            type_info.view_strategy = "view"
+                    parent_info = parent_upper.get(type_name.upper())
+                    if parent_info and getattr(parent_info, 'view_strategy', None) == "view":
+                        type_info.view_strategy = "view"
 
             bridge_code = generate_kernel_callee_bridge(
                 callee_sig, kind_aliases, callee_registry
