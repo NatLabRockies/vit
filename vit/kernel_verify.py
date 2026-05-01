@@ -2370,8 +2370,9 @@ def _repair_kernel_build(
         "log": [],
     }
 
+    max_iterations = 100
     iteration = 0
-    while True:
+    while iteration < max_iterations:
         iteration += 1
         result["iterations"] = iteration
 
@@ -2423,6 +2424,9 @@ def _repair_kernel_build(
                 f"First unfixed: {errors[0].category} '{errors[0].symbol}' in {errors[0].file}"
             )
             return result
+
+    result["errors"].append(f"Reached safety limit ({max_iterations} iterations)")
+    return result
 
 
 def _fix_use_ordering(content: str) -> str:
