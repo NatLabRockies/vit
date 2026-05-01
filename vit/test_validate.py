@@ -189,10 +189,126 @@ def _get_module_use_statements(source_text: str) -> list[str]:
     return uses
 
 
+def _has_allocatable_fields(arg, derived_types):
+    """Check if a derived-type arg's type has ALLOCATABLE fields.
+
+    Returns the DerivedTypeInfo if decomposition is needed, None otherwise.
+    """
+    if not arg.is_derived_type or not derived_types:
+        return None
+    type_name = arg.derived_type_name
+    for k, v in derived_types.items():
+        if k.upper() == type_name.upper():
+            if not v.is_c_compatible:
+                return v
+            return None
+    return None
+
+
+def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
+                                   c_params, local_decls, pre_call, post_call,
+                                   call_args):
+    """Emit bridge parameters for a derived type with ALLOCATABLE fields.
+
+    Instead of passing the whole struct as C_PTR (which fails for ALLOCATABLE),
+    emits individual parameters for each field. Scalar fields are passed by VALUE;
+    ALLOCATABLE fields are passed as C_PTR + dimension sizes. The bridge constructs
+    a real Fortran type internally.
+
+    Parameter names are prefixed with vit_{arg.name}_ to avoid collisions with
+    names imported via USE statements.
+    """
+    prefix = f"vit_{arg.name}"
+    local_var = f"vit_local_{arg.name}"
+
+    for fld in type_info.fields:
+        if fld.is_pointer:
+            continue
+        param = f"{prefix}_{fld.name}"
+        if fld.is_allocatable:
+            c_params.append((f"        TYPE(C_PTR), VALUE :: {param}_ptr", f"{param}_ptr"))
+            rank = fld.array_dims.count(",") + 1 if fld.array_dims else 1
+            if rank == 1:
+                c_params.append((
+                    f"        INTEGER(C_INT), VALUE :: {param}_n", f"{param}_n"))
+            else:
+                c_params.append((
+                    f"        INTEGER(C_INT), VALUE :: {param}_rows", f"{param}_rows"))
+                c_params.append((
+                    f"        INTEGER(C_INT), VALUE :: {param}_cols", f"{param}_cols"))
+        elif fld.fortran_type.upper().startswith("TYPE("):
+            # Nested derived type — not yet supported
+            c_params.append((f"        ! TODO: nested derived type {fld.fortran_type}", param))
+        else:
+            iso_type = get_type_mapping(fld.fortran_type, kind_aliases).iso_c_type
+            c_params.append((f"        {iso_type}, VALUE :: {param}", param))
+
+    # Local: real Fortran type (not POINTER)
+    local_decls.append(f"        TYPE({type_info.name}) :: {local_var}")
+
+    # Temp pointers and loop variables for ALLOCATABLE fields
+    for fld in type_info.fields:
+        if not fld.is_allocatable:
+            continue
+        param = f"{prefix}_{fld.name}"
+        iso_type = get_type_mapping(fld.fortran_type, kind_aliases).iso_c_type
+        local_decls.append(f"        {iso_type}, POINTER :: vit_tmp_{arg.name}_{fld.name}(:)")
+        rank = fld.array_dims.count(",") + 1 if fld.array_dims else 1
+        if rank == 2:
+            local_decls.append(
+                f"        INTEGER :: vit_i_{fld.name}, vit_j_{fld.name}")
+
+    # Pre-call: populate scalar fields
+    for fld in type_info.fields:
+        if fld.is_pointer:
+            continue
+        param = f"{prefix}_{fld.name}"
+        if fld.is_allocatable:
+            rank = fld.array_dims.count(",") + 1 if fld.array_dims else 1
+            tmp = f"vit_tmp_{arg.name}_{fld.name}"
+            if rank == 1:
+                pre_call.append(f"        IF (C_ASSOCIATED({param}_ptr)) THEN")
+                pre_call.append(f"            ALLOCATE({local_var}%{fld.name}({param}_n))")
+                pre_call.append(
+                    f"            CALL C_F_POINTER({param}_ptr, {tmp}, [{param}_n])")
+                pre_call.append(
+                    f"            {local_var}%{fld.name}(1:{param}_n) = {tmp}(1:{param}_n)")
+                pre_call.append(f"        END IF")
+            elif rank == 2:
+                vi = f"vit_i_{fld.name}"
+                vj = f"vit_j_{fld.name}"
+                pre_call.append(f"        IF (C_ASSOCIATED({param}_ptr)) THEN")
+                pre_call.append(
+                    f"            ALLOCATE({local_var}%{fld.name}({param}_rows, {param}_cols))")
+                pre_call.append(
+                    f"            CALL C_F_POINTER({param}_ptr, {tmp}, [{param}_rows * {param}_cols])")
+                pre_call.append(f"            DO {vj} = 1, {param}_cols")
+                pre_call.append(f"                DO {vi} = 1, {param}_rows")
+                pre_call.append(
+                    f"                    {local_var}%{fld.name}({vi}, {vj}) = &")
+                pre_call.append(
+                    f"                        {tmp}(({vj}-1)*{param}_rows + {vi})")
+                pre_call.append(f"                END DO")
+                pre_call.append(f"            END DO")
+                pre_call.append(f"        END IF")
+        elif not fld.fortran_type.upper().startswith("TYPE("):
+            pre_call.append(f"        {local_var}%{fld.name} = {param}")
+
+    # Post-call: DEALLOCATE ALLOCATABLEs
+    for fld in type_info.fields:
+        if fld.is_allocatable:
+            post_call.append(
+                f"        IF (ALLOCATED({local_var}%{fld.name})) "
+                f"DEALLOCATE({local_var}%{fld.name})")
+
+    call_args.append(local_var)
+
+
 def generate_fortran_bridge(
     sig: FortranSignature,
     kind_aliases: Optional[dict] = None,
     source_file: Optional[str] = None,
+    derived_types: Optional[dict] = None,
 ) -> str:
     """Generate a BIND(C) Fortran bridge for calling the original function from C++.
 
@@ -200,10 +316,16 @@ def generate_fortran_bridge(
     function for comparison against the C++ translation. Named <name>_f90 to
     distinguish from the C++ function.
 
+    When a derived-type argument has ALLOCATABLE fields, the bridge decomposes
+    it into individual scalar parameters plus pointer+size pairs for each
+    ALLOCATABLE field. This is necessary because C_F_POINTER cannot reconstruct
+    Fortran ALLOCATABLE descriptors from C view structs.
+
     Args:
         sig: Parsed Fortran function signature
         kind_aliases: Project kind mappings
         source_file: Path to the Fortran source file (for extracting module USE statements)
+        derived_types: Registry of known derived types (for ALLOCATABLE detection)
 
     Returns:
         Fortran source string for the bridge subroutine
@@ -230,11 +352,19 @@ def generate_fortran_bridge(
 
         if arg.is_derived_type:
             type_name = arg.derived_type_name
-            # Receive as C_PTR, convert via C_F_POINTER
-            c_params.append((f"        TYPE(C_PTR), VALUE :: {arg.name}_ptr", f"{arg.name}_ptr"))
-            local_decls.append(f"        TYPE({type_name}), POINTER :: {arg.name}")
-            pre_call.append(f"        CALL C_F_POINTER({arg.name}_ptr, {arg.name})")
-            call_args.append(arg.name)
+            type_info = _has_allocatable_fields(arg, derived_types)
+            if type_info is not None:
+                # ALLOCATABLE fields: decompose into individual parameters
+                _emit_decomposed_bridge_params(
+                    arg, type_info, kind_aliases,
+                    c_params, local_decls, pre_call, post_call, call_args,
+                )
+            else:
+                # C-compatible type: use simple C_F_POINTER
+                c_params.append((f"        TYPE(C_PTR), VALUE :: {arg.name}_ptr", f"{arg.name}_ptr"))
+                local_decls.append(f"        TYPE({type_name}), POINTER :: {arg.name}")
+                pre_call.append(f"        CALL C_F_POINTER({arg.name}_ptr, {arg.name})")
+                call_args.append(arg.name)
         elif "CHARACTER" in fortran_type:
             # CHARACTER is not C-interoperable — handle locally in the bridge.
             # No C-side parameter; only ErrStat is returned to C++.
@@ -250,13 +380,16 @@ def generate_fortran_bridge(
             c_params.append((f"        INTEGER(C_INT), VALUE, INTENT(IN) :: n_{arg.name}", f"n_{arg.name}"))
             call_args.append(f"{arg.name}(1:n_{arg.name})")
         elif "INTEGER" in fortran_type:
-            c_params.append((f"        INTEGER(C_INT), INTENT({intent}) :: {arg.name}", arg.name))
+            value_attr = ", VALUE" if intent == "IN" else ""
+            c_params.append((f"        INTEGER(C_INT){value_attr}, INTENT({intent}) :: {arg.name}", arg.name))
             call_args.append(arg.name)
         elif "REAL" in fortran_type:
-            c_params.append((f"        REAL(C_DOUBLE), INTENT({intent}) :: {arg.name}", arg.name))
+            value_attr = ", VALUE" if intent == "IN" else ""
+            c_params.append((f"        REAL(C_DOUBLE){value_attr}, INTENT({intent}) :: {arg.name}", arg.name))
             call_args.append(arg.name)
         elif "LOGICAL" in fortran_type:
-            c_params.append((f"        LOGICAL(C_BOOL), INTENT({intent}) :: {arg.name}", arg.name))
+            value_attr = ", VALUE" if intent == "IN" else ""
+            c_params.append((f"        LOGICAL(C_BOOL){value_attr}, INTENT({intent}) :: {arg.name}", arg.name))
             call_args.append(arg.name)
         else:
             c_params.append((f"        ! TODO: unsupported type {fortran_type}", arg.name))
@@ -525,12 +658,34 @@ def generate_test_harness_skeleton(
     lines.append(f"// void {func_name}({param_str});")
     lines.append("")
 
-    # Fortran bridge has a different signature: derived types as void*,
-    # CHARACTER args handled locally in the bridge (not exposed to C++)
+    # Fortran bridge has a different signature: derived types as void* or
+    # decomposed fields; CHARACTER args handled locally (not exposed to C++)
     bridge_params = []
     for arg in sig.args:
         if arg.is_derived_type:
-            bridge_params.append(f"void* {arg.name}_ptr")
+            type_info = _has_allocatable_fields(arg, derived_types)
+            if type_info is not None:
+                prefix = f"vit_{arg.name}"
+                for fld in type_info.fields:
+                    if fld.is_pointer:
+                        continue
+                    param = f"{prefix}_{fld.name}"
+                    if fld.is_allocatable:
+                        c_type = get_type_mapping(fld.fortran_type, kind_aliases).c_type
+                        bridge_params.append(f"{c_type}* {param}_ptr")
+                        rank = fld.array_dims.count(",") + 1 if fld.array_dims else 1
+                        if rank == 1:
+                            bridge_params.append(f"int {param}_n")
+                        else:
+                            bridge_params.append(f"int {param}_rows")
+                            bridge_params.append(f"int {param}_cols")
+                    elif fld.fortran_type.upper().startswith("TYPE("):
+                        bridge_params.append(f"void* {param}")
+                    else:
+                        c_type = get_type_mapping(fld.fortran_type, kind_aliases).c_type
+                        bridge_params.append(f"{c_type} {param}")
+            else:
+                bridge_params.append(f"void* {arg.name}_ptr")
         elif "CHARACTER" in arg.fortran_type.upper():
             continue  # CHARACTER handled locally in bridge, not passed from C++
         else:

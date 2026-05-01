@@ -1288,7 +1288,8 @@ def cmd_test_validate(args, config):
         out_path.write_text(skeleton)
 
     # Generate and write Fortran bridge
-    bridge = generate_fortran_bridge(sig, config.kind_aliases, source_file=args.file)
+    bridge = generate_fortran_bridge(sig, config.kind_aliases, source_file=args.file,
+                                     derived_types=derived_types)
     bridge_path = out_dir / f"{sig.name.lower()}_bridge.f90"
     bridge_path.write_text(bridge)
 

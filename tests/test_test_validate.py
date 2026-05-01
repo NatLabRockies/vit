@@ -416,3 +416,183 @@ class TestAssumedShapeArrayBridge:
         bridge = generate_fortran_bridge(sig)
         assert "INTEGER(C_INT), INTENT(IN) :: indices(*)" in bridge
         assert "n_indices" in bridge
+
+
+# === ALLOCATABLE field decomposition tests ===
+
+def _make_allocatable_registry():
+    """Registry with a type that has ALLOCATABLE fields."""
+    from vit.derived_type_parser import DerivedTypeInfo, DerivedTypeField
+    return {
+        "DBEMT_InitInputType": DerivedTypeInfo(
+            name="DBEMT_InitInputType",
+            fields=[
+                DerivedTypeField(name="NumBlades", fortran_type="INTEGER(IntKi)"),
+                DerivedTypeField(name="NumNodes", fortran_type="INTEGER(IntKi)"),
+                DerivedTypeField(name="tau1_const", fortran_type="REAL(ReKi)"),
+                DerivedTypeField(name="DBEMT_Mod", fortran_type="INTEGER(IntKi)"),
+                DerivedTypeField(name="rLocal", fortran_type="REAL(ReKi)",
+                                 is_allocatable=True, is_array=True,
+                                 array_dims="(:,:)"),
+            ],
+        ),
+    }
+
+
+def _make_allocatable_sig():
+    """Signature with an ALLOCATABLE-containing derived type argument."""
+    return FortranSignature(
+        name="DBEMT_ValidateInitInp",
+        kind=SubprogramKind.SUBROUTINE,
+        args=[
+            FortranArg(name="interval", fortran_type="REAL(DbKi)",
+                       intent=IntentKind.IN),
+            FortranArg(name="InitInp", fortran_type="TYPE(DBEMT_InitInputType)",
+                       intent=IntentKind.IN),
+            FortranArg(name="errStat", fortran_type="INTEGER(IntKi)",
+                       intent=IntentKind.OUT),
+            FortranArg(name="errMsg", fortran_type="CHARACTER(*)",
+                       intent=IntentKind.OUT),
+        ],
+        module_name="DBEMT",
+    )
+
+
+def _make_1d_allocatable_registry():
+    """Registry with a type that has a 1D ALLOCATABLE field."""
+    from vit.derived_type_parser import DerivedTypeInfo, DerivedTypeField
+    return {
+        "SimpleType": DerivedTypeInfo(
+            name="SimpleType",
+            fields=[
+                DerivedTypeField(name="n", fortran_type="INTEGER(IntKi)"),
+                DerivedTypeField(name="values", fortran_type="REAL(ReKi)",
+                                 is_allocatable=True, is_array=True,
+                                 array_dims="(:)"),
+            ],
+        ),
+    }
+
+
+class TestAllocatableBridge:
+
+    def test_decomposed_scalar_fields(self):
+        """ALLOCATABLE type decomposes scalar fields into VALUE parameters."""
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        bridge = generate_fortran_bridge(sig, derived_types=registry)
+        assert "vit_InitInp_NumBlades" in bridge
+        assert "vit_InitInp_NumNodes" in bridge
+        assert "vit_InitInp_tau1_const" in bridge
+        assert "vit_InitInp_DBEMT_Mod" in bridge
+        assert "VALUE :: vit_InitInp_NumBlades" in bridge
+
+    def test_decomposed_allocatable_ptr_and_dims(self):
+        """ALLOCATABLE field gets pointer + dimension parameters."""
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        bridge = generate_fortran_bridge(sig, derived_types=registry)
+        assert "TYPE(C_PTR), VALUE :: vit_InitInp_rLocal_ptr" in bridge
+        assert "vit_InitInp_rLocal_rows" in bridge
+        assert "vit_InitInp_rLocal_cols" in bridge
+
+    def test_no_c_f_pointer_on_struct(self):
+        """Decomposed bridge does NOT use C_F_POINTER on the whole struct."""
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        bridge = generate_fortran_bridge(sig, derived_types=registry)
+        assert "C_F_POINTER(InitInp_ptr" not in bridge
+
+    def test_allocate_and_deallocate(self):
+        """Bridge ALLOCATEs and DEALLOCATEs ALLOCATABLE fields."""
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        bridge = generate_fortran_bridge(sig, derived_types=registry)
+        assert "ALLOCATE(vit_local_InitInp%rLocal" in bridge
+        assert "DEALLOCATE(vit_local_InitInp%rLocal)" in bridge
+
+    def test_c_associated_null_check(self):
+        """Bridge checks C_ASSOCIATED before ALLOCATE."""
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        bridge = generate_fortran_bridge(sig, derived_types=registry)
+        assert "C_ASSOCIATED(vit_InitInp_rLocal_ptr)" in bridge
+
+    def test_scalar_assignment(self):
+        """Bridge assigns scalar fields to the local type."""
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        bridge = generate_fortran_bridge(sig, derived_types=registry)
+        assert "vit_local_InitInp%NumBlades = vit_InitInp_NumBlades" in bridge
+        assert "vit_local_InitInp%tau1_const = vit_InitInp_tau1_const" in bridge
+
+    def test_call_uses_local_var(self):
+        """Bridge calls the original function with the local Fortran type."""
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        bridge = generate_fortran_bridge(sig, derived_types=registry)
+        assert "CALL DBEMT_ValidateInitInp(" in bridge
+        assert "vit_local_InitInp" in bridge
+
+    def test_1d_allocatable(self):
+        """1D ALLOCATABLE gets _n size parameter (not _rows/_cols)."""
+        sig = FortranSignature(
+            name="TestFunc",
+            kind=SubprogramKind.SUBROUTINE,
+            args=[
+                FortranArg(name="data", fortran_type="TYPE(SimpleType)",
+                           intent=IntentKind.IN),
+            ],
+            module_name="TestMod",
+        )
+        registry = _make_1d_allocatable_registry()
+        bridge = generate_fortran_bridge(sig, derived_types=registry)
+        assert "vit_data_values_n" in bridge
+        assert "vit_data_values_rows" not in bridge
+
+    def test_non_derived_args_unchanged(self):
+        """Non-derived-type args keep their original names (no vit_ prefix)."""
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        bridge = generate_fortran_bridge(sig, derived_types=registry)
+        assert ":: interval" in bridge or ":: vit_interval" not in bridge
+        assert ":: errStat" in bridge
+
+    def test_c_compatible_type_still_uses_c_f_pointer(self):
+        """C-compatible types (no ALLOCATABLE) still use C_F_POINTER."""
+        sig = _make_sig_with_derived_type()
+        bridge = generate_fortran_bridge(sig)
+        assert "C_F_POINTER" in bridge
+        assert "InitInput_ptr" in bridge
+
+
+class TestAllocatableSkeleton:
+
+    def test_extern_uses_decomposed_params(self):
+        """C++ extern uses individual params for ALLOCATABLE types."""
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        skeleton = generate_test_harness_skeleton(sig, derived_types=registry)
+        assert "vit_InitInp_NumBlades" in skeleton
+        assert "vit_InitInp_rLocal_ptr" in skeleton
+
+    def test_extern_no_void_ptr_for_allocatable(self):
+        """extern declaration does NOT use void* for ALLOCATABLE types."""
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        skeleton = generate_test_harness_skeleton(sig, derived_types=registry)
+        assert "void* InitInp_ptr" not in skeleton
+
+    def test_extern_allocatable_dims_match_bridge(self):
+        """2D ALLOCATABLE gets _rows/_cols in extern matching the bridge."""
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        skeleton = generate_test_harness_skeleton(sig, derived_types=registry)
+        assert "int vit_InitInp_rLocal_rows" in skeleton
+        assert "int vit_InitInp_rLocal_cols" in skeleton
+
+    def test_c_compatible_still_void_ptr(self):
+        """C-compatible types still use void* in extern."""
+        sig = _make_sig_with_derived_type()
+        skeleton = generate_test_harness_skeleton(sig)
+        assert "void*" in skeleton
