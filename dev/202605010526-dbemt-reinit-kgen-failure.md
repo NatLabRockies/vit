@@ -18,11 +18,20 @@ Error: Expecting END MODULE statement at (1)
 Error: Symbol 'dbemt_reinit' at (1) has no IMPLICIT type
 ```
 
-**Root cause:** KGen's source instrumentation placed state-capture code (referencing local variables `x` and `m`) outside the subroutine scope — likely at the module level where those variables aren't declared. The instrumented production build fails to compile, so no state data is captured.
+**Root cause: pragma at function DEFINITION instead of CALL SITE.** VIT placed `!$kgen begin_callsite DBEMT_ReInit` around the `subroutine DBEMT_ReInit(...)` declaration (module level). KGen's `ancestors()` for a module-level subroutine returns `[MODULE]`, so `Config.parentblock['stmt']` becomes the MODULE. KGen's `create_parentblock_parts` (gen_kernel_callsite_file.py:63) then appends `INTEGER, INTENT(IN) :: kgen_unit` etc. to the MODULE's DECL_PART — invalid Fortran (INTENT only valid inside a subroutine).
 
-**Why other DBEMT functions extracted successfully:** Functions like UpdateStates, CalcOutput, and the time integrators all extracted without this issue. The difference may be related to ReInit's simpler signature (no ErrStat/ErrMsg outputs), its position in the source file relative to other instrumented functions, or its callee (`DBEMT_CopyElementContinuousStateType` is in DBEMT_Types.f90, not DBEMT.f90).
+**Why other DBEMT functions extracted successfully:** Every successful extraction had the pragma at a position where KGen found a subroutine-level parentblock:
+- AB4 → parentblock = `dbemt_abm4` (ABM4 calls AB4 within DBEMT.f90)
+- ABM4 → parentblock = `dbemt_updatestates` (UpdateStates calls ABM4)
+- CalcContStateDeriv → parentblock = `dbemt_ab4`
+- InitStates → parentblock = `dbemt_updatestates`
+- UpdateStates → parentblock = `bemt_updatestates` (in BEMT.f90)
 
-**Workaround:** Custom Fortran test harness (same approach as InitStates_AllNodes). This is the fourth verification method used in the DBEMT translation.
+These all worked because KGen found a subroutine CALLER in the same module. ReInit has no same-module caller — it's only called from DBEMT_Init (also module-level) and BEMT_ReInit (in BEMT.f90). The pragma should have been placed at the CALL site in BEMT.f90:778 instead.
+
+**Fix:** Always use `vit extract -f CallerFile.f90 -l CALL_LINE` (point to a CALL site inside a subroutine), never at the function definition. Updated CLAUDE.md extraction workflow. KGen extraction would succeed for ReInit with `-f modules/aerodyn/src/BEMT.f90 -l 778`.
+
+**Workaround used:** Custom Fortran test harness (same approach as InitStates_AllNodes), since the root cause was found after the translation was already complete.
 
 ## Translation Details
 

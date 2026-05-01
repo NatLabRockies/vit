@@ -180,10 +180,18 @@ bash scripts/reset_to_clean.sh    # Run on Mac, not in container
 cd /workspace/openfast/build && cmake --build . --target aerodyn_driver -j$(nproc)
 ```
 
-**Step 5 — Extract** (inside container):
+**Step 5 — Extract at a CALL SITE, not the function definition** (inside container):
 ```bash
-cd /workspace/openfast && vit extract FunctionName -f modules/aerodyn/src/SourceFile.f90 -l LINE
+cd /workspace/openfast && vit extract FunctionName -f modules/aerodyn/src/CallerFile.f90 -l CALL_LINE
 ```
+**CRITICAL: The `-f` file and `-l` line must point to a CALL site (where the function is called from), NOT the function definition.** KGen requires the pragma to be inside a subroutine scope. When the pragma wraps a module-level subroutine definition, KGen's parentblock becomes the MODULE (not a subroutine), and it places `INTENT(IN/OUT)` declarations at module scope — invalid Fortran, silent failure with "No state data captured."
+
+Use the `query_coverage.py` output from Step 1 to pick the call site. For example, if coverage shows:
+```
+modules/aerodyn/src/BEMT.f90:778 (BEMT_ReInit) -> ad_BAR_CombinedCases: 4
+modules/aerodyn/src/DBEMT.f90:231 (DBEMT_Init) -> ad_BAR_CombinedCases: 3
+```
+Use `-f modules/aerodyn/src/BEMT.f90 -l 778`, not `-f modules/aerodyn/src/DBEMT.f90 -l 236` (the definition). See dev note `202605010526` for the full diagnosis.
 
 **Step 6 — Restore integrated source:**
 ```bash
@@ -193,7 +201,7 @@ Then rebuild.
 
 **Step 7 — Restore `vit.yaml` `run_cmd`** to the default (`ad_BAR_SineMotion`) if it was changed.
 
-**If extraction reports "No state data captured":** Follow the debugging checklist in `docs/EXTRACTION_INTERNALS.md` Section 7. Most common causes: wrong test case, cross-module instrumentation, source not clean.
+**If extraction reports "No state data captured":** Most common causes: (1) pragma at a function DEFINITION instead of a CALL site (see Step 5), (2) wrong test case, (3) source not clean. Also see `docs/EXTRACTION_INTERNALS.md` Section 7.
 
 **Other pitfalls:**
 - KGen modifies `AirfoilInfo_Types.f90` and `AeroDyn_Driver.f90` (strips blank comment lines). Always `git checkout` these after extraction.
