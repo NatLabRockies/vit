@@ -412,39 +412,48 @@ def _scan_copy_allocates(
     body: str,
     arg_names_upper: set[str],
 ) -> list[AllocationInfo]:
-    """Scan for Registry Copy calls that allocate via deep copy.
+    """Scan for CALL statements that initialize INTENT(OUT) argument fields.
 
-    Detects patterns like:
-        CALL DBEMT_CopyContState(x, OtherState%xdot(i), MESH_NEWCOPY, ErrStat2, ErrMsg2)
-
-    These allocate the destination argument's ALLOCATABLE fields as a side effect
-    of the MESH_NEWCOPY operation.
+    Detects any CALL where an argument matches ``arg%field(...)`` and ``arg``
+    is one of the function's arguments. These calls typically allocate or
+    populate fields as a side effect (e.g., deep-copy routines) and must be
+    preserved in the Fortran wrapper before the C++ call.
     """
     results = []
     lines = body.split("\n")
 
     for line_idx, line in enumerate(lines):
         m = re.match(
-            r'\s*(?:CALL\s+)?(\w+_Copy\w+)\s*\(\s*(\w+)\s*,\s*(\w+)%(\w+)',
+            r'\s*(?:CALL\s+)(\w+)\s*\(',
             line, re.IGNORECASE,
         )
         if not m:
             continue
 
         routine = m.group(1)
-        src_arg = m.group(2)
-        dst_arg = m.group(3)
-        dst_field = m.group(4)
 
-        if dst_arg.upper() not in arg_names_upper:
+        # Check if any argument is arg%field where arg is a function argument
+        call_start = line.upper().index(routine.upper()) + len(routine)
+        paren_start = line.index("(", call_start)
+        call_content = _extract_balanced_parens(line, paren_start)
+        if call_content is None:
             continue
 
-        if "MESH_NEWCOPY" not in line.upper():
+        args = _split_call_args(call_content)
+        dst_arg = None
+        dst_field = None
+        for arg_text in args:
+            arg_m = re.match(r'\s*(\w+)\s*%\s*(\w+)', arg_text.strip())
+            if arg_m and arg_m.group(1).upper() in arg_names_upper:
+                dst_arg = arg_m.group(1)
+                dst_field = arg_m.group(2)
+                break
+
+        if dst_arg is None:
             continue
 
         guard = _find_guard_for_line(lines, line_idx)
 
-        # Capture the loop wrapper if present (e.g., "DO i=1,SIZE(OtherState%xdot)")
         loop_line = None
         for i in range(line_idx - 1, max(line_idx - 3, -1), -1):
             upper = lines[i].strip().upper()
