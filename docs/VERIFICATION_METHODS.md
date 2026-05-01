@@ -1,6 +1,6 @@
 # Verification Methods Reference
 
-Four verification approaches for AeroDyn translations. Each suits a different class of function.
+Five verification approaches for AeroDyn translations. Each suits a different class of function.
 
 ## 1. KGen Kernel Verification (Physics Functions)
 
@@ -97,7 +97,43 @@ cd /workspace/openfast/translations/AirfoilInfo && make test_<name>_filetest && 
 
 **Test storage:** `translations/<Module>/`. Files named `<name>_filetest.cpp`, `<name>_filetest_bridge.f90`.
 
-## 4. Simulation Baseline Verification
+## 4. Custom Fortran Test Harness (Zero-Coverage Functions)
+
+Dual-call testing using a hand-written Fortran program. For functions with ALLOCATABLE types that have zero gcov coverage — KGen can't extract (no state data), baselines pass trivially (function never called), and `vit test-validate`'s generated bridge can't handle view types with ALLOCATABLE fields (C_F_POINTER layout mismatch).
+
+**When to use:** Functions that are never called in the 17 test cases (e.g., Jacobian-path-only functions, initialization functions called before timestepping). The function may be a thin wrapper around already-verified callees, but the wrapper's loop bounds and argument passing still need verification.
+
+**How it works:** A Fortran program owns all memory (real Fortran derived types), creates deep copies via Registry routines, calls both original Fortran and C++ (via view populators + BIND(C) wrapper), and compares results field-by-field.
+
+**Pattern (from DBEMT_InitStates_AllNodes):**
+```fortran
+! 1. Allocate real Fortran types with test data
+CALL setup_types(NumNodes, NumBlades, DBEMT_Mod, u, p, x_f90, os_f90)
+
+! 2. Deep copy for C++ path
+CALL DBEMT_CopyContState(x_f90, x_cpp, MESH_NEWCOPY, ErrStat, ErrMsg)
+CALL DBEMT_CopyOtherState(os_f90, os_cpp, MESH_NEWCOPY, ErrStat, ErrMsg)
+
+! 3. Call original Fortran
+CALL DBEMT_InitStates_AllNodes(u, p, x_f90, os_f90)
+
+! 4. Call C++ via views
+CALL vit_populate_*(x_cpp, x_view)  ! etc.
+CALL func_c(C_LOC(u_view), C_LOC(p_view), C_LOC(x_view), C_LOC(os_view))
+CALL vit_copy_scalars_to_*(x_view, x_cpp)  ! reverse-copy
+
+! 5. Compare field-by-field
+```
+
+**Key challenges:**
+- **ALLOCATABLE fields:** Can't use C_F_POINTER to cast view structs to Fortran types — must create real Fortran types and use Registry Copy routines for deep copies.
+- **Fortran LOGICAL comparison:** Use `.NEQV.` not `/=`. Assignment uses `.TRUE.`/`.FALSE.` not integer literals.
+- **Registry routine names:** Shortened (e.g., `DBEMT_CopyContState` not `DBEMT_CopyContinuousStateType`).
+- **The `_c` wrapper:** The C++ translation needs an `extern "C"` wrapper for Fortran to call it. Add this to the translation file.
+
+**Test storage:** `translations/<Module>/test_<name>.f90` + `translations/<Module>/Makefile.test_<name>`.
+
+## 5. Simulation Baseline Verification
 
 17 AeroDyn regression test cases with committed baselines (`openfast/baselines/aerodyn/`). Run after integrating ANY function.
 

@@ -334,7 +334,7 @@ Key decision: **`DBEMT_ElementInputType_ExtrapInterp` via production bridge** �
 
 Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Continuous ODE path (Mode 3): **ONLY** `ad_BAR_SineMotion_UA4_DBEMT3`.
 
-**Revisit trigger:** Phase B complete. Phase C next — DBEMT_UpdateStates is the hot path orchestrator that calls all translated functions. Standard VIT workflow.
+**Revisit trigger:** Phase C complete. Phase D next — DBEMT_ValidateInitInp (test-validate), DBEMT_ReInit (simulation), DBEMT_Init (two-pass orchestrator).
 
 **Phase A status (2026-04-29): COMPLETE.** All 5 leaf functions integrated (ComputeTau2, ComputeTau1, DBEMT_InitStates, DBEMT_CalcOutput, DBEMT_CalcContStateDeriv). 11 VIT bugs fixed during DBEMT Phase A. Infrastructure proven: all DBEMT view structs, error handling, auto-type, fixed-size view arrays (KD9), callee bridges for view-type parameters, C++ callee detection on integrated source.
 
@@ -490,9 +490,9 @@ Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Con
 
 **Date:** 2026-04-30
 
-**Status:** Phase 0 complete. Phase 1 in progress — **AirfoilInfo COMPLETE (20/20), DBEMT Phase A COMPLETE (5/5), Phase B COMPLETE (3/3).** All 8 DBEMT leaf + integrator functions in C++, 17/17 baselines PASS. VIT infrastructure hardened with 20 bug fixes + 3 enhancements (auto-type KD8, fixed-size view arrays KD9, callee bridge fixes, derived-type-array support, case-insensitive view propagation, bridge ErrMsg copy-back, CHARACTER(*) length resolution). Production bridge pattern established. Shared utilities: SetErrStat, Fortran intrinsics header.
+**Status:** Phase 0 complete. Phase 1 in progress — **AirfoilInfo COMPLETE (20/20), DBEMT Phases A-C COMPLETE (10/14).** All 10 DBEMT leaf + integrator + orchestrator functions in C++, 17/17 baselines PASS. 22 VIT bug fixes + 4 infrastructure enhancements during DBEMT (auto-type KD8, fixed-size view arrays KD9, fixed-size view-type array params, repair loop convergence). Production bridge pattern established. Shared utilities: SetErrStat, Fortran intrinsics header. Five verification approaches proven (KGen, test-validate, file-output, simulation baselines, custom Fortran test harness).
 
-**Next action:** DBEMT Phase C — orchestrators (DBEMT_UpdateStates, DBEMT_InitStates_AllNodes).
+**Next action:** DBEMT Phase D — init/validation/end (DBEMT_ValidateInitInp, DBEMT_ReInit, DBEMT_Init).
 
 **Completed milestones:**
 - [x] Docker container (`vit-dev-openfast`) built and verified
@@ -551,6 +551,9 @@ Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Con
 - [x] Phase B: DBEMT_AB4 integrated — 20/20 KGen, 17/17 baselines. First C++-calls-C++ callee (RK4 from AB4). First xdot[4] history access in translation. (dev note `202604292325`)
 - [x] Phase B: DBEMT_ABM4 integrated — 20/20 KGen, 17/17 baselines. KGen kernel crashed due to CHARACTER(*) length mismatch (4096 vs 8196). Root cause: VIT hardcoded CHARACTER buffer length; state data used ErrMsgLen. Fix: per-variable length resolution tracing kernel local → enclosing function parameter → caller's actual argument → resolved constant from source tree. (dev notes `202604300017`, `202604300138`, `202604300149`)
 - [x] **DBEMT Phase B COMPLETE** — all 3 time integrators translated and integrated. 20 VIT bug fixes total.
+- [x] Phase C: DBEMT_UpdateStates integrated — 20/20 KGen, 17/17 baselines. Hot-path orchestrator calling all 4 translated callees + inline finite difference math. VIT fixed for fixed-size view-type array parameters (`u(2)` pattern, 6 changes in interface_gen.py). Repair loop off-by-one fixed (non-idempotent `_fix_undefined_symbol` + unbounded loop). ExtrapInterp bridge CHARACTER buffer truncation fixed (1024 → 8196). (dev notes `202604301041`, `202604301103`, `202604301926`)
+- [x] Phase C: DBEMT_InitStates_AllNodes integrated — 4/4 test-validate, 17/17 baselines. Zero gcov coverage (Jacobian path only). Verified via custom Fortran test harness with dual-call comparison. New verification approach for zero-coverage functions with ALLOCATABLE types. (dev note `202604301834`)
+- [x] **DBEMT Phase C COMPLETE** — both orchestrators translated and integrated. 22 VIT bug fixes + 4 infrastructure enhancements total across DBEMT.
 
 ## 8. History
 
@@ -560,7 +563,9 @@ Detailed change history is in dev notes (`vit/dev/YYYYMMDDHHMM-descriptor.md`). 
 
 **Phase 1 — AirfoilInfo:** `202604241004` (first extraction), `202604241905` (derived types), `202604251943` (vit_nwtc.h), `202604260357` (libmvec vectorization), `202604261142` (test-validate audit), `202604270333` (ReadAFfile root causes), `202604271433` (AFI_Init two-pass)
 
-**Phase 1 — DBEMT:** `202604281854` (ComputeTau2 integration — operator precedence + vectorization fix), `202604281859` (KGen coverage gap), `202604281913` (the case for KGen), `202604282039` (ComputeTau1 + 3 VIT bugs), `202604282134` (auto-type infrastructure), `202604282138` (session reflection), `202604291005` (DBEMT_InitStates + 3 VIT fixes), `202604291527` (fixed-size view type arrays enhancement), `202604291756` (CalcOutput + ErrMsg blank-padding), `202604291824` (Phase A complete), `202604291831` (session reflection), `202604291859` (callee bridge fixes — 3 root causes)
+**Phase 1 — DBEMT Phase A/B:** `202604281854` (ComputeTau2 integration — operator precedence + vectorization fix), `202604281859` (KGen coverage gap), `202604281913` (the case for KGen), `202604282039` (ComputeTau1 + 3 VIT bugs), `202604282134` (auto-type infrastructure), `202604282138` (session reflection), `202604291005` (DBEMT_InitStates + 3 VIT fixes), `202604291527` (fixed-size view type arrays enhancement), `202604291756` (CalcOutput + ErrMsg blank-padding), `202604291824` (Phase A complete), `202604291831` (session reflection), `202604291859` (callee bridge fixes — 3 root causes)
+
+**Phase 1 — DBEMT Phase C:** `202604301041` (UpdateStates integration — fixed-size view-type array params), `202604301103` (repair loop fix — off-by-one + idempotency), `202604301834` (InitStates_AllNodes — zero-coverage test harness, Phase C complete), `202604301844` (Phase C reflection), `202604301926` (Phase C audit — bridge truncation fix)
 
 ## 9. Deferred Technical Items
 
