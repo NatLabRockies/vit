@@ -447,7 +447,8 @@ def _scan_copy_allocates(
             if arg_m and arg_m.group(1).upper() in arg_names_upper:
                 dst_arg = arg_m.group(1)
                 dst_field = arg_m.group(2)
-                break
+                # Don't break — take the LAST match (destination is typically
+                # after source in copy-style calls)
 
         if dst_arg is None:
             continue

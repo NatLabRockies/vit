@@ -411,17 +411,15 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
         unsafe_allocs = [a for a in allocations if a.category == "local"]
         if all_allocs:
             lines.append(f"        ! --- Pre-allocate arrays (auto-extracted from Fortran source) ---")
-            open_guards: list[str] = []
+            current_guard: Optional[str] = None
             for a in all_allocs:
-                # Manage IF guard nesting
                 desired_guard = a.guard_expr
-                if desired_guard and desired_guard not in open_guards:
-                    lines.append(f"        IF ({desired_guard}) THEN")
-                    open_guards.append(desired_guard)
-                elif not desired_guard and open_guards:
-                    for _ in open_guards:
+                if desired_guard != current_guard:
+                    if current_guard is not None:
                         lines.append(f"        END IF")
-                    open_guards.clear()
+                    if desired_guard is not None:
+                        lines.append(f"        IF ({desired_guard}) THEN")
+                    current_guard = desired_guard
 
                 if a.copy_call:
                     # Registry Copy call (handles allocation internally)
@@ -448,8 +446,7 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
                     lines.append(f'            CALL SetErrStat(ErrID_Fatal, "{err_msg}", ErrStat, ErrMsg, RoutineName)')
                     lines.append(f"            RETURN")
                     lines.append(f"        END IF")
-            # Close any remaining open guards
-            for _ in open_guards:
+            if current_guard is not None:
                 lines.append(f"        END IF")
         if unsafe_allocs:
             lines.append(f"        ! WARNING: These allocations could not be auto-extracted safely.")
