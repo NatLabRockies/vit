@@ -20,6 +20,7 @@ Handles derived types, assumed-shape arrays, and OPTIONAL arguments:
   whether the subprogram is a function or subroutine.
 """
 
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -395,24 +396,67 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     if optional_forwarded:
         lines.extend(_generate_optional_preamble(optional_forwarded, kind_aliases, derived_types))
 
+    # Allocation-related local declarations
+    if allocations:
+        lines.append(f"        INTEGER(4) :: ErrStat2")
+        lines.append(f"        CHARACTER(ErrMsgLen) :: ErrMsg2")
+        lines.append(f"        CHARACTER(*), PARAMETER :: RoutineName = '{sig.name}'")
+        has_copy = any(a.copy_call for a in allocations)
+        if has_copy:
+            lines.append(f"        INTEGER :: vit_alloc_i")
+
     # Auto-extracted ALLOCATE statements (before view populate, so C_LOC has valid memory)
     if allocations:
-        safe_allocs = [a for a in allocations if a.category == "safe"]
-        unsafe_allocs = [a for a in allocations if a.category != "safe"]
-        if safe_allocs:
+        all_allocs = [a for a in allocations if a.category in ("safe", "same_arg")]
+        unsafe_allocs = [a for a in allocations if a.category == "local"]
+        if all_allocs:
             lines.append(f"        ! --- Pre-allocate arrays (auto-extracted from Fortran source) ---")
-            for a in safe_allocs:
-                dims = ", ".join(a.size_exprs)
-                lines.append(f"        ALLOCATE({a.target_arg}%{a.field_name}({dims}))")
-                if a.init_value:
-                    lines.append(f"        {a.target_arg}%{a.field_name} = {a.init_value}")
+            open_guards: list[str] = []
+            for a in all_allocs:
+                # Manage IF guard nesting
+                desired_guard = a.guard_expr
+                if desired_guard and desired_guard not in open_guards:
+                    lines.append(f"        IF ({desired_guard}) THEN")
+                    open_guards.append(desired_guard)
+                elif not desired_guard and open_guards:
+                    for _ in open_guards:
+                        lines.append(f"        END IF")
+                    open_guards.clear()
+
+                if a.copy_call:
+                    # Registry Copy call (handles allocation internally)
+                    # Replace loop variable with vit_alloc_i to avoid conflicts
+                    copy_text = a.copy_call
+                    loop_match = re.search(r'\bdo\s+(\w+)\s*=', copy_text, re.IGNORECASE)
+                    if loop_match:
+                        old_var = loop_match.group(1)
+                        copy_text = re.sub(rf'\b{old_var}\b', 'vit_alloc_i', copy_text)
+                    copy_text = re.sub(r'\bend\s+do\b', 'END DO',
+                                       copy_text, flags=re.IGNORECASE)
+                    for cl in copy_text.split("\n"):
+                        lines.append(f"        {cl.strip()}")
+                    err_msg = a.error_msg or f"Error in {a.source.split(':')[-1]}."
+                    lines.append(f"            IF (ErrStat2 /= 0) THEN")
+                    lines.append(f'                CALL SetErrStat(ErrID_Fatal, "{err_msg}", ErrStat, ErrMsg, RoutineName)')
+                    lines.append(f"                RETURN")
+                    lines.append(f"            END IF")
+                else:
+                    dims = ", ".join(a.size_exprs)
+                    lines.append(f"        ALLOCATE({a.target_arg}%{a.field_name}({dims}), STAT=ErrStat2)")
+                    err_msg = a.error_msg or f"Error allocating {a.target_arg}%{a.field_name}."
+                    lines.append(f"        IF (ErrStat2 /= 0) THEN")
+                    lines.append(f'            CALL SetErrStat(ErrID_Fatal, "{err_msg}", ErrStat, ErrMsg, RoutineName)')
+                    lines.append(f"            RETURN")
+                    lines.append(f"        END IF")
+            # Close any remaining open guards
+            for _ in open_guards:
+                lines.append(f"        END IF")
         if unsafe_allocs:
             lines.append(f"        ! WARNING: These allocations could not be auto-extracted safely.")
             lines.append(f"        ! Review and add ALLOCATE statements manually if needed:")
             for a in unsafe_allocs:
                 dims = ", ".join(a.size_exprs)
-                reason = "same argument" if a.category == "same_arg" else "local/computed size"
-                lines.append(f"        !   {a.target_arg}%{a.field_name}({dims}) — {reason} [{a.source}]")
+                lines.append(f"        !   {a.target_arg}%{a.field_name}({dims}) — local/computed size [{a.source}]")
 
     # View type executables: populator calls + stash assignments
     if view_args:

@@ -32,8 +32,15 @@ class AllocationInfo:
         source: How the allocation was discovered:
             - "direct" for explicit ALLOCATE statements
             - "helper:<name>" for helper-mediated allocations (e.g., "helper:ParseAry")
+            - "copy_call:<routine>" for Registry Copy calls
         init_value: Default initialization value for the allocated array
             ("0.0D0" for REAL, "0" for INTEGER, "0.0D0" as fallback).
+        guard_expr: Fortran IF condition that guards this allocation, or None
+            if the allocation is unconditional.
+        copy_call: Full CALL statement for Registry Copy allocations, including
+            the loop wrapper if present (e.g., "DO i=1,SIZE(OtherState%xdot)\\n...")
+        error_msg: Error message string from the original SetErrStat call after
+            this allocation, if detected.
     """
     field_name: str
     target_arg: str
@@ -41,6 +48,9 @@ class AllocationInfo:
     category: str = "safe"
     source: str = "direct"
     init_value: str = "0.0D0"
+    guard_expr: Optional[str] = None
+    copy_call: Optional[str] = None
+    error_msg: Optional[str] = None
 
 
 def extract_allocations(
@@ -99,8 +109,18 @@ def extract_allocations(
                 seen_fields.add(key)
                 results.append(info)
 
-    # 3. Classify each allocation
+    # 3. Scan for Registry Copy calls (allocation via deep copy)
+    copy_results = _scan_copy_allocates(body, arg_names_upper)
+    for info in copy_results:
+        key = (info.target_arg.upper(), info.field_name.upper())
+        if key not in seen_fields:
+            seen_fields.add(key)
+            results.append(info)
+
+    # 4. Classify each allocation
     for info in results:
+        if info.source.startswith("copy_call"):
+            continue  # Copy calls are always safe (src is a different arg)
         info.category = _classify_allocation(info, arg_names_upper)
 
     return results
@@ -219,6 +239,39 @@ def _join_continuations(text: str) -> str:
     return "\n".join(result)
 
 
+def _find_guard_for_line(lines: list[str], target_line_idx: int) -> Optional[str]:
+    """Find the IF condition that guards the ALLOCATE at the given line index.
+
+    Walks backwards from the ALLOCATE line to find the nearest enclosing
+    block IF statement. Returns the condition expression or None.
+    """
+    depth = 0
+    for i in range(target_line_idx - 1, -1, -1):
+        upper = lines[i].strip().upper()
+        if re.match(r'END\s*IF\b', upper):
+            depth += 1
+        elif re.match(r'IF\s*\(.*\)\s*THEN\b', upper, re.IGNORECASE):
+            if depth == 0:
+                m = re.match(r'IF\s*\((.*)\)\s*THEN\b', lines[i].strip(), re.IGNORECASE)
+                if m:
+                    return m.group(1).strip()
+                return None
+            depth -= 1
+    return None
+
+
+def _find_error_msg(lines: list[str], alloc_line_idx: int) -> Optional[str]:
+    """Find the SetErrStat error message after an ALLOCATE, if present."""
+    for i in range(alloc_line_idx + 1, min(alloc_line_idx + 5, len(lines))):
+        line = lines[i].strip()
+        m = re.search(r'SetErrStat\s*\(\s*ErrID_Fatal\s*,\s*["\']([^"\']+)["\']', line, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        if re.match(r'\bALLOCATE\b', line, re.IGNORECASE):
+            break
+    return None
+
+
 def _scan_direct_allocates(
     body: str,
     arg_names_upper: set[str],
@@ -230,32 +283,37 @@ def _scan_direct_allocates(
     - Nested parentheses in dimension expressions (e.g., PerfTableSize(2))
     - ALLOCATE with STAT= clause (ignored, not treated as a dimension)
     - Multiple ALLOCATE targets separated by commas (rare but legal)
+    - Enclosing IF guards (conditional allocations)
+    - SetErrStat error messages after ALLOCATE
     """
     results = []
+    lines = body.split("\n")
 
-    # Match ALLOCATE( ... )
-    # We need to find the balanced parentheses after ALLOCATE
-    for match in re.finditer(r'\bALLOCATE\s*\(', body, re.IGNORECASE):
-        start = match.end() - 1  # position of the opening (
-        content = _extract_balanced_parens(body, start)
+    for line_idx, line in enumerate(lines):
+        line_upper = line.strip().upper()
+        if not re.match(r'\bALLOCATE\s*\(', line_upper):
+            continue
+
+        # Find the full ALLOCATE content (may span this single normalized line)
+        match = re.search(r'\bALLOCATE\s*\(', line, re.IGNORECASE)
+        if not match:
+            continue
+        start = match.end() - 1
+        content = _extract_balanced_parens(line, start)
         if content is None:
             continue
 
-        # Remove STAT= clause if present
-        # STAT= comes after the allocation targets, separated by comma
-        # e.g., ALLOCATE(arr(n), STAT=err)
         content = _remove_stat_clause(content)
-
-        # Parse allocation targets — could be multiple: ALLOCATE(a(n), b(m))
-        # But we handle single targets primarily since multi-target with Var%field is rare
         targets = _split_allocate_targets(content)
+
+        guard = _find_guard_for_line(lines, line_idx)
+        error_msg = _find_error_msg(lines, line_idx)
 
         for target in targets:
             target = target.strip()
             if not target:
                 continue
 
-            # Match Var%field(dims) pattern
             m = re.match(r'(\w+)\s*%\s*(\w+)\s*\(', target, re.IGNORECASE)
             if not m:
                 continue
@@ -263,11 +321,9 @@ def _scan_direct_allocates(
             var_name = m.group(1)
             field_name = m.group(2)
 
-            # Check that Var is one of the function arguments
             if var_name.upper() not in arg_names_upper:
                 continue
 
-            # Extract dimensions from the parenthesized part
             dims_start = target.index("(", m.start(2))
             dims_content = _extract_balanced_parens(target, dims_start)
             if dims_content is None:
@@ -281,6 +337,8 @@ def _scan_direct_allocates(
                 target_arg=var_name,
                 size_exprs=size_exprs,
                 source="direct",
+                guard_expr=guard,
+                error_msg=error_msg,
             ))
 
     return results
@@ -345,6 +403,67 @@ def _scan_helper_allocates(
             target_arg=var_name,
             size_exprs=[size_arg],
             source=f"helper:{helper_name}",
+        ))
+
+    return results
+
+
+def _scan_copy_allocates(
+    body: str,
+    arg_names_upper: set[str],
+) -> list[AllocationInfo]:
+    """Scan for Registry Copy calls that allocate via deep copy.
+
+    Detects patterns like:
+        CALL DBEMT_CopyContState(x, OtherState%xdot(i), MESH_NEWCOPY, ErrStat2, ErrMsg2)
+
+    These allocate the destination argument's ALLOCATABLE fields as a side effect
+    of the MESH_NEWCOPY operation.
+    """
+    results = []
+    lines = body.split("\n")
+
+    for line_idx, line in enumerate(lines):
+        m = re.match(
+            r'\s*(?:CALL\s+)?(\w+_Copy\w+)\s*\(\s*(\w+)\s*,\s*(\w+)%(\w+)',
+            line, re.IGNORECASE,
+        )
+        if not m:
+            continue
+
+        routine = m.group(1)
+        src_arg = m.group(2)
+        dst_arg = m.group(3)
+        dst_field = m.group(4)
+
+        if dst_arg.upper() not in arg_names_upper:
+            continue
+
+        if "MESH_NEWCOPY" not in line.upper():
+            continue
+
+        guard = _find_guard_for_line(lines, line_idx)
+
+        # Capture the loop wrapper if present (e.g., "DO i=1,SIZE(OtherState%xdot)")
+        loop_line = None
+        for i in range(line_idx - 1, max(line_idx - 3, -1), -1):
+            upper = lines[i].strip().upper()
+            if re.match(r'DO\s+\w+\s*=', upper):
+                loop_line = lines[i].strip()
+                break
+
+        copy_call = line.strip()
+        if loop_line:
+            copy_call = f"{loop_line}\n            {copy_call}\n        END DO"
+
+        results.append(AllocationInfo(
+            field_name=f"{dst_field}(*)",
+            target_arg=dst_arg,
+            size_exprs=[],
+            category="safe",
+            source=f"copy_call:{routine}",
+            guard_expr=guard,
+            copy_call=copy_call,
         ))
 
     return results
