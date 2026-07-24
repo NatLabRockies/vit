@@ -31,14 +31,17 @@ Findings, all from live captures (not reconstruction):
    where the C++ cancels exactly because of the reference build's code generation, is
    incorrect as stated.
 
-4. **The true cause is a sub-float32 divergence in the internal *double* state.** At the store,
-   the two builds carry different `LastSignal` doubles — Fortran `0x3EDF9C7998447C18`, C++
-   `0x3EDF9C799841480A` — differing by `1.78e-16` (`2.4e-11` relative), far below the float32
-   spacing (`~5.7e-11`). Both round to the *same* float32, so every float32 `avrSWAP` output is
-   bit-identical (including `bld_pitch[4443]`). The difference is invisible until the rate-limiter
-   **zero crossing** at t=111.1 s, where Fortran's double state lands on `2^-70` and C++'s lands on
-   exact `0`. This is closed-loop amplification — but it relocates the effect from
-   the rate limiter's code generation to an upstream sub-float32 difference in the double lineage.
+4. **The true cause is a sub-float32 divergence in the internal *double* state**, seeded in the
+   wind-speed-estimator EKF. At the store, the two builds carry different `LastSignal` doubles —
+   Fortran `0x3EDF9C7998447C18`, C++ `0x3EDF9C799841480A` — differing by `1.78e-16` (`2.4e-11`
+   relative), far below the float32 spacing (`~5.7e-11`). Both round to the *same* float32, so every
+   float32 `avrSWAP` output is bit-identical (including `bld_pitch[4443]`). The difference is
+   invisible until the rate-limiter **zero crossing** at t=111.1 s, where Fortran's double state
+   lands on `2^-70` and C++'s on exact `0`. Traced to its seed (see "Upstream origin" below): a
+   **1-ULP difference in the EKF covariance `MATMUL`** (Fortran intrinsic vs C++ hand-unrolled
+   loops) at t≈13.8 s, amplified through the wind estimate → torque → pitch chain. This is exactly
+   closed-loop amplification — but it relocates the effect from the rate limiter's code
+   generation to a small-matrix `MATMUL` compiler difference upstream.
 
 The engineering conclusion is unchanged (physically negligible, compiler-level not a translation
 bug, do not add a near-zero clamp). What changes is the *mechanism* and the false claim of
@@ -141,15 +144,46 @@ This is a textbook instance of closed-loop amplification: a sub-ULP (here sub-fl
 invisible at the deployment interface, amplified by closed-loop dynamics into a single detectable
 value. It confirms the amplification effect while correcting the specific mechanism.
 
-## Open item (next step)
+## Upstream origin — traced to the seed
 
-The exact upstream function whose double output first diverges sub-float32 on the flap-pitch path
-is not yet identified. Walking the `LastSignal` lineage backward (instrument the producing calls at
-steps 4440–4443, diff Fortran vs C++ doubles) would name it — likely one of the catalogued
-compiler effects (FMA/vectorization/math-library) on a flap-path function, or a translated function
-that is float64-identical on its kernel sample but differs on this invocation (the same sample-gap
-that bit `ComputeTau2`). The `run.sh` orchestrator supports this: widen the dump threshold and
-capture both builds at the earlier steps.
+Followed the divergence back through the whole simulation by instrumenting both builds (fresh
+`e8010f0` Fortran and `integrated` C++ trees) and diffing doubles call-by-call. The complete
+causal chain, seed to symptom:
+
+1. **Seed — EKF prediction covariance `P(1,1)`, 1 ULP, EKF step ~4.** In `WindSpeedEstimator`
+   (WE_Mode=2), the Kalman covariance prediction
+   `P = P + DT*(MATMUL(F,P) + MATMUL(P,F^T) + Q - MATMUL(K*R_m,K^T))` (`ControllerBlocks.f90:448`)
+   is a **Fortran `MATMUL` intrinsic** in the reference build and **hand-unrolled triple loops**
+   in the C++ translation (`windspeedestimator.cpp:190–212`). For the 3×3 matrices these round
+   differently, and `P(1,1)` diverges by 1 ULP first. Confirmed by capture at the gain step:
+   `Cp_op` (the `interp2d` Cp lookup) and `P(2,1)` are **bit-identical**, while `S = P(1,1)+R_m`
+   differs by 1 ULP (`0x3F987CF0906BC0BF` vs `…BE`). So `interp2d` is exonerated (its own later
+   divergence at EKF call 321 is inherited, not causal); the seed is the covariance matrix
+   arithmetic.
+2. **`S = P(1,1) + R_m`** inherits the 1 ULP → **Kalman gain `K(2) = P(2,1)/S`** diverges (EKF call 4).
+3. **`v_t = xh(2)`** (turbulent-wind state), updated by `K(2)*innovation`, crosses a ULP by
+   **WSE call 551 ≈ t=13.8 s** — the first divergence in any controller output double.
+   `WE_Vw = v_m + v_t`.
+4. **`WE_Vw` → `VS_RefSpd` (setpoints) → `GenTq`** (VS-torque PI). `GenTq` is the **first
+   rate-limited signal to diverge** — 3 ULPs at global rate-limiter call 12353 ≈ **t=38.6 s**
+   (value ≈26854 N·m; confirmed inst 1 = the `GenTq` limiter, since VariableSpeedControl runs
+   before PitchControl in `DISCON.F90`).
+5. **Collective + per-blade pitch rate limiters** carry the difference in their internal **double**
+   `LastSignal` state. It grows to ~2×10⁵ double-ULPs by t≈111 s while staying **below float32
+   resolution the whole time** — every `avrSWAP` output is bit-identical, including `bld_pitch[4443]`.
+6. **Zero crossing at t=111.1 s** (`bld_pitch[4444]`): the two builds' slightly different double
+   `LastSignal` values round across a float32 boundary — gfortran to `2^-70`, g++ to exact `0`.
+   Three blades because Scenario 16 has no IPC.
+
+**Conclusion:** the origin is a **compiler codegen difference in the EKF covariance `MATMUL`
+(Fortran intrinsic vs C++ unrolled loops)** — not a translation defect and not the rate limiter.
+Both `-ffp-contract=off`, so it is summation-order/implementation, not FMA. The C++ EKF is a
+faithful translation; the 1-ULP small-matrix rounding is inherent to the intrinsic-vs-loop choice.
+The chase used the same instrumentation pattern as `run.sh` (dump doubles, diff call-by-call);
+scratch trees `chase_f/` and `chase_cpp/` are gitignored and disposable.
+
+Optional further pinning (not done, low value): disassemble gfortran's `MATMUL` call to confirm
+whether it fuses or reorders the 3-term dot products relative to the C++ loop.
 
 ## Artifacts
 
