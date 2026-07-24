@@ -182,8 +182,42 @@ faithful translation; the 1-ULP small-matrix rounding is inherent to the intrins
 The chase used the same instrumentation pattern as `run.sh` (dump doubles, diff call-by-call);
 scratch trees `chase_f/` and `chase_cpp/` are gitignored and disposable.
 
-Optional further pinning (not done, low value): disassemble gfortran's `MATMUL` call to confirm
-whether it fuses or reorders the 3-term dot products relative to the C++ loop.
+## Disassembly — the reordering confirmed
+
+Disassembled the compiled EKF covariance update in both builds and ran a decisive
+mechanism test.
+
+**gfortran routes the covariance `MATMUL` to libgfortran, which fuses and vectorizes.**
+The WSE object emits a `bl _gfortran_matmul_r8` (it does *not* fully inline the covariance
+matmuls). libgfortran is dynamically linked (`/lib/aarch64-linux-gnu/libgfortran.so.5`), and
+`_gfortran_matmul_r8` contains **230 fused multiply-add instructions** (`fmla`/`fmadd`) and
+**2-wide SIMD** (`v31.2d`) — i.e., it accumulates the dot products **fused** (one rounding per
+step) and **reassociated** (SIMD partial sums). This routine is precompiled with the distro's
+default flags, so ROSCO's `-ffp-contract=off` **does not reach it**.
+
+**The C++ translation does neither.** Its hand-unrolled covariance loops
+(`windspeedestimator.cpp`) compile under `-ffp-contract=off` to plain scalar `fmul`+`fadd`
+(**0 FMA**) in source order.
+
+**Behavioral confirmation — a three-way split.** Rebuilding only the C++ with FMA enabled
+(`-ffp-contract=fast`) does **not** reproduce Fortran:
+
+| Build | `MATMUL` implementation | `bld_pitch[4444]` |
+|---|---|---|
+| Fortran (reference) | gfortran → `_gfortran_matmul_r8`: **FMA + 2-wide SIMD** | `2^-70` (8.47e-22) |
+| C++ `-ffp-contract=off` | hand loops, **no FMA**, scalar source order | `0.0` |
+| C++ `-ffp-contract=fast` | hand loops, **FMA in C++ source order** | `~2^-71` (4.35e-22) |
+
+Same algorithm, same inputs, **three different last-bit results**. Toggling C++ FMA alone can't
+match Fortran because the residual depends on libgfortran matmul's *specific* fused-and-vectorized
+accumulation order, which the hand-unrolled loops don't reproduce under any single flag. This
+confirms both **fusion** (FMA) and **reordering** (SIMD reassociation) in gfortran's `MATMUL`
+relative to the C++ translation — a small-matrix `MATMUL` effect, now
+pinned to libgfortran `matmul_r8`.
+
+(Capture note: the 1-ULP first appears in an *off-diagonal* covariance element `P(1,3)` at the
+first EKF steps — the covariance MATMUL path — not the diagonal `P(1,1)` prediction, which is
+identical at step 1. The seed is the covariance matrix multiply regardless of element.)
 
 ## Artifacts
 
