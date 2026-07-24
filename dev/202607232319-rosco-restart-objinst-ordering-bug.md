@@ -135,10 +135,20 @@ The restart pair is now genuinely bit-identical to Fortran across a checkpoint/r
 
 ## Follow-ups
 
-- [ ] Re-integrate the fix into `integrated` `src/discon.cpp` and re-run the 27-scenario gate
-      (should be unaffected — the fix only changes the `-9` path, which the gate never hits).
-- [ ] Audit other hand-written C++ dispatch ordering vs Fortran for similar
-      restore-before-reset hazards (e.g. any state that is both checkpointed and reset per step).
+- [x] **Re-integrated** the fix into `integrated` `src/discon.cpp` (ROSCO commit `bbd58e3`,
+      pushed). 27-scenario gate re-run: unchanged — 348/351 arrays identical (2.56M non-trivial
+      values), the only diffs the known Scenario 16 `2^-70` artifact. No regression (the fix
+      touches only the `-9` path the gate never hits).
+- [x] **Audit done — CLEAN.** Cross-checked every assignment to a checkpointed field in the
+      C++ `DISCON` body against the checkpoint field list: `objInst` was the *only* checkpointed
+      field reset before `ReadRestartFile` (the bug). No other restore-before-reset hazard
+      exists. The bit-identical Test B pass corroborates the restart dispatch is fully correct.
+      (Method: parse `field_op(f, LocalVar/objInst->…)` from `restart_fields.h`, flag any
+      `LocalVar./objInst.<field> =` assignment before the `readrestartfile_c` call.)
+- [x] **Carried over to `integrated`** (ROSCO commit `ac393c2`): the restart harness +
+      modified-Fortran reference (`Examples/restart_baseline/`) and the PreFilterMeasuredSignals
+      `verification: kgen` (21/21) record now live on the deployed branch; Test B verified PASS
+      there.
 - [ ] Consider whether `objInst` even belongs in the checkpoint (Fortran checkpoints it but
       immediately resets it; it is effectively dead state in the checkpoint). Removing it from
       both write and read would be a cleaner design, but is a format change — defer.
