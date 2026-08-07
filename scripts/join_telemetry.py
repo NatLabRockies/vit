@@ -35,6 +35,8 @@ COLUMNS = (
         "t_total_s",
         "verify_attempts",
         "integrate_attempts",
+        "verify_runs",
+        "integrate_runs",
         "tok_in",
         "tok_out",
         "tok_cache_read",
@@ -48,18 +50,39 @@ COLUMNS = (
 
 
 def status_for(intervals):
-    """Derive a function's outcome from its command exit codes."""
+    """Derive a function's outcome from its command exit codes.
+
+    Three cases exist beyond pass/fail, and conflating any of them with
+    "failed" corrupts a failure rate computed from this table:
+
+    `phase`       the span brackets a measured phase (analysis, planning)
+                  rather than a translation cycle. It has no verify or
+                  integrate step and can never reach a passing one.
+    `in_progress` a cycle command was started and has not ended. Reading a
+                  mid-run join is now routine, so this must be visible.
+    `failed`      a real cycle that did not reach a passing verify or
+                  integrate.
+    """
     by_command = {}
+    unclosed = False
     for interval in intervals:
         by_command.setdefault(interval["command"], []).append(interval)
+        if interval.get("unclosed"):
+            unclosed = True
 
     def passed(command):
         return any(i["exit_code"] == 0 for i in by_command.get(command, []))
 
+    if not by_command:
+        return "unknown"
+    if not any(c in by_command for c in STEP_COMMANDS):
+        return "phase"
     if passed("integrate"):
         return "integrated"
     if passed("verify"):
         return "verified"
+    if unclosed:
+        return "in_progress"
     if by_command:
         return "failed"
     return "unknown"
@@ -70,6 +93,12 @@ def attempts_to_first_pass(intervals, command):
 
     Counts every invocation if none succeeded, which is the honest answer
     for an abandoned function.
+
+    This is deliberately not the raw invocation count. A command re-run
+    *after* it already succeeded — regenerating an artifact once a tool bug
+    was fixed, say — is not an attempt at passing. The two numbers differ
+    exactly when that happens, and both are reported so the difference is
+    recoverable rather than a matter of recollection.
     """
     count = 0
     for interval in intervals:
@@ -79,6 +108,11 @@ def attempts_to_first_pass(intervals, command):
         if interval["exit_code"] == 0:
             return count
     return count
+
+
+def total_runs(intervals, command):
+    """Raw invocations of `command`, successful or not."""
+    return sum(1 for i in intervals if i["command"] == command)
 
 
 def main(argv=None):
@@ -123,6 +157,8 @@ def main(argv=None):
                     (span["end"] - span["start"]).total_seconds(), 3),
                 "verify_attempts": attempts_to_first_pass(owned, "verify"),
                 "integrate_attempts": attempts_to_first_pass(owned, "integrate"),
+                "verify_runs": total_runs(owned, "verify"),
+                "integrate_runs": total_runs(owned, "integrate"),
                 "tok_total_uncached": telemetry.total_uncached(totals),
                 "usage_records": totals["records"],
                 "model": ";".join(sorted(totals.get("models") or [])),
