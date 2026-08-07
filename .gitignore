@@ -2,3 +2,4 @@
 vit.egg-info/
 scratch/
 .DS_Store
+.vit/

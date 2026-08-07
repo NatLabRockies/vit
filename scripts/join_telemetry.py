@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+"""
+Join VIT's cycle log against Claude Code session transcripts to produce
+per-function cost.
+
+    join_telemetry.py --cycle-log .vit/cycle_log.jsonl \
+                      --transcripts ~/.claude/projects/<key>/ \
+                      --out analysis/replication/per_function.csv
+
+Writes the CSV and prints a summary including the unattributed fraction.
+The join logic lives in vit/telemetry.py so it is importable and tested;
+this is the command-line wrapper.
+
+Read the module docstring of vit/telemetry.py before trusting any number
+this produces. In particular: transcript usage records are deduplicated by
+requestId, without which every count is roughly doubled.
+"""
+
+import argparse
+import csv
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from vit import telemetry  # noqa: E402
+
+
+STEP_COMMANDS = ("extract", "translate", "verify", "integrate", "rebuild", "regress")
+
+COLUMNS = (
+    ["function", "status"]
+    + [f"t_{step}_s" for step in STEP_COMMANDS]
+    + [
+        "t_total_s",
+        "verify_attempts",
+        "integrate_attempts",
+        "tok_in",
+        "tok_out",
+        "tok_cache_read",
+        "tok_cache_write",
+        "tok_total_uncached",
+        "usage_records",
+        "model",
+        "interleaved_with",
+    ]
+)
+
+
+def status_for(intervals):
+    """Derive a function's outcome from its command exit codes."""
+    by_command = {}
+    for interval in intervals:
+        by_command.setdefault(interval["command"], []).append(interval)
+
+    def passed(command):
+        return any(i["exit_code"] == 0 for i in by_command.get(command, []))
+
+    if passed("integrate"):
+        return "integrated"
+    if passed("verify"):
+        return "verified"
+    if by_command:
+        return "failed"
+    return "unknown"
+
+
+def attempts_to_first_pass(intervals, command):
+    """Invocations of `command` up to and including the first success.
+
+    Counts every invocation if none succeeded, which is the honest answer
+    for an abandoned function.
+    """
+    count = 0
+    for interval in intervals:
+        if interval["command"] != command:
+            continue
+        count += 1
+        if interval["exit_code"] == 0:
+            return count
+    return count
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    parser.add_argument("--cycle-log", required=True)
+    parser.add_argument("--transcripts", required=True,
+                        help="Directory of session .jsonl transcripts, or a single file")
+    parser.add_argument("--out", required=True)
+    args = parser.parse_args(argv)
+
+    events = telemetry.read_cycle_log(args.cycle_log)
+    if not events:
+        print(f"No cycle events in {args.cycle_log}", file=sys.stderr)
+        return 1
+
+    transcripts = Path(args.transcripts)
+    paths = sorted(transcripts.glob("*.jsonl")) if transcripts.is_dir() else [transcripts]
+    usage = telemetry.read_usage_records(paths)
+
+    intervals = telemetry.build_intervals(events)
+    spans = telemetry.build_spans(intervals)
+    per_function, buckets = telemetry.attribute(usage, spans)
+
+    by_function = {}
+    for interval in intervals:
+        if interval["function"]:
+            by_function.setdefault(interval["function"], []).append(interval)
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=COLUMNS)
+        writer.writeheader()
+        for span in spans:
+            name = span["function"]
+            owned = by_function.get(name, [])
+            totals = per_function[name]
+            row = {
+                "function": name,
+                "status": status_for(owned),
+                "t_total_s": round(
+                    (span["end"] - span["start"]).total_seconds(), 3),
+                "verify_attempts": attempts_to_first_pass(owned, "verify"),
+                "integrate_attempts": attempts_to_first_pass(owned, "integrate"),
+                "tok_total_uncached": telemetry.total_uncached(totals),
+                "usage_records": totals["records"],
+                "model": ";".join(sorted(totals.get("models") or [])),
+                "interleaved_with": ";".join(sorted(set(span["overlaps"]))),
+            }
+            for step in STEP_COMMANDS:
+                seconds = sum(i["duration_s"] or 0 for i in owned if i["command"] == step)
+                row[f"t_{step}_s"] = round(seconds, 3)
+            for key, _ in telemetry.USAGE_FIELDS:
+                row[key] = totals[key]
+            writer.writerow(row)
+
+    attributed = sum(telemetry.total_uncached(t) for t in per_function.values())
+    overhead = telemetry.total_uncached(buckets["session_overhead"])
+    orphan = telemetry.total_uncached(buckets["unattributed"])
+    accounted = attributed + overhead + orphan
+
+    def sessions(bucket):
+        count = len(bucket.get("sessions") or ())
+        return f", {count} session(s)" if count else ""
+
+    print(f"Wrote {out_path} ({len(spans)} functions, {len(paths)} transcript(s))")
+    print(f"  attributed        {attributed:>12,}")
+    print(f"  session_overhead  {overhead:>12,}  "
+          f"({buckets['session_overhead']['records']} records"
+          f"{sessions(buckets['session_overhead'])})")
+    print(f"  unattributed      {orphan:>12,}  "
+          f"({buckets['unattributed']['records']} records"
+          f"{sessions(buckets['unattributed'])})")
+    if accounted:
+        fraction = 100.0 * orphan / accounted
+        print(f"  unattributed fraction: {fraction:.1f}%"
+              + ("   ABOVE 10% THRESHOLD" if fraction > 10 else ""))
+
+    interleaved = [s["function"] for s in spans if s["overlaps"]]
+    if interleaved:
+        print(f"  WARNING: overlapping spans, attribution unreliable for: "
+              f"{', '.join(sorted(set(interleaved)))}")
+    unclosed = [i for i in intervals if i.get("unclosed")]
+    if unclosed:
+        print(f"  WARNING: {len(unclosed)} unpaired start/end event(s)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
