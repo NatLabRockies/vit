@@ -114,12 +114,57 @@ substantially cheaper. Wall clock 935 s, 406 s, 226 s.
 
 **Function #1 is not a data point about function #1.** Its span contains a VIT bug fix
 (`7ad4e9c`), two gate runs, and the first exercise of `vit verify` and `vit integrate` in a fresh
-tree. A decreasing cost curve across the first several functions is infrastructure discovery
-amortizing, not an agent improving.
+tree.
+
+**The wall-clock series is not homogeneous. A configuration change moved it mid-run.** Between
+functions #2 and #3 the session narrowed `vit.yaml`'s `run_cmd` to a single scenario, and extract
+time fell from ~180 s to ~25 s:
+
+| # | function | extract | wall |
+|---|---|---|---|
+| 1 | `saturate` | 182 | 935 |
+| 2 | `wrap_180` | 178 | 406 |
+| 3 | `wrap_360` | **25** | 238 |
+| 4 | `ColemanTransform` | 25 | 311 |
+| 5 | `identity` | 54 | 257 |
+| 6 | `ColemanTransformInverse` | 28 | 379 |
+
+`wrap_180` at the later extract cost would have been ~253 s, which sits inside the range of
+functions #3–#6. **Most of the apparent improvement from #2 to #3 is the configuration change,
+not amortization and not the agent getting better.** An earlier draft of this note attributed the
+decreasing curve to infrastructure discovery alone; that was incomplete.
+
+Consequences: functions #1–#2 and #3 onward are not comparable on wall clock without adjusting
+for extract, the change point belongs in the manifest, and any median should either exclude the
+pre-change functions or report extract separately. Token counts are unaffected — the change moved
+machine time, not agent work.
+
+**`verify` spikes when shared infrastructure changes**, not with function difficulty: 229 s on
+`saturate` (first run in a fresh tree) and 227 s on `ColemanTransformInverse` (after
+`rosco_constants.h` entered `shared_files`), against 79–80 s elsewhere.
 
 **Boundary fraction rises with function count, not with function cost.** Boundary work is roughly
 constant per transition; attributed cost per function varies. Reporting the ratio without that
 caveat invites a reader to conclude overhead is growing.
+
+## The carried guidance references artifacts that were not carried
+
+`TRANSLATION_TIPS.md` was carried into the replication tree deliberately, so that the measurement
+would be of the accumulated-guidance regime (manifest §1 caveat 4). It instructs translations to
+include `translations/rosco_constants.h` — a campaign artifact that was **not** carried. The
+session had to derive the header from `Constants.f90` and register it in `vit.yaml`'s
+`shared_files`.
+
+So the carry-over was incomplete in a way nobody noticed at setup: guidance points at things, and
+carrying the guidance without the things it points at partially restores from-scratch cost. This
+is honest — the rebuild is real work and it is measured — but the manifest currently claims a
+cleaner separation than exists, and should say so.
+
+It also produced the sharpest fidelity example of the run. ROSCO's Pi is written
+`3.14159265359`, truncated. Using `M_PI` would be more accurate, would look more correct in
+review, and would fail the gate. That is the source-level counterpart to the finding that
+bit-level equivalence sometimes requires preserving implementation choices rather than the
+mathematics — there the compiler's, here the original author's.
 
 ## Two findings worth keeping
 
