@@ -54,11 +54,11 @@ Do not skip these. Two are already known to be wrong or unverified.
 | P3 | `vit-dev` container runs the ROSCO toolchain (Python 2.7 KGen, cmake, gfortran) | **Verified 2026-08-07.** Container up; ran 27 scenarios and an incremental build successfully | Rebuild per `docs/CONTAINER_SETUP.md` |
 | P4 | The 27-scenario baseline suite reproduces on the clean fork | **Partly verified.** The suite runs and reproduces the committed baselines to 348/351 channels; the 3 that differ are scenario 16 `bld_pitch{,_2,_3}`, the known 2^-70 EKF residual. Not yet run on the clean fork | Regenerate baselines locally from the clean Fortran build before the first integration. **Do not gate against committed `baseline_arrays/`** — see §4.4 |
 | P5 | The model in effect is known for the whole run | **Superseded.** Do not rely on pinning. Every transcript record carries `message.model`; `join_telemetry.py` reads it and reports the distinct set per function | If more than one model ID appears in a function's interval, flag that function |
-| **P6** | **The VIT that runs the replication is the current VIT** | **FAILS.** `vit` in `vit-dev` resolves to `/workspace/vit` = `vit_translation/vit`, branch `rosco-restart-objinst-fix`, **3 ahead / 186 behind `origin/main`**, 598 tests vs the OpenFAST checkout's 660 | Triage the 3 unmerged commits, then sync to `origin/main`. Telemetry must land in **this** checkout, not only the OpenFAST one |
+| **P6** | **The VIT that runs the replication is the current VIT** | **RESOLVED 2026-08-07.** Was failing: `vit` in `vit-dev` resolves to `/workspace/vit` = `vit_translation/vit`, which sat on branch `rosco-restart-objinst-fix`, 3 ahead / 186 behind `origin/main`, 598 tests. Fast-forwarded `main` to `ea24c91` and merged the branch (`a9e1a15`); its 3 commits were dev notes only, no code. Container now reports **660 tests passing** and `vit --help` lists `test-validate`, which exists only in the current code | Telemetry must land in **this** checkout, not only the OpenFAST one |
 
 **P1, P2 and P6 are blocking.** A replication that starts from the wrong commit, translates the
 wrong function set, or runs a 186-commit-stale tool measures something, but not the thing it
-sets out to measure.
+sets out to measure. P1 and P6 are now resolved; P2 is deferred per §11 and does not block.
 
 ---
 
