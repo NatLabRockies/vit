@@ -18,8 +18,10 @@ import os
 import re
 import shutil
 import sys
+import time
 from pathlib import Path
 
+from . import telemetry
 from .config import load_config, init_config, record_translation, save_config
 from .derived_type_parser import build_derived_type_registry
 from .fortran_parser import find_function_in_file, FortranSignature
@@ -184,41 +186,62 @@ def main():
 
     config = load_config(args.config)
 
+    # Telemetry brackets every command so per-function cost can be
+    # reconstructed later (see vit/telemetry.py). It never raises, and the
+    # `finally` guarantees an end event on the exception path too.
+    function_name = getattr(args, "function_name", None)
+    telemetry.log_event(function_name, args.command, "start", argv=sys.argv[1:])
+    started = time.monotonic()
+    exit_code = 1
+
     try:
-        if args.command == "init":
-            return cmd_init(args, config)
-        elif args.command == "find":
-            return cmd_find(args, config)
-        elif args.command == "parse":
-            return cmd_parse(args, config)
-        elif args.command == "extract":
-            return cmd_extract(args, config)
-        elif args.command == "translate":
-            return cmd_translate(args, config)
-        elif args.command == "interface":
-            return cmd_interface(args, config)
-        elif args.command == "verify":
-            return cmd_verify(args, config)
-        elif args.command == "integrate":
-            return cmd_integrate(args, config)
-        elif args.command == "sim-compare":
-            return cmd_sim_compare(args, config)
-        elif args.command == "run":
-            return cmd_run(args, config)
-        elif args.command == "status":
-            return cmd_status(args, config)
-        elif args.command == "analyze-types":
-            return cmd_analyze_types(args, config)
-        elif args.command == "test-validate":
-            return cmd_test_validate(args, config)
-        else:
-            parser.print_help()
-            return 1
+        exit_code = _dispatch(args, config, parser)
+        return exit_code
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         if args.verbose:
             import traceback
             traceback.print_exc()
+        exit_code = 1
+        return exit_code
+    finally:
+        telemetry.log_event(
+            function_name, args.command, "end",
+            duration_s=round(time.monotonic() - started, 3),
+            exit_code=exit_code,
+        )
+
+
+def _dispatch(args, config, parser):
+    """Route a parsed command to its handler."""
+    if args.command == "init":
+        return cmd_init(args, config)
+    elif args.command == "find":
+        return cmd_find(args, config)
+    elif args.command == "parse":
+        return cmd_parse(args, config)
+    elif args.command == "extract":
+        return cmd_extract(args, config)
+    elif args.command == "translate":
+        return cmd_translate(args, config)
+    elif args.command == "interface":
+        return cmd_interface(args, config)
+    elif args.command == "verify":
+        return cmd_verify(args, config)
+    elif args.command == "integrate":
+        return cmd_integrate(args, config)
+    elif args.command == "sim-compare":
+        return cmd_sim_compare(args, config)
+    elif args.command == "run":
+        return cmd_run(args, config)
+    elif args.command == "status":
+        return cmd_status(args, config)
+    elif args.command == "analyze-types":
+        return cmd_analyze_types(args, config)
+    elif args.command == "test-validate":
+        return cmd_test_validate(args, config)
+    else:
+        parser.print_help()
         return 1
 
 
