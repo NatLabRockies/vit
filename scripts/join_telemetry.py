@@ -173,8 +173,9 @@ def main(argv=None):
 
     attributed = sum(telemetry.total_uncached(t) for t in per_function.values())
     overhead = telemetry.total_uncached(buckets["session_overhead"])
+    boundary = telemetry.total_uncached(buckets["boundary"])
     orphan = telemetry.total_uncached(buckets["unattributed"])
-    accounted = attributed + overhead + orphan
+    accounted = attributed + overhead + boundary + orphan
 
     def sessions(bucket):
         count = len(bucket.get("sessions") or ())
@@ -185,13 +186,20 @@ def main(argv=None):
     print(f"  session_overhead  {overhead:>12,}  "
           f"({buckets['session_overhead']['records']} records"
           f"{sessions(buckets['session_overhead'])})")
-    print(f"  unattributed      {orphan:>12,}  "
-          f"({buckets['unattributed']['records']} records"
-          f"{sessions(buckets['unattributed'])})")
+    print(f"  boundary          {boundary:>12,}  "
+          f"({buckets['boundary']['records']} records"
+          f"{sessions(buckets['boundary'])})   "
+          f"inter-function: commit, findings, report")
+    if orphan:
+        print(f"  unattributed      {orphan:>12,}  "
+              f"({buckets['unattributed']['records']} records"
+              f"{sessions(buckets['unattributed'])})")
+        print("  WARNING: unattributed is non-zero, which means no spans were "
+              "found. Check --transcripts points at the right project.")
     if accounted:
-        fraction = 100.0 * orphan / accounted
-        print(f"  unattributed fraction: {fraction:.1f}%"
-              + ("   ABOVE 10% THRESHOLD" if fraction > 10 else ""))
+        print(f"  boundary fraction: {100.0 * boundary / accounted:.1f}%"
+              "   (reported, not a threshold: inter-function work is real "
+              "project cost that belongs to no function)")
 
     interleaved = [s["function"] for s in spans if s["overlaps"]]
     if interleaved:
