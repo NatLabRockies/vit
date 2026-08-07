@@ -7,7 +7,8 @@ Automates:
 3. Generating include.ini for module discovery
 4. Cleaning stale artifacts
 5. Running KGen with the correct build/run commands
-6. Injecting kgen_utils.f90 into the project build (KGen bug workaround)
+6. Wrapping --cmd-build in a script that prepares the instrumented tree
+   (see build_state_capture_wrapper -- nine steps, not one)
 7. Managing the resulting kernel/ and state/ directories
 
 Encodes lessons learned from ROSCO debugging:
@@ -638,18 +639,74 @@ def generate_state_capture_build_script(
     """
     Generate a shell script that wraps the build command for state capture.
 
-    KGen instruments source code with calls to kgen_utils functions
-    (kgen_init_vars, kgen_check_save, etc.) but does NOT add kgen_utils.f90
-    to the project's build system. On Linux, shared libraries allow unresolved
-    symbols at link time, so the build succeeds — but state capture fails
-    silently at runtime because the kgen functions are missing.
+    KGen leaves an instrumented source tree that will not build, or will build
+    and then silently capture nothing. This wrapper is what makes it work. It
+    has grown well past its original job -- nine steps, not the one the module
+    docstring used to claim -- so they are enumerated here with provenance,
+    because a comment that undersells what code does is how bugs hide in it
+    (see dev note 202608071058 for the FC_0 case).
 
-    This script:
-    1. Copies kgen_utils.f90 from kernel/ into the source tree
-    2. Patches CMakeLists.txt (or Makefile) to compile it
-    3. Runs the actual build
-    4. Runs the install step (if any)
-    5. Cleans up the patches (so the source tree is restored)
+    Steps, and whose problem each one is:
+
+      1.  Copy kgen_utils.f90 from kernel/ into the source tree.
+      2.  sed it into CMakeLists.txt, then reconfigure (step 3).
+          [KGen gap, correctly ours] KGen instruments code with calls to
+          kgen_utils functions (kgen_init_vars, kgen_check_save, ...) but never
+          arranges for kgen_utils.f90 to be compiled. On Linux a shared library
+          links with unresolved symbols, so the build SUCCEEDS and capture then
+          produces nothing at runtime. Fixing this upstream would require KGen
+          to understand arbitrary build systems -- the same objection that got
+          --auto-allocate rejected (dev note 202605011207) -- so a build-command
+          wrapper is the right shape, not debt.
+
+      2b. sed assumed-size array actuals into explicit sections at kw_* call
+          sites.
+          [KGen code-generator bug -- STILL A WORKAROUND, fix scoped not made]
+          KGen emits write subroutines with assumed-shape DIMENSION(:) dummies
+          while passing assumed-size (*) actuals, which is invalid Fortran. We
+          rewrite the actual to an explicit section, var(1:N), where N comes
+          from VIT's evidence-based extent inference (exit code 10) -- KGen
+          cannot infer N itself.
+
+          This is the one patcher here that does meet CLAUDE.md's "fix it in
+          the fork" bar, because KGen could emit explicit-shape dummies that
+          take the extent as an argument. Not done yet: the kw_* generator
+          builds declarations through the AST builder rather than a template,
+          KGen has no unit test that would catch a regression in it, and
+          verifying a change means a full extraction cycle against clean
+          source. Do it the next time extraction is exercised, not as a
+          drive-by. See dev note 202608071141.
+
+      2c. Reset project SAVE guards between scenarios.
+          [Ours, config-driven] Python ctypes may not truly dlclose() a Fortran
+          shared library, so SAVE variables persist across scenario boundaries.
+          Which guards to reset is per-project, configured in vit.yaml under
+          kgen.dll_persistence. KGen's own SAVE arrays do NOT need this -- each
+          extraction phase is a separate subprocess.
+
+      2d. Touch Fortran sources so cmake recompiles them.
+
+      2e. Transplant kw_* subroutines across cmake target boundaries.
+          [KGen limitation, correctly ours] KGen follows USE chains and
+          instruments files outside the build target. Those files are never
+          compiled, so their kw_* subroutines surface as unresolved symbols.
+          Fixing upstream would require KGen to model build-system target
+          boundaries; same objection as step 2.
+
+      3.  Reconfigure cmake if CMakeLists.txt changed. Required: cmake caches
+          its source list, so patching without reconfiguring means
+          `cmake --build .` silently uses the old list and never compiles
+          kgen_utils.f90.
+
+      4.  Run the real build, then the install step if any.
+      5.  Strip the tagged persistence lines, restoring the source tree.
+
+    Fragility worth knowing: the step-2 sed matches `^ *src/[A-Za-z_]*\\.f90$`.
+    It therefore assumes sources sit under src/, use a lowercase .f90
+    extension, and have names free of digits and hyphens. That holds for ROSCO
+    and AeroDyn. If it ever misses, the failure mode is the silent one above --
+    build succeeds, capture yields nothing -- so check this before assuming a
+    pragma or test-case problem.
 
     The script is written to a temp file and returned as a command.
 
@@ -688,21 +745,28 @@ def generate_state_capture_build_script(
         "set -e",
         "",
         "# VIT: State capture build wrapper",
-        "# Injects kgen_utils.f90 into the project build so KGen's",
-        "# instrumented code can capture state data at runtime.",
+        "# Prepares the KGen-instrumented tree so the build links and capture",
+        "# actually produces state. See build_state_capture_wrapper's docstring",
+        "# for all nine steps and which are KGen's problem vs ours.",
         "",
         f'KGEN_UTILS_SRC="{kgen_utils_src}"',
         f'KGEN_UTILS_DEST="{kgen_utils_dest}"',
         f'CMAKE_FILE="{cmake_file_abs}"',
-        'echo "VIT_WRAPPER: invoked at $(date), cwd=$(pwd)" >> /tmp/vit_wrapper.log',
-        'echo "VIT_WRAPPER: KGEN_UTILS_SRC=$KGEN_UTILS_SRC exists=$([ -f $KGEN_UTILS_SRC ] && echo YES || echo NO)" >> /tmp/vit_wrapper.log',
+        "",
+        "# Diagnostics are opt-in: export VIT_WRAPPER_LOG=/path/to/log to enable.",
+        "# Worth doing when capture reports no state data -- several failures here",
+        "# are silent by construction (a shared library links with unresolved",
+        "# symbols, so the build succeeds and only the capture comes back empty).",
+        'VIT_LOG="${VIT_WRAPPER_LOG:-/dev/null}"',
+        'echo "VIT_WRAPPER: invoked at $(date), cwd=$(pwd)" >> "$VIT_LOG"',
+        'echo "VIT_WRAPPER: KGEN_UTILS_SRC=$KGEN_UTILS_SRC exists=$([ -f $KGEN_UTILS_SRC ] && echo YES || echo NO)" >> "$VIT_LOG"',
         "",
         "# Step 1: Copy kgen_utils.f90 into source tree (if it exists)",
         'if [ -f "$KGEN_UTILS_SRC" ]; then',
         '    cp "$KGEN_UTILS_SRC" "$KGEN_UTILS_DEST"',
         "    # (kgen_utils.f90 copied as-is, no modifications needed)",
         '    echo "VIT: Copied kgen_utils.f90 to source tree"',
-        '    echo "VIT_WRAPPER: copied kgen_utils.f90 to $KGEN_UTILS_DEST" >> /tmp/vit_wrapper.log',
+        '    echo "VIT_WRAPPER: copied kgen_utils.f90 to $KGEN_UTILS_DEST" >> "$VIT_LOG"',
         "",
     ]
 
@@ -739,7 +803,7 @@ def generate_state_capture_build_script(
 
     script_lines.extend([
         "else",
-        '    echo "VIT_WRAPPER: kgen_utils.f90 not found at $KGEN_UTILS_SRC — skipping injection" >> /tmp/vit_wrapper.log',
+        '    echo "VIT_WRAPPER: kgen_utils.f90 not found at $KGEN_UTILS_SRC — skipping injection" >> "$VIT_LOG"',
         "fi",
         "",
     ])
@@ -842,7 +906,7 @@ def generate_state_capture_build_script(
             f'    \\"{source_dir_abs}\\"',
             f')',
             f'for f in fixes: print(\\"VIT: \\" + f)',
-            f'" 2>&1 | tee -a /tmp/vit_wrapper.log',
+            f'" 2>&1 | tee -a "$VIT_LOG"',
             "",
         ])
 
@@ -856,9 +920,9 @@ def generate_state_capture_build_script(
         script_lines.extend([
             "# Step 3: Reconfigure cmake if CMakeLists was modified",
             f'if [ -f "{cmake_file_abs}.vit_backup" ]; then',
-            f'    echo "VIT_WRAPPER: reconfiguring cmake" >> /tmp/vit_wrapper.log',
-            f'    cd "{build_dir_abs}" && cmake .. >> /tmp/vit_wrapper.log 2>&1',
-            f'    echo "VIT_WRAPPER: cmake reconfigure exit code=$?" >> /tmp/vit_wrapper.log',
+            f'    echo "VIT_WRAPPER: reconfiguring cmake" >> "$VIT_LOG"',
+            f'    cd "{build_dir_abs}" && cmake .. >> "$VIT_LOG" 2>&1',
+            f'    echo "VIT_WRAPPER: cmake reconfigure exit code=$?" >> "$VIT_LOG"',
             f'fi',
             "",
         ])

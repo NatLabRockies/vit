@@ -203,7 +203,7 @@ Then rebuild.
 
 **Step 7 — Restore `vit.yaml` `run_cmd`** to the default (`ad_BAR_SineMotion`) if it was changed.
 
-**If extraction reports "No state data captured":** Most common causes: (1) pragma at a function DEFINITION instead of a CALL site (see Step 5), (2) wrong test case, (3) source not clean. Also see `docs/EXTRACTION_INTERNALS.md` Section 7.
+**If extraction reports "No state data captured":** Most common causes: (1) pragma at a function DEFINITION instead of a CALL site (see Step 5), (2) wrong test case, (3) source not clean, (4) `kgen_utils.f90` never got compiled into the instrumented library. Cause 4 is the hardest to spot because *everything reports success*: KGen instruments calls to `kgen_init_vars`/`kgen_check_save`, VIT's build wrapper `sed`s `kgen_utils.f90` into `CMakeLists.txt`, and if that `sed` misses, a Linux shared library still links with the symbols unresolved. The build passes, the simulation runs, and only the capture comes back empty. The `sed` matches `^ *src/[A-Za-z_]*\.f90$`, so it assumes sources under `src/` with lowercase `.f90` names free of digits and hyphens — true for ROSCO and AeroDyn, not guaranteed elsewhere. To check, run the extraction with `VIT_WRAPPER_LOG=/tmp/vit.log` and confirm the wrapper reported patching `CMakeLists.txt`, or just `grep kgen_utils.f90` the target's `CMakeLists.txt` mid-build. See dev note `202608071141`. Also see `docs/EXTRACTION_INTERNALS.md` Section 7.
 
 **Other pitfalls:**
 - KGen modifies `AirfoilInfo_Types.f90` and `AeroDyn_Driver.f90` (strips blank comment lines). Always `git checkout` these after extraction.
