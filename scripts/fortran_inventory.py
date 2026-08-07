@@ -27,7 +27,9 @@ import argparse
 import glob
 import json
 import os
+import re
 import sys
+import tempfile
 from collections import defaultdict
 
 from fparser.two.parser import ParserFactory
@@ -40,14 +42,69 @@ from fparser.common.readfortran import FortranFileReader
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Matches a line whose final non-whitespace character is a backslash. Sources
+# built with `-cpp` (ROSCO sets it for every compiler branch) get C-preprocessor
+# line splicing, so a trailing backslash is a continuation. fparser does not
+# preprocess and rejects it as a syntax error, silently dropping the whole file.
+_CPP_CONTINUATION = re.compile(r"\\(\s*)$")
+
+
+def _despliced(path):
+    """Read `path`, rewriting cpp line-splices as Fortran `&` continuations.
+
+    Returns (text, n_rewritten). Rewriting rather than joining is deliberate:
+    joining shifts every subsequent line number, and line numbers are what the
+    extraction step needs. `&` is the free-form Fortran equivalent and keeps the
+    line count identical.
+
+    A trailing backslash inside a string literal would be data, not a splice, so
+    lines with an odd number of quote characters before the backslash are left
+    alone.
+    """
+    with open(path, "r", errors="replace") as f:
+        lines = f.readlines()
+
+    n = 0
+    for i, line in enumerate(lines):
+        body = line.rstrip("\n")
+        if not _CPP_CONTINUATION.search(body):
+            continue
+        prefix = body[: body.rindex("\\")]
+        if prefix.count("'") % 2 or prefix.count('"') % 2:
+            continue  # backslash sits inside an unterminated string literal
+        lines[i] = _CPP_CONTINUATION.sub(r"&\1", body) + "\n"
+        n += 1
+    return "".join(lines), n
+
+
 def parse_file(parser, path):
     """Parse a single Fortran file, return the AST or None on failure."""
+    tmp_path = None
     try:
-        reader = FortranFileReader(path, ignore_comments=False)
+        text, n_spliced = _despliced(path)
+        if n_spliced:
+            print(
+                f"  NOTE: {os.path.basename(path)}: rewrote {n_spliced} cpp "
+                f"line-splice(s) as Fortran continuations before parsing",
+                file=sys.stderr,
+            )
+            fd, tmp_path = tempfile.mkstemp(suffix=os.path.basename(path))
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+            read_path = tmp_path
+        else:
+            read_path = path
+        reader = FortranFileReader(read_path, ignore_comments=False)
         return parser(reader)
     except Exception as e:
         print(f"  WARN: failed to parse {os.path.basename(path)}: {e}", file=sys.stderr)
         return None
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def is_registry_generated(path):
