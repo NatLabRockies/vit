@@ -1,7 +1,7 @@
 # KGen Fixes vs. VIT-Side Workarounds: Reconciling `CLAUDE.md` With the Code
 
 **Date:** 2026-08-07
-**Status:** in-progress — investigation needed on item 1 before any change
+**Status:** completed — item 1 investigated and fixed; one follow-up comment rewrite outstanding
 **Scope:** KGen fork, `vit/kernel_verify.py`, `vit/extract.py`, `CLAUDE.md` KGen rule
 
 ## What prompted this
@@ -73,7 +73,12 @@ overstated.
 
 ## The three remaining VIT-side patchers
 
-### 1. `FC_0` / `FC_FLAGS_SET_0` — **premise is questionable, investigate before acting**
+### 1. `FC_0` / `FC_FLAGS_SET_0` — **RESOLVED 2026-08-07: the patcher stays, and it had a bug**
+
+> **The investigation below reached the wrong conclusion, and the record is kept so the
+> reasoning is visible.** The premise ("KGen never defines these") is indeed false — but the
+> inference drawn from it, that the patcher masks a VIT config gap and could be deleted by
+> passing `--kernel-option FC=`, was also wrong. See **Resolution** at the end of this item.
 
 `vit/kernel_verify.py:653,667` asserts:
 
@@ -98,15 +103,51 @@ turned out to be a usage error."* The comment claiming a KGen bug is itself the 
 unverified assertion that survives because nobody re-checks it — same failure mode as the
 misrecorded agent model in dev note `202608071048`.
 
-**Do not delete the patcher on the strength of this note.** Investigate first:
+#### Resolution (investigated 2026-08-07)
 
-- Does VIT populate `kernel_option['FC']` / `['FC_FLAGS']` when invoking KGen? Check
-  `vit/extract.py` and the `vit.yaml` schema in `vit/config.py`.
-- Reproduce: run an extraction with the option supplied and inspect the generated Makefile for
-  `FC_0`.
-- If VIT simply isn't passing it, the fix is to pass it, and the patcher becomes dead code. If
-  KGen genuinely emits an undefined reference on a path we legitimately use, fix it in the fork
-  (a default, or a hard error naming the missing option — never a silent undefined variable).
+**VIT does not pass `FC`** — confirmed, there is no `FC`/`FC_FLAGS` anywhere in `vit/config.py`
+or `vit/extract.py`; the invocation carries only `--cmd-build` and `--cmd-run`. So that part of
+the diagnosis held.
+
+**But KGen defines them anyway, from a third source I had not read.** `main.py:311-330` writes
+`FC_0` from *any of*: an explicit `kernel_option['FC']`, the MPI frame, **or compilers
+auto-detected during instrumentation** — and likewise `FC_FLAGS_SET_0` from
+`kernel_option['FC_FLAGS']` or detected compiler options. In VIT's usage the third path is the
+live one. "Never defines these" was false in a way that passing the option would not have fixed.
+
+**And the patcher is not a workaround at all.** Its `if existing:` branch *overwrites* what KGen
+wrote. That is its actual job: the kernel must compile the way production does, or the
+comparison measures the compiler instead of the translation. The flags it forces are
+`-fvect-cost-model=unlimited` (the vectorization remedy — the cause behind five kernel cases
+that failed with no defect in the C++) and the project's `fortran_flags` (literal precision).
+Deleting it would reintroduce a documented class of spurious failures. It belongs with item 2:
+correct by design, not debt.
+
+**The investigation did find a real bug, in the branch logic.** `compilers` and
+`compiler_options` are two independently-populated `OrderedDict`s (`main.py:232-233`) iterated
+separately, so a Makefile with `FC_0` defined and `FC_FLAGS_SET_0` *not* is reachable. The old
+code coupled the two branches:
+
+```python
+if existing:            # FC_FLAGS_SET_0 present -> overwrite
+elif not FC_0 present:  # neither present -> insert both
+```
+
+In the divergent case `existing` is None and `FC_0` *is* present, so **neither line was
+inserted** and the kernel silently built with `FC_FLAGS_SET_0` empty — no `-O2`, no
+vectorization matching, no `fortran_flags`. That does not fail loudly. It produces a kernel that
+can pass or fail for the wrong reason, which is the one thing kernel verification must never do.
+
+Fixed by handling the two definitions independently. Two regression tests added
+(`test_flags_defined_when_only_fc_0_present`, `test_existing_fc_0_not_duplicated`); the first
+fails against the old code with `assert []` and passes after. Suite 660/660.
+
+**Lesson, and it is the third instance today.** A comment asserting "KGen bug: uses but never
+defines these" sat unchallenged for six months and was wrong on three counts, while the code
+underneath it was right and quietly carried a defect the comment's framing actively concealed —
+if you believe you are patching around someone else's bug, you do not audit your own branch
+logic. Same shape as the misrecorded agent model (dev note `202608071048`) and the assumed-size
+misattribution: an unverified assertion survives because it explains something plausibly.
 
 ### 2. C++ object in `ALL_OBJS` — **not a workaround; this is correctly VIT's job**
 
@@ -141,30 +182,31 @@ assumption about the build system.
 apology for a workaround; it should read as a deliberate design choice with the alternative
 stated and rejected, so the next reader doesn't "fix" it.
 
-## Proposed resolution
+## Resolution
 
-1. **Investigate item 1.** Highest value — it may be a live bug in our own invocation.
-2. **Rewrite the item 3 comment** to record the rejected alternative rather than implying debt.
-3. **Add a carve-out to `CLAUDE.md`.** The current rule admits no exceptions, but items 2 and 3
-   are legitimate and permanent. Suggested amendment after the existing KGen paragraph:
+**None of the three patchers is a KGen workaround.** All three are VIT doing its own job:
 
-   > Three VIT-side patchers are *not* covered by this rule and should not be "fixed upstream":
-   > C++ object and `-lstdc++` injection into the kernel Makefile (KGen has no C++ concept —
-   > this is VIT's integration layer), and the `kgen_utils.f90` build-command wrapper (fixing it
-   > in KGen would require KGen to understand arbitrary build systems). See dev note
-   > `202608071058`. Everything else that looks like a KGen bug should be investigated as a
-   > usage error first, then fixed in the fork.
+| Patcher | Verdict |
+|---|---|
+| `FC_0` / `FC_FLAGS_SET_0` | Forces kernel build flags to match production. Correct; had a branch bug, now fixed |
+| C++ `ALL_OBJS` + `-lstdc++` | KGen has no C++ concept; this is the integration layer |
+| `kgen_utils.f90` injection | Real defect, but the upstream fix would need KGen to understand arbitrary build systems |
 
-   Without this, a future session reads a rule stricter than the codebase and either wastes
-   time or stops trusting the rule.
+So `CLAUDE.md`'s rule does not need a carve-out for items 1 and 2 — nothing there is being worked
+around. Item 3 is the only genuine workaround, and it is defensible for the same reason
+`--auto-allocate` was rejected: the alternative encodes build-system specifics into a general
+tool. **The rule stands as written.** What needs changing is the comments that mislabel VIT's own
+design decisions as other people's bugs.
 
 ## Next steps
 
-- [ ] Trace `kernel_option['FC']` through `vit/config.py` → `vit/extract.py` → KGen invocation
-- [ ] Reproduce a clean extraction and inspect the generated Makefile for `FC_0`
-- [ ] Depending on the finding: pass the option and delete the patcher, or fix the fork
-- [ ] Rewrite the `extract.py:22-25` comment
-- [ ] Amend `CLAUDE.md` with the carve-out
+- [x] Trace `kernel_option['FC']` through `vit/config.py` → `vit/extract.py` → KGen invocation
+- [x] Fix the coupled-branch bug and add regression tests (660/660)
+- [x] Rewrite the `kernel_verify.py` docstring and inline comment
+- [ ] Rewrite the `extract.py:22-25` comment for item 3 — state the rejected alternative
+      (KGen understanding arbitrary build systems) rather than reading as debt
+- [ ] Consider a one-line note in `CLAUDE.md` pointing at this note, so the next session that
+      sees a "KGen bug" comment in `kernel_verify.py` knows it was audited
 
 ## References
 

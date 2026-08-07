@@ -650,7 +650,7 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
                            extra_cpp_sources: Optional[list] = None) -> None:
     """
     Patch the kernel Makefile to:
-    1. Define FC_0 and FC_FLAGS_SET_0 (KGen bug: uses but never defines these)
+    1. Own FC_0 and FC_FLAGS_SET_0 so the kernel's build matches production
     2. Add C++ compilation rule
     3. Add C++ object to ALL_OBJS
     4. Add -lstdc++ to link flags
@@ -664,40 +664,60 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
         A.o: A.f90 ...
             ${FC_0} ${FC_FLAGS_SET_0} -c -o $@ $<
 
-    Note: FC_0 and FC_FLAGS_SET_0 are USED but NEVER DEFINED.
-    There is no FC variable either. We must prepend definitions.
+    On FC_0 / FC_FLAGS_SET_0 -- this is NOT a workaround for a KGen defect,
+    despite what this comment used to claim. KGen defines both, from any of
+    three sources (kgen/extractor/main.py:311-330): an explicit --kernel-option
+    FC=/FC_FLAGS=, the MPI frame, or compilers auto-detected during
+    instrumentation. VIT passes none of the first two, so in our usage they
+    normally come from auto-detection.
 
-    The fortran_flags parameter propagates project-specific compiler flags
-    (e.g., -fdefault-real-8) that affect literal constant precision.
-    Without these, Fortran literals like 3.14159265359 may be truncated
-    to single precision in the kernel, causing coefficient mismatches.
+    We overwrite them anyway, because the kernel must be compiled the way
+    production is or the comparison measures the compiler instead of the
+    translation. Two flags carry that:
+
+      -fvect-cost-model=unlimited forces the reduced kernel to vectorize loops
+      the full project vectorizes. Without it gfortran applies a different
+      heuristic to the smaller compilation unit, calls scalar libm where
+      production calls SIMD libmvec, and the 1-ULP difference cascades through
+      orchestrator functions. This is the cause behind five kernel cases that
+      failed with no defect in the C++.
+
+      fortran_flags propagates project-specific flags (e.g. -fdefault-real-8)
+      that affect literal constant precision. Without them a literal like
+      3.14159265359 truncates to single precision in the kernel and shows up
+      as a coefficient mismatch.
+
+    So: KGen may define these, and we replace what it defines. The two
+    definitions are handled independently below -- KGen writes FC_%d and
+    FC_FLAGS_SET_%d from two separately-populated OrderedDicts, so a Makefile
+    with FC_0 but no FC_FLAGS_SET_0 is reachable, and coupling the branches
+    would silently build the kernel with no flags at all.
     """
     makefile = kernel / "Makefile"
     content = makefile.read_text()
     lines = content.split("\n")
     obj_name = cpp_source.replace(".cpp", ".o")
 
-    # 1. Prepend FC_0/FC_FLAGS_SET_0 definitions if not present
-    # KGen Makefiles use FC_0 but never define it or FC
-    # Include project-specific fortran_flags (e.g., -fdefault-real-8)
-    # Without these, Fortran literals like 3.14159265359 may be truncated
-    # to single precision in the kernel, causing coefficient mismatches.
-    # -fvect-cost-model=unlimited: Force vectorization matching the production
-    # CMake build. Without this, gfortran may skip vectorizing cos/sin loops
-    # in the reduced kernel module (different heuristic threshold than the full
-    # project). Vectorized cos/sin (libmvec) can differ by 1 ULP from scalar
-    # cos/sin (libm), causing cascading diffs in orchestrator functions.
+    # 1. Take ownership of FC_0/FC_FLAGS_SET_0 (see docstring for why these
+    #    must be ours rather than KGen's or the auto-detected build's).
     base_flags = "-O2 -ffree-form -ffree-line-length-none -fvect-cost-model=unlimited"
     if fortran_flags:
         base_flags = f"{base_flags} {fortran_flags}"
     fc_flags_line = f"FC_FLAGS_SET_0 ?= {base_flags}"
-    existing = re.search(r'^FC_FLAGS_SET_0\s*[?:]?=.*$', content, re.MULTILINE)
-    if existing:
-        # Update existing FC_FLAGS_SET_0 with correct flags
+
+    # Handle the two definitions independently. They are written by KGen from
+    # two separately-populated OrderedDicts (compilers, compiler_options), so
+    # "FC_0 defined, FC_FLAGS_SET_0 not" is reachable. Coupling these branches
+    # -- as this did until 2026-08-07 -- meant that case inserted neither line
+    # and the kernel silently built with no flags: no -O2, no vectorization
+    # matching, no fortran_flags. That does not fail loudly; it produces a
+    # kernel that can pass or fail for the wrong reason.
+    if re.search(r'^FC_FLAGS_SET_0\s*[?:]?=', content, re.MULTILINE):
         lines = [fc_flags_line if re.match(r'^FC_FLAGS_SET_0\s*[?:]?=', l) else l
                  for l in lines]
-    elif not re.search(r'^FC_0\s*[?:]?=', content, re.MULTILINE):
+    else:
         lines.insert(0, fc_flags_line)
+    if not re.search(r'^FC_0\s*[?:]?=', content, re.MULTILINE):
         lines.insert(0, "FC_0 ?= gfortran")
 
     # 2. Add C++ objects to ALL_OBJS FIRST (before checking obj_name in content)

@@ -7,6 +7,7 @@ from kernel_verify.py. No Docker, KGen, or real Fortran compilation needed.
 
 import os
 import pytest
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -928,6 +929,65 @@ Controllers.o: Controllers.f90 ROSCO_Types.o
             if line.startswith("FC_FLAGS_SET_0"):
                 assert "-fdefault-real-8" in line
                 break
+
+    # KGen writes FC_%d and FC_FLAGS_SET_%d from two separately-populated
+    # OrderedDicts (kgen/extractor/main.py:232-233, 311-330), so a Makefile
+    # carrying FC_0 without FC_FLAGS_SET_0 is reachable. Until 2026-08-07 the
+    # patcher coupled these two branches and that case inserted neither line,
+    # silently building the kernel with no flags at all -- no -O2, no
+    # -fvect-cost-model=unlimited, no fortran_flags. A flagless kernel does not
+    # fail loudly; it can pass or fail for the wrong reason, which is exactly
+    # what kernel verification must not do.
+    KGEN_MAKEFILE_FC_ONLY = """\
+# Makefile for KGEN-generated kernel
+FC_0 := gfortran
+
+ALL_OBJS := Controllers.o kernel_driver.o kgen_utils.o
+
+build: ${ALL_OBJS}
+\t${FC_0} ${FC_FLAGS_SET_0} -o kernel.exe $^
+
+Controllers.o: Controllers.f90
+\t${FC_0} ${FC_FLAGS_SET_0} -c -o $@ $<
+"""
+
+    def _sig(self):
+        return FortranSignature(
+            name="test_func", kind=SubprogramKind.FUNCTION,
+            args=[], result_name="test_func_result",
+            result_type="REAL(8)", source_file="test.f90", line_number=1,
+        )
+
+    def test_flags_defined_when_only_fc_0_present(self, tmp_path):
+        """FC_0 present but FC_FLAGS_SET_0 absent must still get full flags."""
+        kernel = tmp_path / "kernel"
+        kernel.mkdir()
+        (kernel / "Makefile").write_text(self.KGEN_MAKEFILE_FC_ONLY)
+
+        _patch_kernel_makefile(kernel, self._sig(), "test.cpp",
+                               fortran_flags="-fdefault-real-8")
+        content = (kernel / "Makefile").read_text()
+
+        flag_lines = [l for l in content.split("\n")
+                      if l.startswith("FC_FLAGS_SET_0")]
+        assert flag_lines, "FC_FLAGS_SET_0 was never defined"
+        assert "-O2" in flag_lines[0]
+        assert "-fvect-cost-model=unlimited" in flag_lines[0], \
+            "vectorization matching lost; kernel would not match production"
+        assert "-fdefault-real-8" in flag_lines[0]
+
+    def test_existing_fc_0_not_duplicated(self, tmp_path):
+        """A Makefile that already defines FC_0 keeps exactly one definition."""
+        kernel = tmp_path / "kernel"
+        kernel.mkdir()
+        (kernel / "Makefile").write_text(self.KGEN_MAKEFILE_FC_ONLY)
+
+        _patch_kernel_makefile(kernel, self._sig(), "test.cpp")
+        content = (kernel / "Makefile").read_text()
+
+        fc_defs = [l for l in content.split("\n")
+                   if re.match(r'^FC_0\s*[?:]?=', l)]
+        assert len(fc_defs) == 1, f"expected one FC_0 definition, got {fc_defs}"
 
 
 # === Edge case tests ===
