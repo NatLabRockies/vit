@@ -71,6 +71,23 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 
 **Verification methods:** See `docs/VERIFICATION_METHODS.md` for test-validate, file-output comparison, simulation baselines, and FMA debugging.
 
+**Cycle telemetry.** Every `vit` command logs a start/end event to `.vit/cycle_log.jsonl` (override with `VIT_TELEMETRY_LOG`, disable with `VIT_TELEMETRY=0`). Joined against Claude Code session transcripts, this yields per-function tokens, wall clock, and attempts to first verification pass:
+
+```bash
+python3 scripts/join_telemetry.py --cycle-log .vit/cycle_log.jsonl \
+    --transcripts ~/.claude/projects/<project-key>/ \
+    --out analysis/per_function.csv
+```
+
+The two cycle steps that are not `vit` commands must log themselves, or rebuild and regress time vanishes from the totals:
+
+```bash
+python3 -m vit.telemetry start --function FuncName --command regress
+python3 -m vit.telemetry end   --function FuncName --command regress --exit-code $rc
+```
+
+Attribution assumes one function at a time. Interleaved work produces overlapping spans, which the joiner flags. Read `vit/telemetry.py`'s module docstring before trusting any number it produces.
+
 **VIT reference:** See `docs/VIT_REFERENCE.md` for CLI commands, config fields, exit codes, and known limitations.
 
 ## Workflow Discipline
