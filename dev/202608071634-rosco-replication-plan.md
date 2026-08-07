@@ -295,14 +295,32 @@ would quantify that mechanism directly.
 
 ---
 
-## 11. Open questions for the author
+## 11. Decisions (resolved 2026-08-07)
 
-1. **P1** — where did translations land between 2026-02-25 and 2026-03-18?
-2. **P2** — 49, 52, or something else?
-3. **§7.3** — which regress fidelity?
-4. Is a summary sentence the goal, or is the reproducibility artifact the goal? They imply different
-   stopping points: a sentence needs CP2; an artifact wants CP4 and probably does not fit before
-   Friday.
+**P1 — RESOLVED. Baseline is `974290e`** (dzalkind, 2026-02-04, "Update inputs for openfast
+4.2.0 (#491)"). Rule given by the author: the last commit on the fork that he did not make. That
+is the last non-`kevinmenear` commit, and it sits immediately before `e8010f0` (kevinmenear,
+2026-03-18, "Add VIT translation infrastructure and golden kernel fixtures").
+
+The 2026-02-25 to 2026-03-18 gap is not missing work. VIT's own repository was started 2026-02-25
+and early translations were verified against kernel fixtures before anything landed in the ROSCO
+fork. Nothing is unaccounted for; §2's P1 concern is withdrawn.
+
+**P2 — DEFERRED.** The 49-vs-52 discrepancy between `ROSCO/vit.yaml` and the project's own count stands
+unresolved. The author will investigate separately. **This does not block the replication** — the
+plan in §5 is generated from the codebase analysis, not from the log — but it remains an open
+issue against the ROSCO accounting and must not be forgotten. Whatever the analysis produces here is
+evidence toward resolving it.
+
+**§7.3 — RESOLVED: full fidelity, option (a).** Full 27-scenario regression after every
+integration, exactly as the original campaign ran it. No batching, no subset. This makes the
+per-function cost figure include the true regress cost and keeps the replication a replication.
+The consequence is accepted: throughput will be low and the run will be cut off partway through
+ROSCO rather than completing it.
+
+**Goal — as far as we get.** Not a fixed n. Every completed function is a valid data point and
+the dataset is analysable at any size (§8). The author will stop the run when the remaining time
+is needed elsewhere.
 
 ---
 
