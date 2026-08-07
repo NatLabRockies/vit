@@ -1090,6 +1090,16 @@ def _build_wrapper_call_args(sig: FortranSignature,
         elif mapping.iso_c_type.startswith("LOGICAL") and mapping.c_kind:
             # LOGICAL needs explicit conversion to C_BOOL
             call_args.append(f"LOGICAL({arg.name}, {mapping.c_kind})")
+        elif (mapping.fortran_type.upper().lstrip().startswith("LOGICAL")
+                and mapping.iso_c_type.startswith("INTEGER")):
+            # type_map.py maps Fortran LOGICAL/LOGICAL(4) to INTEGER(C_INT),
+            # which is the right memory layout but is NOT assignment-compatible
+            # in Fortran -- passing the LOGICAL straight through is a hard
+            # compile error ("passed LOGICAL(4) to INTEGER(4)"). The reverse
+            # direction already converts with (/= 0); this is the same
+            # conversion going out.
+            call_args.append(
+                f"MERGE(1_{mapping.c_kind}, 0_{mapping.c_kind}, {arg.name})")
         elif mapping.c_kind != mapping.fortran_kind and mapping.fortran_kind and \
                 mapping.byte_size != _fortran_kind_byte_size(mapping.fortran_kind):
             # Need to convert from project kind to C kind (different byte sizes)

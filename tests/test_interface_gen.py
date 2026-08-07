@@ -566,6 +566,34 @@ class TestGenerateKernelCalleeBridge:
         assert "RESULT" in bridge or "bridge_result" in bridge
         assert "ComputeValue" in bridge
 
+    def test_logical_in_arg_converted_to_int(self):
+        """Fortran LOGICAL passed to an INTEGER(C_INT) parameter needs MERGE.
+
+        type_map.py maps LOGICAL/LOGICAL(4) to INTEGER(C_INT) -- correct memory
+        layout, but Fortran will not pass one as the other. Without an explicit
+        conversion gfortran rejects the generated wrapper with
+        "Type mismatch in argument 'reset'; passed LOGICAL(4) to INTEGER(4)".
+
+        Regression: ROSCO's HPFilter(..., reset, ...).
+        """
+        sig = FortranSignature(
+            name="HPFilter",
+            kind=SubprogramKind.FUNCTION,
+            args=[
+                FortranArg(name="InputSignal", fortran_type="REAL(DbKi)",
+                           intent=IntentKind.IN),
+                FortranArg(name="reset", fortran_type="LOGICAL(4)",
+                           intent=IntentKind.IN),
+            ],
+            result_type="REAL(DbKi)",
+            result_name="HPFilter_result",
+        )
+        wrapper = generate_fortran_wrapper(sig, KIND_ALIASES)
+        call_line = [l for l in wrapper.split("\n") if "hpfilter_c(" in l]
+        assert call_line, "expected a call to hpfilter_c in the wrapper"
+        assert "MERGE(1_C_INT, 0_C_INT, reset)" in call_line[0], (
+            "LOGICAL arg must be converted, got: " + call_line[0])
+
 
 # === Run tests ===
 
