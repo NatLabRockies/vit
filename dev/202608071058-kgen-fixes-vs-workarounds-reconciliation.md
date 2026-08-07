@@ -42,16 +42,34 @@ overstated.
 
 **Two corrections fall out of this table:**
 
-1. **An earlier description undersells the fork.** It says the fork "adds `BIND(C)` parsing, procedure-pointer
-   support, and assumed-size array handling" — three items. The log shows at least six fixes,
-   including the string-literal escape bug, complex/deferred-length character types, and error
-   surfacing. Either the sentence should be broadened or it should say "among others."
+1. **An earlier description misattributed upstream work to our fork — corrected 2026-08-07.** It said the fork
+   "adds `BIND(C)` parsing, procedure-pointer support, and assumed-size array handling." Two of
+   those are ours (`b5fd702`, `31d653c`). **Assumed-size array support is not** — it is upstream
+   NCAR commit `384009d`, "resolved issue-08 by adding support for `Assumed_Size_Spec`," outside
+   the VIT-era window entirely.
 
-2. **§VIII catalogs a defect that has since been fixed.** It states "KGen's runner ignores
-   subprocess return codes, so build failures during capture manifest only as absent state
-   files." Commit `0705f2d` fixed exactly that. The catalog entry is still valid as an observed
-   failure mode, but noting the fix would turn a complaint into a demonstration of the
-   root-cause standard working.
+   The likely source of the error: VIT *does* have assumed-size **extent inference**
+   (evidence-based, gated by exit code 10), which is ours — but it is a VIT
+   feature, not a KGen fork change. The two got conflated, and the conflation ran in the
+   direction of claiming credit for someone else's fix, which is the worst direction for it to
+   run.
+
+   Corrected to name what the fork actually changed: `BIND(C)` and procedure-pointer parsing,
+   character and complex kinds, and error propagation during capture. The list also stops
+   understating — the seven VIT-era commits cover more than the original three items claimed.
+
+   **The seven VIT-era commits** (everything after the last upstream commit):
+   `0705f2d` error surfacing during capture · `c57cd7b` ETime profiling default ·
+   `4676161` string-literal backslash bug · `31d653c` PROCEDURE POINTER parsing ·
+   `b5fd702` `parse_bind` on `TYPE, BIND(C)` · `d76be2a` explicit python2.7 in `bin/kgen` ·
+   `6144156` complex and deferred-length character types
+
+2. **The same description catalogued a defect that had since been fixed — corrected 2026-08-07.** It stated
+   "KGen's runner ignores subprocess return codes, so build failures during capture manifest
+   only as absent state files," in the present tense, as a live hazard. Commit `0705f2d` had
+   already fixed it. Now reads "...which we fixed in the fork rather than detected around,"
+   which turns a complaint about a dependency into a demonstration of the root-cause
+   standard.
 
 ## The three remaining VIT-side patchers
 
