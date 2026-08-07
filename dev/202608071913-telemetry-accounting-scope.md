@@ -166,6 +166,76 @@ review, and would fail the gate. That is the source-level counterpart to the fin
 bit-level equivalence sometimes requires preserving implementation choices rather than the
 mathematics — there the compiler's, here the original author's.
 
+## Deferred: three joiner defects, and where it is safe to fix them
+
+Found auditing at 7 functions integrated (2026-08-07 19:39), `HPFilter` in flight. All three are
+in the joiner, none in the replication's work. **Deliberately not applied while a function is
+open.**
+
+**1. Nesting is reported as interleaving.** `__typefix__` (23:21:38–23:23:05) sits entirely
+inside `sigma` (23:19:01–23:30:26). That is a sub-task bracket, not two functions alternating, but
+`build_spans`' overlap check cannot tell them apart, so it declares `sigma`'s attribution
+unreliable when it is fine. A false alarm on the one warning that is supposed to mean *stop
+trusting this row*.
+
+**2. Two phantom `failed` rows.**
+
+```
+__typefix__   failed    87s    0 tok   0 records
+HPFilter      failed    56s    0 tok   0 records
+```
+
+`__typefix__` used `rebuild` and `regress` as its command names, so the "no cycle commands →
+phase" rule from `06811f0` does not catch it: the same phantom-failure class, through a different
+door. `HPFilter` is simply in flight — extract closed, next command not yet started, so no
+unclosed interval exists and it falls through to `failed`. The `in_progress` check only fires
+while a command is actively running.
+
+Both corrupt a failure rate computed from the table, which is the specific thing the dataset
+exists to supply.
+
+**3. `__typefix__` shows zero tokens.** The joiner attributes to the first containing span and
+`sigma` starts earlier, so `sigma` absorbed the type-fix work. Defensible — the fix was needed
+*for* `sigma` — but the row reads as a free operation, and `sigma` is second in uncached tokens
+only to `saturate` with nothing on the row explaining why.
+
+### The rule to replace it with
+
+Failure should require evidence of failure rather than being the fallthrough:
+
+- span fully contained in another → `nested` (no warning; tokens roll up to the parent, keep its
+  own wall clock)
+- no cycle commands → `phase`
+- any nonzero exit code → `failed`
+- passing integrate → `integrated`; passing verify → `verified`
+- otherwise → `in_progress`
+
+### Where it is safe to make it
+
+Verified, not assumed: **`scripts/join_telemetry.py` is a leaf.** Nothing imports it; the only
+occurrence of the name elsewhere in the tree is a docstring mention in `vit/telemetry.py`. The
+measured path imports `vit/telemetry.py` and nothing else — `vit/cli.py:24` (`from . import
+telemetry`) and `python3 -m vit.telemetry` from `regress.sh`, `rebuild.sh` and the commit bracket.
+
+So:
+
+- **Confined to `scripts/join_telemetry.py`: no functional interference is possible.** It cannot
+  change what the replication's commands do or what gets logged. Nesting can be computed in the
+  joiner from the spans list, so `build_spans()` need not be touched.
+- **Touching `vit/telemetry.py`: real risk.** Every `vit` command imports it and every shell
+  bracket shells into it. A syntax error there breaks their next command outright. Avoid, and this
+  fix does not require it.
+
+Two residual risks remain either way, both operational rather than functional, and both charged to
+whichever function is open when they land: a concurrent `git commit` in the shared VIT repo
+colliding on `index.lock` (they commit there too — `a8ac134`, `7ad4e9c` are theirs), and a changed
+working tree observed mid-cycle prompting them to stop and investigate.
+
+**Therefore: apply at a function boundary, never during a cycle.** The fix is pure
+post-processing and applies retroactively to every function already recorded, so nothing is lost
+by waiting. This is the same discipline as relaying guidance and compacting between functions, for
+the same reason — cost and attention both land on the cycle that is open.
+
 ## Two findings worth keeping
 
 **Leaf-first ordering exposes infrastructure assumptions that later functions cannot.** Both VIT
