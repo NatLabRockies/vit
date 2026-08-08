@@ -67,19 +67,28 @@ Last: `20260807-234213`, 91 MB, four bundles verified.
 
 ## State at handoff
 
-Replication: **27 attempted — 25 translated, 1 out of scope (`AddToList`), 1 deferred
-(`ReadEmptyLine`), 0 blocked, 0 failed.** All 27/27 bit-identical. Next is #28 `GetWords`.
-Heads: `ROSCO-replication 7f34de5`, `vit cc74922`, `KGen 5ac811f`.
+*Updated 2026-08-08 08:26 local, before the audit session's second compaction.*
 
-Clean-cycle wall clock **n=16, median 400 s**, against 471 s across all 25
-integrated — the gap is tooling gaps, and a mature VIT still hit a novel gap in 9 of
-25 functions.
+Replication: **45 attempted — 40 integrated, 2 `integrated_unexercised`, 1 out of scope
+(`AddToList`), 1 deferred (`ReadEmptyLine`), 1 blocked (`ExtController`), 0 failed.**
+Next is **#46 `CheckInputs`** — 857 lines of validation branches no scenario takes, with
+test-validate proposed instead of kernel replay. Expect a long, atypical cycle.
+
+Heads at this point: `ROSCO-replication e164a3a`, `vit 306900e`, `KGen 5ac811f`.
+
+**Translation correctness is 100% first-pass across all 40.** Not one wrong translation in the run.
+Every verify failure has been infrastructure.
+
+**The gate was broken for the first 38 functions** and is now repaired (`41436ec`, `b908585`). HEAD
+is bit-identical, 351 channels, 0 mismatched, all functions jointly. Per-commit "regress 27/27"
+claims are void; joint tree-level bit-identity is what the dataset supports. Any "function N passed
+its gate" must come from a run after `b908585`. See `202608080346` and `202608080404`.
 
 
-Fifteen tool fixes so far (VIT + KGen), three of them fails-green defects.
+**The per-function cost column has a four-function hole (#42–#45) that presents as four zeros** —
+a joiner defect, recoverable, see `202608080826`. Fix before publishing any per-function figure.
 
-**Remaining scope**, recomputed from call sites: of 51 remaining, 13 unit-I/O deferred, 10
-KGen-exposed, 13 alloc-trait, union 22 — **29 unobstructed**.
+Twenty-odd tool fixes (VIT + KGen), several of them fails-green defects.
 
 **~~Open decision, the author's:~~ CLOSED at #34.** The control-layer redirect is moot. Plan order
 reached `ControllerBlocks.f90` at #32 and `Controllers.f90` at #34 unaided.
@@ -89,24 +98,30 @@ reached `ControllerBlocks.f90` at #32 and `Controllers.f90` at #34 unaided.
 Each of these touches the replication's tree or its tooling. They are safe the moment the run
 finishes and unsafe before it.
 
-1. **Add `tok_cache_read` and a derived cost column to `join_telemetry.py`'s summary output.** The
+1. **Fix `join_telemetry.py` — two separate defects, both required before any per-function cost is
+   reported.** (a) It merges disjoint spans sharing a `(function, command)` key into one interval
+   from first start to last end; this swallowed #42–#45 entirely (`202608080826`). Pair in order,
+   with a queue. (b) A nested phase prices at zero and its cost lands on the enclosing function
+   (`202608080506`). Subtract inner spans, or refuse to print a cost for a flagged row. Then re-run
+   over the whole cycle log and redo `202608080454`.
+2. **Add `tok_cache_read` and a derived cost column to `join_telemetry.py`'s summary output.** The
    summary currently reports `attributed` / `session_overhead` / `boundary` in
    `tok_total_uncached`, which is the minority of cost that is *not* cache read. The per-function CSV
    already carries the column; only the summary omits it. Leaf script, retroactive — the token data
    is in the transcripts and the backups. Blocked only because the script lives at
    `vit_translation/vit/scripts/`, inside the measured tree. See `202608072355`.
-2. Add the fifth extraction-empty cause to `CLAUDE.md`'s pitfalls list: pragma correct, call site
+3. Add the fifth extraction-empty cause to `CLAUDE.md`'s pitfalls list: pragma correct, call site
    real, enclosing subroutine never entered because a generic interface routes every call to a
    sibling. Diagnostic — check coverage on the *enclosing* procedure. See `202608080003`.
-3. Add to the runbook: when a function's call sites differ in the *shape* of what they pass, select
+4. Add to the runbook: when a function's call sites differ in the *shape* of what they pass, select
    by argument variety rather than hit count. Coverage-count selection picks the most stereotyped
    site. See `202608080003` §6.
-9. **Fix `join_telemetry.py` overlap handling** — a nested phase prices at zero and its cost lands on the enclosing function. Subtract it, or refuse to print a cost for a flagged row. See `202608080506`.
-4. Re-verify AeroDyn's 17 baselines against the 15 changed tool commits.
-5. Amend the `kgen-bug-attribution` memory and `CLAUDE.md` with the three genuine KGen exceptions.
-6. Update `CLAUDE.md`'s stale `vit translate` overwrite warning.
-7. Merge the two VIT checkouts.
-8. Re-integrate `sigma`/`unwrap` with copy-back. Low priority, diagnostic fidelity only.
+5. **Fix `join_telemetry.py` overlap handling** — a nested phase prices at zero and its cost lands on the enclosing function. Subtract it, or refuse to print a cost for a flagged row. See `202608080506`.
+6. Re-verify AeroDyn's 17 baselines against the 15 changed tool commits.
+7. Amend the `kgen-bug-attribution` memory and `CLAUDE.md` with the three genuine KGen exceptions.
+8. Update `CLAUDE.md`'s stale `vit translate` overwrite warning.
+9. Merge the two VIT checkouts.
+10. Re-integrate `sigma`/`unwrap` with copy-back. Low priority, diagnostic fidelity only.
 
 ## The notes, and where to start
 
@@ -133,7 +148,7 @@ Then, roughly by importance:
 | `202608080128` | **Read second.** 30 campaign kernel bridges declare mismatched widths for the same argument, across 17 of 43 kernels; leaf-first left the whole callee-bridge path untested for 31 functions; third setup omission of mine |
 | `202608080204` | **Read third.** The campaign's gate went 9→27 scenarios and silently lost `Flp_Mode=2` coverage; `PIIController` is verified in the campaign and unreachable in the gate that ships with it. Fourth setup omission: extending the gate was campaign practice the runbook never carried |
 | `202608080218` | CLOSED, and wrong in its central claim — my sixth caught error, corrected at the head of the note. One gate run of 41 hit a stale library and was superseded before commit; all 36 final gates followed a good rebuild |
-| `202608080729` | **§VI's strongest exhibit.** `interp2d` passes 20/20 with 20 distinct values and never executes its bilinear algorithm; defeats every check the run had. KGen accepts comma-separated windows, so add one rather than move it |
+| `202608080729` | `interp2d` passes 20/20 with 20 distinct values and never executes its bilinear algorithm; defeats every check the run had. KGen accepts comma-separated windows, so add one rather than move it |
 | `202608080700` | Recommendation on the gate gaps: close by addition only. The campaign grew its gate 9→27 in nine additive commits and never modified a scenario |
 | `202608080640` | `invocation: 0:0:1-20` — every kernel in the project samples a function's *first* twenty calls, which unifies four earlier findings; plus the run's one disjoint-but-complete two-layer case |
 | `202608080615` | Campaign scenario 13 runs no controller and prints "PASSED … exercised" — third unconditional success message; and a ×2 probe and a +1e-9 probe disagree, so a mutation probe reports its own shape |
