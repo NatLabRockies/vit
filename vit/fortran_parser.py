@@ -51,6 +51,7 @@ class FortranArg:
     is_array: bool = False
     array_dims: Optional[str] = None  # e.g., "(:)" or "(3,3)"
     is_optional: bool = False
+    is_allocatable: bool = False
 
     @property
     def is_derived_type(self) -> bool:
@@ -258,7 +259,7 @@ def parse_signature_from_source(source: str, function_name: str) -> FortranSigna
         # Try to parse as a type declaration
         decl = _parse_type_declaration(line, line_upper, names_to_find)
         if decl:
-            for var_name, var_type, intent, is_array, dims, is_optional in decl:
+            for var_name, var_type, intent, is_array, dims, is_optional, is_allocatable in decl:
                 var_upper = var_name.upper()
                 if var_upper in args:
                     args[var_upper].fortran_type = var_type
@@ -266,6 +267,7 @@ def parse_signature_from_source(source: str, function_name: str) -> FortranSigna
                     args[var_upper].is_array = is_array
                     args[var_upper].array_dims = dims
                     args[var_upper].is_optional = is_optional
+                    args[var_upper].is_allocatable = is_allocatable
                 elif var_upper == (result_name or function_name).upper():
                     result_type = var_type
                     result_is_array = is_array
@@ -302,7 +304,8 @@ def _parse_type_declaration(line: str, line_upper: str, names_to_find: set):
     """
     Parse a Fortran type declaration line.
 
-    Returns list of (var_name, type, intent, is_array, dims, is_optional) tuples
+    Returns list of (var_name, type, intent, is_array, dims, is_optional,
+    is_allocatable) tuples
     for any variables that are in names_to_find, or None if not a type decl.
     """
     # Match type declarations: TYPE[(...)] [, attrs] :: var1, var2
@@ -340,6 +343,7 @@ def _parse_type_declaration(line: str, line_upper: str, names_to_find: set):
     # Parse attributes between type and ::
     intent = IntentKind.NONE
     is_optional = False
+    is_allocatable = False
     has_dimension = False
     dim_spec = None
 
@@ -362,6 +366,11 @@ def _parse_type_declaration(line: str, line_upper: str, names_to_find: set):
             intent = IntentKind(intent_match.group(1))
         if "OPTIONAL" in attrs:
             is_optional = True
+        # ALLOCATABLE on a dummy matters: an INTENT(OUT) ALLOCATABLE arrives
+        # unallocated and the callee is what decides its extent. See the
+        # allocate-on-return convention in interface_gen.
+        if re.search(r'\bALLOCATABLE\b', attrs):
+            is_allocatable = True
         dim_start = re.search(r'DIMENSION\s*\(', attrs)
         if dim_start:
             has_dimension = True
@@ -424,7 +433,8 @@ def _parse_type_declaration(line: str, line_upper: str, names_to_find: set):
             # Use the original case from the source for the type
             # Find the type in the original line
             orig_type = line[:len(type_str)]  # rough — use the actual matched span
-            results.append((var_name, type_str, intent, local_is_array, local_dims, is_optional))
+            results.append((var_name, type_str, intent, local_is_array, local_dims,
+                            is_optional, is_allocatable))
 
     return results if results else None
 

@@ -789,6 +789,36 @@ def cmd_verify(args, config):
     return 0 if verify_result.success else 1
 
 
+def _sync_shared_files(config) -> list:
+    """Copy shared headers/sources into source_dir so the production build sees them.
+
+    kernel verification copies shared_files into the kernel directory, so a new
+    shared header works there immediately. The production build compiles out of
+    source_dir and had no such step -- the header had to be copied by hand, and
+    nothing failed until a later integration included it. Same list, same files,
+    one less manual step to forget.
+    """
+    messages = []
+    shared = getattr(config, "shared_files", None) or []
+    if not shared:
+        return messages
+    src = Path(getattr(config, "source_dir", "") or "")
+    if not src.is_dir():
+        return messages
+    for rel in shared:
+        origin = Path(rel)
+        if not origin.is_file():
+            continue
+        dest = src / origin.name
+        if dest.resolve() == origin.resolve():
+            continue
+        if dest.exists() and dest.read_bytes() == origin.read_bytes():
+            continue
+        shutil.copy2(str(origin), str(dest))
+        messages.append(f"Synced shared file: {dest}")
+    return messages
+
+
 def cmd_integrate(args, config):
     """Generate integration plan."""
     if args.file:
@@ -819,6 +849,9 @@ def cmd_integrate(args, config):
     if args.apply:
         print("\nApplying integration plan...")
         result = apply_integration_plan(plan, dry_run=args.dry_run)
+        if not args.dry_run:
+            for line in _sync_shared_files(config):
+                print(f"  {line}")
         for action in result["applied"]:
             print(f"  {action}")
         for error in result["errors"]:

@@ -98,6 +98,8 @@ def generate_cpp_wrapper(sig: FortranSignature, cpp_impl_file: str,
     lines.append(f'#include "{Path(cpp_impl_file).name}"')
     lines.append("")
 
+    lines.extend(generate_vit_free_definition(sig))
+
     # Generate extern "C" wrapper
     if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         # Scalar-returning function: return value directly
@@ -275,8 +277,12 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
         intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ", INTENT(IN)"
         optional_str = ", OPTIONAL" if arg.is_optional else ""
         target_str = _get_target_attr(arg, kind_aliases, derived_types)
+        # An allocate-on-return dummy MUST keep its ALLOCATABLE attribute:
+        # dropping it leaves a wrapper whose interface no longer matches the
+        # actual argument at the call site.
+        alloc_str = ", ALLOCATABLE" if is_alloc_return(arg) else ""
         if arg.is_array:
-            lines.append(f"        {resolved_type}{intent_str}{optional_str}{target_str} :: {arg.name}{_format_dims(arg)}")
+            lines.append(f"        {resolved_type}{intent_str}{optional_str}{alloc_str}{target_str} :: {arg.name}{_format_dims(arg)}")
         else:
             lines.append(f"        {resolved_type}{intent_str}{optional_str}{target_str} :: {arg.name}")
     for arg in char_args:
@@ -302,6 +308,9 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     # CHARACTER local var declarations (before any executable statements)
     lines.extend(_generate_character_declarations(sig, kind_aliases, derived_types))
 
+    # Allocate-on-return locals + the vit_free interface
+    lines.extend(_generate_alloc_return_declarations(sig, kind_aliases))
+
     # CHARACTER-valued result: stage it in a C_CHAR buffer. A CHARACTER(n)
     # scalar cannot be passed to a BIND(C) CHARACTER(KIND=C_CHAR) array dummy,
     # so the C side fills the buffer and the wrapper copies it into the result.
@@ -320,6 +329,9 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
 
     # CHARACTER copy loops (executable, before the C call)
     lines.extend(_generate_character_copy_loops(sig, kind_aliases, derived_types))
+
+    # Allocate-on-return handshake variables
+    lines.extend(_generate_alloc_return_prologue(sig))
 
     # Build the C function call (only non-passthrough args, with size params for arrays)
     ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
@@ -345,6 +357,9 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
             lines.append(f"        {result_name} = REAL({c_call}, {ret_kind})")
         else:
             lines.append(f"        {result_name} = {c_call}")
+
+    # Allocate-on-return: allocate the dummy, copy, free
+    lines.extend(_generate_alloc_return_epilogue(sig))
 
     # Reverse-copy: copy modified scalars from view back to Fortran type.
     # Placed after the result assignment, since the C call is what mutates the
@@ -408,8 +423,12 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
         intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ""
         optional_str = ", OPTIONAL" if arg.is_optional else ""
         target_str = _get_target_attr(arg, kind_aliases, derived_types)
+        # An allocate-on-return dummy MUST keep its ALLOCATABLE attribute:
+        # dropping it leaves a wrapper whose interface no longer matches the
+        # actual argument at the call site.
+        alloc_str = ", ALLOCATABLE" if is_alloc_return(arg) else ""
         if arg.is_array:
-            lines.append(f"        {resolved_type}{intent_str}{optional_str}{target_str} :: {arg.name}{_format_dims(arg)}")
+            lines.append(f"        {resolved_type}{intent_str}{optional_str}{alloc_str}{target_str} :: {arg.name}{_format_dims(arg)}")
         else:
             lines.append(f"        {resolved_type}{intent_str}{optional_str}{target_str} :: {arg.name}")
     for arg in char_args:
@@ -419,6 +438,9 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
 
     # CHARACTER local var declarations (before any executable statements)
     lines.extend(_generate_character_declarations(sig, kind_aliases, derived_types))
+
+    # Allocate-on-return locals + the vit_free interface
+    lines.extend(_generate_alloc_return_declarations(sig, kind_aliases))
 
     # View type declarations (must be before any executable statements)
     if view_args:
@@ -494,10 +516,16 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     # CHARACTER copy loops (executable, before the C call)
     lines.extend(_generate_character_copy_loops(sig, kind_aliases, derived_types))
 
+    # Allocate-on-return handshake variables
+    lines.extend(_generate_alloc_return_prologue(sig))
+
     # Build call with conversions (only non-passthrough args)
     call_args = _build_wrapper_call_args(sig, kind_aliases, derived_types)
     call_str = ", ".join(call_args)
     lines.append(f"        CALL {c_func_name}({call_str})")
+
+    # Allocate-on-return: allocate the dummy, copy, free
+    lines.extend(_generate_alloc_return_epilogue(sig))
 
     # Copy OPTIONAL INTENT(OUT/INOUT) values back to the actual arguments
     if optional_forwarded:
@@ -526,6 +554,73 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
 
     lines.append(f"    END SUBROUTINE {sig.name}")
     return lines
+
+
+def generate_vit_free_definition(sig) -> list:
+    """Emit vit_free for a translation that uses allocate-on-return.
+
+    Defined here rather than in a shared translation unit so that no build-system
+    plumbing is required: several translated functions may each carry a copy, and
+    the weak attribute lets the linker merge them. Fortran calls it, so C++ never
+    ODR-uses it -- an ordinary inline function would be discarded before reaching
+    the link.
+    """
+    if not alloc_return_args(sig):
+        return []
+    return [
+        "// VIT allocate-on-return support. Frees a buffer that the translation",
+        "// handed to the Fortran wrapper, using the allocator that made it.",
+        "// Weak: several translations may each define it; the linker keeps one.",
+        "#include <cstdlib>",
+        'extern "C" {',
+        "    __attribute__((weak)) void vit_free(void* vit_p) { std::free(vit_p); }",
+        "}",
+        "",
+    ]
+
+
+def is_alloc_return(arg) -> bool:
+    """True if this dummy uses the ALLOCATE-ON-RETURN convention.
+
+    An ``INTENT(OUT)`` ``ALLOCATABLE`` dummy arrives unallocated and the callee
+    is what decides its extent -- often from data it has to read or compute
+    first, so the extent cannot be known before the call. VIT's ordinary array
+    convention passes SIZE(x) INTO the C function, which is undefined here, and
+    the C side has no way to allocate a Fortran allocatable anyway.
+
+    The convention instead is:
+
+      * C receives ``T** x`` plus one ``int*`` per rank. It allocates with
+        malloc, fills in Fortran (column-major) order, writes the extents, and
+        sets ``*x``. If it does not allocate -- an error branch, say -- it
+        leaves ``*x`` null and the extents 0.
+      * The Fortran wrapper allocates the real dummy, copies, and frees.
+        ``C_NULL_PTR`` means "callee did not allocate", and the dummy is left
+        unallocated, which is what the Fortran did.
+
+    INTENT(INOUT) ALLOCATABLE -- a dummy that is REallocated, growing an array
+    that already has contents -- is deliberately NOT covered. That case has
+    different semantics (the old contents matter) and usually a different answer
+    entirely; see AddToList in the ROSCO replication log.
+    """
+    return (getattr(arg, "is_allocatable", False)
+            and arg.intent == IntentKind.OUT
+            and getattr(arg, "is_array", False))
+
+
+def alloc_return_args(sig) -> list:
+    """Every dummy of ``sig`` using the allocate-on-return convention."""
+    return [a for a in sig.args if is_alloc_return(a)]
+
+
+def _alloc_return_extent_names(arg) -> list[str]:
+    """The C ``int*`` extent parameter names for an allocate-on-return arg."""
+    if arg.array_rank <= 1:
+        return [f"n_{arg.name}"]
+    if arg.array_rank == 2:
+        return [f"n_{arg.name}_rows", f"n_{arg.name}_cols"]
+    raise ValueError(
+        f"allocate-on-return supports rank 1 and 2; {arg.name} is rank {arg.array_rank}")
 
 
 def _char_array_count_expr(arg) -> Optional[str]:
@@ -634,6 +729,68 @@ def _generate_character_reverse_copy_loops(sig, kind_aliases, derived_types):
                 lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
                 lines.append(f"            {arg.name}(vit_i_{arg.name}:vit_i_{arg.name}) = {arg.name}_c(vit_i_{arg.name})")
                 lines.append(f"        END DO")
+    return lines
+
+
+def _generate_alloc_return_declarations(sig, kind_aliases):
+    """Locals and the vit_free interface for allocate-on-return args.
+
+    The vit_free interface is emitted INSIDE the wrapper rather than at module
+    level on purpose: two translated functions in the same module would
+    otherwise each contribute a vit_free interface and collide.
+    """
+    allocs = alloc_return_args(sig)
+    if not allocs:
+        return []
+    lines = [
+        "        ! VIT allocate-on-return: the C++ side discovers the extent,",
+        "        ! allocates, and hands back a pointer; the wrapper copies into the",
+        "        ! Fortran ALLOCATABLE and frees. C_NULL_PTR means 'not allocated'.",
+        "        INTERFACE",
+        "            SUBROUTINE vit_free(vit_p) BIND(C, NAME='vit_free')",
+        "                USE ISO_C_BINDING",
+        "                TYPE(C_PTR), VALUE :: vit_p",
+        "            END SUBROUTINE vit_free",
+        "        END INTERFACE",
+    ]
+    for arg in allocs:
+        resolved = _resolve_fortran_type(arg.fortran_type, kind_aliases)
+        dims = ",".join(":" for _ in range(max(1, arg.array_rank)))
+        lines.append(f"        TYPE(C_PTR) :: {arg.name}_cptr")
+        for n in _alloc_return_extent_names(arg):
+            lines.append(f"        INTEGER(C_INT) :: {n}")
+        lines.append(f"        {resolved}, POINTER :: {arg.name}_fptr({dims})")
+    return lines
+
+
+def _generate_alloc_return_prologue(sig):
+    """Initialise the handshake variables before the C call."""
+    allocs = alloc_return_args(sig)
+    if not allocs:
+        return []
+    lines = []
+    for arg in allocs:
+        lines.append(f"        {arg.name}_cptr = C_NULL_PTR")
+        for n in _alloc_return_extent_names(arg):
+            lines.append(f"        {n} = 0")
+    return lines
+
+
+def _generate_alloc_return_epilogue(sig):
+    """Allocate the real dummy from what the C side returned, copy, free."""
+    allocs = alloc_return_args(sig)
+    if not allocs:
+        return []
+    lines = []
+    for arg in allocs:
+        extents = _alloc_return_extent_names(arg)
+        shape = ", ".join(extents)
+        lines.append(f"        IF (C_ASSOCIATED({arg.name}_cptr)) THEN")
+        lines.append(f"            CALL C_F_POINTER({arg.name}_cptr, {arg.name}_fptr, [{shape}])")
+        lines.append(f"            ALLOCATE({arg.name}({shape}))")
+        lines.append(f"            {arg.name} = {arg.name}_fptr")
+        lines.append(f"            CALL vit_free({arg.name}_cptr)")
+        lines.append(f"        END IF")
     return lines
 
 
@@ -910,6 +1067,14 @@ def build_c_params(sig: FortranSignature,
                     params.append(("int", f"n_{arg.name}_cols"))
             continue
 
+        if is_alloc_return(arg):
+            # Allocate-on-return: pointer-to-pointer plus one extent OUT param
+            # per rank. See is_alloc_return for the contract.
+            params.append((f"{mapping.c_type}**", arg.name))
+            for n in _alloc_return_extent_names(arg):
+                params.append(("int*", n))
+            continue
+
         if arg.is_array:
             params.append((f"{mapping.c_type}*", arg.name))
             # Add size parameter(s) for assumed-shape arrays
@@ -1066,6 +1231,18 @@ def _build_interface_args(sig: FortranSignature,
                     })
             continue
 
+        if is_alloc_return(arg):
+            args.append({
+                "iface_name": f"{arg.name}_cptr",
+                "iface_decl": f"TYPE(C_PTR), INTENT(OUT) :: {arg.name}_cptr",
+            })
+            for n in _alloc_return_extent_names(arg):
+                args.append({
+                    "iface_name": n,
+                    "iface_decl": f"INTEGER(C_INT), INTENT(OUT) :: {n}",
+                })
+            continue
+
         if arg.is_array:
             intent_str = arg.intent.value or "IN"
             if not arg.intent.value:
@@ -1216,6 +1393,11 @@ def _build_wrapper_call_args(sig: FortranSignature,
                 call_args.append(f"C_LOC({arg.name}_view)")
             else:
                 call_args.append(f"C_LOC({arg.name})")
+            continue
+
+        if is_alloc_return(arg):
+            call_args.append(f"{arg.name}_cptr")
+            call_args.extend(_alloc_return_extent_names(arg))
             continue
 
         if arg.is_array:

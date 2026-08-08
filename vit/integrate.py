@@ -290,7 +290,17 @@ def apply_integration_plan(plan: IntegrationPlan, dry_run: bool = False) -> dict
                 else:
                     content = Path(patch.filepath).read_text()
                     if patch.original_snippet and patch.replacement_snippet:
-                        if patch.original_snippet in content:
+                        # Re-applying an integration used to corrupt the source
+                        # while reporting success: the second pass no longer
+                        # finds the ORIGINAL body, but its other patches still
+                        # fire, leaving a duplicated wrapper tail and invalid
+                        # Fortran. A patch whose replacement is already present
+                        # has nothing to do.
+                        if patch.replacement_snippet in content:
+                            result["applied"].append(
+                                f"Already applied, skipped: {patch.filepath}"
+                            )
+                        elif patch.original_snippet in content:
                             content = content.replace(
                                 patch.original_snippet,
                                 patch.replacement_snippet,
@@ -461,6 +471,12 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
     lines.append("")
 
     impl_func_name = sig.cpp_impl_name
+
+    # Allocate-on-return needs vit_free on the C side; see interface_gen.
+    from .interface_gen import generate_vit_free_definition
+    vit_free_lines = generate_vit_free_definition(sig)
+    if vit_free_lines:
+        lines.extend(vit_free_lines)
 
     # Generate extern "C" wrapper using shared param builder
     lines.append("// --- Fortran-callable C wrapper ---")
