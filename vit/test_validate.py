@@ -466,9 +466,24 @@ def generate_fortran_bridge(
             c_params.append((f"        REAL(C_DOUBLE){value_attr}, INTENT({intent}) :: {arg.name}", arg.name))
             call_args.append(arg.name)
         elif "LOGICAL" in fortran_type:
+            # The dummy is a default LOGICAL (kind 4). LOGICAL(C_BOOL) is kind
+            # 1, and passing one to the other is a hard type mismatch, not a
+            # silent narrowing -- the bridge simply would not compile. Cross as
+            # INTEGER(C_INT), which is what type_map already uses everywhere
+            # else in VIT, and convert through a local of the right kind. That
+            # also lines the C side up with the translation's own signature,
+            # which takes the flag as an int.
             value_attr = ", VALUE" if intent == "IN" else ""
-            c_params.append((f"        LOGICAL(C_BOOL){value_attr}, INTENT({intent}) :: {arg.name}", arg.name))
-            call_args.append(arg.name)
+            c_params.append((f"        INTEGER(C_INT){value_attr}, INTENT({intent}) :: {arg.name}", arg.name))
+            if intent == "IN":
+                local_decls.append(f"        LOGICAL :: {arg.name}_f")
+                pre_call.append(f"        {arg.name}_f = ({arg.name} /= 0)")
+                call_args.append(f"{arg.name}_f")
+            else:
+                local_decls.append(f"        LOGICAL :: {arg.name}_f")
+                pre_call.append(f"        {arg.name}_f = ({arg.name} /= 0)")
+                post_call.append(f"        {arg.name} = MERGE(1_C_INT, 0_C_INT, {arg.name}_f)")
+                call_args.append(f"{arg.name}_f")
         else:
             c_params.append((f"        ! TODO: unsupported type {fortran_type}", arg.name))
             call_args.append(arg.name)
