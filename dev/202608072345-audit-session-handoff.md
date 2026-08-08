@@ -75,6 +75,7 @@ Clean-cycle wall clock **n=16, median 400 s**, against 471 s across all 25
 integrated — the gap is tooling gaps, and a mature VIT still hit a novel gap in 9 of
 25 functions.
 
+
 Fifteen tool fixes so far (VIT + KGen), three of them fails-green defects.
 
 **Remaining scope**, recomputed from call sites: of 51 remaining, 13 unit-I/O deferred, 10
@@ -86,6 +87,23 @@ is the only place that answers whether the marginal cost holds for functions wit
 callees*, and where the lost-update hazard fires. Not blockage-driven — I overstated that and was
 corrected.
 
+## Deferred until the run ends — do NOT do these now
+
+Each of these touches the replication's tree or its tooling. They are safe the moment the run
+finishes and unsafe before it.
+
+1. **Add `tok_cache_read` and a derived cost column to `join_telemetry.py`'s summary output.** The
+   summary currently reports `attributed` / `session_overhead` / `boundary` in
+   `tok_total_uncached`, which is the minority of cost that is *not* cache read. The per-function CSV
+   already carries the column; only the summary omits it. Leaf script, retroactive — the token data
+   is in the transcripts and the backups. Blocked only because the script lives at
+   `vit_translation/vit/scripts/`, inside the measured tree. See `202608072355`.
+2. Re-verify AeroDyn's 17 baselines against the 15 changed tool commits.
+3. Amend the `kgen-bug-attribution` memory and `CLAUDE.md` with the three genuine KGen exceptions.
+4. Update `CLAUDE.md`'s stale `vit translate` overwrite warning.
+5. Merge the two VIT checkouts.
+6. Re-integrate `sigma`/`unwrap` with copy-back. Low priority, diagnostic fidelity only.
+
 ## The notes, and where to start
 
 
@@ -94,6 +112,7 @@ Then, roughly by importance:
 | Note | What it holds |
 |---|---|
 | `202608072250` | **Strongest §VIII item.** A passing kernel over a non-discriminating input — not fixable in any tool |
+| `202608072355` | Cost is 81% context re-read; two defensible per-function figures; corrects the output-token units used throughout these notes |
 | `202608072058` | The steering record. Three procedural prompts, three continuations, one authorization |
 | `202608072043` | Seven→fifteen tool fixes; the tool was finished *for AeroDyn*, not finished |
 | `202608072149` | Track A/B; the replication verifies code the campaign hand-wrote |
