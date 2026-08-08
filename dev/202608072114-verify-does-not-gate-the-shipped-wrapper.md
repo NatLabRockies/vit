@@ -79,13 +79,20 @@ which see only exercised paths. Not the test suite, unless someone had written a
 unreached branch. It surfaced because ROSCO's leaf layer is function-heavy where AeroDyn's is
 subroutine-heavy. **The tool was finished for AeroDyn's *shape*, not merely for its type system.**
 
-## Deliberate open exposure — and it is narrower than first stated
+## Deliberate open exposure — narrower than first stated, twice
 
-`sigma` and `unwrap` were integrated before the fix and still lack copy-back. The replication
-session recorded them as open rather than repairing them, because re-integration is project-level
-work that would have contaminated `interp1d`'s span.
+`sigma` and `unwrap` lack copy-back. The replication session recorded them as open rather than
+repairing them, because re-integration is project-level work that would have contaminated
+`interp1d`'s span.
 
-**Checked directly in the emitted C++, read-only, rather than assumed.** Neither function
+**First correction, from the replication session.** An earlier version of this note placed them
+under this bug. That is wrong. `--reverse-copy` was never *passed* for either function, so nothing
+was silently stripped — the wrapper correctly omits a copy-back that was never requested. Whether
+the flag should have been passed is a separate, pre-existing omission. **The cost of the bug
+documented here was that `interp1d` was integrated incorrectly on the first attempt and nothing in
+the pipeline could have said so.**
+
+**Second correction, checked directly in the emitted C++ rather than assumed.** Neither function
 originates an error:
 
 ```
@@ -141,6 +148,48 @@ The translation was first-pass, now 13 of 15.
 
 Boundary fraction rose, driven by the pre-compaction checklist and report, which are
 inter-function by construction.
+
+## A third blind spot, and this one is ahead of us
+
+Found on `StateMachine` (#17), where `vit translate` auto-generated view structs for
+`ControlParameters` (213 fields) and `LocalVariables` (167 fields) unprompted.
+
+**`--reverse-copy` writes back every scalar in the view, not the ones the function touched.**
+Measured: `vit_copy_scalars_to_localvariables` contains **328 assignments**, not the two fields
+`StateMachine` modifies.
+
+That is safe only while nothing executes between populating the view and copying it back. **The
+callee-bridge design explicitly violates that assumption**, and the mechanism is already shipped:
+
+```fortran
+! Kernel stash: pointer to original Fortran type, set by wrapper before calling C++.
+! Callee bridges USE this to pass the original type to Fortran callees.
+TYPE(LocalVariables), POINTER, SAVE :: vit_original_localvariables => NULL()
+```
+
+Callee bridges pass the **original** Fortran type, not the view. So the lost-update sequence is
+constructible today:
+
+1. Translated function `F` populates the view from `LocalVar` — 328 scalars copied in
+2. `F`'s C++ calls a Fortran callee through a bridge
+3. The bridge hands it `vit_original_localvariables`, the real type
+4. The callee writes `LocalVar%SomeField`
+5. `F` returns; the wrapper copies 328 stale scalars back, overwriting it
+
+The callee's write is silently discarded. Neither gate reliably catches it: the kernel harness
+stashes the original, and the simulation gate sees it only if a scenario reaches the path *and*
+the overwritten value propagates to a compared output channel.
+
+**This is the third mechanism by which the gates are blind by construction**, alongside the
+verify/integrate wrapper divergence above and kernel replay restoring `objInst` counters as
+captured input. It differs from both in being visible *before* it bites — the first such case on
+this run.
+
+**Mitigation, stronger than recording it.** The copy-back should write only the fields the
+translation actually assigns, which VIT can determine from the C++ it just generated. Copying
+everything is safe only under an assumption the design contradicts. Recorded in the replication's
+`DECISIONS.md` as a hazard for the depth-1 functions ahead; it should be fixed before the first
+function that populates a view, calls back into Fortran, and copies back.
 
 ## References
 
