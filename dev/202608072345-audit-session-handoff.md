@@ -105,10 +105,10 @@ finishes and unsafe before it.
    by argument variety rather than hit count. Coverage-count selection picks the most stereotyped
    site. See `202608080003` §6.
 4. Re-verify AeroDyn's 17 baselines against the 15 changed tool commits.
-3. Amend the `kgen-bug-attribution` memory and `CLAUDE.md` with the three genuine KGen exceptions.
-4. Update `CLAUDE.md`'s stale `vit translate` overwrite warning.
-5. Merge the two VIT checkouts.
-6. Re-integrate `sigma`/`unwrap` with copy-back. Low priority, diagnostic fidelity only.
+5. Amend the `kgen-bug-attribution` memory and `CLAUDE.md` with the three genuine KGen exceptions.
+6. Update `CLAUDE.md`'s stale `vit translate` overwrite warning.
+7. Merge the two VIT checkouts.
+8. Re-integrate `sigma`/`unwrap` with copy-back. Low priority, diagnostic fidelity only.
 
 ## The notes, and where to start
 
