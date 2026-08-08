@@ -1746,6 +1746,9 @@ def generate_kernel_callee_bridge(
         opt_call_name = opt.name
         if opt_mapping.iso_c_type.startswith("LOGICAL"):
             opt_call_name = f"LOGICAL({opt.name})"
+        elif (opt_mapping.fortran_type.upper().lstrip().startswith("LOGICAL")
+                and opt_mapping.iso_c_type.startswith("INTEGER")):
+            opt_call_name = f"({opt.name} /= 0)"
 
         args_with = required_str + (", " if required_str else "") + opt_call_name
         args_without = required_str
@@ -1898,6 +1901,14 @@ def _build_bridge_call_args(sig: FortranSignature,
         elif mapping.iso_c_type.startswith("LOGICAL("):
             # LOGICAL(C_BOOL) → LOGICAL: explicit conversion needed
             call_args.append(f"LOGICAL({arg.name})")
+        elif (mapping.fortran_type.upper().lstrip().startswith("LOGICAL")
+                and mapping.iso_c_type.startswith("INTEGER")):
+            # type_map sends Fortran LOGICAL across as INTEGER(C_INT), which is
+            # the right memory layout but is NOT assignment-compatible: passing
+            # the INTEGER straight to a LOGICAL dummy is a hard compile error.
+            # The wrapper direction already converts (MERGE going out); this is
+            # the same conversion coming back IN, which the bridge never did.
+            call_args.append(f"({arg.name} /= 0)")
         else:
             # Scalar VALUE args: direct pass-through.
             # BIND(C) VALUE args are already the right type for calling Fortran
