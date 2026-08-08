@@ -404,15 +404,49 @@ def generate_fortran_bridge(
             c_params.append(
                 (f"        INTEGER(C_INT), VALUE, INTENT(IN) :: len_{arg.name}",
                  f"len_{arg.name}"))
-            local_decls.append(f"        CHARACTER(len_{arg.name}) :: {arg.name}")
-            local_decls.append(f"        INTEGER :: vit_i_{arg.name}")
-            pre_call.append(f"        DO vit_i_{arg.name} = 1, len_{arg.name}")
-            pre_call.append(f"            {arg.name}(vit_i_{arg.name}:vit_i_{arg.name}) = {arg.name}_c(vit_i_{arg.name})")
-            pre_call.append(f"        END DO")
-            if intent in ("INOUT", "OUT"):
-                post_call.append(f"        DO vit_i_{arg.name} = 1, len_{arg.name}")
-                post_call.append(f"            {arg.name}_c(vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
-                post_call.append(f"        END DO")
+            # A CHARACTER ARRAY dummy has a second, independent size. Dropping
+            # it produced a bridge declaring a CHARACTER SCALAR where the
+            # function takes an array -- which does not even match the
+            # function's interface, so the whole class was unbridgeable.
+            count_expr = None
+            if getattr(arg, "is_array", False):
+                if getattr(arg, "is_assumed_shape", False) or not arg.array_dims:
+                    c_params.append(
+                        (f"        INTEGER(C_INT), VALUE, INTENT(IN) :: n_{arg.name}",
+                         f"n_{arg.name}"))
+                    count_expr = f"n_{arg.name}"
+                else:
+                    # Explicit shape, usually in terms of another dummy
+                    # (Words(NumWords)); that dummy is already a bridge
+                    # parameter and is declared before the locals.
+                    count_expr = arg.array_dims
+            if count_expr:
+                local_decls.append(
+                    f"        CHARACTER(len_{arg.name}) :: {arg.name}({count_expr})")
+                local_decls.append(f"        INTEGER :: vit_i_{arg.name}, vit_j_{arg.name}")
+                pre_call.append(f"        DO vit_j_{arg.name} = 1, {count_expr}")
+                pre_call.append(f"            DO vit_i_{arg.name} = 1, len_{arg.name}")
+                pre_call.append(f"                {arg.name}(vit_j_{arg.name})(vit_i_{arg.name}:vit_i_{arg.name}) = &")
+                pre_call.append(f"                    {arg.name}_c((vit_j_{arg.name} - 1) * len_{arg.name} + vit_i_{arg.name})")
+                pre_call.append(f"            END DO")
+                pre_call.append(f"        END DO")
+                if intent in ("INOUT", "OUT"):
+                    post_call.append(f"        DO vit_j_{arg.name} = 1, {count_expr}")
+                    post_call.append(f"            DO vit_i_{arg.name} = 1, len_{arg.name}")
+                    post_call.append(f"                {arg.name}_c((vit_j_{arg.name} - 1) * len_{arg.name} + vit_i_{arg.name}) = &")
+                    post_call.append(f"                    {arg.name}(vit_j_{arg.name})(vit_i_{arg.name}:vit_i_{arg.name})")
+                    post_call.append(f"            END DO")
+                    post_call.append(f"        END DO")
+            else:
+                local_decls.append(f"        CHARACTER(len_{arg.name}) :: {arg.name}")
+                local_decls.append(f"        INTEGER :: vit_i_{arg.name}")
+                pre_call.append(f"        DO vit_i_{arg.name} = 1, len_{arg.name}")
+                pre_call.append(f"            {arg.name}(vit_i_{arg.name}:vit_i_{arg.name}) = {arg.name}_c(vit_i_{arg.name})")
+                pre_call.append(f"        END DO")
+                if intent in ("INOUT", "OUT"):
+                    post_call.append(f"        DO vit_i_{arg.name} = 1, len_{arg.name}")
+                    post_call.append(f"            {arg.name}_c(vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
+                    post_call.append(f"        END DO")
             call_args.append(arg.name)
         elif arg.is_array and arg.is_assumed_shape:
             # Assumed-shape arrays: receive as assumed-size (*) + size parameter.
@@ -751,6 +785,12 @@ def generate_test_harness_skeleton(
             # Buffer + length, matching the bridge above.
             bridge_params.append(f"char* {arg.name}_c")
             bridge_params.append(f"int len_{arg.name}")
+            # An assumed-shape CHARACTER array also passes its element count.
+            # Explicit shape does not: its extent is another dummy that is
+            # already in the list.
+            if getattr(arg, "is_array", False) and (
+                    getattr(arg, "is_assumed_shape", False) or not arg.array_dims):
+                bridge_params.append(f"int n_{arg.name}")
         else:
             # Find the matching C param from build_c_params, plus any size
             # parameter that travels with it. An assumed-shape array becomes

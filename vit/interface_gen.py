@@ -282,7 +282,7 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     for arg in char_args:
         resolved_type = _resolve_fortran_type(arg.fortran_type, kind_aliases)
         intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ", INTENT(IN)"
-        lines.append(f"        {resolved_type}{intent_str} :: {arg.name}")
+        lines.append(f"        {resolved_type}{intent_str} :: {arg.name}{_format_dims(arg)}")
 
     # Declare result with resolved type
     if sig.result_type:
@@ -415,7 +415,7 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     for arg in char_args:
         resolved_type = _resolve_fortran_type(arg.fortran_type, kind_aliases)
         intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ""
-        lines.append(f"        {resolved_type}{intent_str} :: {arg.name}")
+        lines.append(f"        {resolved_type}{intent_str} :: {arg.name}{_format_dims(arg)}")
 
     # CHARACTER local var declarations (before any executable statements)
     lines.extend(_generate_character_declarations(sig, kind_aliases, derived_types))
@@ -528,6 +528,24 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     return lines
 
 
+def _char_array_count_expr(arg) -> Optional[str]:
+    """Element count for a CHARACTER *array* dummy, or None if it is a scalar.
+
+    A CHARACTER(*) array dummy carries two independent sizes: the element
+    length (LEN) and the number of elements (SIZE). The C++ side receives one
+    flat buffer and needs both to index it, so the wrapper stages the array
+    into a C_CHAR buffer of LEN*count. Explicit-shape dims are reproduced
+    verbatim because they are usually other dummies (Words(NumWords));
+    assumed-shape falls back to SIZE().
+    """
+    if not getattr(arg, "is_array", False):
+        return None
+    if getattr(arg, "is_assumed_shape", False) or not arg.array_dims:
+        return f"SIZE({arg.name})"
+    dims = [d.strip() for d in arg.array_dims.split(',')]
+    return " * ".join(f"({d})" for d in dims)
+
+
 def _get_char_len_expr(arg, mapping, sig):
     """Get the length expression for a CHARACTER argument, using original case."""
     if mapping.character_len_param:
@@ -551,8 +569,13 @@ def _generate_character_declarations(sig, kind_aliases, derived_types):
         mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
         len_expr = _get_char_len_expr(arg, mapping, sig)
         if len_expr:
-            lines.append(f"        CHARACTER(KIND=C_CHAR) :: {arg.name}_c({len_expr})")
-            lines.append(f"        INTEGER :: vit_i_{arg.name}")
+            count = _char_array_count_expr(arg)
+            if count:
+                lines.append(f"        CHARACTER(KIND=C_CHAR) :: {arg.name}_c(({len_expr}) * ({count}))")
+                lines.append(f"        INTEGER :: vit_i_{arg.name}, vit_j_{arg.name}")
+            else:
+                lines.append(f"        CHARACTER(KIND=C_CHAR) :: {arg.name}_c({len_expr})")
+                lines.append(f"        INTEGER :: vit_i_{arg.name}")
     return lines
 
 
@@ -568,9 +591,18 @@ def _generate_character_copy_loops(sig, kind_aliases, derived_types):
             if not has_any:
                 lines.append(f"        ! Convert CHARACTER args to C_CHAR arrays")
                 has_any = True
-            lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
-            lines.append(f"            {arg.name}_c(vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
-            lines.append(f"        END DO")
+            count = _char_array_count_expr(arg)
+            if count:
+                lines.append(f"        DO vit_j_{arg.name} = 1, {count}")
+                lines.append(f"            DO vit_i_{arg.name} = 1, {len_expr}")
+                lines.append(f"                {arg.name}_c((vit_j_{arg.name} - 1) * ({len_expr}) + vit_i_{arg.name}) = &")
+                lines.append(f"                    {arg.name}(vit_j_{arg.name})(vit_i_{arg.name}:vit_i_{arg.name})")
+                lines.append(f"            END DO")
+                lines.append(f"        END DO")
+            else:
+                lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
+                lines.append(f"            {arg.name}_c(vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
+                lines.append(f"        END DO")
     return lines
 
 
@@ -590,9 +622,18 @@ def _generate_character_reverse_copy_loops(sig, kind_aliases, derived_types):
             if not has_any:
                 lines.append(f"        ! Copy C_CHAR arrays back to CHARACTER args (INTENT OUT/INOUT)")
                 has_any = True
-            lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
-            lines.append(f"            {arg.name}(vit_i_{arg.name}:vit_i_{arg.name}) = {arg.name}_c(vit_i_{arg.name})")
-            lines.append(f"        END DO")
+            count = _char_array_count_expr(arg)
+            if count:
+                lines.append(f"        DO vit_j_{arg.name} = 1, {count}")
+                lines.append(f"            DO vit_i_{arg.name} = 1, {len_expr}")
+                lines.append(f"                {arg.name}(vit_j_{arg.name})(vit_i_{arg.name}:vit_i_{arg.name}) = &")
+                lines.append(f"                    {arg.name}_c((vit_j_{arg.name} - 1) * ({len_expr}) + vit_i_{arg.name})")
+                lines.append(f"            END DO")
+                lines.append(f"        END DO")
+            else:
+                lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
+                lines.append(f"            {arg.name}(vit_i_{arg.name}:vit_i_{arg.name}) = {arg.name}_c(vit_i_{arg.name})")
+                lines.append(f"        END DO")
     return lines
 
 
@@ -880,6 +921,12 @@ def build_c_params(sig: FortranSignature,
                     params.append(("int", f"n_{arg.name}_cols"))
                 else:
                     raise ValueError(f"Unsupported array rank {arg.array_rank} for {arg.name}")
+            # A CHARACTER(*) ARRAY carries two independent sizes. The element
+            # count comes from the dims above (or is already another dummy);
+            # the element LENGTH is what the C++ side strides by, and without
+            # it the flat buffer cannot be indexed at all.
+            if mapping.character_len_param == "*":
+                params.append(("int", f"len_{arg.name}"))
         else:
             # CHARACTER with fixed length > 1 or parameterized length → always pointer
             if (mapping.character_length and mapping.character_length > 1) or mapping.character_len_param:
@@ -1044,6 +1091,12 @@ def _build_interface_args(sig: FortranSignature,
                         "iface_name": f"n_{arg.name}_cols",
                         "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}_cols",
                     })
+            # See build_c_params: a CHARACTER(*) array passes its element length.
+            if mapping.character_len_param == "*":
+                args.append({
+                    "iface_name": f"len_{arg.name}",
+                    "iface_decl": f"INTEGER(C_INT), VALUE :: len_{arg.name}",
+                })
         else:
             # CHARACTER with fixed length > 1 or parameterized length → assumed-size array
             if (mapping.character_length and mapping.character_length > 1) or mapping.character_len_param:
@@ -1166,8 +1219,14 @@ def _build_wrapper_call_args(sig: FortranSignature,
             continue
 
         if arg.is_array:
-            # Arrays are passed by reference
-            call_args.append(arg.name)
+            # CHARACTER arrays go through the same C_CHAR staging buffer as
+            # CHARACTER scalars: a CHARACTER(n) array cannot be sequence-
+            # associated with a BIND(C) CHARACTER(KIND=C_CHAR) dummy.
+            if _get_char_len_expr(arg, mapping, sig):
+                call_args.append(f"{arg.name}_c")
+            else:
+                # Arrays are passed by reference
+                call_args.append(arg.name)
             # Pass SIZE for assumed-shape arrays
             if arg.is_assumed_shape:
                 if arg.array_rank == 1:
@@ -1175,6 +1234,8 @@ def _build_wrapper_call_args(sig: FortranSignature,
                 elif arg.array_rank == 2:
                     call_args.append(f"SIZE({arg.name}, 1)")
                     call_args.append(f"SIZE({arg.name}, 2)")
+            if mapping.character_len_param == "*":
+                call_args.append(f"LEN({arg.name})")
         elif (mapping.character_length and mapping.character_length > 1) or mapping.character_len_param:
             # CHARACTER with fixed/parameterized length: pass local C_CHAR array
             call_args.append(f"{arg.name}_c")

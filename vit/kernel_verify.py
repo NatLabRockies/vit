@@ -1668,6 +1668,14 @@ def _patch_field_value_logging(content: str) -> str:
     result = []
     current_field = None
     current_type = None  # "scalar" or "array"
+    # Bare comparisons (kv_*_dim1 and friends) use subroutine-LOCAL diff /
+    # rmsdiff variables rather than diff_FIELD / rmsdiff_FIELD, so the
+    # module-wide pre-scan above cannot see them. KGen only declares them for
+    # numeric types; a CHARACTER comparison has neither, and referencing one
+    # produces an undefined symbol at link time rather than a compile error in
+    # the file that names it. Track them per kv_ subroutine instead.
+    bare_has_diff = False
+    bare_has_rmsdiff = False
 
     # Regex patterns for comparison starts
     # Scalar: NaN-patched form: IF ((var%FIELD == kgenref_var%FIELD) .OR. ...
@@ -1702,8 +1710,21 @@ def _patch_field_value_logging(content: str) -> str:
         r'(\s*)check_result\s*=\s*(CHECK_IDENTICAL|CHECK_IN_TOL|CHECK_OUT_TOL)\s*$',
         re.IGNORECASE,
     )
+    # Start of a verify subroutine — resets the bare diff/rmsdiff tracking.
+    kv_subroutine_re = re.compile(r'\s*(RECURSIVE\s+)?SUBROUTINE\s+kv_\w+', re.IGNORECASE)
+    # A declaration of the BARE names (diff_foo / nrmsdiff must not match).
+    bare_diff_decl_re = re.compile(r'::[^!]*\bdiff\b', re.IGNORECASE)
+    bare_rmsdiff_decl_re = re.compile(r'::[^!]*\brmsdiff\b', re.IGNORECASE)
 
     for line in lines:
+        if kv_subroutine_re.match(line):
+            bare_has_diff = False
+            bare_has_rmsdiff = False
+        elif "::" in line:
+            if bare_diff_decl_re.search(line):
+                bare_has_diff = True
+            if bare_rmsdiff_decl_re.search(line):
+                bare_has_rmsdiff = True
         # Detect scalar comparison start
         m = scalar_re.match(line)
         if m:
@@ -1818,43 +1839,45 @@ def _patch_field_value_logging(content: str) -> str:
                 # Uses subroutine-local variables: var, kgenref_var, diff,
                 # rmsdiff, n, varname (the string name parameter).
                 elif current_type == "bare_scalar":
+                    diff_tail = ', " | ", diff' if bare_has_diff else ''
                     if check_type == "CHECK_IDENTICAL":
                         result.append(
                             f'{indent}WRITE(*, *) "[VIT_FIELD] ", '
                             f'trim(adjustl(varname)), '
                             f'" | IDENTICAL | ", var, " | ", kgenref_var'
                         )
-                    elif check_type == "CHECK_IN_TOL":
+                    elif check_type == "CHECK_IN_TOL" and bare_has_diff:
                         result.append(
                             f'{indent}WRITE(*, *) "[VIT_FIELD] ", '
                             f'trim(adjustl(varname)), '
-                            f'" | IN_TOL | ", var, " | ", kgenref_var, " | ", diff'
+                            f'" | IN_TOL | ", var, " | ", kgenref_var{diff_tail}'
                         )
                     elif check_type == "CHECK_OUT_TOL":
                         result.append(
                             f'{indent}WRITE(*, *) "[VIT_FIELD] ", '
                             f'trim(adjustl(varname)), '
-                            f'" | OUT_TOL | ", var, " | ", kgenref_var, " | ", diff'
+                            f'" | OUT_TOL | ", var, " | ", kgenref_var{diff_tail}'
                         )
 
                 elif current_type == "bare_array":
+                    rms_tail = ', " | rms=", rmsdiff' if bare_has_rmsdiff else ''
                     if check_type == "CHECK_IDENTICAL":
                         result.append(
                             f'{indent}WRITE(*, *) "[VIT_ARRAY] ", '
                             f'trim(adjustl(varname)), '
                             f'" | IDENTICAL | size=", SIZE(var)'
                         )
-                    elif check_type == "CHECK_IN_TOL":
+                    elif check_type == "CHECK_IN_TOL" and bare_has_rmsdiff:
                         result.append(
                             f'{indent}WRITE(*, *) "[VIT_ARRAY] ", '
                             f'trim(adjustl(varname)), '
-                            f'" | IN_TOL | n_diff=", n, " | rms=", rmsdiff'
+                            f'" | IN_TOL | n_diff=", n{rms_tail}'
                         )
                     elif check_type == "CHECK_OUT_TOL":
                         result.append(
                             f'{indent}WRITE(*, *) "[VIT_ARRAY] ", '
                             f'trim(adjustl(varname)), '
-                            f'" | OUT_TOL | n_diff=", n, " | rms=", rmsdiff'
+                            f'" | OUT_TOL | n_diff=", n{rms_tail}'
                         )
 
     return "\n".join(result)
