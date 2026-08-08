@@ -9,6 +9,7 @@ exist.
 """
 
 import importlib.util
+import json
 import os
 import sys
 
@@ -128,14 +129,14 @@ class TestDispositions:
             "AddToList": {"status": "skipped", "reason": "because"}
         })
         with pytest.raises(ValueError, match="expected one of"):
-            load_dispositions(path)
+            join.load_dispositions(path)
 
     def test_requires_a_reason(self, tmp_path):
         """A disposition without a stated reason is not reviewable."""
         load_dispositions = join.load_dispositions
         path = self._write(tmp_path, {"AddToList": {"status": "out_of_scope"}})
         with pytest.raises(ValueError, match="no reason"):
-            load_dispositions(path)
+            join.load_dispositions(path)
 
     def test_deferred_is_a_valid_status(self, tmp_path):
         """`deferred` and `out_of_scope` must not be conflated: one is remaining
@@ -164,3 +165,33 @@ class TestPhaseBrackets:
              "function": "saturate"},
         ]
         assert join.status_for(intervals) == "failed"
+
+
+class TestIntegratedUnexercisedDisposition:
+    """A green gate over code no scenario runs is not the same result as a
+    green gate over code every scenario runs, and one column cannot mean both."""
+
+    def _write(self, tmp_path, body):
+        p = tmp_path / "dispositions.json"
+        p.write_text(json.dumps(body))
+        return str(p)
+
+    def test_accepted(self, tmp_path):
+        path = self._write(tmp_path, {
+            "UpdateZeroMQ": {
+                "status": "integrated_unexercised",
+                "reason": "ZMQ_Mode is 0 in all 14 DISCON*.IN; both call sites are gated on it.",
+            }
+        })
+        got = join.load_dispositions(path)
+        assert got["UpdateZeroMQ"]["status"] == "integrated_unexercised"
+
+    def test_still_requires_a_reason(self, tmp_path):
+        path = self._write(tmp_path, {"UpdateZeroMQ": {"status": "integrated_unexercised"}})
+        with pytest.raises(ValueError, match="no reason"):
+            join.load_dispositions(path)
+
+    def test_unknown_status_still_rejected(self, tmp_path):
+        path = self._write(tmp_path, {"X": {"status": "unexercised", "reason": "typo"}})
+        with pytest.raises(ValueError, match="expected one of"):
+            join.load_dispositions(path)

@@ -50,7 +50,8 @@ COLUMNS = (
 )
 
 
-VALID_DISPOSITIONS = {"out_of_scope", "deferred", "blocked", "abandoned"}
+VALID_DISPOSITIONS = {"out_of_scope", "deferred", "blocked",
+                      "integrated_unexercised", "abandoned"}
 
 
 def load_dispositions(path):
@@ -76,11 +77,25 @@ def load_dispositions(path):
     `blocked`       the function should be mirrored and the tooling cannot. A
                     gap in the method.
 
+    `integrated_unexercised`
+                    translated, integrated, and the gate is green -- but no
+                    scenario executes the function, so the green says the build
+                    works and nothing about the translation. This is NOT the
+                    same outcome as `integrated` and must not share a column
+                    with it: a function whose 27/27 is backed by bit-identical
+                    channel output and one whose 27/27 is backed by nothing
+                    both read as "passed" otherwise. Anything reachable only
+                    behind a mode flag that is off in every input file, or
+                    behind a preprocessor macro this build does not define,
+                    belongs here.
+
     `abandoned`     attempted and given up on.
 
-    All of these would otherwise be derived as `failed`, which understates the
-    method and overstates the failure rate -- and, for `deferred`, would also
-    misreport remaining work as work that will never happen.
+    All but `integrated_unexercised` would otherwise be derived as `failed`,
+    which understates the method and overstates the failure rate -- and, for
+    `deferred`, would also misreport remaining work as work that will never
+    happen. `integrated_unexercised` is the opposite error: it would otherwise
+    be derived as `integrated`, and silently inflate the evidence.
     """
     if not path:
         return {}

@@ -557,17 +557,39 @@ def _generate_fortran_patches(sig: FortranSignature, source_file: str,
                                        allocations=allocations)
     end_keyword = "FUNCTION" if sig.is_function else "SUBROUTINE"
 
-    # Find the original function body
+    # Find the original function body.
+    #
+    # Nesting has to be counted, not assumed away. Taking the FIRST
+    # END SUBROUTINE after the header stops at the wrong place whenever the
+    # procedure contains an INTERFACE block -- ZeroMQInterface declares
+    # zmq_client that way, inside an #ifdef -- and the resulting patch replaces
+    # only the header, orphaning the whole real body. That produced invalid
+    # Fortran while integrate reported success.
     start_idx = None
     end_idx = None
+    depth = 0
+    proc_start_re = re.compile(
+        r'^\s*(?:(?:RECURSIVE|PURE|IMPURE|ELEMENTAL|MODULE)\s+)*'
+        r'(?:[A-Z0-9_()\s*]*?\s)?(?:SUBROUTINE|FUNCTION)\s+\w+')
     for i, line in enumerate(lines):
         stripped = line.strip().upper()
-        if re.search(rf'\b{end_keyword}\s+{name_upper}\s*\(', stripped):
-            if not stripped.startswith("END"):
+        if start_idx is None:
+            if (re.search(rf'\b{end_keyword}\s+{name_upper}\s*\(', stripped)
+                    and not stripped.startswith("END")):
                 start_idx = i
-        if start_idx is not None and re.match(rf'\s*END\s+{end_keyword}\b', stripped):
-            end_idx = i
-            break
+                depth = 1
+            continue
+        if re.match(r'^(ABSTRACT\s+)?INTERFACE\b', stripped):
+            depth += 1
+        elif re.match(r'^END\s+INTERFACE\b', stripped):
+            depth -= 1
+        elif re.match(r'^END\s+(SUBROUTINE|FUNCTION)\b', stripped):
+            depth -= 1
+            if depth == 0:
+                end_idx = i
+                break
+        elif not stripped.startswith("END") and proc_start_re.match(stripped):
+            depth += 1
 
     if start_idx is not None and end_idx is not None:
         original_func = "\n".join(lines[start_idx:end_idx + 1])
