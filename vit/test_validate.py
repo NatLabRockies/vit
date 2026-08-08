@@ -224,6 +224,70 @@ def _has_allocatable_fields(arg, derived_types):
     return None
 
 
+def _decomposed_param_names(arg, type_info):
+    """Ordered, collision-free bridge parameter names for a decomposed type.
+
+    Returns a list of (field, kind, rank, names) where `kind` is one of
+    "alloc" / "nested" / "scalar" and `names` maps a role ("ptr", "n", "rows",
+    "cols", "scalar") to the parameter name to emit.
+
+    WHY THIS EXISTS. The naive scheme is `vit_<arg>_<field>` with `_ptr`/`_n`
+    appended for an ALLOCATABLE field, and it breaks when a SCALAR field is
+    named exactly like some other field's generated size parameter. ROSCO's
+    ControlParameters has both, twice over:
+
+        WE_CP        ALLOCATABLE -> emits vit_CntrPar_WE_CP_ptr, .._WE_CP_n
+        WE_CP_n      scalar      -> emits vit_CntrPar_WE_CP_n       <-- same name
+
+        WE_FOPoles   ALLOCATABLE -> emits ..._WE_FOPoles_n
+        WE_FOPoles_N scalar      -> emits ..._WE_FOPoles_N          <-- same name
+                                                                        in Fortran
+
+    The first collides in both languages; the second collides ONLY in Fortran,
+    which is case-insensitive, and would compile in C++ while producing a
+    duplicate dummy argument in the bridge. Uniqueness is therefore enforced
+    case-insensitively, by suffixing the LATER occurrence with _v2, _v3, ...
+
+    Both the Fortran bridge and the C++ extern declaration must agree on these
+    names, so both call this rather than deriving names independently -- which
+    is how the two loops drifted into emitting the same duplicate twice.
+    """
+    used = set()
+
+    def uniq(name):
+        key = name.lower()
+        if key not in used:
+            used.add(key)
+            return name
+        i = 2
+        while f"{name}_v{i}".lower() in used:
+            i += 1
+        out = f"{name}_v{i}"
+        used.add(out.lower())
+        return out
+
+    prefix = f"vit_{arg.name}"
+    result = []
+    for fld in type_info.fields:
+        if fld.is_pointer:
+            continue
+        base = f"{prefix}_{fld.name}"
+        if fld.is_allocatable:
+            rank = fld.array_dims.count(",") + 1 if fld.array_dims else 1
+            names = {"ptr": uniq(f"{base}_ptr")}
+            if rank == 1:
+                names["n"] = uniq(f"{base}_n")
+            else:
+                names["rows"] = uniq(f"{base}_rows")
+                names["cols"] = uniq(f"{base}_cols")
+            result.append((fld, "alloc", rank, names))
+        elif fld.fortran_type.upper().startswith("TYPE("):
+            result.append((fld, "nested", 1, {"scalar": uniq(base)}))
+        else:
+            result.append((fld, "scalar", 1, {"scalar": uniq(base)}))
+    return result
+
+
 def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
                                    c_params, local_decls, pre_call, post_call,
                                    call_args):
@@ -237,30 +301,27 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
     Parameter names are prefixed with vit_{arg.name}_ to avoid collisions with
     names imported via USE statements.
     """
-    prefix = f"vit_{arg.name}"
     local_var = f"vit_local_{arg.name}"
+    spec = _decomposed_param_names(arg, type_info)
 
-    for fld in type_info.fields:
-        if fld.is_pointer:
-            continue
-        param = f"{prefix}_{fld.name}"
-        if fld.is_allocatable:
-            c_params.append((f"        TYPE(C_PTR), VALUE :: {param}_ptr", f"{param}_ptr"))
-            rank = fld.array_dims.count(",") + 1 if fld.array_dims else 1
+    for fld, kind, rank, names in spec:
+        if kind == "alloc":
+            c_params.append((f"        TYPE(C_PTR), VALUE :: {names['ptr']}", names["ptr"]))
             if rank == 1:
                 c_params.append((
-                    f"        INTEGER(C_INT), VALUE :: {param}_n", f"{param}_n"))
+                    f"        INTEGER(C_INT), VALUE :: {names['n']}", names["n"]))
             else:
                 c_params.append((
-                    f"        INTEGER(C_INT), VALUE :: {param}_rows", f"{param}_rows"))
+                    f"        INTEGER(C_INT), VALUE :: {names['rows']}", names["rows"]))
                 c_params.append((
-                    f"        INTEGER(C_INT), VALUE :: {param}_cols", f"{param}_cols"))
-        elif fld.fortran_type.upper().startswith("TYPE("):
+                    f"        INTEGER(C_INT), VALUE :: {names['cols']}", names["cols"]))
+        elif kind == "nested":
             # Nested derived type — not yet supported
-            c_params.append((f"        ! TODO: nested derived type {fld.fortran_type}", param))
+            c_params.append((f"        ! TODO: nested derived type {fld.fortran_type}",
+                             names["scalar"]))
         else:
             iso_type = get_type_mapping(fld.fortran_type, kind_aliases).iso_c_type
-            c_params.append((f"        {iso_type}, VALUE :: {param}", param))
+            c_params.append((f"        {iso_type}, VALUE :: {names['scalar']}", names["scalar"]))
 
     # Local: real Fortran type (not POINTER)
     local_decls.append(f"        TYPE({type_info.name}) :: {local_var}")
@@ -269,7 +330,6 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
     for fld in type_info.fields:
         if not fld.is_allocatable:
             continue
-        param = f"{prefix}_{fld.name}"
         iso_type = get_type_mapping(fld.fortran_type, kind_aliases).iso_c_type
         local_decls.append(f"        {iso_type}, POINTER :: vit_tmp_{arg.name}_{fld.name}(:)")
         rank = fld.array_dims.count(",") + 1 if fld.array_dims else 1
@@ -278,40 +338,38 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
                 f"        INTEGER :: vit_i_{fld.name}, vit_j_{fld.name}")
 
     # Pre-call: populate scalar fields
-    for fld in type_info.fields:
-        if fld.is_pointer:
-            continue
-        param = f"{prefix}_{fld.name}"
-        if fld.is_allocatable:
-            rank = fld.array_dims.count(",") + 1 if fld.array_dims else 1
+    for fld, kind, rank, names in spec:
+        if kind == "alloc":
             tmp = f"vit_tmp_{arg.name}_{fld.name}"
             if rank == 1:
-                pre_call.append(f"        IF (C_ASSOCIATED({param}_ptr)) THEN")
-                pre_call.append(f"            ALLOCATE({local_var}%{fld.name}({param}_n))")
+                p_ptr, p_n = names["ptr"], names["n"]
+                pre_call.append(f"        IF (C_ASSOCIATED({p_ptr})) THEN")
+                pre_call.append(f"            ALLOCATE({local_var}%{fld.name}({p_n}))")
                 pre_call.append(
-                    f"            CALL C_F_POINTER({param}_ptr, {tmp}, [{param}_n])")
+                    f"            CALL C_F_POINTER({p_ptr}, {tmp}, [{p_n}])")
                 pre_call.append(
-                    f"            {local_var}%{fld.name}(1:{param}_n) = {tmp}(1:{param}_n)")
+                    f"            {local_var}%{fld.name}(1:{p_n}) = {tmp}(1:{p_n})")
                 pre_call.append(f"        END IF")
             elif rank == 2:
+                p_ptr, p_rows, p_cols = names["ptr"], names["rows"], names["cols"]
                 vi = f"vit_i_{fld.name}"
                 vj = f"vit_j_{fld.name}"
-                pre_call.append(f"        IF (C_ASSOCIATED({param}_ptr)) THEN")
+                pre_call.append(f"        IF (C_ASSOCIATED({p_ptr})) THEN")
                 pre_call.append(
-                    f"            ALLOCATE({local_var}%{fld.name}({param}_rows, {param}_cols))")
+                    f"            ALLOCATE({local_var}%{fld.name}({p_rows}, {p_cols}))")
                 pre_call.append(
-                    f"            CALL C_F_POINTER({param}_ptr, {tmp}, [{param}_rows * {param}_cols])")
-                pre_call.append(f"            DO {vj} = 1, {param}_cols")
-                pre_call.append(f"                DO {vi} = 1, {param}_rows")
+                    f"            CALL C_F_POINTER({p_ptr}, {tmp}, [{p_rows} * {p_cols}])")
+                pre_call.append(f"            DO {vj} = 1, {p_cols}")
+                pre_call.append(f"                DO {vi} = 1, {p_rows}")
                 pre_call.append(
                     f"                    {local_var}%{fld.name}({vi}, {vj}) = &")
                 pre_call.append(
-                    f"                        {tmp}(({vj}-1)*{param}_rows + {vi})")
+                    f"                        {tmp}(({vj}-1)*{p_rows} + {vi})")
                 pre_call.append(f"                END DO")
                 pre_call.append(f"            END DO")
                 pre_call.append(f"        END IF")
-        elif not fld.fortran_type.upper().startswith("TYPE("):
-            pre_call.append(f"        {local_var}%{fld.name} = {param}")
+        elif kind == "scalar":
+            pre_call.append(f"        {local_var}%{fld.name} = {names['scalar']}")
 
     # Post-call: DEALLOCATE ALLOCATABLEs
     for fld in type_info.fields:
@@ -775,25 +833,22 @@ def generate_test_harness_skeleton(
         if arg.is_derived_type:
             type_info = _has_allocatable_fields(arg, derived_types)
             if type_info is not None:
-                prefix = f"vit_{arg.name}"
-                for fld in type_info.fields:
-                    if fld.is_pointer:
-                        continue
-                    param = f"{prefix}_{fld.name}"
-                    if fld.is_allocatable:
+                # Same helper as the Fortran side, so the two agree by
+                # construction rather than by both re-deriving the names.
+                for fld, kind, rank, names in _decomposed_param_names(arg, type_info):
+                    if kind == "alloc":
                         c_type = get_type_mapping(fld.fortran_type, kind_aliases).c_type
-                        bridge_params.append(f"{c_type}* {param}_ptr")
-                        rank = fld.array_dims.count(",") + 1 if fld.array_dims else 1
+                        bridge_params.append(f"{c_type}* {names['ptr']}")
                         if rank == 1:
-                            bridge_params.append(f"int {param}_n")
+                            bridge_params.append(f"int {names['n']}")
                         else:
-                            bridge_params.append(f"int {param}_rows")
-                            bridge_params.append(f"int {param}_cols")
-                    elif fld.fortran_type.upper().startswith("TYPE("):
-                        bridge_params.append(f"void* {param}")
+                            bridge_params.append(f"int {names['rows']}")
+                            bridge_params.append(f"int {names['cols']}")
+                    elif kind == "nested":
+                        bridge_params.append(f"void* {names['scalar']}")
                     else:
                         c_type = get_type_mapping(fld.fortran_type, kind_aliases).c_type
-                        bridge_params.append(f"{c_type} {param}")
+                        bridge_params.append(f"{c_type} {names['scalar']}")
             else:
                 bridge_params.append(f"void* {arg.name}_ptr")
         elif "CHARACTER" in arg.fortran_type.upper():
