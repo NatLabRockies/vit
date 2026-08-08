@@ -377,6 +377,120 @@ def find_call_sites(source_dir: str, function_name: str,
     return results
 
 
+# Construct openers, and the END keyword that closes each. Matched against the
+# logical statement with comments stripped and whitespace collapsed.
+_BLOCK_OPENERS = [
+    (re.compile(r"^(?:\w+\s*:\s*)?IF\b.*\bTHEN$"), "IF"),
+    (re.compile(r"^(?:\w+\s*:\s*)?DO\b"), "DO"),
+    (re.compile(r"^(?:\w+\s*:\s*)?SELECT\s*(?:CASE|TYPE)\b"), "SELECT"),
+    (re.compile(r"^(?:\w+\s*:\s*)?WHERE\s*\(.*\)$"), "WHERE"),
+    (re.compile(r"^(?:\w+\s*:\s*)?FORALL\s*\(.*\)$"), "FORALL"),
+    (re.compile(r"^(?:\w+\s*:\s*)?ASSOCIATE\b"), "ASSOCIATE"),
+    (re.compile(r"^(?:\w+\s*:\s*)?BLOCK$"), "BLOCK"),
+]
+
+_END_PATTERNS = {
+    "IF": re.compile(r"^END\s*IF\b"),
+    "DO": re.compile(r"^END\s*DO\b"),
+    "SELECT": re.compile(r"^END\s*SELECT\b"),
+    "WHERE": re.compile(r"^END\s*WHERE\b"),
+    "FORALL": re.compile(r"^END\s*FORALL\b"),
+    "ASSOCIATE": re.compile(r"^END\s*ASSOCIATE\b"),
+    "BLOCK": re.compile(r"^END\s*BLOCK\b"),
+}
+
+
+def _logical_stmt(lines: list, idx: int) -> str:
+    """
+    Normalize one source line into a comparable statement: strip a trailing
+    comment, drop a trailing continuation marker, collapse whitespace, uppercase.
+
+    Comment stripping is quote-aware, so a '!' inside a string literal is kept.
+    """
+    raw = lines[idx]
+    out = []
+    quote = None
+    for ch in raw:
+        if quote:
+            out.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+        elif ch == "!":
+            break
+        else:
+            out.append(ch)
+    text = "".join(out).strip()
+    if text.endswith("&"):
+        text = text[:-1].strip()
+    return re.sub(r"\s+", " ", text).upper()
+
+
+def _joined_stmt(lines: list, start_idx: int, end_idx: int) -> str:
+    """Join a continued statement into one normalized line."""
+    return re.sub(
+        r"\s+", " ",
+        " ".join(_logical_stmt(lines, i) for i in range(start_idx, end_idx + 1))
+    ).strip()
+
+
+def _extend_to_block_end(lines: list, start_idx: int, end_idx: int) -> int:
+    """
+    If the statement at start_idx..end_idx opens a block construct, return the
+    index of its matching END statement. Otherwise return end_idx unchanged.
+
+    Nested constructs of any kind are counted, so the returned END is the one
+    that actually closes this construct. ELSE / ELSE IF / CASE / TYPE IS are
+    continuations, not openers, and do not affect the depth.
+
+    An unterminated construct (no matching END before end of file) returns
+    end_idx unchanged rather than raising -- the caller's existing behaviour is
+    then no worse than before this function existed.
+    """
+    stmt = _joined_stmt(lines, start_idx, end_idx)
+
+    kind = None
+    for pattern, name in _BLOCK_OPENERS:
+        if pattern.match(stmt):
+            kind = name
+            break
+    if kind is None:
+        return end_idx
+
+    # A DO with a numeric label terminates on that label, not END DO. Rare in
+    # modern code and not handled; leave it alone rather than guess.
+    if kind == "DO" and re.match(r"^(?:\w+\s*:\s*)?DO\s+\d+\b", stmt):
+        return end_idx
+
+    end_pattern = _END_PATTERNS[kind]
+    depth = 1
+    i = end_idx + 1
+    while i < len(lines):
+        # Skip continuation lines: only consider statement starts.
+        if i > 0 and _logical_stmt(lines, i - 1).endswith("&"):
+            i += 1
+            continue
+        current = _logical_stmt(lines, i)
+        if not current:
+            i += 1
+            continue
+
+        if end_pattern.match(current):
+            depth -= 1
+            if depth == 0:
+                return i
+        else:
+            for pattern, name in _BLOCK_OPENERS:
+                if name == kind and pattern.match(current):
+                    depth += 1
+                    break
+        i += 1
+
+    return end_idx
+
+
 def insert_kgen_pragma(filepath: str, line_number: int,
                        function_name: str = "",
                        output_path: Optional[str] = None) -> str:
@@ -416,6 +530,17 @@ def insert_kgen_pragma(filepath: str, line_number: int,
     # Check if this line continues on the next line
     while end_idx < len(lines) - 1 and lines[end_idx].rstrip().endswith("&"):
         end_idx += 1
+
+    # If the statement OPENS A BLOCK, extend to its terminator.
+    #
+    # A call embedded in a construct header -- most often
+    # `IF (cond .AND. .NOT. f(x)) THEN` -- is a legitimate call site, but
+    # wrapping only the header puts an unterminated IF inside the callsite
+    # region. KGen then emits a malformed kernel: the construct's body is
+    # dropped and its END statement is re-emitted out of order. The failure
+    # surfaces as a Fortran syntax error in the generated kernel, far from its
+    # cause.
+    end_idx = _extend_to_block_end(lines, start_idx, end_idx)
 
     # Insert pragmas (KGen requires underscores and function name)
     indent = len(lines[start_idx]) - len(lines[start_idx].lstrip())

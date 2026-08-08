@@ -82,6 +82,25 @@ def _parse_link_libraries(build_dir: str, target_name: str) -> Optional[list[str
         elif tok.startswith("-l"):
             libs.append(tok)
 
+    # A target built directly from sources -- no intermediate static libraries --
+    # yields only system -l flags here, and the harness then fails to link with
+    # undefined references to the very function it is testing. ROSCO's `discon`
+    # is such a target; AeroDyn's driver is not, which is why this went unnoticed.
+    #
+    # Fall back to the target's own object files, which is exactly what the
+    # target itself links. Searched recursively: sources in subdirectories
+    # (ROSCO's src/SysFiles/) land in matching subdirectories of the .dir, and a
+    # flat glob silently omits them, producing a link error one level further on.
+    #
+    # NOTE: these objects come from the CURRENT build. Run test-validate BEFORE
+    # integrating, or the "Fortran reference" is a wrapper around the C++
+    # translation and the comparison is against itself.
+    if not any(lib.endswith((".a", ".so")) for lib in libs):
+        obj_dir = link_txt.parent
+        objs = sorted(str(o) for o in obj_dir.rglob("*.o"))
+        if objs:
+            libs = objs + libs
+
     return libs if libs else None
 
 
@@ -348,7 +367,12 @@ def generate_fortran_bridge(
 
     for arg in sig.args:
         fortran_type = arg.fortran_type.upper()
-        intent = arg.intent.value if arg.intent else "INOUT"
+        # arg.intent is IntentKind.NONE (empty value) for a dummy declared
+        # without an INTENT attribute, which is legal Fortran and common in
+        # older code -- ROSCO_Helpers declares several that way. Emitting
+        # INTENT() is a syntax error, so fall back to INOUT, which is what an
+        # unspecified intent permits.
+        intent = arg.intent.value if (arg.intent and arg.intent.value) else "INOUT"
 
         if arg.is_derived_type:
             type_name = arg.derived_type_name
@@ -706,11 +730,14 @@ def generate_test_harness_skeleton(
         elif "CHARACTER" in arg.fortran_type.upper():
             continue  # CHARACTER handled locally in bridge, not passed from C++
         else:
-            # Find the matching C param from build_c_params
+            # Find the matching C param from build_c_params, plus any size
+            # parameter that travels with it. An assumed-shape array becomes
+            # (ptr, n_ptr) on the C side and the bridge declares both, so
+            # matching on the argument name alone drops the size and produces a
+            # declaration that disagrees with the bridge it declares.
             for ctype, cname in c_params:
-                if cname == arg.name:
+                if cname == arg.name or cname == f"n_{arg.name}":
                     bridge_params.append(f"{ctype} {cname}")
-                    break
     # The bridge is always a SUBROUTINE, so a FUNCTION's result comes back
     # through a trailing output parameter. The loop above walks sig.args only,
     # which never includes the result.

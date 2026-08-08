@@ -576,3 +576,111 @@ class TestFindCallSites:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# --- Block-construct pragma placement ---------------------------------------
+#
+# A call embedded in a construct header is a legitimate call site. Wrapping
+# only the header leaves an unterminated construct inside the callsite region,
+# and KGen emits a kernel that fails to compile with the cause nowhere near the
+# symptom. See DECISIONS.md, NonDecreasing (#20).
+
+import re as _re
+from pathlib import Path as _Path
+
+from vit.extract import insert_kgen_pragma as _insert
+
+
+def _wrap(tmp_path, source, line_number):
+    f = tmp_path / "src.f90"
+    f.write_text(source)
+    _insert(str(f), line_number, function_name="Target")
+    return f.read_text().split("\n")
+
+
+def _region(lines):
+    """Lines strictly between the two pragmas."""
+    begin = next(i for i, l in enumerate(lines) if "begin_callsite" in l)
+    end = next(i for i, l in enumerate(lines) if "end_callsite" in l)
+    return [l.strip() for l in lines[begin + 1:end]]
+
+
+def test_pragma_wraps_whole_if_construct(tmp_path):
+    src = "\n".join([
+        "SUBROUTINE S()",
+        "    IF (a > 0 .AND. .NOT. Target(x)) THEN",
+        "        b = 1",
+        "    ENDIF",
+        "    c = 2",
+        "END SUBROUTINE S",
+    ])
+    region = _region(_wrap(tmp_path, src, 2))
+    assert region[0].startswith("IF (")
+    assert region[-1].upper().replace(" ", "") == "ENDIF"
+    assert "b = 1" in region
+
+
+def test_pragma_handles_nested_if(tmp_path):
+    src = "\n".join([
+        "SUBROUTINE S()",
+        "    IF (Target(x)) THEN",
+        "        IF (y) THEN",
+        "            b = 1",
+        "        END IF",
+        "    END IF",
+        "    c = 2",
+        "END SUBROUTINE S",
+    ])
+    region = _region(_wrap(tmp_path, src, 2))
+    # Must close on the OUTER END IF, not the inner one.
+    assert len([l for l in region if l.upper().replace(" ", "") == "ENDIF"]) == 2
+    assert "c = 2" not in region
+
+
+def test_pragma_wraps_do_construct(tmp_path):
+    src = "\n".join([
+        "SUBROUTINE S()",
+        "    DO i = 1, Target(n)",
+        "        b = i",
+        "    END DO",
+        "END SUBROUTINE S",
+    ])
+    region = _region(_wrap(tmp_path, src, 2))
+    assert region[0].startswith("DO ")
+    assert region[-1].upper().replace(" ", "") == "ENDDO"
+
+
+def test_pragma_leaves_plain_assignment_alone(tmp_path):
+    src = "\n".join([
+        "SUBROUTINE S()",
+        "    y = Target(x)",
+        "    c = 2",
+        "END SUBROUTINE S",
+    ])
+    region = _region(_wrap(tmp_path, src, 2))
+    assert region == ["y = Target(x)"]
+
+
+def test_pragma_ignores_bang_inside_string(tmp_path):
+    # The '!' is inside a literal, so the line still ends with THEN and is a
+    # block opener.
+    src = "\n".join([
+        "SUBROUTINE S()",
+        "    IF (msg == '!' .AND. Target(x)) THEN",
+        "        b = 1",
+        "    END IF",
+        "END SUBROUTINE S",
+    ])
+    region = _region(_wrap(tmp_path, src, 2))
+    assert region[-1].upper().replace(" ", "") == "ENDIF"
+
+
+def test_pragma_single_line_if_is_not_a_block(tmp_path):
+    src = "\n".join([
+        "SUBROUTINE S()",
+        "    IF (Target(x)) b = 1",
+        "    c = 2",
+        "END SUBROUTINE S",
+    ])
+    region = _region(_wrap(tmp_path, src, 2))
+    assert region == ["IF (Target(x)) b = 1"]
