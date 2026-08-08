@@ -1,8 +1,16 @@
 # The Kernel Can Be Narrow on the Output Side, and a Branch Can Be Dead to Both Layers
 
 **Date:** 2026-08-08
-**Status:** completed — #37; includes a correction to a claim of mine and one of the agent's
+**Status:** completed, but **the reset-branch section below is WRONG** — see `202608080436`
 **Scope:** verification coverage
+
+> **CORRECTION.** The claim that the reset branch is dead to both layers, and that this "applies
+> backwards to `PIController`, `PIIController` and `ratelimit`", is false. `restart` is `.True.` on
+> the first call of every scenario — `ReadSetParameters.f90:123-127`, inside `ReadAvrSWAP`, is
+> `IF (LocalVar%iStatus == 0) THEN LocalVar%restart = .True.`. I cited lines 124 and 126 as evidence
+> for the opposite of what they say. Measured reachability: reset is reached for `PIController`,
+> `ratelimit` and `PIDController`; only `ResController` is unreached, and for a different reason.
+> The output-side narrowness finding, which is the point of this note, is unaffected.
 
 ## Placement
 
