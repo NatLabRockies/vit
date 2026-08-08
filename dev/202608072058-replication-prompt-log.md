@@ -1,7 +1,7 @@
-# Prompt Log: Every Instruction Given to the Replication Agent
+# Prompt Log: Every Instruction the Replication Agent Received
 
-**Date:** 2026-08-07
-**Status:** in-progress — live log, appended as the run proceeds
+**Date:** 2026-08-07 (extended 2026-08-08)
+**Status:** in-progress — live log; extracted from the transcript, not reconstructed
 **Scope:** ROSCO replication session steering
 
 ## Placement
@@ -10,26 +10,62 @@ Same as the other replication notes: the OpenFAST workspace, outside the replica
 mount and outside the repository it commits to. **Do not merge into the ROSCO-workspace checkout
 until the run has ended.**
 
-## Why this exists
+## Provenance
 
-The replication agent runs in its own session. The author is its only conduit — every instruction
-it receives passes through one person, who relays from an audit session that watches the telemetry
-and the repositories read-only. So this log is the **complete steering bandwidth of the run**.
+**Extracted verbatim from the session transcript**, not reconstructed from what the audit session
+drafted. An earlier version of this note was written from drafts and was wrong in three ways: it
+listed a prompt that was never sent, it described technical guidance that never reached the agent,
+and it undercounted how little steering the run actually took.
 
-That makes it evidence rather than bookkeeping. §V argues for a human–agent–tool arrangement in
-which the human adjudicates and the agent executes. A full record of how many interventions a
-fourteen-function migration required, and what kind, is a measurement of that arrangement — the
-kind of thing the OpenAI field report describes qualitatively and nobody quantifies.
+Extraction: `type: "user"`, non-`isMeta`, string content, from
+`~/.claude/projects/<project-key>/`. That yields 13
+records, of which 4 are slash-command wrappers or their stdout and 1 is the compaction summary.
+Plus one `AskUserQuestion` answer, which arrives as a `tool_result` rather than a user message and
+is easy to miss.
 
-**Completeness caveat.** This records prompts *drafted in the audit session for relay*. Several
-were relayed verbatim; some the author sent in their own words, and that exact text is not
-captured here. Those are marked. Interventions are listed in order.
+## The complete record
 
----
+Session span **3.1 hours**, 14 functions integrated.
 
-## 1. Opening prompt
+| # | Time (UTC) | Kind | Content |
+|---|---|---|---|
+| 1 | 21:55:31 | command | `/effort` → high |
+| 2 | 21:56:44 | **prompt** | Opening — read the runbook, confirm memories, begin Phase 2 |
+| 3 | 22:43:02 | **prompt** | Resume with `wrap_180`; joiner fixes; boundary-bracketing suggestion |
+| 4 | 23:18:19 | continuation | `Continue` |
+| 5 | 23:45:41 | continuation | `Continue` |
+| 6 | 23:51:37 | **decision** | `AskUserQuestion` answer: "Copy files, regenerate baselines (Recommended)" |
+| 7 | 00:02:48 | continuation | `continue` |
+| 8 | 00:50:55 | **prompt** | Pre-compaction readiness checklist |
+| 9 | 00:56:25 | command | `/compact` |
+| 10 | 00:59:12 | **prompt** | Post-compaction resume |
 
-Sent at session start, cwd `vit_translation/ROSCO-replication`, Opus 5, high effort.
+**Four substantive prompts. Three bare continuations. One multiple-choice answer.**
+
+That is **one human turn per several dozen agent requests.**
+
+## What was not sent
+
+The audit session produced a great deal of technical analysis during the run. **None of it reached
+the agent.** Specifically not sent:
+
+- that scenario 13 was a fourth dead scenario with a different cause, predating both campaigns
+- the `GetRoot` aliasing analysis, and that the real hazard was Fortran's blank-padding semantics
+- the seven-fixes tally and its two categories
+- the `LOGICAL` mapping regression traced to commit `1deb7e3`
+- the observation that `unwrap`'s tokens were recoverable under innermost-wins attribution
+
+A boundary-bracketing prompt was drafted and **never sent** — the author questioned it instead
+(*"doesn't that 'fix' just amount to a rename?"*), and it became post-processing in the joiner.
+The agent independently decided to bracket the commit, from the joiner's behaviour rather than
+from instruction.
+
+The audit channel's actual function was to inform **the author**, who used it to decide what not
+to send.
+
+## The four prompts, verbatim
+
+### 1. Opening — 2026-08-07 21:56:44
 
 ```
 You are running the ROSCO replication. This session's transcript is the measurement — it is
@@ -59,14 +95,7 @@ Record failures as data. A function you cannot complete is a result this project
 had. Work at whatever pace the verification allows; I will tell you when to stop.
 ```
 
-**Outcome.** Memories confirmed (9 files plus index). Phase 2 completed in 16 minutes; found and
-fixed `fortran_inventory.py` silently dropping `Controllers.f90` on a cpp line-splice, taking the
-inventory from 70 to 84 procedures. Rejected the tool's call graph as unusable for ordering
-(case-sensitive, no generic resolution) and built its own. Phase 3 in 2.5 minutes.
-
----
-
-## 2. Resume after the first joiner fix
+### 2. Resume — 2026-08-07 22:43:02
 
 ```
 Resume with wrap_180. Before you start it, git pull in /workspace/vit — I fixed two joiner bugs at
@@ -81,57 +110,10 @@ cycle per the runbook, so consider bracketing it into the function's span. Your 
 file.
 ```
 
-**Outcome.** The agent corrected the instruction: `/workspace/vit` is a bind mount of the same
-checkout, so there was nothing to pull. It then investigated the joiner's geometry before acting
-on the bracketing suggestion, and confirmed the diagnosis about boundary tokens.
+The `git pull` instruction was wrong — `/workspace/vit` is a bind mount of the same checkout. The
+agent corrected it.
 
-**Audit-session error recorded:** the `git pull` instruction was wrong.
-
----
-
-## 3. Boundary bracketing
-
-```
-Bracket the commit as planned, but widen it to __boundary__ covering the whole inter-function
-turn — commit, findings, report. All the unattributed tokens are there and it just crossed 10.1%,
-which is structural rather than sloppy: routine boundaries run ~5–6k against ~47k per function, so
-the threshold fails by construction. Naming the bucket turns a warning light into a category.
-Then carry on with wrap_180.
-```
-
-**Superseded before it mattered.** The author pushed back — *"if unattributed just means boundary,
-can't we just post-process it? Or, rather, doesn't that 'fix' just amount to a rename?"* — which
-was correct. The bracket was ceremony; the joiner already knows both surrounding spans and can
-derive it. Implemented as post-processing in `90a496d` instead, with the 10% threshold removed
-rather than adjusted. See dev note `202608071913`.
-
----
-
-## 4. Relayed in the author's own words (text not captured)
-
-Several interventions were relayed by the author directly. Their content, from the agent's
-responses:
-
-- **Scenario 13 still dead.** After the open-loop repair, the audit found a fourth dead scenario
-  with a different cause (`VS_FBP` and `VS_ConstPower` mutually exclusive) that predates both
-  campaigns. Dev note `202608072000`.
-- **`GetRoot` hazards.** That the aliasing in `CALL GetRoot(RootName, RootName)` is benign because
-  every assignment writes a prefix of the source, and that the real risk is Fortran's blank-padding
-  to the destination's full declared length.
-- **The seven-fixes tally**, and that the `vit translate` overwrite warning in `CLAUDE.md` and the
-  runbook documented a bug as if it were design.
-
-**One decision was made through the agent's own AskUserQuestion**, not through this channel: given
-three degenerate gate scenarios, the author chose *"Copy files, regenerate baselines."* The agent
-then added the step the audit session's recommendation had omitted — reverting to a pure-Fortran
-build first, without which the regenerated baselines would have enshrined eight C++ translations
-as their own ground truth.
-
-**Audit-session error recorded:** the repair instruction omitted the pure-Fortran revert.
-
----
-
-## 5. Pre-compaction readiness
+### 3. Pre-compaction readiness — 2026-08-08 00:50:55
 
 ```
 Before we compact: make sure nothing you'd need to continue lives only in your context.
@@ -162,17 +144,10 @@ Then report what you fixed, and compact.
 After compacting, re-read REPLICATION_RUNBOOK.md before resuming — do not work from memory of it.
 ```
 
-**Outcome.** Found one uncommitted fix (KGen `PUBLIC`, now `5ac811f`) that a previous commit
-message had already referred to as committed. Added an explicit usable/not-usable attribution
-ledger to `DECISIONS.md`. Corrected the runbook's overwrite warning. Committed `per_function.csv`
-and — unprompted, and a real gap — snapshotted the gitignored cycle log to
-`analysis/replication/cycle_log_snapshot.jsonl`, without which the primary measurement record
-existed in exactly one untracked place. All three repositories verified clean; 14 `_c` symbols in
-the library matching 14 integrated functions.
+Found one uncommitted KGen fix that a prior commit message had already described as committed.
+Snapshotted the gitignored cycle log unprompted, closing a real durability gap.
 
----
-
-## 6. Post-compaction resume
+### 4. Post-compaction resume — 2026-08-08 00:59:12
 
 ```
 Resuming the ROSCO replication after compaction.
@@ -193,30 +168,60 @@ DECISIONS.md and lessons to TRANSLATION_TIPS.md as you go.
 Report after interp1d and I'll tell you whether to keep going in plan order.
 ```
 
----
+## The one technical decision, and how it was framed
 
-## What the log shows so far
+At 23:51:29 the agent asked, and at 23:51:37 — **eight seconds later** — the author answered:
 
-Fourteen functions, 27/27 bit-identical throughout, first-pass verify 12/14. Six substantive
-interventions, of which:
+> Three gate scenarios (10, 14, 24) are degenerate because their open-loop input files were never
+> carried into this tree. How should I proceed?
+> → **"Copy files, regenerate baselines (Recommended)"**
 
-- **two were setup or continuity** (opening, post-compaction resume)
-- **one was hygiene** (pre-compaction readiness)
-- **three were technical guidance**, and the agent **corrected or improved all three**: the
-  nonexistent `git pull`, the bracketing that should have been post-processing, and the repair
-  instruction missing its pure-Fortran revert.
+The agent had already diagnosed the fault, scoped it, enumerated the options and marked its own
+recommendation. The human contribution was authorization. And the agent then added the step the
+audit session's parallel recommendation had *omitted* — reverting to a pure-Fortran build first,
+without which the regenerated baselines would have enshrined eight C++ translations as their own
+ground truth.
 
-**No intervention was needed to correct a translation.** Every one concerned measurement
-apparatus, tooling, or process. The agent found and fixed seven infrastructure defects across VIT
-and KGen without being told any of them existed.
+## What the log shows
 
-That asymmetry is the §V observation with numbers attached: the human channel adjudicated scope
-and caught framing errors, the agent executed and self-corrected on technical detail, and the tool
-supplied the gate that made both trustworthy. It is also, uncomfortably, a record of an audit
-session being wrong three times in a row on specifics while being useful on direction.
+In 3.1 hours, from four setup-and-hygiene prompts, three bare continuations and one multiple-choice
+answer, the agent:
+
+- integrated **14 of 78 functions**, all 27/27 bit-identical, first-pass verify 12/14
+- found and fixed **seven infrastructure defects** across VIT and KGen, none of which it was told
+  about
+- discovered that **four gate scenarios had been passing green while computing nothing**, one of
+  them dead since the original campaign
+- traced the `LOGICAL` mapping failure to an AeroDyn-era commit
+- found an **inverted guard that the project had documented as intended behaviour** in `CLAUDE.md`
+- refused to relabel a nested span when doing so would have flattered a function's cost, and wrote
+  the distinction into the runbook as a rule
+
+**Not one intervention concerned a translation.** The four prompts were setup, continuity, and
+hygiene. The agent wrote fourteen C++ implementations and none required correction from the human
+channel; the gates handled that.
+
+## The division of labour
+
+This is a division in which the human adjudicates and the agent executes under a tool that makes
+both trustworthy, measured rather than described. The division here was sharp:
+
+- **the tool** supplied every correctness signal — 20/20 replay, 27/27 gate, and it is what caught
+  the translation errors
+- **the agent** did the technical work, including all seven repairs to the tool itself
+- **the human** authorized scope once, set up and closed down, and typed `Continue` three times
+
+One human turn per several dozen agent requests, on production scientific code, gated bit-identically
+throughout.
+
+The honest counterweight, and it belongs beside the ratio: this worked because the gate is
+bit-identical and cheap. Every one of those requests ran against a suite that would fail
+loudly on a wrong answer in 87 seconds. **The ratio is a property of the verification, not of the
+agent.** Remove the gate and the same autonomy would be indistinguishable from unsupervised
+generation.
 
 ## References
 
 - Dev note `202608071634` — the replication plan
 - Dev notes `202608071913`, `202608071945`, `202608072000`, `202608072004`, `202608072043` — the
-  findings these prompts responded to
+  findings the audit session produced, almost none of which were relayed
