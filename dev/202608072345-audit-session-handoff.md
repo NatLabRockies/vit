@@ -109,11 +109,14 @@ finishes and unsafe before it.
 
 ## The notes, and where to start
 
-**Start with `202608080346`** — the replication's own gate never compared anything, from the setup
-commit through function #38. `docker exec` without `-i` fed the comparison an empty script, which
-exited 0 and printed `27/27 bit-identical`. Every "regress 27/27" in these notes is void; the kernel
-results, the telemetry, and every campaign-side finding survive. It also carries the recommendation
-on how to proceed and the list of what does and does not survive.
+**Start with `202608080346` and then `202608080404`, in that order.** The replication's gate never
+compared anything from the setup commit through #38 — `docker exec` without `-i` fed the comparison
+an empty script, which exited 0 and printed `27/27 bit-identical`. When repaired it showed 95
+mismatches, and those turned out to be **one missing line of CMake**: `CMAKE_CXX_FLAGS` never got
+`-ffp-contract=off`, so g++ fused every `a*b + c` while the Fortran did not. Both defects trace to
+the same setup commit, `bf25e35`. **HEAD is now bit-identical, 351 channels, 0 mismatched, all 38
+functions.** "Every regress 27/27" is void as a per-commit claim; the translations themselves are
+vindicated jointly at the tree level.
 
 **Then `202608080058`** — the campaign shipped a false "kernel PASSED" stamp on `ExtController`, a
 function that demonstrably diverges from its Fortran and that no gate scenario can execute.
