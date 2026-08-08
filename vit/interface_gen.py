@@ -228,7 +228,7 @@ def generate_fortran_wrapper(sig: FortranSignature,
     if sig.is_function:
         lines.extend(_generate_wrapper_function(
             sig, c_func_name, kind_aliases, derived_types, optional_forwarded,
-            view_args, is_kernel
+            view_args, is_kernel, reverse_copy
         ))
     else:
         lines.extend(_generate_wrapper_subroutine(
@@ -241,7 +241,7 @@ def generate_fortran_wrapper(sig: FortranSignature,
 
 def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
                                 optional_forwarded, view_args=None,
-                                is_kernel=False):
+                                is_kernel=False, reverse_copy=False):
     """Generate wrapper body for a FUNCTION."""
     view_args = view_args or []
     lines = []
@@ -256,8 +256,8 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     for use_stmt in _get_use_statements_for_derived_types(sig):
         lines.append(f"        {use_stmt}")
 
-    # Add USE for view type modules
-    lines.extend(_get_view_use_statements(view_args, is_kernel))
+    # Add USE for view type modules (include reverse-copy if requested)
+    lines.extend(_get_view_use_statements(view_args, is_kernel, reverse_copy))
 
     lines.append(f"        IMPLICIT NONE")
 
@@ -336,6 +336,21 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
             lines.append(f"        {result_name} = REAL({c_call}, {ret_kind})")
         else:
             lines.append(f"        {result_name} = {c_call}")
+
+    # Reverse-copy: copy modified scalars from view back to Fortran type.
+    # Placed after the result assignment, since the C call is what mutates the
+    # view. Mirrors the block in _generate_wrapper_subroutine.
+    if reverse_copy and view_args:
+        lines.append(f"        ! Copy modified scalars back from view to Fortran type")
+        for arg, mapping in view_args:
+            if arg.intent and arg.intent.value.upper() in ("INOUT", "OUT"):
+                type_lower = mapping.c_type.lower()
+                if arg.is_array and not arg.is_assumed_shape and arg.array_dims:
+                    lines.append(f"        DO vit_view_i = 1, {arg.array_dims}")
+                    lines.append(f"            CALL vit_copy_scalars_to_{type_lower}({arg.name}_view(vit_view_i), {arg.name}(vit_view_i))")
+                    lines.append(f"        END DO")
+                else:
+                    lines.append(f"        CALL vit_copy_scalars_to_{type_lower}({arg.name}_view, {arg.name})")
 
     lines.append(f"    END FUNCTION {sig.name}")
     return lines
