@@ -136,3 +136,13 @@ class TestDispositions:
         path = self._write(tmp_path, {"AddToList": {"status": "out_of_scope"}})
         with pytest.raises(ValueError, match="no reason"):
             load_dispositions(path)
+
+    def test_deferred_is_a_valid_status(self, tmp_path):
+        """`deferred` and `out_of_scope` must not be conflated: one is remaining
+        work, the other never will be. See DECISIONS.md, ReadEmptyLine (#27)."""
+        load_dispositions = join.load_dispositions
+        path = self._write(tmp_path, {
+            "ReadEmptyLine": {"status": "deferred",
+                              "reason": "Fortran unit I/O; translate with its caller"}
+        })
+        assert load_dispositions(path)["ReadEmptyLine"]["status"] == "deferred"

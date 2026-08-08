@@ -50,20 +50,37 @@ COLUMNS = (
 )
 
 
-VALID_DISPOSITIONS = {"out_of_scope", "blocked", "abandoned"}
+VALID_DISPOSITIONS = {"out_of_scope", "deferred", "blocked", "abandoned"}
 
 
 def load_dispositions(path):
     """Read a {function: {status, reason}} map, or {} if no path was given.
 
     A disposition is a judgement about a function that no exit code can carry.
-    The one this exists for: a function whose only purpose is to work around a
-    limitation the target language does not have -- a hand-rolled growable array
-    in Fortran, which is std::vector in C++. Mirroring it would faithfully
-    reproduce a workaround for a problem that no longer exists. That is a
-    finding about the function, not a failure of the translation method, and
-    counting it as `failed` understates the method and overstates the failure
-    rate.
+    Recognised statuses:
+
+    `out_of_scope`  the function should not be mirrored at all -- its only
+                    purpose is to work around a limitation the target language
+                    does not have. A hand-rolled growable array in Fortran is
+                    std::vector in C++; mirroring it would faithfully reproduce
+                    a workaround for a problem that no longer exists.
+
+    `deferred`      the function should be mirrored, but not yet, and not on
+                    its own. The case this exists for is Fortran unit I/O: a
+                    routine whose body is `READ(Un, ...)` operates on state
+                    owned by the Fortran runtime, and a unit number has no
+                    meaning on the C++ side. It becomes translatable only
+                    together with whoever owns the file. Call-graph depth puts
+                    such leaves early; their real dependency runs the other way.
+
+    `blocked`       the function should be mirrored and the tooling cannot. A
+                    gap in the method.
+
+    `abandoned`     attempted and given up on.
+
+    All of these would otherwise be derived as `failed`, which understates the
+    method and overstates the failure rate -- and, for `deferred`, would also
+    misreport remaining work as work that will never happen.
     """
     if not path:
         return {}
