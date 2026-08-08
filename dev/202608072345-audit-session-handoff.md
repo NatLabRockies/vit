@@ -101,6 +101,7 @@ finishes and unsafe before it.
 3. Add to the runbook: when a function's call sites differ in the *shape* of what they pass, select
    by argument variety rather than hit count. Coverage-count selection picks the most stereotyped
    site. See `202608080003` §6.
+9. **Fix `join_telemetry.py` overlap handling** — a nested phase prices at zero and its cost lands on the enclosing function. Subtract it, or refuse to print a cost for a flagged row. See `202608080506`.
 4. Re-verify AeroDyn's 17 baselines against the 15 changed tool commits.
 5. Amend the `kgen-bug-attribution` memory and `CLAUDE.md` with the three genuine KGen exceptions.
 6. Update `CLAUDE.md`'s stale `vit translate` overwrite warning.
