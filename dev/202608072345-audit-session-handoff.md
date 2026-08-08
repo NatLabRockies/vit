@@ -109,9 +109,14 @@ finishes and unsafe before it.
 
 ## The notes, and where to start
 
-**Start with `202608080058`** — the campaign shipped a false "kernel PASSED" stamp on
-`ExtController`, a function that demonstrably diverges from its Fortran and that no gate scenario
-can execute. It is the strongest single artifact the project has and the anchor for §VIII.
+**Start with `202608080346`** — the replication's own gate never compared anything, from the setup
+commit through function #38. `docker exec` without `-i` fed the comparison an empty script, which
+exited 0 and printed `27/27 bit-identical`. Every "regress 27/27" in these notes is void; the kernel
+results, the telemetry, and every campaign-side finding survive. It also carries the recommendation
+on how to proceed and the list of what does and does not survive.
+
+**Then `202608080058`** — the campaign shipped a false "kernel PASSED" stamp on `ExtController`, a
+function that demonstrably diverges from its Fortran and that no gate scenario can execute.
 
 Then, roughly by importance:
 
