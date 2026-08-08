@@ -98,7 +98,13 @@ finishes and unsafe before it.
    already carries the column; only the summary omits it. Leaf script, retroactive — the token data
    is in the transcripts and the backups. Blocked only because the script lives at
    `vit_translation/vit/scripts/`, inside the measured tree. See `202608072355`.
-2. Re-verify AeroDyn's 17 baselines against the 15 changed tool commits.
+2. Add the fifth extraction-empty cause to `CLAUDE.md`'s pitfalls list: pragma correct, call site
+   real, enclosing subroutine never entered because a generic interface routes every call to a
+   sibling. Diagnostic — check coverage on the *enclosing* procedure. See `202608080003`.
+3. Add to the runbook: when a function's call sites differ in the *shape* of what they pass, select
+   by argument variety rather than hit count. Coverage-count selection picks the most stereotyped
+   site. See `202608080003` §6.
+4. Re-verify AeroDyn's 17 baselines against the 15 changed tool commits.
 3. Amend the `kgen-bug-attribution` memory and `CLAUDE.md` with the three genuine KGen exceptions.
 4. Update `CLAUDE.md`'s stale `vit translate` overwrite warning.
 5. Merge the two VIT checkouts.
@@ -111,8 +117,8 @@ Then, roughly by importance:
 
 | Note | What it holds |
 |---|---|
-| `202608072250` | **Strongest §VIII item.** A passing kernel over a non-discriminating input — not fixable in any tool |
-| `202608072355` | Cost is 81% context re-read; two defensible per-function figures; corrects the output-token units used throughout these notes |
+| `202608072250` | A passing kernel over a non-discriminating input — not fixable in any tool |
+| `202608080003` | `GetWords`: generic interfaces hide dead code; call-site choice fixes fixture shape; the mirror constraint's cost set against one line of `std::istringstream` |
 | `202608072058` | The steering record. Three procedural prompts, three continuations, one authorization |
 | `202608072043` | Seven→fifteen tool fixes; the tool was finished *for AeroDyn*, not finished |
 | `202608072149` | Track A/B; the replication verifies code the campaign hand-wrote |
