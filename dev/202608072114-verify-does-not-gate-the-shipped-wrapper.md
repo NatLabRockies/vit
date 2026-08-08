@@ -79,12 +79,38 @@ which see only exercised paths. Not the test suite, unless someone had written a
 unreached branch. It surfaced because ROSCO's leaf layer is function-heavy where AeroDyn's is
 subroutine-heavy. **The tool was finished for AeroDyn's *shape*, not merely for its type system.**
 
-## Deliberate open exposure
+## Deliberate open exposure — and it is narrower than first stated
 
-`sigma` and `unwrap` were integrated before the fix and still lack copy-back. Both write `ErrVar`
-only on error paths no scenario reaches, so the exposure is bounded and known. The replication
+`sigma` and `unwrap` were integrated before the fix and still lack copy-back. The replication
 session recorded them as open rather than repairing them, because re-integration is project-level
 work that would have contaminated `interp1d`'s span.
+
+**Checked directly in the emitted C++, read-only, rather than assumed.** Neither function
+originates an error:
+
+```
+sigma.cpp    aviFAIL / ErrStat assignments: none — read-only
+unwrap.cpp   aviFAIL / ErrStat assignments: none — read-only
+interp1d.cpp aviFAIL = -1 at two sites
+```
+
+Both write only `ErrMsg`, and only under `if (ErrVar->aviFAIL < 0)` — that is, when an error
+raised by an *earlier* routine is already in flight. This is a ROSCO idiom: each routine prepends
+its own name to a pending message, building a call-chain breadcrumb. `interp1d` is the contrast,
+and raising errors itself is exactly why the missing copy-back mattered there and why that
+function is what exposed the bug.
+
+So the consequence for `sigma` and `unwrap` is:
+
+- **No error can be lost.** `aviFAIL` is never written, so failure still propagates correctly.
+- **What is lost is a breadcrumb** — their name would be missing from the message chain.
+- It manifests only when an error is already in flight, which no scenario produces.
+
+That is a **diagnostic-fidelity gap, not a correctness gap.** An earlier draft of this note said
+both "write `ErrVar` only on error paths no scenario reaches," which is true but reads as though
+error reporting could be silently discarded. It cannot be. The distinction matters because it is
+the same overstatement this project keeps catching in itself, and because it changes the priority
+of the open item from "correctness debt" to "cosmetic, fix at a convenient pause."
 
 That is the same judgment as declining to fold `__gate_repair__` into `unwrap` (dev note
 `202608072004`) — the third time this distinction has arisen, and the third time it was called
@@ -92,6 +118,8 @@ correctly. It is worth noting that the discipline of *not* silently improving th
 now been exercised more often than any translation difficulty.
 
 **Open item for after the run:** re-integrate `sigma` and `unwrap` with copy-back, and re-gate.
+Low priority per the narrowing above — it restores a message prefix, nothing more, and no risk
+accumulates while it waits.
 
 ## Two smaller observations from the same cycle
 
