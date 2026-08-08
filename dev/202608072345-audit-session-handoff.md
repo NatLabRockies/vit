@@ -81,11 +81,8 @@ Fifteen tool fixes so far (VIT + KGen), three of them fails-green defects.
 **Remaining scope**, recomputed from call sites: of 51 remaining, 13 unit-I/O deferred, 10
 KGen-exposed, 13 alloc-trait, union 22 — **29 unobstructed**.
 
-**Open decision, the author's:** whether to redirect from plan order to the control layer
-(`Controllers.f90`, `ControllerBlocks.f90`). Every clean cycle so far is a leaf; the control layer
-is the only place that answers whether the marginal cost holds for functions with *translated
-callees*, and where the lost-update hazard fires. Not blockage-driven — I overstated that and was
-corrected.
+**~~Open decision, the author's:~~ CLOSED at #34.** The control-layer redirect is moot. Plan order
+reached `ControllerBlocks.f90` at #32 and `Controllers.f90` at #34 unaided.
 
 ## Deferred until the run ends — do NOT do these now
 
