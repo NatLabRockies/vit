@@ -4,6 +4,12 @@
 **Status:** completed — #32 integrated; contains a second campaign defect found by re-derivation
 **Scope:** ordering methodology, kernel bridge correctness
 
+> **CORRECTION.** The `SS_Mode` claim below is wrong — one scenario patches `'SS_Mode': 0`
+> (campaign `vit_sim.py:1486`, replication `:1509`), so `SetpointSmoother`'s `ELSE` branch **is
+> reached**. I read the committed `DISCON*.IN` files, which are generated outputs. The 30
+> width-mismatched kernel bridges, which are the point of this note, come from reading the bridge
+> files directly and are unaffected. See `202608080517`.
+
 ## Placement
 
 Same as the other replication notes: OpenFAST workspace, outside the replication's container mount

@@ -133,6 +133,7 @@ Then, roughly by importance:
 | `202608080128` | **Read second.** 30 campaign kernel bridges declare mismatched widths for the same argument, across 17 of 43 kernels; leaf-first left the whole callee-bridge path untested for 31 functions; third setup omission of mine |
 | `202608080204` | **Read third.** The campaign's gate went 9→27 scenarios and silently lost `Flp_Mode=2` coverage; `PIIController` is verified in the campaign and unreachable in the gate that ships with it. Fourth setup omission: extending the gate was campaign practice the runbook never carried |
 | `202608080218` | CLOSED, and wrong in its central claim — my sixth caught error, corrected at the head of the note. One gate run of 41 hit a stale library and was superseded before commit; all 36 final gates followed a good rebuild |
+| `202608080517` | **Retraction.** The gate never lost coverage — `DISCON*.IN` are generated outputs. `202608080204` withdrawn, `202608080128`'s SS_Mode claim corrected, `202608080058` confirmed on authoritative evidence |
 | `202608080510` | Setup classification: everything copied carried a hash and is clean; the two re-implemented artifacts carried prose and both had a defect |
 | `202608080246` | Kernel narrowness has two axes and the pass line shows neither; a reset branch with no evidence from any layer in four shipped functions; sixth upstream artifact |
 | `202608072058` | The steering record. Three procedural prompts, three continuations, one authorization |

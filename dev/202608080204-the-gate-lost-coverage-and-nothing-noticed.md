@@ -4,6 +4,15 @@
 **Status:** completed — #35 and #36; seventh fails-green shape, and a new kind
 **Scope:** gate construction, `gate_can_verify`
 
+> # RETRACTED — see `202608080517`
+> The central claim is false. Committed `Examples/DISCON*.IN` files are **outputs** of
+> `write_discon()`; the `Flp_Mode` values I traced through git are the residue of whichever scenario
+> ran last. Scenario 4 patches `'Flp_Mode': 2` explicitly — campaign `vit_sim.py:444`, replication
+> `:467` — so `PIIController` is reachable in both gates and **no coverage was ever lost.** The
+> "suite losing reach while getting larger" finding does not exist.
+> What survives: the campaign's scenario-adding practice (read from commit subjects), the 20 captured
+> kernel cases, and `gate_can_verify` being unreliable.
+
 ## Placement
 
 Same as the other replication notes: OpenFAST workspace, outside the replication's container mount
