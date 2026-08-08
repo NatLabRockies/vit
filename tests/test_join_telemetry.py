@@ -92,3 +92,47 @@ class TestColumns:
     def test_every_step_has_a_time_column(self):
         for step in join.STEP_COMMANDS:
             assert f"t_{step}_s" in join.COLUMNS
+
+
+class TestDispositions:
+    """A disposition is a judgement no exit code can carry.
+
+    The case it exists for: a function whose only purpose is to work around a
+    limitation the target language does not have. Counting it as `failed`
+    understates the method and overstates the failure rate. See DECISIONS.md,
+    AddToList (#25).
+    """
+
+    def _write(self, tmp_path, payload):
+        import json
+        p = tmp_path / "dispositions.json"
+        p.write_text(json.dumps(payload))
+        return str(p)
+
+    def test_no_path_returns_empty(self):
+        load_dispositions = join.load_dispositions
+        assert load_dispositions(None) == {}
+
+    def test_loads_status_and_reason(self, tmp_path):
+        load_dispositions = join.load_dispositions
+        path = self._write(tmp_path, {
+            "AddToList": {"status": "out_of_scope", "reason": "std::vector"}
+        })
+        loaded = load_dispositions(path)
+        assert loaded["AddToList"]["status"] == "out_of_scope"
+        assert loaded["AddToList"]["reason"] == "std::vector"
+
+    def test_rejects_unknown_status(self, tmp_path):
+        load_dispositions = join.load_dispositions
+        path = self._write(tmp_path, {
+            "AddToList": {"status": "skipped", "reason": "because"}
+        })
+        with pytest.raises(ValueError, match="expected one of"):
+            load_dispositions(path)
+
+    def test_requires_a_reason(self, tmp_path):
+        """A disposition without a stated reason is not reviewable."""
+        load_dispositions = join.load_dispositions
+        path = self._write(tmp_path, {"AddToList": {"status": "out_of_scope"}})
+        with pytest.raises(ValueError, match="no reason"):
+            load_dispositions(path)

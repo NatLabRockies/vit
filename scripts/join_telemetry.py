@@ -18,6 +18,7 @@ requestId, without which every count is roughly doubled.
 
 import argparse
 import csv
+import json
 import sys
 from pathlib import Path
 
@@ -49,6 +50,44 @@ COLUMNS = (
 )
 
 
+VALID_DISPOSITIONS = {"out_of_scope", "blocked", "abandoned"}
+
+
+def load_dispositions(path):
+    """Read a {function: {status, reason}} map, or {} if no path was given.
+
+    A disposition is a judgement about a function that no exit code can carry.
+    The one this exists for: a function whose only purpose is to work around a
+    limitation the target language does not have -- a hand-rolled growable array
+    in Fortran, which is std::vector in C++. Mirroring it would faithfully
+    reproduce a workaround for a problem that no longer exists. That is a
+    finding about the function, not a failure of the translation method, and
+    counting it as `failed` understates the method and overstates the failure
+    rate.
+    """
+    if not path:
+        return {}
+    with open(path) as fh:
+        raw = json.load(fh)
+    out = {}
+    for name, entry in raw.items():
+        if isinstance(entry, str):
+            entry = {"status": entry}
+        status = entry.get("status")
+        if status not in VALID_DISPOSITIONS:
+            raise ValueError(
+                f"{path}: disposition for '{name}' is {status!r}; "
+                f"expected one of {sorted(VALID_DISPOSITIONS)}"
+            )
+        if not entry.get("reason"):
+            raise ValueError(
+                f"{path}: disposition for '{name}' has no reason. "
+                f"A disposition without a stated reason is not reviewable."
+            )
+        out[name] = entry
+    return out
+
+
 def status_for(intervals):
     """Derive a function's outcome from its command exit codes.
 
@@ -62,6 +101,10 @@ def status_for(intervals):
                   mid-run join is now routine, so this must be visible.
     `failed`      a real cycle that did not reach a passing verify or
                   integrate.
+
+    A fourth case, `out_of_scope`, cannot be derived from exit codes at all --
+    it is a judgement about the function, not an outcome of running it -- so it
+    is supplied externally via --dispositions. See apply_dispositions().
     """
     by_command = {}
     unclosed = False
@@ -121,7 +164,13 @@ def main(argv=None):
     parser.add_argument("--transcripts", required=True,
                         help="Directory of session .jsonl transcripts, or a single file")
     parser.add_argument("--out", required=True)
+    parser.add_argument("--dispositions", default=None,
+                        help="JSON map {function: {status, reason}} overriding "
+                             "derived status for functions deliberately not "
+                             "mirror-translated. See load_dispositions().")
     args = parser.parse_args(argv)
+
+    dispositions = load_dispositions(args.dispositions)
 
     events = telemetry.read_cycle_log(args.cycle_log)
     if not events:
@@ -141,6 +190,8 @@ def main(argv=None):
         if interval["function"]:
             by_function.setdefault(interval["function"], []).append(interval)
 
+    unseen = sorted(set(dispositions) - {s["function"] for s in spans})
+
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", newline="") as handle:
@@ -152,7 +203,8 @@ def main(argv=None):
             totals = per_function[name]
             row = {
                 "function": name,
-                "status": status_for(owned),
+                "status": (dispositions[name]["status"] if name in dispositions
+                           else status_for(owned)),
                 "t_total_s": round(
                     (span["end"] - span["start"]).total_seconds(), 3),
                 "verify_attempts": attempts_to_first_pass(owned, "verify"),
@@ -182,6 +234,19 @@ def main(argv=None):
         return f", {count} session(s)" if count else ""
 
     print(f"Wrote {out_path} ({len(spans)} functions, {len(paths)} transcript(s))")
+    if dispositions:
+        applied = sorted(n for n in dispositions if n not in unseen)
+        print(f"  dispositions applied: {len(applied)}"
+              + (f" — {', '.join(applied)}" if applied else ""))
+        for name in applied:
+            print(f"      {name}: {dispositions[name]['status']} — "
+                  f"{dispositions[name]['reason']}")
+    if unseen:
+        # A disposition for a function with no span is almost always a typo in
+        # the name, and silently ignoring it would hide the function from the
+        # dataset entirely.
+        print(f"  WARNING: disposition names not found in the cycle log: "
+              f"{', '.join(unseen)}", file=sys.stderr)
     print(f"  attributed        {attributed:>12,}")
     print(f"  session_overhead  {overhead:>12,}  "
           f"({buckets['session_overhead']['records']} records"
