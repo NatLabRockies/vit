@@ -122,6 +122,7 @@ Then, roughly by importance:
 | `202608080010` | `Read_OL_Input`: the campaign solved allocate-on-return by hand and never generalised it; sixth fails-green shape; recommendation to translate #30/#31 under a fourth disposition |
 | `202608080058` | **Read first.** The false `kernel PASSED` stamp on `ExtController`; the agent's refusal beat my instruction; plan order reaches the control layer at #32 without a redirect |
 | `202608080128` | **Read second.** 30 campaign kernel bridges declare mismatched widths for the same argument, across 17 of 43 kernels; leaf-first left the whole callee-bridge path untested for 31 functions; third setup omission of mine |
+| `202608080204` | **Read third.** The campaign's gate went 9→27 scenarios and silently lost `Flp_Mode=2` coverage; `PIIController` is verified in the campaign and unreachable in the gate that ships with it. Fourth setup omission: extending the gate was campaign practice the runbook never carried |
 | `202608072058` | The steering record. Three procedural prompts, three continuations, one authorization |
 | `202608072043` | Seven→fifteen tool fixes; the tool was finished *for AeroDyn*, not finished |
 | `202608072149` | Track A/B; the replication verifies code the campaign hand-wrote |
