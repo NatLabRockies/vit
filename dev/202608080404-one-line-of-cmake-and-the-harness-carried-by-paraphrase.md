@@ -52,9 +52,24 @@ dropped the one it did. It is not a partial copy — it is the complement. A fou
 generalising the intent replaced the one line that implemented it, and the generalisation excluded
 the specific case.
 
-That is the fifth setup omission in a different form from the other four: not something left out,
-but something **re-derived from an understanding of the original rather than copied from it**, and
-inverted in the re-derivation.
+That is the **fifth** setup defect, and the second of a kind distinct from the first three: not
+something left out, but something **re-derived from an understanding of the original rather than
+copied from it**, and inverted in the re-derivation.
+
+**Corrected count** (I numbered two different notes "fifth" — `202608080346` counted the incomplete
+Phase 2 flags among my setup errors, which is wrong; those are outputs of an analysis the agent ran):
+
+| # | Defect | Kind |
+|---|---|---|
+| 1 | Disposition set authorised only mirror-translation (`202608072320`) | omitted step |
+| 2 | No `reset_to_clean.sh` / `integrate_all.sh` pair (`202608080128`) | omitted step |
+| 3 | Gate-extension practice never carried (`202608080204`) | omitted step |
+| 4 | `regress.sh` compared nothing (`202608080346`) | **re-derived, wrong** |
+| 5 | `CMAKE_CXX_FLAGS` omitted (this note) | **re-derived, wrong** |
+
+The first three cost time; the agent hit each and worked around it. The last two produced 38
+functions of results that looked valid and were not, and no amount of doing the work correctly could
+have surfaced either.
 
 **Both of the run's silent, result-invalidating defects trace to `bf25e35`** — this and the gate that
 never compared (`202608080346`). Same commit, same cause. It is also documented correctly in this
