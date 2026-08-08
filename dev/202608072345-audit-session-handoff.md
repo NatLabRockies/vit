@@ -67,13 +67,18 @@ Last: `20260807-234213`, 91 MB, four bundles verified.
 
 ## State at handoff
 
-*Updated 2026-08-08 11:28 local, after #46 and before the replication's first `/clear`.*
+*Updated 2026-08-08 19:38 local, at #54.*
 
-Replication: **46 attempted — 41 integrated, 2 `integrated_unexercised`, 1 out of scope
-(`AddToList`), 1 deferred (`ReadEmptyLine`), 1 blocked (`ExtController`), 0 failed.**
-Next is **#47** in plan order — confirm against `plan.json`, including its `phase` field.
+Replication: **past #53 `RefSpeedExclusion`** (54/54 kernel, described as the best-gated function of
+the run) and into #54, of 78 planned. Confirm exact counts from `STATUS.md` in the replication tree
+rather than from this note — it goes stale between updates and the tree does not.
 
-Heads at this point: `ROSCO-replication d84d07d`, `vit e6dd0d8`, `KGen 5ac811f`.
+**A second repository now exists.** `translation-loop` holds the **outer loop**: the
+orchestration and audit layer this audit's findings turned into software. M0–M10 complete, 129 tests,
+in a private repository. Its `SPEC.md` is archived here as `202608081244`; the repo's copy is
+authoritative. It has its own memories under its own project key. **It is where campaign-audit
+tooling now lives** — the claims audit, bridge/liveness/manifest checks, and the corrected telemetry
+joiner all run from there, read-only against these trees.
 
 **Translation correctness is 100% first-pass across all 41.** Not one wrong translation in the run.
 Every verify failure has been infrastructure.
@@ -90,9 +95,9 @@ neither views the integration wrapper. `CheckInputs` (#46) would have shipped wi
 validation silently disabled and both layers green; the harness rerun after integration caught it.
 See `202608081128`. Members of the same class already recorded: `sigma`, `unwrap`.
 
-
-**The per-function cost column has a four-function hole (#42–#45) that presents as four zeros** —
-a joiner defect, recoverable, see `202608080826`. Fix before publishing any per-function figure.
+The joiner had two attribution defects that parked requests in two phantom spans and zeroed
+twelve functions. The corrected joiner lives in the loop repo and is **validated but not applied** — one `cp` over
+`vit_translation/vit/scripts/join_telemetry.py` once the run ends.
 
 Twenty-odd tool fixes (VIT + KGen), several of them fails-green defects.
 
