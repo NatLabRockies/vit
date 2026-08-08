@@ -168,6 +168,44 @@ DECISIONS.md and lessons to TRANSLATION_TIPS.md as you go.
 Report after interp1d and I'll tell you whether to keep going in plan order.
 ```
 
+## The only message with technical content, and what the agent took from it
+
+Prompt 2 is the sole instruction in the run carrying anything technical. It had three components.
+**The agent used none of them as guidance.** Verbatim from the transcript, in order:
+
+**"git pull in /workspace/vit"** — wrong, and corrected:
+
+> `06811f0` is already at HEAD locally — `/workspace/vit` is the same checkout via bind mount, so
+> your fix is already here. No pull needed; `origin` is behind, not ahead. Verifying the change is
+> live.
+
+**A description of the two joiner fixes** — re-derived from the data rather than accepted:
+
+> The fix is visible: `status: phase` for the brackets, and `integrate_runs: 2` against
+> `integrate_attempts: 1` — the rerun is now distinguishable.
+
+**The boundary-bracketing suggestion** — explicitly deferred until the mechanism was understood:
+
+> On the bracketing question — before deciding, I need to know how the joiner attributes tokens and
+> whether a wrapping span would trip its overlap check.
+
+It then read the joiner, worked out the span geometry itself, confirmed the diagnosis against its
+own measurement — *"Unattributed rose purely from the boundary turns since the last join,
+which confirms your diagnosis"* — and only then acted.
+
+**Net contribution of the message to the work: zero, arguably negative.** Correcting the `git pull`
+cost a turn.
+
+The behaviour worth naming is not that the agent proceeded without guidance. It is that it
+**rejected** an instruction and **verified before adopting** a suggestion. An agent that ran the
+`git pull` would have burned a turn on a no-op; one that adopted the bracketing uncritically would
+have built ceremony the author later identified as a rename (see §3 above). Both times the check
+that caught it was the agent's.
+
+So the steering record reduces to **three procedural prompts** — start, prepare-to-compact,
+resume-after-compact — three `Continue`s, and one authorization the agent had already framed and
+recommended.
+
 ## The one technical decision, and how it was framed
 
 At 23:51:29 the agent asked, and at 23:51:37 — **eight seconds later** — the author answered:
@@ -184,21 +222,24 @@ ground truth.
 
 ## What the log shows
 
-In 3.1 hours, from four setup-and-hygiene prompts, three bare continuations and one multiple-choice
-answer, the agent:
+From **three procedural prompts, three bare continuations, and one authorization it had itself
+framed and recommended**, the agent:
 
-- integrated **14 of 78 functions**, all 27/27 bit-identical, first-pass verify 12/14
-- found and fixed **seven infrastructure defects** across VIT and KGen, none of which it was told
-  about
+- integrated **23 of 78 functions** (14 by compaction, continuing since), all 27/27 bit-identical
+- found and fixed **nine VIT defects and two KGen defects**, none of which it was told about
+- built a **new VIT capability** — CHARACTER-valued function results — that neither campaign
+  possessed
 - discovered that **four gate scenarios had been passing green while computing nothing**, one of
-  them dead since the original campaign
+  them dead since the original campaign, and repaired three
+- found that **`vit verify` had no floor**: a kernel comparing zero variables printed PASSED
 - traced the `LOGICAL` mapping failure to an AeroDyn-era commit
-- found an **inverted guard that the project had documented as intended behaviour** in `CLAUDE.md`
-- refused to relabel a nested span when doing so would have flattered a function's cost, and wrote
-  the distinction into the runbook as a rule
+- found an **inverted guard the project had documented as intended behaviour** in `CLAUDE.md`
+- refused to relabel a nested span when doing so would have flattered a function's cost, refused to
+  let `1/1 PASSED` stand beside `20/20`, and refused to count a function the gate cannot verify —
+  three separate occasions of declining to flatter its own measurement
 
-**Not one intervention concerned a translation.** The four prompts were setup, continuity, and
-hygiene. The agent wrote fourteen C++ implementations and none required correction from the human
+**Not one intervention concerned a translation.** Every prompt was setup, continuity, or hygiene.
+The agent wrote twenty-three C++ implementations and none required correction from the human
 channel; the gates handled that.
 
 ## The division of labour
@@ -208,7 +249,8 @@ both trustworthy, measured rather than described. The division here was sharp:
 
 - **the tool** supplied every correctness signal — 20/20 replay, 27/27 gate, and it is what caught
   the translation errors
-- **the agent** did the technical work, including all seven repairs to the tool itself
+- **the agent** did the technical work, including all eleven repairs to the tool itself, and
+  rejected the single instruction that carried technical content
 - **the human** authorized scope once, set up and closed down, and typed `Continue` three times
 
 One human turn per several dozen agent requests, on production scientific code, gated bit-identically
