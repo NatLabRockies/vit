@@ -201,6 +201,11 @@ only to `saturate` with nothing on the row explaining why.
 
 ### The rule to replace it with
 
+> **SUPERSEDED in part.** The first clause below is wrong — see dev note `202608072004`.
+> Containment cannot decide ownership: `__typefix__` belonged to `sigma` (which caused it) but
+> `__gate_repair__` did not belong to `unwrap` (which merely triggered it). The corrected rule is
+> innermost-wins with **no** roll-up. The remaining clauses stand.
+
 Failure should require evidence of failure rather than being the fallthrough:
 
 - span fully contained in another → `nested` (no warning; tokens roll up to the parent, keep its
