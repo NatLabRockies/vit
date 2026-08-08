@@ -38,7 +38,26 @@ CHARACTER(size_avcOUTNAME), INTENT(IN) :: RootName        ← three sites
 `CHARACTER(MaxLineLength)` and `CHARACTER(MaxParamLength)` are unaffected: those lengths are
 `PARAMETER` constants and are legal as locals. The defect fires only when the length is passed in.
 
-Counted against `plan.json`, of **54 functions remaining**:
+> **CORRECTED 2026-08-07 23:40.** The count below is wrong. It infers exposure from *file
+> location* — every function living in `ROSCO_Helpers.f90` or `ReadSetParameters.f90` — when the
+> defect fires only at call sites that actually pass an automatic-length dummy.
+>
+> **The exposed set is 11, not 22**: the ten `Parse*` procedures behind the `ParseInput`/`ParseAry`
+> generic interfaces (`ParseDbAry`, `ParseDbAry_Opt`, `ParseInAry`, `ParseInAry_Opt`,
+> `ParseInput_Dbl`, `ParseInput_Dbl_Opt`, `ParseInput_Int`, `ParseInput_Int_Opt`,
+> `ParseInput_Str`, `ParseInput_Str_Opt`) plus `GetPath` — the call sites passing `accINFILE(1)` or
+> `RootName` out of `ReadControlParameterFileSub`, whose dummy is `CHARACTER(accINFILE_size)`.
+>
+> Evidence already available when this note was written and not reconciled: `Int2LStr`,
+> `NonDecreasing` and `AddToList` all extracted cleanly from that same routine, because their call
+> sites do not touch those arguments.
+>
+> The figure **22 of 51 remaining (43%)** is real but means something else: it is the **union of
+> all three walls** — 13 unit-I/O deferred, 10 KGen-exposed, 13 alloc-trait still ahead.
+> **29 remaining functions are unobstructed.** Caught by the replication session verifying a claim
+> of mine rather than accepting it.
+
+Counted against `plan.json`, of **54 functions remaining** — **superseded, see above**:
 
 | file | remaining |
 |---|---|

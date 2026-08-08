@@ -90,14 +90,19 @@ structure carries, which is a result the project has never had.
 
 ## Where this leaves the remaining scope
 
-| Class | Count | Status |
-|---|---|---|
-| True unit I/O | 14 | deferred — unblocked by their callers, scheduled late |
-| KGen automatic-length blocked | ~22 | config layer; defect diagnosed, not fixed (`202608072254`) |
-| **Control layer** | **~22** | **clean, Track A, campaign-comparable** |
+Recomputed by the replication session from call sites rather than file location, of **51
+remaining**:
 
-Overlaps are imperfect, but the direction is unambiguous and now has three independent
-confirmations. The control layer — `Controllers.f90` and `ControllerBlocks.f90` — is the only large
+| Wall | Total | Still ahead |
+|---|---|---|
+| Fortran unit I/O — deferred, inverted dependency | 14 | 13 |
+| KGen automatic-length hoist | 11 | 10 |
+| alloc trait — needs per-function judgement | 14 | 13 |
+| **Union** | | **22 of 51 (43%)** |
+
+**29 remaining functions are unobstructed** — materially more than an earlier note of mine claimed
+(see the correction at the head of `202608072254`, where I inferred exposure from file location and
+overstated the KGen-blocked set as 22 rather than 11). The control layer — `Controllers.f90` and `ControllerBlocks.f90` — is the only large
 body of reachable, informative, comparable work remaining, and it is the only one that answers the
 open question of whether the marginal cost holds for functions with translated callees.
 
