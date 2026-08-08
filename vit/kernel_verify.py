@@ -2608,6 +2608,16 @@ def _parse_verify_output(output: str, tolerance: float) -> VerifyResult:
     current_case_has_nan = False
     current_case_name = ""
 
+    # KGen reports how many variables it actually compared. A kernel whose
+    # callsite result never lands in a captured variable -- CurTime(), whose
+    # value goes straight into a WRITE -- compares ZERO and still prints
+    # "Verification PASSED". Without this the pass is vacuous and reads exactly
+    # like a real one.
+    # None means KGen never printed the line at all, which is not the same as
+    # printing zero -- only an explicit zero is evidence that nothing was
+    # compared.
+    output_vars_seen = None
+
     for line in output.split("\n"):
         line_stripped = line.strip()
         line_upper = line_stripped.upper()
@@ -2672,6 +2682,12 @@ def _parse_verify_output(output: str, tolerance: float) -> VerifyResult:
             r'Number of verification-passed cases\s*:\s*(\d+)', line)
         if passed_match:
             summary_passed = int(passed_match.group(1))
+            continue
+
+        outvars_match = re.search(
+            r'Number of output variables\s*:\s*(\d+)', line, re.IGNORECASE)
+        if outvars_match:
+            output_vars_seen = (output_vars_seen or 0) + int(outvars_match.group(1))
             continue
 
         # Skip summary/count lines — don't count them as per-case results
@@ -2740,6 +2756,26 @@ def _parse_verify_output(output: str, tolerance: float) -> VerifyResult:
     # NaN-skipped cases don't count against success.
     valid_cases = total - skipped
     success = valid_cases > 0 and failed == 0
+
+    # A kernel that compared no variables has verified nothing, whatever it
+    # printed. Report it as a failure rather than a pass: the alternative is a
+    # green result that means the opposite of what it appears to.
+    #
+    # This is not the same as "no cases captured" (which extraction already
+    # reports). Here the cases exist and were replayed -- there was simply
+    # nothing to compare them on, because the function's result never reaches a
+    # variable KGen captures.
+    if success and output_vars_seen == 0:  # explicit zero, not a missing line
+        success = False
+        details.append({
+            "status": "FAILED",
+            "line": "kernel compared 0 output variables — nothing was verified",
+            "reason": (
+                "The call site's result does not land in a variable KGen "
+                "captures (e.g. it is consumed directly by a WRITE). Kernel "
+                "replay cannot verify this function; use vit test-validate."
+            ),
+        })
 
     return VerifyResult(
         success=success,
