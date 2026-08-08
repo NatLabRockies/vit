@@ -146,3 +146,21 @@ class TestDispositions:
                               "reason": "Fortran unit I/O; translate with its caller"}
         })
         assert load_dispositions(path)["ReadEmptyLine"]["status"] == "deferred"
+
+
+class TestPhaseBrackets:
+    def test_dunder_name_is_a_phase_even_with_step_commands(self):
+        """__gate_repair__ re-ran `regress` for every completed function. Without
+        this it derived as `failed` and would have entered a failure rate."""
+        intervals = [
+            {"command": "regress", "exit_code": 0, "unclosed": False,
+             "function": "__gate_repair__"},
+        ]
+        assert join.status_for(intervals) == "phase"
+
+    def test_ordinary_name_with_only_regress_is_still_failed(self):
+        intervals = [
+            {"command": "regress", "exit_code": 0, "unclosed": False,
+             "function": "saturate"},
+        ]
+        assert join.status_for(intervals) == "failed"

@@ -135,6 +135,14 @@ def status_for(intervals):
 
     if not by_command:
         return "unknown"
+    # A __name__ bracket is a phase by convention (see the runbook), whatever
+    # commands it ran. __gate_repair__ re-ran `regress` across every completed
+    # function, which made it look like a cycle that never reached a passing
+    # verify -- i.e. `failed` -- and would have put a phase bracket into any
+    # failure rate computed from this column.
+    name = next((i.get("function") for i in intervals if i.get("function")), "")
+    if name.startswith("__") and name.endswith("__"):
+        return "phase"
     if not any(c in by_command for c in STEP_COMMANDS):
         return "phase"
     if passed("integrate"):
