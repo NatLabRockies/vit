@@ -1477,6 +1477,7 @@ def run_kgen_extract(
     preprocessor_defines: Optional[list[str]] = None,
     dll_persistence: Optional[dict] = None,
     env: Optional[dict] = None,
+    function_name: str = "",
     dry_run: bool = False,
 ) -> dict:
     """
@@ -1604,7 +1605,8 @@ def run_kgen_extract(
 
         # Count state data files (in kernel dir — that's where KGen puts them)
         if result["kernel_dir"]:
-            result["state_cases"] = count_kernel_cases(result["kernel_dir"])
+            result["state_cases"] = count_kernel_cases(
+                result["kernel_dir"], function_name)
             result["success"] = True
 
             # Deduplicate kgen_statefile.lst. KGen's ElapsedTime phase
@@ -1655,19 +1657,37 @@ def run_kgen_extract(
     return result
 
 
-def count_kernel_cases(kernel_dir: str) -> int:
+def count_kernel_cases(kernel_dir: str, function_name: Optional[str] = None) -> int:
     """
-    Count the number of KGen state data files in a directory.
+    Count the KGen state data files for `function_name` in a directory.
 
-    KGen state files are named like: <function>.0.0.1, <function>.0.0.2, etc.
+    KGen state files are named <function>.<rank>.<thread>.<invocation>, e.g.
+    saturate.0.0.1.
+
+    **Pass function_name.** Without it this counts any function's state files,
+    and a stale file left by a previous extraction is indistinguishable from a
+    real capture. That turns the one loud failure mode extraction has -- "no
+    state data captured" -- into a silent wrong answer: `vit extract` reports
+    success with a case count for a call site that never executed, and the
+    kernel then replays another function's state.
+
+    Found in the ROSCO replication extracting CurDate, whose only call site is
+    behind `IF (CntrPar%Echo > 0)` and is dead in all 27 scenarios. Extraction
+    reported "Cases: 1"; the file was AddToList.0.0.1 from the previous
+    function. See DECISIONS.md, CurDate (#26).
+
+    The name is matched case-insensitively: KGen lowercases in some paths, and a
+    case-sensitive match would under-count and report a false zero, which is the
+    same defect pointing the other way.
     """
     if not os.path.isdir(kernel_dir):
         return 0
 
-    count = 0
-    for item in os.listdir(kernel_dir):
-        # Match pattern: name.N.N.N (e.g., saturate.0.0.1)
-        if re.match(r'.+\.\d+\.\d+\.\d+$', item):
-            count += 1
+    if function_name:
+        pattern = re.compile(
+            r'^' + re.escape(function_name) + r'\.\d+\.\d+\.\d+$',
+            re.IGNORECASE)
+    else:
+        pattern = re.compile(r'.+\.\d+\.\d+\.\d+$')
 
-    return count
+    return sum(1 for item in os.listdir(kernel_dir) if pattern.match(item))

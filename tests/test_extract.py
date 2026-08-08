@@ -684,3 +684,48 @@ def test_pragma_single_line_if_is_not_a_block(tmp_path):
     ])
     region = _region(_wrap(tmp_path, src, 2))
     assert region == ["IF (Target(x)) b = 1"]
+
+
+class TestCountKernelCases:
+    """State-file counting must be scoped to the function being extracted.
+
+    Counting any function's files turns extraction's one loud failure mode --
+    "no state data captured" -- into a silent wrong answer: a stale file from a
+    previous extraction reads as a real capture. See DECISIONS.md, CurDate (#26).
+    """
+
+    def _make(self, tmp_path, names):
+        d = tmp_path / "kernel"
+        d.mkdir()
+        for n in names:
+            (d / n).write_text("x")
+        return str(d)
+
+    def test_counts_only_the_named_function(self, tmp_path):
+        from vit.extract import count_kernel_cases
+        d = self._make(tmp_path, ["CurDate.0.0.1", "AddToList.0.0.1",
+                                  "AddToList.0.0.2"])
+        assert count_kernel_cases(d, "CurDate") == 1
+        assert count_kernel_cases(d, "AddToList") == 2
+
+    def test_stale_file_alone_is_zero_not_one(self, tmp_path):
+        """The exact CurDate case: no own state file, one left by a predecessor."""
+        from vit.extract import count_kernel_cases
+        d = self._make(tmp_path, ["AddToList.0.0.1"])
+        assert count_kernel_cases(d, "CurDate") == 0
+
+    def test_name_match_is_case_insensitive(self, tmp_path):
+        """KGen lowercases in some paths; a case-sensitive match reports a false zero."""
+        from vit.extract import count_kernel_cases
+        d = self._make(tmp_path, ["curdate.0.0.1"])
+        assert count_kernel_cases(d, "CurDate") == 1
+
+    def test_prefix_is_not_a_match(self, tmp_path):
+        from vit.extract import count_kernel_cases
+        d = self._make(tmp_path, ["CurDateExtra.0.0.1"])
+        assert count_kernel_cases(d, "CurDate") == 0
+
+    def test_no_name_preserves_old_behaviour(self, tmp_path):
+        from vit.extract import count_kernel_cases
+        d = self._make(tmp_path, ["AddToList.0.0.1", "CurDate.0.0.1"])
+        assert count_kernel_cases(d) == 2

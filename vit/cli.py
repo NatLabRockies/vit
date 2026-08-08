@@ -416,6 +416,7 @@ def cmd_extract(args, config):
             assumed_size_arrays=assumed_size or None,
             preprocessor_defines=config.preprocessor_defines or None,
             dll_persistence=config.dll_persistence or None,
+            function_name=args.function_name,
             dry_run=args.dry_run,
         )
 
