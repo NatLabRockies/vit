@@ -99,7 +99,7 @@ def generate_cpp_wrapper(sig: FortranSignature, cpp_impl_file: str,
     lines.append("")
 
     # Generate extern "C" wrapper
-    if sig.is_function and not sig.result_is_array:
+    if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         # Scalar-returning function: return value directly
         ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
         ret_c_type = ret_mapping.c_type
@@ -156,7 +156,7 @@ def generate_fortran_interface_block(sig: FortranSignature,
     lines.append(f"    ! Auto-generated interface for C++ implementation of {sig.name}")
     lines.append(f"    INTERFACE")
 
-    if sig.is_function and not sig.result_is_array:
+    if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         # Scalar-returning function: BIND(C) FUNCTION with return type
         ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
 
@@ -302,6 +302,14 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     # CHARACTER local var declarations (before any executable statements)
     lines.extend(_generate_character_declarations(sig, kind_aliases, derived_types))
 
+    # CHARACTER-valued result: stage it in a C_CHAR buffer. A CHARACTER(n)
+    # scalar cannot be passed to a BIND(C) CHARACTER(KIND=C_CHAR) array dummy,
+    # so the C side fills the buffer and the wrapper copies it into the result.
+    res_char_len = result_char_len(sig, kind_aliases, derived_types)
+    if res_char_len:
+        lines.append(f"        CHARACTER(KIND=C_CHAR) :: {result_name}_c({res_char_len})")
+        lines.append(f"        INTEGER :: vit_i_result")
+
     # OPTIONAL preamble: local variables, PRESENT() checks
     if optional_forwarded:
         lines.extend(_generate_optional_preamble(optional_forwarded, kind_aliases, derived_types))
@@ -318,8 +326,9 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     call_args = _build_wrapper_call_args(sig, kind_aliases, derived_types)
     call_str = ", ".join(call_args)
 
-    if sig.result_is_array:
-        # Array-valued result: CALL the C subroutine, which writes into result_name
+    if result_is_out_param(sig, kind_aliases, derived_types):
+        # Array- or CHARACTER-valued result: CALL the C subroutine, which
+        # writes into result_name (or, for CHARACTER, into its C_CHAR buffer).
         lines.append(f"        CALL {c_func_name}({call_str})")
     else:
         # Scalar result: assign from C function return value
@@ -351,6 +360,14 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
                     lines.append(f"        END DO")
                 else:
                     lines.append(f"        CALL vit_copy_scalars_to_{type_lower}({arg.name}_view, {arg.name})")
+
+    # Copy the C_CHAR result buffer back into the CHARACTER result. The C side
+    # is required to have filled all res_char_len bytes -- Fortran CHARACTER is
+    # blank-padded and fixed width, not NUL-terminated.
+    if res_char_len:
+        lines.append(f"        DO vit_i_result = 1, {res_char_len}")
+        lines.append(f"            {result_name}(vit_i_result:vit_i_result) = {result_name}_c(vit_i_result)")
+        lines.append(f"        END DO")
 
     lines.append(f"    END FUNCTION {sig.name}")
     return lines
@@ -751,6 +768,46 @@ def _get_return_type_mapping(sig: FortranSignature,
     return get_type_mapping("REAL(8)", kind_aliases, derived_types)
 
 
+def result_is_out_param(sig: FortranSignature,
+                        kind_aliases: Optional[dict] = None,
+                        derived_types: Optional[dict] = None) -> bool:
+    """
+    True when a FUNCTION's result cannot be a C return value and must instead
+    be written through an output parameter.
+
+    Two cases: array-valued results, and CHARACTER(n) results with n > 1. A
+    CHARACTER(1) result is a single byte and still returns by value.
+
+    Fortran CHARACTER results are fixed-width and blank-padded, so they behave
+    exactly like the array case -- the caller owns the buffer and the callee
+    fills it. Returning `char` instead (which is what VIT did before this
+    existed) silently truncates the result to its first byte.
+    """
+    if not sig.is_function:
+        return False
+    if sig.result_is_array:
+        return True
+    if sig.result_type:
+        mapping = get_type_mapping(sig.result_type, kind_aliases, derived_types)
+        if mapping.character_len_param:
+            return True
+        if mapping.character_length and mapping.character_length > 1:
+            return True
+    return False
+
+
+def result_char_len(sig: FortranSignature,
+                    kind_aliases: Optional[dict] = None,
+                    derived_types: Optional[dict] = None) -> Optional[int]:
+    """Declared length of a CHARACTER function result, or None."""
+    if not sig.is_function or sig.result_is_array or not sig.result_type:
+        return None
+    mapping = get_type_mapping(sig.result_type, kind_aliases, derived_types)
+    if mapping.character_length and mapping.character_length > 1:
+        return mapping.character_length
+    return None
+
+
 def build_c_params(sig: FortranSignature,
                     kind_aliases: Optional[dict] = None,
                     derived_types: Optional[dict] = None) -> list[tuple[str, str]]:
@@ -844,9 +901,9 @@ def build_c_params(sig: FortranSignature,
             else:
                 params.append((mapping.c_type, arg.name))
 
-    # Array-valued function results become an output pointer parameter.
-    # The C function returns void; the result is written via this pointer.
-    if sig.is_function and sig.result_is_array:
+    # Array- and CHARACTER-valued function results become an output pointer
+    # parameter. The C function returns void; the result is written through it.
+    if result_is_out_param(sig, kind_aliases, derived_types):
         ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
         result_param_name = f"{sig.name}_result"
         params.append((f"{ret_mapping.c_type}*", result_param_name))
@@ -1015,13 +1072,20 @@ def _build_interface_args(sig: FortranSignature,
                     "iface_decl": f"{mapping.iso_c_type}, VALUE :: {arg.name}",
                 })
 
-    # Array-valued function results become an INTENT(OUT) assumed-size parameter
-    if sig.is_function and sig.result_is_array:
+    # Array- and CHARACTER-valued function results become an INTENT(OUT)
+    # assumed-size parameter. For CHARACTER the element type is C_CHAR, so the
+    # Fortran side passes a CHARACTER(KIND=C_CHAR) buffer, not the result
+    # variable itself.
+    if result_is_out_param(sig, kind_aliases, derived_types):
         ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
         result_param_name = f"{sig.name}_result"
+        if result_char_len(sig, kind_aliases, derived_types):
+            iface_decl = f"CHARACTER(KIND=C_CHAR), INTENT(OUT) :: {result_param_name}(*)"
+        else:
+            iface_decl = f"{ret_mapping.iso_c_type}, INTENT(OUT) :: {result_param_name}(*)"
         args.append({
             "iface_name": result_param_name,
-            "iface_decl": f"{ret_mapping.iso_c_type}, INTENT(OUT) :: {result_param_name}(*)",
+            "iface_decl": iface_decl,
         })
 
     return args
@@ -1146,10 +1210,16 @@ def _build_wrapper_call_args(sig: FortranSignature,
         else:
             call_args.append(arg.name)
 
-    # Array-valued function results: pass the result variable as the output pointer
-    if sig.is_function and sig.result_is_array:
+    # Array-valued function results: pass the result variable as the output
+    # pointer. CHARACTER results pass a C_CHAR staging buffer instead, since a
+    # CHARACTER(n) scalar cannot be sequence-associated with a BIND(C)
+    # CHARACTER(KIND=C_CHAR) array dummy.
+    if result_is_out_param(sig, kind_aliases, derived_types):
         result_name = sig.result_name or f"{sig.name}_result"
-        call_args.append(result_name)
+        if result_char_len(sig, kind_aliases, derived_types):
+            call_args.append(f"{result_name}_c")
+        else:
+            call_args.append(result_name)
 
     return call_args
 
@@ -1234,6 +1304,18 @@ def generate_kernel_callee_bridge(
     Returns:
         Complete Fortran source for the bridge function
     """
+
+    # CHARACTER-valued results are supported in the forward direction (the
+    # translated function returns through an output buffer) but NOT here. A
+    # bridge would have to stage the Fortran CHARACTER result into a C_CHAR
+    # array and blank-pad it, and none of the code below does that. Fail loudly
+    # rather than emit a bridge that compiles and truncates.
+    if result_char_len(sig, kind_aliases, derived_types):
+        raise NotImplementedError(
+            f"Callee bridge for '{sig.name}' returns CHARACTER, which is not yet "
+            f"supported. Translate the callee first, or extend "
+            f"generate_kernel_callee_bridge() to stage the result buffer."
+        )
     lines = []
     c_func_name = sig.c_func_name
     bridge_name = f"{sig.name.lower()}_bridge"
@@ -1288,7 +1370,7 @@ def generate_kernel_callee_bridge(
                 result_size_param = f"n_{a.name}"
                 break
 
-    if sig.is_function and not sig.result_is_array:
+    if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         # Scalar-returning function
         ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
         result_name = "bridge_result"
@@ -1329,7 +1411,7 @@ def generate_kernel_callee_bridge(
         lines.append(f"        {a['iface_decl']}")
 
     # Declare result for functions
-    if sig.is_function and not sig.result_is_array:
+    if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         lines.append(f"        {ret_mapping.iso_c_type} :: {result_name}")
 
     # Declare local Fortran pointer variables for regular struct args (not view types)
@@ -1426,14 +1508,14 @@ def generate_kernel_callee_bridge(
         args_without = required_str
 
         lines.append(f"        IF (has_{opt.name} /= 0) THEN")
-        if sig.is_function and not sig.result_is_array:
+        if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
             lines.append(_make_call(sig.name, args_with, True, result_name, ret_mapping))
         elif sig.is_function and sig.result_is_array:
             lines.append(_make_call(sig.name, args_with, True))
         else:
             lines.append(_make_call(sig.name, args_with, False))
         lines.append(f"        ELSE")
-        if sig.is_function and not sig.result_is_array:
+        if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
             lines.append(_make_call(sig.name, args_without, True, result_name, ret_mapping))
         elif sig.is_function and sig.result_is_array:
             lines.append(_make_call(sig.name, args_without, True))
@@ -1441,7 +1523,7 @@ def generate_kernel_callee_bridge(
             lines.append(_make_call(sig.name, args_without, False))
         lines.append(f"        END IF")
     else:
-        if sig.is_function and not sig.result_is_array:
+        if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
             lines.append(_make_call(sig.name, required_str, True, result_name, ret_mapping))
         elif sig.is_function and sig.result_is_array:
             lines.append(_make_call(sig.name, required_str, True))
@@ -1474,7 +1556,7 @@ def generate_kernel_callee_bridge(
             lines.append(f"            {buf_name}(vit_i) = local_{buf_name}(vit_i:vit_i)")
             lines.append(f"        END DO")
 
-    if sig.is_function and not sig.result_is_array:
+    if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         lines.append(f"    END FUNCTION {bridge_name}")
     else:
         lines.append(f"    END SUBROUTINE {bridge_name}")
@@ -1609,7 +1691,7 @@ def generate_callee_declarations_header(
     for sig in callee_sigs:
         params = build_c_params(sig, kind_aliases, derived_types)
         param_str = ", ".join(f"{p[0]} {p[1]}" for p in params)
-        if sig.is_function and not sig.result_is_array:
+        if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
             ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
             lines.append(f"{ret_mapping.c_type} {sig.c_func_name}({param_str});")
         else:

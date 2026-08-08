@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from .fortran_parser import FortranSignature
-from .interface_gen import build_c_params
+from .interface_gen import build_c_params, result_is_out_param
 from .type_map import get_type_mapping
 
 
@@ -261,7 +261,7 @@ def _get_c_return_type(sig: FortranSignature, kind_aliases: Optional[dict] = Non
     """Get the C return type for a function signature."""
     if sig.is_subroutine:
         return "void"
-    if sig.result_is_array:
+    if result_is_out_param(sig, kind_aliases):
         return "void"
     if sig.result_type:
         mapping = get_type_mapping(sig.result_type, kind_aliases)

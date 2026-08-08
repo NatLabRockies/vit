@@ -404,6 +404,13 @@ def generate_fortran_bridge(
             c_params.append((f"        INTEGER(C_INT), INTENT(OUT) :: vit_result", "vit_result"))
         elif "REAL" in result_type_upper:
             c_params.append((f"        REAL(C_DOUBLE), INTENT(OUT) :: vit_result", "vit_result"))
+        elif "CHARACTER" in result_type_upper:
+            # Fortran CHARACTER results are fixed-width and blank-padded, so
+            # they come back through a C_CHAR buffer the caller owns -- the
+            # same shape the forward path uses. Staged through a local because
+            # a CHARACTER(n) scalar cannot be sequence-associated with a
+            # BIND(C) CHARACTER(KIND=C_CHAR) array dummy.
+            c_params.append((f"        CHARACTER(KIND=C_CHAR), INTENT(OUT) :: vit_result(*)", "vit_result"))
         else:
             c_params.append((f"        ! TODO: unsupported return type {sig.result_type}", "vit_result"))
 
@@ -446,6 +453,11 @@ def generate_fortran_bridge(
     for decl in local_decls:
         lines.append(decl)
 
+    # Staging buffer for a CHARACTER-valued result
+    if sig.is_function and "CHARACTER" in (sig.result_type or "").upper():
+        lines.append(f"        {sig.result_type} :: vit_char_result")
+        lines.append(f"        INTEGER :: vit_i_result")
+
     # Pre-call conversions
     for conv in pre_call:
         lines.append(conv)
@@ -455,6 +467,11 @@ def generate_fortran_bridge(
         result_type_upper = (sig.result_type or "").upper()
         if "LOGICAL" in result_type_upper:
             lines.append(f"        vit_result = LOGICAL({func_name}({', '.join(call_args)}), C_BOOL)")
+        elif "CHARACTER" in result_type_upper:
+            lines.append(f"        vit_char_result = {func_name}({', '.join(call_args)})")
+            lines.append(f"        DO vit_i_result = 1, LEN(vit_char_result)")
+            lines.append(f"            vit_result(vit_i_result) = vit_char_result(vit_i_result:vit_i_result)")
+            lines.append(f"        END DO")
         else:
             lines.append(f"        vit_result = {func_name}({', '.join(call_args)})")
     else:
@@ -694,6 +711,20 @@ def generate_test_harness_skeleton(
                 if cname == arg.name:
                     bridge_params.append(f"{ctype} {cname}")
                     break
+    # The bridge is always a SUBROUTINE, so a FUNCTION's result comes back
+    # through a trailing output parameter. The loop above walks sig.args only,
+    # which never includes the result.
+    if sig.is_function:
+        result_type_upper = (sig.result_type or "").upper()
+        if "CHARACTER" in result_type_upper:
+            bridge_params.append("char* vit_result")
+        elif "LOGICAL" in result_type_upper:
+            bridge_params.append("bool* vit_result")
+        elif "INTEGER" in result_type_upper:
+            bridge_params.append("int* vit_result")
+        elif "REAL" in result_type_upper:
+            bridge_params.append("double* vit_result")
+
     bridge_param_str = ", ".join(bridge_params)
     lines.append(f"// Fortran reference (via BIND(C) bridge):")
     lines.append(f'extern "C" void {func_lower}_f90({bridge_param_str});')

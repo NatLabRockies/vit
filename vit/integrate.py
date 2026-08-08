@@ -21,6 +21,7 @@ from .interface_gen import (
     generate_fortran_interface_block,
     generate_fortran_wrapper,
     build_c_params,
+    result_is_out_param,
 )
 
 
@@ -416,7 +417,7 @@ def _generate_c_declaration(sig: FortranSignature,
     c_params = build_c_params(sig, kind_aliases, derived_types)
     param_str = ", ".join(f"{p[0]} {p[1]}" for p in c_params)
 
-    if sig.is_function and not sig.result_is_array:
+    if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         ret_mapping = get_type_mapping(
             sig.result_type or "REAL(8)", kind_aliases, derived_types
         )
@@ -469,7 +470,7 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
     param_str = ", ".join(f"{p[0]} {p[1]}" for p in c_params)
     arg_str = ", ".join(p[1] for p in c_params)
 
-    if sig.is_function and not sig.result_is_array:
+    if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         ret_mapping = get_type_mapping(sig.result_type or "REAL(8)", kind_aliases, derived_types)
 
         lines.append(f'extern "C" {{')
