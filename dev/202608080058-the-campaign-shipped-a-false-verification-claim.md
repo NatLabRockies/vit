@@ -1,5 +1,13 @@
 # The Campaign Shipped a False Verification Claim on the One Function Nothing Could Check
 
+> **ATTRIBUTION CORRECTED 2026-08-08 — see `202608081354`.** The title and the framing below are
+> wrong about *who made the claim*. No agent wrote it: `vit/integrate.py:457` emits
+> `// After verification: {name} kernel PASSED` as a header template constant, unconditionally, for
+> every file `vit integrate` touches. It is not one false claim on one function — it is the same
+> assertion on 100% of integrated functions in both campaigns, independent of whether any kernel
+> ran. **The substance below stands unchanged:** no `kernel/ExtController` fixture exists, and
+> Record 49 carries a real 512× divergence. Read the substance; discount the attribution.
+
 **Date:** 2026-08-08
 **Status:** completed — #29–#31; contains the strongest single artifact of the project
 **Scope:** what the gates certify; the agent's refusal was correct
