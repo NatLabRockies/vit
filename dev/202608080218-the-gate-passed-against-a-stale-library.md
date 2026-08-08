@@ -1,8 +1,41 @@
 # The Gate Passed Against a Stale Library, and the Telemetry Recorded It as Success
 
 **Date:** 2026-08-08
-**Status:** open — the affected function is unidentified; one clean rebuild + regress settles it
-**Scope:** dataset integrity; **action required before the run continues**
+**Status:** CLOSED — and the central claim below was wrong. See the correction immediately following.
+**Scope:** dataset integrity
+
+## CORRECTION (2026-08-08, after the check ran)
+
+**The claim that the telemetry was fooled is false, and it was my error.** The replication ran the
+check and found:
+
+- A from-scratch rebuild (build directory deleted) produced a library **byte-identical** to the one
+  the gate had been testing, and 27/27 on it. Nothing stale was ever installed.
+- `rebuild.sh` computes its return code from the `docker exec` directly, so the pipe never reached
+  the telemetry. The cycle log carries **five genuine failed rebuilds at `exit_code: 2`** —
+  `interp1d`, `Int2LStr`, `Read_OL_Input` ×2, `UpdateZeroMQ`. Verified against the full log.
+- Exactly one gate run of 41 tested a stale library — `Read_OL_Input` at 04:35:53 — and it was
+  superseded by a valid 27/27 two minutes before its commit. **All 36 functions' final gate followed
+  a successful rebuild, zero exceptions.**
+
+**How I got it wrong:** the table below prints `rebuild` spans from #32 onward only. All five genuine
+failures occurred *before* #32. I chose a window that excluded every piece of contradicting
+evidence, saw only zeros, and concluded the log could not record a failure. One query over the whole
+file would have falsified it — the same query I ran an hour later at the agent's prompting.
+
+This is the sixth of my claims the replication has caught, and the second of exactly this shape after
+the KGen 22-vs-11 count (`202608072254`): a confident conclusion from a deliberately narrow view,
+with the disproof one command away. **The sentence "the evidence that would identify the affected
+function was destroyed by the defect itself" is simply false.** The evidence was in the log the
+whole time.
+
+What survives from the note below: the shell-level masking was real, it did produce one gate run
+against a stale library, and the `rebuild.sh` observation in "The part worth keeping" stands. The
+consequences I inferred from it do not.
+
+---
+
+*Original note follows, uncorrected, for the record.*
 
 ## Placement
 

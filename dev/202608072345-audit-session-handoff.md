@@ -123,7 +123,8 @@ Then, roughly by importance:
 | `202608080058` | **Read first.** The false `kernel PASSED` stamp on `ExtController`; the agent's refusal beat my instruction; plan order reaches the control layer at #32 without a redirect |
 | `202608080128` | **Read second.** 30 campaign kernel bridges declare mismatched widths for the same argument, across 17 of 43 kernels; leaf-first left the whole callee-bridge path untested for 31 functions; third setup omission of mine |
 | `202608080204` | **Read third.** The campaign's gate went 9→27 scenarios and silently lost `Flp_Mode=2` coverage; `PIIController` is verified in the campaign and unreachable in the gate that ships with it. Fourth setup omission: extending the gate was campaign practice the runbook never carried |
-| `202608080218` | **OPEN — action required.** A gate run passed against a stale library and the telemetry logged it as success; the affected function is unidentified. One clean rebuild + regress settles it |
+| `202608080218` | CLOSED, and wrong in its central claim — my sixth caught error, corrected at the head of the note. One gate run of 41 hit a stale library and was superseded before commit; all 36 final gates followed a good rebuild |
+| `202608080246` | Kernel narrowness has two axes and the pass line shows neither; a reset branch with no evidence from any layer in four shipped functions; sixth upstream artifact |
 | `202608072058` | The steering record. Three procedural prompts, three continuations, one authorization |
 | `202608072043` | Seven→fifteen tool fixes; the tool was finished *for AeroDyn*, not finished |
 | `202608072149` | Track A/B; the replication verifies code the campaign hand-wrote |
