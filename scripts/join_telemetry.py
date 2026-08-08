@@ -50,7 +50,7 @@ COLUMNS = (
 )
 
 
-VALID_DISPOSITIONS = {"out_of_scope", "deferred", "blocked",
+VALID_DISPOSITIONS = {"integrated", "out_of_scope", "deferred", "blocked",
                       "integrated_unexercised", "abandoned"}
 
 
@@ -91,6 +91,22 @@ def load_dispositions(path):
 
     `abandoned`     attempted and given up on.
 
+    `integrated`    a CONFIRMING no-op. It is what the joiner derives anyway,
+                    so it changes no number; it exists so that a corrected
+                    judgement can carry its reasoning next to the data instead
+                    of only in a prose file. Written when a function was
+                    previously given a different disposition and measurement
+                    overturned it -- `PIIController` was `integrated_unexercised`
+                    on the strength of mode values read out of the DISCON*.IN
+                    files, which are outputs, until a perturbation probe showed
+                    scenario 4 does reach it.
+
+                    Because it is the one override that could HIDE something,
+                    it is checked rather than trusted: if the derived status is
+                    not already `integrated`, the joiner raises. An override may
+                    document a judgement the derivation cannot make; it may not
+                    contradict the exit codes.
+
     All but `integrated_unexercised` would otherwise be derived as `failed`,
     which understates the method and overstates the failure rate -- and, for
     `deferred`, would also misreport remaining work as work that will never
@@ -118,6 +134,28 @@ def load_dispositions(path):
             )
         out[name] = entry
     return out
+
+
+def _resolve_status(name, dispositions, derived):
+    """Apply a disposition override, refusing one that contradicts the data.
+
+    Every override but `integrated` replaces a derived status the joiner cannot
+    reach on its own -- a judgement about the function that exit codes do not
+    encode. `integrated` is different: it is what the joiner already derives, so
+    it must AGREE. Allowing it to disagree would let a failed cycle be relabelled
+    as a pass by editing a JSON file, which is precisely the property this whole
+    table exists to not have.
+    """
+    if name not in dispositions:
+        return derived
+    status = dispositions[name]["status"]
+    if status == "integrated" and derived != "integrated":
+        raise ValueError(
+            f"dispositions: '{name}' is recorded as 'integrated' but the cycle "
+            f"log derives {derived!r}. A confirming disposition may not "
+            f"contradict the exit codes -- fix the data or use a different label."
+        )
+    return status
 
 
 def status_for(intervals):
@@ -243,8 +281,7 @@ def main(argv=None):
             totals = per_function[name]
             row = {
                 "function": name,
-                "status": (dispositions[name]["status"] if name in dispositions
-                           else status_for(owned)),
+                "status": _resolve_status(name, dispositions, status_for(owned)),
                 "t_total_s": round(
                     (span["end"] - span["start"]).total_seconds(), 3),
                 "verify_attempts": attempts_to_first_pass(owned, "verify"),
