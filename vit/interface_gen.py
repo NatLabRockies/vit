@@ -311,6 +311,9 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     # Allocate-on-return locals + the vit_free interface
     lines.extend(_generate_alloc_return_declarations(sig, kind_aliases))
 
+    # C_PTR locals for arguments that may alias a component of a view arg
+    lines.extend(_alias_cptr_declarations(sig, kind_aliases, derived_types))
+
     # CHARACTER-valued result: stage it in a C_CHAR buffer. A CHARACTER(n)
     # scalar cannot be passed to a BIND(C) CHARACTER(KIND=C_CHAR) array dummy,
     # so the C side fills the buffer and the wrapper copies it into the result.
@@ -331,6 +334,7 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     lines.extend(_generate_character_copy_loops(sig, kind_aliases, derived_types))
 
     # Allocate-on-return handshake variables
+    lines.extend(_generate_alias_resolution(sig, kind_aliases, derived_types))
     lines.extend(_generate_alloc_return_prologue(sig))
 
     # Build the C function call (only non-passthrough args, with size params for arrays)
@@ -442,6 +446,9 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     # Allocate-on-return locals + the vit_free interface
     lines.extend(_generate_alloc_return_declarations(sig, kind_aliases))
 
+    # C_PTR locals for arguments that may alias a component of a view arg
+    lines.extend(_alias_cptr_declarations(sig, kind_aliases, derived_types))
+
     # View type declarations (must be before any executable statements)
     if view_args:
         lines.extend(_generate_view_declarations(view_args))
@@ -517,6 +524,7 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     lines.extend(_generate_character_copy_loops(sig, kind_aliases, derived_types))
 
     # Allocate-on-return handshake variables
+    lines.extend(_generate_alias_resolution(sig, kind_aliases, derived_types))
     lines.extend(_generate_alloc_return_prologue(sig))
 
     # Build call with conversions (only non-passthrough args)
@@ -672,6 +680,105 @@ def _generate_character_declarations(sig, kind_aliases, derived_types):
                 lines.append(f"        CHARACTER(KIND=C_CHAR) :: {arg.name}_c({len_expr})")
                 lines.append(f"        INTEGER :: vit_i_{arg.name}")
     return lines
+
+
+def _aliased_component_args(sig, kind_aliases=None, derived_types=None):
+    """
+    Find dummy arguments that may ALIAS a component of a view-type dummy.
+
+    ROSCO's PIDController is the type case:
+
+        PIDController(..., piP, reset, objInst, LocalVar)
+
+    is called as ``PIDController(..., LocalVar%piP, ..., LocalVar)``. The
+    wrapper copies LocalVar (including its nested piP) into LocalVar_view, hands
+    the C++ a DIRECT pointer to the real LocalVar%piP, and then copies the STALE
+    view back over LocalVar -- silently discarding every write the C++ made
+    through the piP pointer. Lost update, and the returned value can still be
+    correct, so it does not necessarily show up as a wrong answer.
+
+    Whether the two actually alias is a property of the CALL SITE, which the
+    wrapper cannot see. So this only identifies candidates statically -- a
+    non-view derived-type dummy whose type appears as a component of a view-type
+    dummy's type -- and the generated wrapper resolves it at RUNTIME by
+    comparing addresses. That is exact for both callers: aliased ones route the
+    pointer into the view, non-aliased ones keep the direct pointer.
+
+    Returns a list of (arg, view_arg, component_name).
+    """
+    if not derived_types:
+        return []
+
+    # Use VIT's own collector rather than re-deriving view-ness: whether a type
+    # is a view depends on vit.yaml's strategy, which is threaded through the
+    # mapping and is NOT visible from the type name alone.
+    view_args = _get_view_type_args(sig, kind_aliases, derived_types)
+    if not view_args:
+        return []
+
+    plain_derived = []
+    for a in sig.args:
+        if not a.is_derived_type or a.is_array:
+            continue
+        m = get_type_mapping(a.fortran_type, kind_aliases, derived_types)
+        if m.is_derived and m.is_c_compatible and not m.is_view_type:
+            plain_derived.append(a)
+    if not plain_derived:
+        return []
+
+    def _type_name(ft):
+        u = ft.strip()
+        if u.upper().startswith("TYPE(") and u.endswith(")"):
+            return u[5:-1].strip()
+        return u
+
+    # The registry preserves the source's capitalisation ('piParams',
+    # 'LocalVariables'), so look up case-insensitively.
+    by_lower = {k.lower(): v for k, v in derived_types.items()}
+
+    out = []
+    for varg, _vm in view_args:
+        if varg.is_array:
+            continue
+        info = by_lower.get(_type_name(varg.fortran_type).lower())
+        if info is None or not getattr(info, "fields", None):
+            continue
+        for parg in plain_derived:
+            ptype = _type_name(parg.fortran_type).lower()
+            for f in info.fields:
+                if f.is_array or getattr(f, "is_allocatable", False):
+                    continue
+                if _type_name(f.fortran_type).lower() == ptype:
+                    out.append((parg, varg, f.name))
+                    break
+    return out
+
+
+def _generate_alias_resolution(sig, kind_aliases=None, derived_types=None):
+    """
+    Emit the runtime aliasing check described in _aliased_component_args.
+
+    Cheap: two C_LOC calls and a pointer compare, once per invocation.
+    """
+    pairs = _aliased_component_args(sig, kind_aliases, derived_types)
+    if not pairs:
+        return []
+    lines = ["        ! Resolve aliasing: an argument that IS a component of a view-type",
+             "        ! argument must be written through the VIEW, or the view copy-back",
+             "        ! afterwards would discard those writes (see _aliased_component_args)."]
+    for parg, varg, comp in pairs:
+        lines.append(f"        IF (C_ASSOCIATED(C_LOC({parg.name}), C_LOC({varg.name}%{comp}))) THEN")
+        lines.append(f"            {parg.name}_cptr = C_LOC({varg.name}_view%{comp})")
+        lines.append(f"        ELSE")
+        lines.append(f"            {parg.name}_cptr = C_LOC({parg.name})")
+        lines.append(f"        END IF")
+    return lines
+
+
+def _alias_cptr_declarations(sig, kind_aliases=None, derived_types=None):
+    """TYPE(C_PTR) locals holding the resolved pointer for each alias candidate."""
+    pairs = _aliased_component_args(sig, kind_aliases, derived_types)
+    return [f"        TYPE(C_PTR) :: {parg.name}_cptr" for parg, _v, _c in pairs]
 
 
 def _generate_character_copy_loops(sig, kind_aliases, derived_types):
@@ -1334,6 +1441,7 @@ def _build_wrapper_call_args(sig: FortranSignature,
     LOGICAL args get explicit conversion to C_BOOL.
     """
     call_args = []
+    _alias_names = {a.name for a, _v, _c in _aliased_component_args(sig, kind_aliases, derived_types)}
     for arg in sig.args:
         mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
 
@@ -1391,6 +1499,10 @@ def _build_wrapper_call_args(sig: FortranSignature,
                         call_args.append(d)
             elif mapping.is_view_type:
                 call_args.append(f"C_LOC({arg.name}_view)")
+            elif arg.name in _alias_names:
+                # May be a component of a view arg; the wrapper resolved which
+                # storage to write through at runtime.
+                call_args.append(f"{arg.name}_cptr")
             else:
                 call_args.append(f"C_LOC({arg.name})")
             continue
