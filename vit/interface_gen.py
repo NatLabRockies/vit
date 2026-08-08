@@ -314,6 +314,9 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     # C_PTR locals for arguments that may alias a component of a view arg
     lines.extend(_alias_cptr_declarations(sig, kind_aliases, derived_types))
 
+    # Staging INTEGER(C_INT) locals for by-reference LOGICAL arguments
+    lines.extend(_logical_ref_declarations(sig, kind_aliases, derived_types))
+
     # CHARACTER-valued result: stage it in a C_CHAR buffer. A CHARACTER(n)
     # scalar cannot be passed to a BIND(C) CHARACTER(KIND=C_CHAR) array dummy,
     # so the C side fills the buffer and the wrapper copies it into the result.
@@ -335,6 +338,7 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
 
     # Allocate-on-return handshake variables
     lines.extend(_generate_alias_resolution(sig, kind_aliases, derived_types))
+    lines.extend(_generate_logical_ref_prologue(sig, kind_aliases, derived_types))
     lines.extend(_generate_alloc_return_prologue(sig))
 
     # Build the C function call (only non-passthrough args, with size params for arrays)
@@ -364,6 +368,7 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
 
     # Allocate-on-return: allocate the dummy, copy, free
     lines.extend(_generate_alloc_return_epilogue(sig))
+    lines.extend(_generate_logical_ref_epilogue(sig, kind_aliases, derived_types))
 
     # Reverse-copy: copy modified scalars from view back to Fortran type.
     # Placed after the result assignment, since the C call is what mutates the
@@ -449,6 +454,9 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     # C_PTR locals for arguments that may alias a component of a view arg
     lines.extend(_alias_cptr_declarations(sig, kind_aliases, derived_types))
 
+    # Staging INTEGER(C_INT) locals for by-reference LOGICAL arguments
+    lines.extend(_logical_ref_declarations(sig, kind_aliases, derived_types))
+
     # View type declarations (must be before any executable statements)
     if view_args:
         lines.extend(_generate_view_declarations(view_args))
@@ -525,6 +533,7 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
 
     # Allocate-on-return handshake variables
     lines.extend(_generate_alias_resolution(sig, kind_aliases, derived_types))
+    lines.extend(_generate_logical_ref_prologue(sig, kind_aliases, derived_types))
     lines.extend(_generate_alloc_return_prologue(sig))
 
     # Build call with conversions (only non-passthrough args)
@@ -534,6 +543,7 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
 
     # Allocate-on-return: allocate the dummy, copy, free
     lines.extend(_generate_alloc_return_epilogue(sig))
+    lines.extend(_generate_logical_ref_epilogue(sig, kind_aliases, derived_types))
 
     # Copy OPTIONAL INTENT(OUT/INOUT) values back to the actual arguments
     if optional_forwarded:
@@ -779,6 +789,66 @@ def _alias_cptr_declarations(sig, kind_aliases=None, derived_types=None):
     """TYPE(C_PTR) locals holding the resolved pointer for each alias candidate."""
     pairs = _aliased_component_args(sig, kind_aliases, derived_types)
     return [f"        TYPE(C_PTR) :: {parg.name}_cptr" for parg, _v, _c in pairs]
+
+
+def _logical_ref_args(sig, kind_aliases, derived_types):
+    """INTENT(OUT)/INTENT(INOUT) LOGICAL scalars, which cross as INTEGER(C_INT).
+
+    type_map.py sends a Fortran LOGICAL across the boundary as INTEGER(C_INT):
+    the right memory layout, and NOT assignment-compatible in Fortran. Every
+    other direction of that conversion is already handled -- passing a LOGICAL
+    by value (`e72235f`), converting one back inside a kernel callee bridge
+    (`05b70bc`), and test_validate's bridge (`ece0c3d`) -- but an INTENT(OUT)
+    scalar took the earlier "INOUT/OUT scalars passed by reference (no
+    conversion needed)" branch in _build_wrapper_call_args and went straight
+    through, which gfortran rejects:
+
+        Error: Type mismatch in argument 'foundline'; passed LOGICAL(4) to INTEGER(4)
+
+    A by-reference argument cannot be converted in the call itself, so it needs
+    a staging INTEGER(C_INT) local: seeded from the LOGICAL for INOUT, passed
+    to C, and copied back with (/= 0) afterwards.
+
+    OPTIONAL args are excluded -- they are already staged through
+    <name>_val by _generate_optional_preamble.
+    """
+    out = []
+    for arg in sig.args:
+        if arg.intent not in (IntentKind.OUT, IntentKind.INOUT):
+            continue
+        if arg.is_array or arg.is_derived_type or arg.is_optional:
+            continue
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+        if (mapping.fortran_type.upper().lstrip().startswith("LOGICAL")
+                and mapping.iso_c_type.startswith("INTEGER")):
+            out.append((arg, mapping))
+    return out
+
+
+def _logical_ref_declarations(sig, kind_aliases, derived_types):
+    """Staging INTEGER(C_INT) locals for by-reference LOGICAL arguments."""
+    return [f"        INTEGER({m.c_kind}) :: {a.name}_lgc"
+            for a, m in _logical_ref_args(sig, kind_aliases, derived_types)]
+
+
+def _generate_logical_ref_prologue(sig, kind_aliases, derived_types):
+    """Seed the staging locals. INTENT(OUT) has no incoming value to seed."""
+    lines = []
+    for arg, mapping in _logical_ref_args(sig, kind_aliases, derived_types):
+        if arg.intent == IntentKind.INOUT:
+            lines.append(f"        {arg.name}_lgc = MERGE(1_{mapping.c_kind}, "
+                         f"0_{mapping.c_kind}, {arg.name})")
+        else:
+            lines.append(f"        {arg.name}_lgc = 0")
+    return lines
+
+
+def _generate_logical_ref_epilogue(sig, kind_aliases, derived_types):
+    """Copy the staging locals back into the LOGICAL arguments."""
+    lines = []
+    for arg, _m in _logical_ref_args(sig, kind_aliases, derived_types):
+        lines.append(f"        {arg.name} = ({arg.name}_lgc /= 0)")
+    return lines
 
 
 def _generate_character_copy_loops(sig, kind_aliases, derived_types):
@@ -1536,6 +1606,14 @@ def _build_wrapper_call_args(sig: FortranSignature,
             # See build_c_params: assumed-length also passes its length.
             if mapping.character_len_param == "*":
                 call_args.append(f"LEN({arg.name})")
+        elif (arg.intent in (IntentKind.OUT, IntentKind.INOUT)
+                and not arg.is_array and not arg.is_derived_type
+                and not arg.is_optional
+                and mapping.fortran_type.upper().lstrip().startswith("LOGICAL")
+                and mapping.iso_c_type.startswith("INTEGER")):
+            # By reference, so the conversion cannot happen in the call --
+            # pass the staging local instead. See _logical_ref_args.
+            call_args.append(f"{arg.name}_lgc")
         elif arg.intent in (IntentKind.OUT, IntentKind.INOUT):
             # INOUT/OUT scalars passed by reference (no conversion needed)
             call_args.append(arg.name)
@@ -1631,6 +1709,55 @@ def _format_dims(arg: FortranArg) -> str:
 # ---------------------------------------------------------------------------
 # Kernel callee bridges (C → Fortran)
 # ---------------------------------------------------------------------------
+
+def _bridge_char_args(sig, kind_aliases, derived_types):
+    """CHARACTER arguments of a kernel callee bridge, with bridge-side sizes.
+
+    The bridge receives what C sends -- a flat CHARACTER(KIND=C_CHAR) array of
+    bytes -- and the Fortran callee wants a CHARACTER(*) scalar or array. Those
+    are not the same thing: passing the C_CHAR array straight through is a rank
+    mismatch on a scalar dummy, and on an array dummy it would silently reshape
+    the element boundaries.
+
+    So each CHARACTER argument is staged through a local of the callee's own
+    shape. The sizes are the ones the BRIDGE has, not the ones the forward
+    wrapper has: `len_<name>` (a dummy of this bridge) rather than
+    `LEN(<name>)`, which would be the length of the C_CHAR array, and `n_<name>`
+    rather than `SIZE(<name>)`, which is not defined for an assumed-size dummy.
+
+    Returns (arg, len_expr, count_expr_or_None).
+    """
+    out = []
+    for arg in sig.args:
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+        if not mapping.iso_c_type.startswith("CHARACTER"):
+            continue
+        if mapping.character_len_param == "*":
+            len_expr = f"len_{arg.name}"
+        else:
+            len_expr = _get_char_len_expr(arg, mapping, sig)
+        if not len_expr:
+            continue
+        count = None
+        if getattr(arg, "is_array", False):
+            if getattr(arg, "is_assumed_shape", False) or not arg.array_dims:
+                count = f"n_{arg.name}"
+            else:
+                count = _char_array_count_expr(arg)
+        out.append((arg, len_expr, count))
+    return out
+
+
+def _bridge_char_copies_back(arg):
+    """Copy a staged CHARACTER local back to C? Yes unless it is INTENT(IN).
+
+    An argument with no declared intent is assumed to be modifiable. Copying
+    back something the callee did not touch is a no-op -- the local was seeded
+    from the same bytes -- while skipping a copy-back the callee did need is a
+    silent wrong answer.
+    """
+    return not (arg.intent and arg.intent.value.upper() == "IN")
+
 
 def generate_kernel_callee_bridge(
     sig: FortranSignature,
@@ -1781,18 +1908,18 @@ def generate_kernel_callee_bridge(
             type_lower = mapping.c_type.lower()
             lines.append(f"        TYPE({type_lower}_view_t), POINTER :: {arg.name}_view")
 
-    # Declare local CHARACTER buffers for CHARACTER OUT/INOUT args.
-    # Fortran expects CHARACTER(*) but BIND(C) bridge receives CHARACTER(C_CHAR) array.
-    # Use a local buffer and pass that to the Fortran callee instead.
-    char_buffer_args = []
-    for arg in sig.args:
-        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
-        if (mapping.iso_c_type.startswith("CHARACTER") and
-                arg.intent and arg.intent.value.upper() in ("OUT", "INOUT")):
-            lines.append(f"        CHARACTER(1024) :: local_{arg.name}")
-            char_buffer_args.append(arg.name)
-    if char_buffer_args:
-        lines.append(f"        INTEGER :: vit_i")
+    # Stage every CHARACTER argument through a local of the callee's own shape.
+    # These are automatic objects: their length and extent come from this
+    # bridge's own dummies, which is legal and is what makes an arbitrary
+    # caller-supplied length work.
+    char_stage_args = _bridge_char_args(sig, kind_aliases, derived_types)
+    for arg, len_expr, count in char_stage_args:
+        dims = f"({count})" if count else ""
+        lines.append(f"        CHARACTER({len_expr}) :: local_{arg.name}{dims}")
+        if count:
+            lines.append(f"        INTEGER :: vit_i_{arg.name}, vit_j_{arg.name}")
+        else:
+            lines.append(f"        INTEGER :: vit_i_{arg.name}")
 
     # Convert C struct pointers to Fortran pointers (regular structs only)
     if struct_args:
@@ -1824,6 +1951,25 @@ def generate_kernel_callee_bridge(
             reverse_copy = f"vit_copy_scalars_to_{type_lower}"
             lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_view)")
             lines.append(f"        CALL {reverse_copy}({arg.name}_view, {stash_name})")
+
+    # Seed the CHARACTER locals from the C buffers. Done for EVERY intent,
+    # including OUT: a Fortran callee is not required to assign every byte of
+    # an INTENT(OUT) CHARACTER, and a direct Fortran call would have left the
+    # caller's bytes in place.
+    if char_stage_args:
+        lines.append(f"        ! Stage CHARACTER args into Fortran-shaped locals")
+    for arg, len_expr, count in char_stage_args:
+        if count:
+            lines.append(f"        DO vit_j_{arg.name} = 1, {count}")
+            lines.append(f"            DO vit_i_{arg.name} = 1, {len_expr}")
+            lines.append(f"                local_{arg.name}(vit_j_{arg.name})(vit_i_{arg.name}:vit_i_{arg.name}) = &")
+            lines.append(f"                    {arg.name}((vit_j_{arg.name} - 1) * ({len_expr}) + vit_i_{arg.name})")
+            lines.append(f"            END DO")
+            lines.append(f"        END DO")
+        else:
+            lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
+            lines.append(f"            local_{arg.name}(vit_i_{arg.name}:vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name})")
+            lines.append(f"        END DO")
 
     # Build the call to the original Fortran function.
     # OPTIONAL args require IF/ELSE branching — Fortran uses argument
@@ -1907,11 +2053,24 @@ def generate_kernel_callee_bridge(
             lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_view)")
             lines.append(f"        CALL {populator}({stash_name}, {arg.name}_view)")
 
-    # Copy local CHARACTER buffers back to C_CHAR arrays after the call
-    if char_buffer_args:
-        for buf_name in char_buffer_args:
-            lines.append(f"        DO vit_i = 1, MIN(LEN_TRIM(local_{buf_name}), 1024)")
-            lines.append(f"            {buf_name}(vit_i) = local_{buf_name}(vit_i:vit_i)")
+    # Copy the staged CHARACTER locals back to the C buffers. The full declared
+    # width, not LEN_TRIM: Fortran CHARACTER is blank-padded and fixed width,
+    # and stopping at the last non-blank would leave the caller's old bytes
+    # visible past the end of a result that got shorter.
+    writeback = [t for t in char_stage_args if _bridge_char_copies_back(t[0])]
+    if writeback:
+        lines.append(f"        ! Copy CHARACTER results back to the C buffers")
+    for arg, len_expr, count in writeback:
+        if count:
+            lines.append(f"        DO vit_j_{arg.name} = 1, {count}")
+            lines.append(f"            DO vit_i_{arg.name} = 1, {len_expr}")
+            lines.append(f"                {arg.name}((vit_j_{arg.name} - 1) * ({len_expr}) + vit_i_{arg.name}) = &")
+            lines.append(f"                    local_{arg.name}(vit_j_{arg.name})(vit_i_{arg.name}:vit_i_{arg.name})")
+            lines.append(f"            END DO")
+            lines.append(f"        END DO")
+        else:
+            lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
+            lines.append(f"            {arg.name}(vit_i_{arg.name}) = local_{arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
             lines.append(f"        END DO")
 
     if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
@@ -1981,6 +2140,15 @@ def _build_bridge_call_args(sig: FortranSignature,
                 call_args.append(f"{arg.name}_f")
             continue
 
+        # CHARACTER of any shape: pass the staged local, never the raw C_CHAR
+        # buffer. A scalar CHARACTER(*) dummy cannot receive a rank-1 array
+        # ("Rank mismatch in argument"), and a CHARACTER array dummy would take
+        # the flat buffer with the wrong element boundaries. Must be tested
+        # before the is_array branch, which does not know about element length.
+        if mapping.iso_c_type.startswith("CHARACTER"):
+            call_args.append(f"local_{arg.name}")
+            continue
+
         if arg.is_array:
             if arg.is_assumed_shape:
                 # The bridge receives assumed-size (*) arrays from C, but the
@@ -2003,13 +2171,9 @@ def _build_bridge_call_args(sig: FortranSignature,
         # Scalar args — INOUT args must be passed directly (no conversion wrapping).
         # VALUE args may need kind conversion for LOGICAL.
         if arg.intent in (IntentKind.OUT, IntentKind.INOUT):
-            # CHARACTER OUT/INOUT: use local buffer (bridge receives C_CHAR array,
-            # Fortran expects CHARACTER(*) — incompatible without local buffer)
-            if mapping.iso_c_type.startswith("CHARACTER"):
-                call_args.append(f"local_{arg.name}")
-            else:
-                # INOUT/OUT: pass directly — can't wrap in conversion function
-                call_args.append(arg.name)
+            # INOUT/OUT: pass directly — can't wrap in conversion function.
+            # (CHARACTER is handled above, for every intent.)
+            call_args.append(arg.name)
         elif mapping.iso_c_type.startswith("LOGICAL("):
             # LOGICAL(C_BOOL) → LOGICAL: explicit conversion needed
             call_args.append(f"LOGICAL({arg.name})")
