@@ -141,13 +141,32 @@ class TestGenerateFortranBridge:
         assert "TYPE(C_PTR), VALUE :: InitInput_ptr" in bridge
         assert "C_F_POINTER(InitInput_ptr, InitInput)" in bridge
 
-    def test_character_handled_locally(self):
-        """CHARACTER args become local buffers, no C-side parameter."""
+    def test_character_crosses_as_buffer_plus_length(self):
+        """CHARACTER args cross as a C_CHAR buffer + length, staged locally.
+
+        Previously they became an uninitialized CHARACTER(8192) local with no
+        C-side parameter at all, so the bridge compiled, ran, and tested
+        nothing. Any function whose input is a CHARACTER argument was silently
+        unverifiable. See DECISIONS.md, PathIsRelative (#23).
+        """
         sig = _make_sig_with_derived_type()
         bridge = generate_fortran_bridge(sig)
-        assert "CHARACTER(8192) :: ErrMsg" in bridge
-        # No ErrMsg in the SUBROUTINE parameter list
-        assert "ErrMsg_stat" not in bridge
+
+        # Exposed to C++ as buffer + length...
+        assert "CHARACTER(KIND=C_CHAR)" in bridge
+        assert "ErrMsg_c" in bridge
+        assert "INTEGER(C_INT), VALUE, INTENT(IN) :: len_ErrMsg" in bridge
+        # ...and staged through a local of the caller's length.
+        assert "CHARACTER(len_ErrMsg) :: ErrMsg" in bridge
+        # The old uninitialized fixed buffer is gone.
+        assert "CHARACTER(8192) :: ErrMsg" not in bridge
+
+    def test_character_inout_copies_back(self):
+        """An INOUT/OUT CHARACTER must be copied back into the C buffer."""
+        sig = _make_sig_with_derived_type()
+        bridge = generate_fortran_bridge(sig)
+        # ErrMsg is INTENT(OUT) in the fixture, so the post-call copy is required.
+        assert "ErrMsg_c(vit_i_ErrMsg) = ErrMsg(vit_i_ErrMsg:vit_i_ErrMsg)" in bridge
 
     def test_integer_direct_mapping(self):
         """INTEGER args map directly to INTEGER(C_INT)."""

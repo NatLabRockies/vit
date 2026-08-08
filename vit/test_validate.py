@@ -390,9 +390,29 @@ def generate_fortran_bridge(
                 pre_call.append(f"        CALL C_F_POINTER({arg.name}_ptr, {arg.name})")
                 call_args.append(arg.name)
         elif "CHARACTER" in fortran_type:
-            # CHARACTER is not C-interoperable — handle locally in the bridge.
-            # No C-side parameter; only ErrStat is returned to C++.
-            local_decls.append(f"        CHARACTER(8192) :: {arg.name}  ! Local buffer (not compared across language boundary)")
+            # CHARACTER is not directly C-interoperable, so it crosses as a
+            # C_CHAR buffer plus its length and is staged through a local
+            # CHARACTER(len) that the Fortran function can actually take.
+            #
+            # This used to declare an uninitialized CHARACTER(8192) local and
+            # pass THAT, exposing no C-side parameter at all: the bridge
+            # compiled, ran, and tested nothing. Any function whose input is a
+            # CHARACTER argument was silently unverifiable.
+            c_params.append(
+                (f"        CHARACTER(KIND=C_CHAR), INTENT({intent}) :: {arg.name}_c(*)",
+                 f"{arg.name}_c"))
+            c_params.append(
+                (f"        INTEGER(C_INT), VALUE, INTENT(IN) :: len_{arg.name}",
+                 f"len_{arg.name}"))
+            local_decls.append(f"        CHARACTER(len_{arg.name}) :: {arg.name}")
+            local_decls.append(f"        INTEGER :: vit_i_{arg.name}")
+            pre_call.append(f"        DO vit_i_{arg.name} = 1, len_{arg.name}")
+            pre_call.append(f"            {arg.name}(vit_i_{arg.name}:vit_i_{arg.name}) = {arg.name}_c(vit_i_{arg.name})")
+            pre_call.append(f"        END DO")
+            if intent in ("INOUT", "OUT"):
+                post_call.append(f"        DO vit_i_{arg.name} = 1, len_{arg.name}")
+                post_call.append(f"            {arg.name}_c(vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
+                post_call.append(f"        END DO")
             call_args.append(arg.name)
         elif arg.is_array and arg.is_assumed_shape:
             # Assumed-shape arrays: receive as assumed-size (*) + size parameter.
@@ -728,7 +748,9 @@ def generate_test_harness_skeleton(
             else:
                 bridge_params.append(f"void* {arg.name}_ptr")
         elif "CHARACTER" in arg.fortran_type.upper():
-            continue  # CHARACTER handled locally in bridge, not passed from C++
+            # Buffer + length, matching the bridge above.
+            bridge_params.append(f"char* {arg.name}_c")
+            bridge_params.append(f"int len_{arg.name}")
         else:
             # Find the matching C param from build_c_params, plus any size
             # parameter that travels with it. An assumed-shape array becomes
