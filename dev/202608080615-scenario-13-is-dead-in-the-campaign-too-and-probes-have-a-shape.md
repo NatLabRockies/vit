@@ -1,5 +1,14 @@
 # Scenario 13 Is Dead in the Campaign Too, and a Probe's Verdict Depends on Its Shape
 
+> **SUPPORTING STATISTIC CORRECTED 2026-08-08 — see `202608081444`.** The claim below that
+> "eleven of its thirteen channels were identically zero" is true but **does not discriminate**: the
+> *repaired, live* replication scenario 13 also has 11 of 13 channels identically zero. Those are the
+> subsystems the scenario does not enable. **The finding stands** — scenario 13 ran no controller,
+> established from `CheckInputs` rejecting the `VS_FBP`/`VS_ConstPower` pair and setting
+> `aviFAIL = -1` on call one. What discriminates is rarity against the ensemble: `gen_power` is live
+> in all 26 other campaign scenarios and dead only in 13.
+
+
 **Date:** 2026-08-08
 **Status:** completed — #42; two findings, one campaign-side, one epistemic
 **Scope:** gate liveness, mutation probing
