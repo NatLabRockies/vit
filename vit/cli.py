@@ -547,9 +547,14 @@ def cmd_translate(args, config):
     out_path = out_dir / f"{sig.name.lower()}.cpp"
     if out_path.exists():
         existing_scaffold = out_path.read_text()
-        if "// TODO:" not in existing_scaffold:
+        if "// TODO:" in existing_scaffold:
+            # Still an untouched placeholder: refresh it. The signature can
+            # change between runs -- a type fix, or a new argument appearing --
+            # and a stale scaffold silently hands the translator the wrong one.
             out_path.write_text(scaffold)
-        # else: don't overwrite an existing implementation
+        else:
+            # Contains a hand-written implementation. Never clobber it.
+            print(f"  Kept existing implementation, scaffold NOT regenerated: {out_path}")
     else:
         out_path.write_text(scaffold)
 

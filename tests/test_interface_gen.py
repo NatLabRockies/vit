@@ -595,6 +595,39 @@ class TestGenerateKernelCalleeBridge:
             "LOGICAL arg must be converted, got: " + call_line[0])
 
 
+    def test_assumed_length_character_gets_explicit_length_param(self):
+        """CHARACTER(*) must pass its length to C++.
+
+        The C buffer is blank-padded, not NUL-terminated, and the length is a
+        runtime property of the caller's actual argument, so nothing on the C++
+        side can recover it. Mirrors how an assumed-shape array passes SIZE.
+
+        Regression: ROSCO's GetRoot(GivenFil, RootName), both CHARACTER(*).
+        """
+        from vit.interface_gen import build_c_params
+        sig = FortranSignature(
+            name="GetRoot",
+            kind=SubprogramKind.SUBROUTINE,
+            args=[
+                FortranArg(name="GivenFil", fortran_type="CHARACTER(*)",
+                           intent=IntentKind.IN),
+                FortranArg(name="RootName", fortran_type="CHARACTER(*)",
+                           intent=IntentKind.OUT),
+            ],
+        )
+        params = build_c_params(sig, KIND_ALIASES)
+        assert params == [
+            ("char*", "GivenFil"), ("int", "len_GivenFil"),
+            ("char*", "RootName"), ("int", "len_RootName"),
+        ], params
+
+        wrapper = generate_fortran_wrapper(sig, KIND_ALIASES)
+        call_line = [l for l in wrapper.split("\n") if "getroot_c(" in l]
+        assert call_line, "expected a call to getroot_c"
+        assert "LEN(GivenFil)" in call_line[0], call_line[0]
+        assert "LEN(RootName)" in call_line[0], call_line[0]
+
+
 # === Run tests ===
 
 if __name__ == "__main__":

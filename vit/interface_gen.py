@@ -812,6 +812,15 @@ def build_c_params(sig: FortranSignature,
             # CHARACTER with fixed length > 1 or parameterized length → always pointer
             if (mapping.character_length and mapping.character_length > 1) or mapping.character_len_param:
                 params.append((f"{mapping.c_type}*", arg.name))
+                # Assumed-length CHARACTER(*) carries no length the C++ side can
+                # recover: the buffer is blank-padded, not NUL-terminated, and
+                # the length is a runtime property of the caller's actual
+                # argument. Pass it explicitly, exactly as an assumed-shape array
+                # passes SIZE. A parameterized length -- CHARACTER(n) where n is
+                # another dummy -- needs nothing extra, since n is already a
+                # parameter.
+                if mapping.character_len_param == "*":
+                    params.append(("int", f"len_{arg.name}"))
             # Scalar INTENT(OUT/INOUT) args must be pointers —
             # the Fortran BIND(C) interface passes them by reference (no VALUE).
             # This applies to both functions and subroutines.
@@ -971,6 +980,12 @@ def _build_interface_args(sig: FortranSignature,
                     "iface_name": arg.name,
                     "iface_decl": f"CHARACTER(KIND=C_CHAR), INTENT({intent_str}) :: {arg.name}(*)",
                 })
+                # See build_c_params: assumed-length needs an explicit length.
+                if mapping.character_len_param == "*":
+                    args.append({
+                        "iface_name": f"len_{arg.name}",
+                        "iface_decl": f"INTEGER(C_INT), VALUE :: len_{arg.name}",
+                    })
             # Scalar INTENT(OUT/INOUT) → by reference (no VALUE)
             elif arg.intent in (IntentKind.OUT, IntentKind.INOUT):
                 intent_str = arg.intent.value
@@ -1084,6 +1099,9 @@ def _build_wrapper_call_args(sig: FortranSignature,
         elif (mapping.character_length and mapping.character_length > 1) or mapping.character_len_param:
             # CHARACTER with fixed/parameterized length: pass local C_CHAR array
             call_args.append(f"{arg.name}_c")
+            # See build_c_params: assumed-length also passes its length.
+            if mapping.character_len_param == "*":
+                call_args.append(f"LEN({arg.name})")
         elif arg.intent in (IntentKind.OUT, IntentKind.INOUT):
             # INOUT/OUT scalars passed by reference (no conversion needed)
             call_args.append(arg.name)
