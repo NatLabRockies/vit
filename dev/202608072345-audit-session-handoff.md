@@ -67,22 +67,28 @@ Last: `20260807-234213`, 91 MB, four bundles verified.
 
 ## State at handoff
 
-*Updated 2026-08-08 08:26 local, before the audit session's second compaction.*
+*Updated 2026-08-08 11:28 local, after #46 and before the replication's first `/clear`.*
 
-Replication: **45 attempted — 40 integrated, 2 `integrated_unexercised`, 1 out of scope
+Replication: **46 attempted — 41 integrated, 2 `integrated_unexercised`, 1 out of scope
 (`AddToList`), 1 deferred (`ReadEmptyLine`), 1 blocked (`ExtController`), 0 failed.**
-Next is **#46 `CheckInputs`** — 857 lines of validation branches no scenario takes, with
-test-validate proposed instead of kernel replay. Expect a long, atypical cycle.
+Next is **#47** in plan order — confirm against `plan.json`, including its `phase` field.
 
-Heads at this point: `ROSCO-replication e164a3a`, `vit 306900e`, `KGen 5ac811f`.
+Heads at this point: `ROSCO-replication d84d07d`, `vit e6dd0d8`, `KGen 5ac811f`.
 
-**Translation correctness is 100% first-pass across all 40.** Not one wrong translation in the run.
+**Translation correctness is 100% first-pass across all 41.** Not one wrong translation in the run.
 Every verify failure has been infrastructure.
 
-**The gate was broken for the first 38 functions** and is now repaired (`41436ec`, `b908585`). HEAD
-is bit-identical, 351 channels, 0 mismatched, all functions jointly. Per-commit "regress 27/27"
-claims are void; joint tree-level bit-identity is what the dataset supports. Any "function N passed
-its gate" must come from a run after `b908585`. See `202608080346` and `202608080404`.
+**The gate was broken for the first 38 functions** and is now repaired (`41436ec`, `b908585`), then
+widened to **33 scenarios, 429 channels, 0 mismatched** by six added cases (`a9248f8`, addition-only:
+six new baselines, zero modified — confirmed by commit stat). HEAD is jointly bit-identical.
+Per-commit "regress 27/27" claims are void; joint tree-level bit-identity is what the dataset
+supports. Any "function N passed its gate" must come from a run after `b908585`. See `202608080346`
+and `202608080404`.
+
+**The two layers are not independent in the way the design assumes** — both view the C++ artifact,
+neither views the integration wrapper. `CheckInputs` (#46) would have shipped with every input
+validation silently disabled and both layers green; the harness rerun after integration caught it.
+See `202608081128`. Members of the same class already recorded: `sigma`, `unwrap`.
 
 
 **The per-function cost column has a four-function hole (#42–#45) that presents as four zeros** —
@@ -92,6 +98,15 @@ Twenty-odd tool fixes (VIT + KGen), several of them fails-green defects.
 
 **~~Open decision, the author's:~~ CLOSED at #34.** The control-layer redirect is moot. Plan order
 reached `ControllerBlocks.f90` at #32 and `Controllers.f90` at #34 unaided.
+
+**Open audit thread, safe to pursue now (read-only):** the campaign tree's committed sources do not
+contain implementations for 7 of its 53 built files — `discon.cpp`, `checkinputs.cpp`,
+`setparameters.cpp`, `readrestartfile.cpp`, `writerestartfile.cpp`, `debug.cpp`,
+`prefiltermeasuredsignals.cpp` are all one-line `// stub` at HEAD on `main` and
+`restart-validation`, and `checkinputs.cpp` is absent entirely on `integrated`. As committed that
+tree cannot link. Until it is known where the campaign's shipped sources live, **no campaign-side
+claim about any of those seven functions is available** — including the one I went looking for, a
+`CheckInputs` copy-back defect. See `202608081128`.
 
 ## Deferred until the run ends — do NOT do these now
 
@@ -145,6 +160,7 @@ Then, roughly by importance:
 | `202608080003` | `GetWords`: generic interfaces hide dead code; call-site choice fixes fixture shape; the mirror constraint's cost set against one line of `std::istringstream` |
 | `202608080010` | `Read_OL_Input`: the campaign solved allocate-on-return by hand and never generalised it; sixth fails-green shape; recommendation to translate #30/#31 under a fourth disposition |
 | `202608080058` | **Read first.** The false `kernel PASSED` stamp on `ExtController`; the agent's refusal beat my instruction; plan order reaches the control layer at #32 without a redirect |
+| `202608081128` | **Pairs with `202608080058`, and is the stronger exhibit.** The kernel verifies the translation, not the integration — both layers view the C++ artifact, neither views the wrapper. `CheckInputs` would have shipped with all 125 validations disabled, gate green in both directions. Defines the gate-invisible class (`sigma`, `unwrap`); fifth verification approach; third cost-attribution artifact |
 | `202608080128` | **Read second.** 30 campaign kernel bridges declare mismatched widths for the same argument, across 17 of 43 kernels; leaf-first left the whole callee-bridge path untested for 31 functions; third setup omission of mine |
 | `202608080204` | **Read third.** The campaign's gate went 9→27 scenarios and silently lost `Flp_Mode=2` coverage; `PIIController` is verified in the campaign and unreachable in the gate that ships with it. Fourth setup omission: extending the gate was campaign practice the runbook never carried |
 | `202608080218` | CLOSED, and wrong in its central claim — my sixth caught error, corrected at the head of the note. One gate run of 41 hit a stale library and was superseded before commit; all 36 final gates followed a good rebuild |
