@@ -502,7 +502,7 @@ def generate_c_struct_header(type_info: DerivedTypeInfo,
     return "\n".join(lines)
 
 
-def apply_type_strategies(registry: dict, type_strategies: dict) -> None:
+def apply_type_strategies(registry: dict, type_strategies: dict) -> list:
     """
     Apply type strategy overrides from config to a derived type registry.
 
@@ -512,13 +512,39 @@ def apply_type_strategies(registry: dict, type_strategies: dict) -> None:
 
     Args:
         registry: Dict mapping type_name → DerivedTypeInfo (modified in place)
-        type_strategies: Dict mapping type_name → strategy string from config
+        type_strategies: type_name → "view"/"bind_c", or the vit.yaml shape
+                         {"strategy": "view"}
+
+    Returns:
+        The type names that matched nothing in this registry. Not an error --
+        vit.yaml declares strategies for a whole campaign and any one function
+        sees only some of them -- but the caller must be able to say so.
+
+    Accepts both the flattened form and the raw vit.yaml form. It used to assign
+    whatever it was given straight to `view_strategy`, so the nested form
+    `{"strategy": "view"}` set the attribute to a DICT: truthy, never equal to
+    "view", so every downstream check failed and the type was treated as
+    passthrough and dropped from the C++ signature entirely. Nothing raised and
+    nothing warned. Anything that is neither shape now raises, because a
+    strategy the code cannot read must not look like a strategy it declined to
+    apply.
     """
+    known = {"view", "bind_c"}
+    unmatched = []
     for type_name, strategy in type_strategies.items():
+        if isinstance(strategy, dict):
+            strategy = strategy.get("strategy")
+        if not isinstance(strategy, str) or strategy not in known:
+            raise ValueError(
+                f"type strategy for {type_name!r} is {strategy!r}; expected one of "
+                f"{sorted(known)}, either directly or as {{'strategy': ...}}")
         for key, info in registry.items():
             if key.upper() == type_name.upper():
                 info.view_strategy = strategy
                 break
+        else:
+            unmatched.append(type_name)
+    return unmatched
 
 
 def _lookup_type(registry: dict, type_name: str) -> Optional[DerivedTypeInfo]:

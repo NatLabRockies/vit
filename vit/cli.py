@@ -416,6 +416,7 @@ def cmd_extract(args, config):
             assumed_size_arrays=assumed_size or None,
             preprocessor_defines=config.preprocessor_defines or None,
             dll_persistence=config.dll_persistence or None,
+            add_source_cmd=config.add_source_cmd,
             function_name=args.function_name,
             dry_run=args.dry_run,
         )
@@ -1395,6 +1396,9 @@ def cmd_test_validate(args, config):
         cpp_file=cpp_file_abs,
         patched_source=patched_source_name,
         callee_bridge=bool(callee_src),
+        fortran_compiler=config.fortran_compiler,
+        cxx_compiler=config.cxx_compiler,
+        fortran_runtime_libs=config.fortran_runtime_libs,
     )
     makefile_path = out_dir / "Makefile"
     makefile_path.write_text(makefile_text)

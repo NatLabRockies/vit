@@ -760,6 +760,7 @@ def generate_state_capture_build_script(
     assumed_size_arrays: dict = None,
     dll_persistence: dict = None,
     state_dir: str = "state",
+    add_source_cmd: str = "",
 ) -> str:
     """
     Generate a shell script that wraps the build command for state capture.
@@ -907,7 +908,38 @@ def generate_state_capture_build_script(
             '        fi',
             '        # Add kgen_utils.f90 only if not already present',
             '        if ! grep -q "kgen_utils.f90" "$CMAKE_FILE"; then',
-            r"""            sed -i '0,/^\( *src\/[A-Za-z_]*\.f90\)$/s//\1\n    src\/kgen_utils.f90/' "$CMAKE_FILE" """,
+        ])
+        if add_source_cmd:
+            # An explicit override, for a build file the default cannot match.
+            # A heuristic that can be replaced is a heuristic; one that cannot
+            # is a requirement on every future codebase.
+            script_lines.append(f'            ( {add_source_cmd} )')
+        else:
+            # Insert after the first Fortran source entry in the list.
+            #
+            # The old pattern was `^\\( *src\\/[A-Za-z_]*\\.f90\\)$`, which
+            # assumed a `src/` prefix, a lowercase `.f90` extension, and file
+            # names free of digits, hyphens and dots. It is widened here to any
+            # path and any Fortran extension -- but widening a heuristic is not
+            # the fix, because the next layout will break it too.
+            script_lines.append(
+                r"""            sed -i -E '0,/^([[:space:]]*"?[A-Za-z0-9_.\/${}-]+\.([fF]|[fF]9[05]|[fF]0[38])"?)$/s//\1\n    src\/kgen_utils.f90/' "$CMAKE_FILE" """)
+        script_lines.extend([
+            # THE FIX THAT MATTERS. The success message below used to print
+            # unconditionally, so a sed that matched nothing announced that it
+            # had patched the file. The build then succeeded, the shared library
+            # linked with kgen_init_vars/kgen_check_save unresolved (a Linux .so
+            # permits that), the simulation ran, and the only symptom was an
+            # empty capture reported as "No state data captured" -- with nothing
+            # pointing back here. See dev note 202608071141.
+            '            if ! grep -q "kgen_utils.f90" "$CMAKE_FILE"; then',
+            '                echo "VIT ERROR: could not add kgen_utils.f90 to $CMAKE_FILE." >&2',
+            '                echo "  The source list did not match the expected shape." >&2',
+            '                echo "  Set kgen.add_source_cmd in vit.yaml to a command that adds" >&2',
+            '                echo "  src/kgen_utils.f90 to this build file, e.g.:" >&2',
+            r'''                echo "    add_source_cmd: sed -i '/^set(SOURCES/a\\    src/kgen_utils.f90' \\"\$CMAKE_FILE\\"" >&2''',
+            '                exit 1',
+            '            fi',
             '            echo "VIT: Patched CMakeLists.txt to include kgen_utils.f90"',
         ])
         # Reconfigure cmake so it picks up the new source file.
@@ -923,6 +955,12 @@ def generate_state_capture_build_script(
             ])
         script_lines.extend([
             '        fi',
+            '    else',
+            # `cmake_file` was configured, so its absence is a misconfiguration
+            # and not a reason to carry on. Skipping quietly here produced the
+            # same empty capture as a failed sed, one step earlier.
+            '        echo "VIT ERROR: cmake_file is configured but $CMAKE_FILE does not exist." >&2',
+            '        exit 1',
             "    fi",
         ])
 
@@ -1476,6 +1514,7 @@ def run_kgen_extract(
     assumed_size_arrays: Optional[dict] = None,
     preprocessor_defines: Optional[list[str]] = None,
     dll_persistence: Optional[dict] = None,
+    add_source_cmd: str = "",
     env: Optional[dict] = None,
     function_name: str = "",
     dry_run: bool = False,
@@ -1560,6 +1599,7 @@ def run_kgen_extract(
         assumed_size_arrays=assumed_size_arrays,
         dll_persistence=dll_persistence,
         state_dir=os.path.join(output_dir or ".", "state"),
+        add_source_cmd=add_source_cmd,
     )
     effective_build_cmd = f"bash {wrapper_script}"
 

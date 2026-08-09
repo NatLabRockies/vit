@@ -615,3 +615,45 @@ class TestAllocatableSkeleton:
         sig = _make_sig_with_derived_type()
         skeleton = generate_test_harness_skeleton(sig)
         assert "void*" in skeleton
+
+
+def _sig(src: str, name: str):
+    from vit.fortran_parser import parse_signature_from_source
+    return parse_signature_from_source(src, name)
+
+
+# --------------------------------------------------------------------------
+# The toolchain is configuration, not a literal.
+
+def test_the_makefile_honours_the_configured_compilers():
+    """`FC = gfortran` and `CXX = g++` were literals in a generator whose
+    Fortran compiler is a vit.yaml field. A campaign on ifx or flang got a
+    Makefile naming a compiler it does not have."""
+    from vit.test_validate import generate_test_makefile
+    sig = _sig("SUBROUTINE Foo(x)\n  REAL(8), INTENT(IN) :: x\nEND SUBROUTINE Foo", "Foo")
+    mk = generate_test_makefile(sig=sig, build_dir="/b", source_dir="/s",
+                                fortran_compiler="ifx", cxx_compiler="icpx")
+    assert "FC = ifx" in mk and "CXX = icpx" in mk
+    assert "FC = gfortran" not in mk
+
+
+def test_the_fortran_runtime_follows_the_compiler():
+    """The harness links with $(CXX), so nothing pulls in the Fortran runtime.
+    `-lgfortran -lm` was hardcoded; on another toolchain that is an undefined
+    symbol naming `_gfortran_*`, which reads as a source problem rather than a
+    configuration one."""
+    from vit.test_validate import fortran_runtime_for, generate_test_makefile
+    assert fortran_runtime_for("gfortran") == "-lgfortran -lm"
+    assert "-lifcore" in fortran_runtime_for("ifx")
+    assert "-lifcore" in fortran_runtime_for("/opt/intel/bin/ifort"), "a path must resolve"
+    # An unknown compiler must not pretend to know.
+    assert "set fortran.runtime_libs" in fortran_runtime_for("some-vendor-fc")
+
+    sig = _sig("SUBROUTINE Foo(x)\n  REAL(8), INTENT(IN) :: x\nEND SUBROUTINE Foo", "Foo")
+    mk = generate_test_makefile(sig=sig, build_dir="/b", source_dir="/s",
+                                fortran_compiler="ifx")
+    assert "-lifcore" in mk and "-lgfortran" not in mk
+    # And an explicit setting wins over the table.
+    mk = generate_test_makefile(sig=sig, build_dir="/b", source_dir="/s",
+                                fortran_compiler="ifx", fortran_runtime_libs="-lmyrt")
+    assert "LIBS += -lmyrt" in mk
