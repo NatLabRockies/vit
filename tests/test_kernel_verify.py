@@ -1062,3 +1062,48 @@ class TestNaNPatchingEdgeCases:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestVacuousPass:
+    """A kernel that compared nothing must not report success.
+
+    KGen prints "Verification PASSED" for a case in which it compared zero
+    output variables -- which happens when the call site's result never lands
+    in a captured variable, e.g. CurTime(), whose value goes straight into a
+    WRITE. See DECISIONS.md, CurTime (#21).
+    """
+
+    def test_zero_output_variables_is_not_a_pass(self):
+        output = "\n".join([
+            " ***************** Verification against 'CurTime.0.0.1' *****************",
+            " Number of output variables:            0",
+            " Number of identical variables:            0",
+            " Verification PASSED with CurTime.0.0.1",
+            "    Total number of verification cases  :     1",
+            "    Number of verification-passed cases :     1",
+        ])
+        result = _parse_verify_output(output, 1e-14)
+        assert not result.success
+        assert any("0 output variables" in d.get("line", "") for d in result.details)
+
+    def test_nonzero_output_variables_still_passes(self):
+        output = "\n".join([
+            " ***************** Verification against 'saturate.0.0.1' *****************",
+            " Number of output variables:            3",
+            " Number of identical variables:            3",
+            " Verification PASSED with saturate.0.0.1",
+            "    Total number of verification cases  :     1",
+            "    Number of verification-passed cases :     1",
+        ])
+        result = _parse_verify_output(output, 1e-14)
+        assert result.success
+
+    def test_missing_line_leaves_behaviour_unchanged(self):
+        # Output shapes without the line at all must not be treated as zero.
+        output = "\n".join([
+            " Verification PASSED with saturate.0.0.1",
+            "    Total number of verification cases  :     1",
+            "    Number of verification-passed cases :     1",
+        ])
+        result = _parse_verify_output(output, 1e-14)
+        assert result.success

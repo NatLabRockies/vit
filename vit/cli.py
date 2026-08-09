@@ -416,6 +416,7 @@ def cmd_extract(args, config):
             assumed_size_arrays=assumed_size or None,
             preprocessor_defines=config.preprocessor_defines or None,
             dll_persistence=config.dll_persistence or None,
+            function_name=args.function_name,
             dry_run=args.dry_run,
         )
 
@@ -547,9 +548,14 @@ def cmd_translate(args, config):
     out_path = out_dir / f"{sig.name.lower()}.cpp"
     if out_path.exists():
         existing_scaffold = out_path.read_text()
-        if "// TODO:" not in existing_scaffold:
+        if "// TODO:" in existing_scaffold:
+            # Still an untouched placeholder: refresh it. The signature can
+            # change between runs -- a type fix, or a new argument appearing --
+            # and a stale scaffold silently hands the translator the wrong one.
             out_path.write_text(scaffold)
-        # else: don't overwrite an existing implementation
+        else:
+            # Contains a hand-written implementation. Never clobber it.
+            print(f"  Kept existing implementation, scaffold NOT regenerated: {out_path}")
     else:
         out_path.write_text(scaffold)
 
@@ -783,6 +789,36 @@ def cmd_verify(args, config):
     return 0 if verify_result.success else 1
 
 
+def _sync_shared_files(config) -> list:
+    """Copy shared headers/sources into source_dir so the production build sees them.
+
+    kernel verification copies shared_files into the kernel directory, so a new
+    shared header works there immediately. The production build compiles out of
+    source_dir and had no such step -- the header had to be copied by hand, and
+    nothing failed until a later integration included it. Same list, same files,
+    one less manual step to forget.
+    """
+    messages = []
+    shared = getattr(config, "shared_files", None) or []
+    if not shared:
+        return messages
+    src = Path(getattr(config, "source_dir", "") or "")
+    if not src.is_dir():
+        return messages
+    for rel in shared:
+        origin = Path(rel)
+        if not origin.is_file():
+            continue
+        dest = src / origin.name
+        if dest.resolve() == origin.resolve():
+            continue
+        if dest.exists() and dest.read_bytes() == origin.read_bytes():
+            continue
+        shutil.copy2(str(origin), str(dest))
+        messages.append(f"Synced shared file: {dest}")
+    return messages
+
+
 def cmd_integrate(args, config):
     """Generate integration plan."""
     if args.file:
@@ -813,6 +849,9 @@ def cmd_integrate(args, config):
     if args.apply:
         print("\nApplying integration plan...")
         result = apply_integration_plan(plan, dry_run=args.dry_run)
+        if not args.dry_run:
+            for line in _sync_shared_files(config):
+                print(f"  {line}")
         for action in result["applied"]:
             print(f"  {action}")
         for error in result["errors"]:
@@ -1258,6 +1297,7 @@ def cmd_test_validate(args, config):
         generate_test_harness_skeleton,
         generate_test_makefile,
         generate_test_validate_prompt,
+        generate_callee_bridges,
     )
     from .translate import _extract_function_text
 
@@ -1328,6 +1368,19 @@ def cmd_test_validate(args, config):
         patched_source_name = patched_name
         print(f"  Function is PRIVATE — patched source: {patched_path}")
 
+    # Callee bridges: `<callee>_c` symbols the translation calls, backed by the
+    # ORIGINAL Fortran. Without these only leaf functions link, which excludes
+    # most of a campaign.
+    callee_src = None
+    if args.cpp_file and Path(args.cpp_file).is_file():
+        callee_src, callee_notes = generate_callee_bridges(
+            Path(args.cpp_file).read_text(), sig.name, config.abs_source_dir,
+            config.kind_aliases, derived_types)
+        for n in callee_notes:
+            print(f"  callee: {n}")
+        if callee_src:
+            (out_dir / f"{sig.name.lower()}_callees.f90").write_text(callee_src)
+
     # Generate and write Makefile
     cpp_file_abs = str(Path(args.cpp_file).resolve()) if args.cpp_file else None
     makefile_text = generate_test_makefile(
@@ -1341,6 +1394,7 @@ def cmd_test_validate(args, config):
         shared_files=shared_files,
         cpp_file=cpp_file_abs,
         patched_source=patched_source_name,
+        callee_bridge=bool(callee_src),
     )
     makefile_path = out_dir / "Makefile"
     makefile_path.write_text(makefile_text)

@@ -227,16 +227,34 @@ class TestAttribution:
         assert per_function["saturate"]["tok_out"] == 500
         assert buckets["unattributed"]["records"] == 0
 
-    def test_record_between_spans_is_unattributed_not_dropped(self, tmp_path):
+    def test_record_between_spans_is_boundary_not_dropped(self, tmp_path):
+        """Inter-function work is derived from the gap, not bracketed.
+
+        The joiner already knows both surrounding spans, so a record between
+        them is boundary work by construction. Calling it `unattributed`
+        implied attribution had failed when it had not.
+        """
         events = (self.cycle("saturate", "2026-08-07T10:00:00Z", "2026-08-07T10:10:00Z")
                   + self.cycle("wrap_180", "2026-08-07T11:00:00Z", "2026-08-07T11:10:00Z"))
         (per_function, buckets), _ = self.build(
             tmp_path, events,
             [usage_record("2026-08-07T10:30:00Z", "req-gap", out=900)],
         )
-        assert buckets["unattributed"]["tok_out"] == 900
+        assert buckets["boundary"]["tok_out"] == 900
+        assert buckets["unattributed"]["tok_out"] == 0
         assert per_function["saturate"]["tok_out"] == 0
         assert per_function["wrap_180"]["tok_out"] == 0
+
+    def test_unattributed_only_when_no_spans_exist(self, tmp_path):
+        """The remaining meaning of `unattributed`: the caller pointed at
+        transcripts from a project with no cycle log, so nothing can be
+        placed. That is worth a loud number."""
+        (per_function, buckets), _ = self.build(
+            tmp_path, [],
+            [usage_record("2026-08-07T10:30:00Z", "req-lost", out=900)],
+        )
+        assert buckets["unattributed"]["tok_out"] == 900
+        assert buckets["boundary"]["tok_out"] == 0
 
     def test_record_before_first_span_is_session_overhead(self, tmp_path):
         (per_function, buckets), _ = self.build(
@@ -270,9 +288,12 @@ class TestAttribution:
         ]
         (per_function, buckets), _ = self.build(tmp_path, events, records)
         total = (sum(t["tok_out"] for t in per_function.values())
-                 + buckets["session_overhead"]["tok_out"]
-                 + buckets["unattributed"]["tok_out"])
+                 + sum(b["tok_out"] for b in buckets.values()))
         assert total == 31
+        # 1 before the first span, 2 and 8 inside spans, 4 and 16 in gaps.
+        assert buckets["session_overhead"]["tok_out"] == 1
+        assert buckets["boundary"]["tok_out"] == 20
+        assert buckets["unattributed"]["tok_out"] == 0
 
     def test_model_is_read_from_the_transcript(self, tmp_path):
         (per_function, _), _ = self.build(

@@ -437,6 +437,8 @@ def _field_to_iso_c_decl(f: DerivedTypeField, kind_aliases: Optional[dict]) -> O
     # The populator handles the conversion explicitly.
     if f.fortran_type.upper().startswith("LOGICAL"):
         return f"LOGICAL(C_BOOL) :: {f.name} = .FALSE."
+    if mapping.c_type.startswith("vit_complex_"):
+        return f"{mapping.iso_c_type} :: {f.name} = (0, 0)"
     return f"{mapping.iso_c_type} :: {f.name} = 0"
 
 
@@ -459,6 +461,8 @@ def _scalar_assignment(f: DerivedTypeField, kind_aliases: Optional[dict]) -> Opt
     if f.fortran_type.upper().startswith("LOGICAL"):
         return f"view%{f.name} = LOGICAL(src%{f.name}, C_BOOL)"
 
+    if mapping.c_type.startswith("vit_complex_"):
+        return f"view%{f.name} = src%{f.name}"
     iso_type = mapping.iso_c_type  # e.g., "REAL(C_DOUBLE)", "INTEGER(C_INT)"
     if iso_type.startswith("REAL("):
         c_kind = mapping.c_kind  # e.g., "C_DOUBLE"

@@ -330,7 +330,20 @@ def attribute(usage_records, spans):
       <function>        inside that function's span
       session_overhead  compaction records, and everything before the first
                         span in a session (session startup)
-      unattributed      outside every span, and not overhead
+      boundary          between one function's last command and the next
+                        function's first: committing, recording findings,
+                        reporting, deciding what is next
+      unattributed      no spans exist at all, so nothing can be placed
+
+    `boundary` is derived, not bracketed. A record in the gap between two
+    spans is inter-function work by construction, and the joiner already
+    knows both spans, so nothing needs to log it. Calling it `unattributed`
+    was wrong: that word means attribution failed, and here it did not.
+    Boundary work is real project cost that belongs to no single function,
+    which is a different thing from cost we cannot place.
+
+    In practice `unattributed` is now non-empty only when the caller points
+    at the wrong transcripts, which is worth a loud number.
 
     Returns (per_function, buckets). Both map name -> token totals plus a
     record count.
@@ -338,7 +351,11 @@ def attribute(usage_records, spans):
     per_function = OrderedDict((s["function"], _blank_totals()) for s in spans)
     for span in spans:
         per_function[span["function"]]["models"] = set()
-    buckets = {"session_overhead": _blank_totals(), "unattributed": _blank_totals()}
+    buckets = {
+        "session_overhead": _blank_totals(),
+        "boundary": _blank_totals(),
+        "unattributed": _blank_totals(),
+    }
     for bucket in buckets.values():
         bucket["sessions"] = set()
 
@@ -358,12 +375,15 @@ def attribute(usage_records, spans):
             _add_usage(per_function[holder], record["_usage"])
             if record["_model"]:
                 per_function[holder]["models"].add(record["_model"])
-        elif first_start is not None and timestamp < first_start:
+        elif first_start is None:
+            _add_usage(buckets["unattributed"], record["_usage"])
+            buckets["unattributed"]["sessions"].add(record["_session"])
+        elif timestamp < first_start:
             _add_usage(buckets["session_overhead"], record["_usage"])
             buckets["session_overhead"]["sessions"].add(record["_session"])
         else:
-            _add_usage(buckets["unattributed"], record["_usage"])
-            buckets["unattributed"]["sessions"].add(record["_session"])
+            _add_usage(buckets["boundary"], record["_usage"])
+            buckets["boundary"]["sessions"].add(record["_session"])
     return per_function, buckets
 
 

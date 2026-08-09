@@ -377,6 +377,120 @@ def find_call_sites(source_dir: str, function_name: str,
     return results
 
 
+# Construct openers, and the END keyword that closes each. Matched against the
+# logical statement with comments stripped and whitespace collapsed.
+_BLOCK_OPENERS = [
+    (re.compile(r"^(?:\w+\s*:\s*)?IF\b.*\bTHEN$"), "IF"),
+    (re.compile(r"^(?:\w+\s*:\s*)?DO\b"), "DO"),
+    (re.compile(r"^(?:\w+\s*:\s*)?SELECT\s*(?:CASE|TYPE)\b"), "SELECT"),
+    (re.compile(r"^(?:\w+\s*:\s*)?WHERE\s*\(.*\)$"), "WHERE"),
+    (re.compile(r"^(?:\w+\s*:\s*)?FORALL\s*\(.*\)$"), "FORALL"),
+    (re.compile(r"^(?:\w+\s*:\s*)?ASSOCIATE\b"), "ASSOCIATE"),
+    (re.compile(r"^(?:\w+\s*:\s*)?BLOCK$"), "BLOCK"),
+]
+
+_END_PATTERNS = {
+    "IF": re.compile(r"^END\s*IF\b"),
+    "DO": re.compile(r"^END\s*DO\b"),
+    "SELECT": re.compile(r"^END\s*SELECT\b"),
+    "WHERE": re.compile(r"^END\s*WHERE\b"),
+    "FORALL": re.compile(r"^END\s*FORALL\b"),
+    "ASSOCIATE": re.compile(r"^END\s*ASSOCIATE\b"),
+    "BLOCK": re.compile(r"^END\s*BLOCK\b"),
+}
+
+
+def _logical_stmt(lines: list, idx: int) -> str:
+    """
+    Normalize one source line into a comparable statement: strip a trailing
+    comment, drop a trailing continuation marker, collapse whitespace, uppercase.
+
+    Comment stripping is quote-aware, so a '!' inside a string literal is kept.
+    """
+    raw = lines[idx]
+    out = []
+    quote = None
+    for ch in raw:
+        if quote:
+            out.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+        elif ch == "!":
+            break
+        else:
+            out.append(ch)
+    text = "".join(out).strip()
+    if text.endswith("&"):
+        text = text[:-1].strip()
+    return re.sub(r"\s+", " ", text).upper()
+
+
+def _joined_stmt(lines: list, start_idx: int, end_idx: int) -> str:
+    """Join a continued statement into one normalized line."""
+    return re.sub(
+        r"\s+", " ",
+        " ".join(_logical_stmt(lines, i) for i in range(start_idx, end_idx + 1))
+    ).strip()
+
+
+def _extend_to_block_end(lines: list, start_idx: int, end_idx: int) -> int:
+    """
+    If the statement at start_idx..end_idx opens a block construct, return the
+    index of its matching END statement. Otherwise return end_idx unchanged.
+
+    Nested constructs of any kind are counted, so the returned END is the one
+    that actually closes this construct. ELSE / ELSE IF / CASE / TYPE IS are
+    continuations, not openers, and do not affect the depth.
+
+    An unterminated construct (no matching END before end of file) returns
+    end_idx unchanged rather than raising -- the caller's existing behaviour is
+    then no worse than before this function existed.
+    """
+    stmt = _joined_stmt(lines, start_idx, end_idx)
+
+    kind = None
+    for pattern, name in _BLOCK_OPENERS:
+        if pattern.match(stmt):
+            kind = name
+            break
+    if kind is None:
+        return end_idx
+
+    # A DO with a numeric label terminates on that label, not END DO. Rare in
+    # modern code and not handled; leave it alone rather than guess.
+    if kind == "DO" and re.match(r"^(?:\w+\s*:\s*)?DO\s+\d+\b", stmt):
+        return end_idx
+
+    end_pattern = _END_PATTERNS[kind]
+    depth = 1
+    i = end_idx + 1
+    while i < len(lines):
+        # Skip continuation lines: only consider statement starts.
+        if i > 0 and _logical_stmt(lines, i - 1).endswith("&"):
+            i += 1
+            continue
+        current = _logical_stmt(lines, i)
+        if not current:
+            i += 1
+            continue
+
+        if end_pattern.match(current):
+            depth -= 1
+            if depth == 0:
+                return i
+        else:
+            for pattern, name in _BLOCK_OPENERS:
+                if name == kind and pattern.match(current):
+                    depth += 1
+                    break
+        i += 1
+
+    return end_idx
+
+
 def insert_kgen_pragma(filepath: str, line_number: int,
                        function_name: str = "",
                        output_path: Optional[str] = None) -> str:
@@ -416,6 +530,17 @@ def insert_kgen_pragma(filepath: str, line_number: int,
     # Check if this line continues on the next line
     while end_idx < len(lines) - 1 and lines[end_idx].rstrip().endswith("&"):
         end_idx += 1
+
+    # If the statement OPENS A BLOCK, extend to its terminator.
+    #
+    # A call embedded in a construct header -- most often
+    # `IF (cond .AND. .NOT. f(x)) THEN` -- is a legitimate call site, but
+    # wrapping only the header puts an unterminated IF inside the callsite
+    # region. KGen then emits a malformed kernel: the construct's body is
+    # dropped and its END statement is re-emitted out of order. The failure
+    # surfaces as a Fortran syntax error in the generated kernel, far from its
+    # cause.
+    end_idx = _extend_to_block_end(lines, start_idx, end_idx)
 
     # Insert pragmas (KGen requires underscores and function name)
     indent = len(lines[start_idx]) - len(lines[start_idx].lstrip())
@@ -1352,6 +1477,7 @@ def run_kgen_extract(
     preprocessor_defines: Optional[list[str]] = None,
     dll_persistence: Optional[dict] = None,
     env: Optional[dict] = None,
+    function_name: str = "",
     dry_run: bool = False,
 ) -> dict:
     """
@@ -1479,7 +1605,8 @@ def run_kgen_extract(
 
         # Count state data files (in kernel dir — that's where KGen puts them)
         if result["kernel_dir"]:
-            result["state_cases"] = count_kernel_cases(result["kernel_dir"])
+            result["state_cases"] = count_kernel_cases(
+                result["kernel_dir"], function_name)
             result["success"] = True
 
             # Deduplicate kgen_statefile.lst. KGen's ElapsedTime phase
@@ -1530,19 +1657,37 @@ def run_kgen_extract(
     return result
 
 
-def count_kernel_cases(kernel_dir: str) -> int:
+def count_kernel_cases(kernel_dir: str, function_name: Optional[str] = None) -> int:
     """
-    Count the number of KGen state data files in a directory.
+    Count the KGen state data files for `function_name` in a directory.
 
-    KGen state files are named like: <function>.0.0.1, <function>.0.0.2, etc.
+    KGen state files are named <function>.<rank>.<thread>.<invocation>, e.g.
+    saturate.0.0.1.
+
+    **Pass function_name.** Without it this counts any function's state files,
+    and a stale file left by a previous extraction is indistinguishable from a
+    real capture. That turns the one loud failure mode extraction has -- "no
+    state data captured" -- into a silent wrong answer: `vit extract` reports
+    success with a case count for a call site that never executed, and the
+    kernel then replays another function's state.
+
+    Found in the ROSCO replication extracting CurDate, whose only call site is
+    behind `IF (CntrPar%Echo > 0)` and is dead in all 27 scenarios. Extraction
+    reported "Cases: 1"; the file was AddToList.0.0.1 from the previous
+    function. See DECISIONS.md, CurDate (#26).
+
+    The name is matched case-insensitively: KGen lowercases in some paths, and a
+    case-sensitive match would under-count and report a false zero, which is the
+    same defect pointing the other way.
     """
     if not os.path.isdir(kernel_dir):
         return 0
 
-    count = 0
-    for item in os.listdir(kernel_dir):
-        # Match pattern: name.N.N.N (e.g., saturate.0.0.1)
-        if re.match(r'.+\.\d+\.\d+\.\d+$', item):
-            count += 1
+    if function_name:
+        pattern = re.compile(
+            r'^' + re.escape(function_name) + r'\.\d+\.\d+\.\d+$',
+            re.IGNORECASE)
+    else:
+        pattern = re.compile(r'.+\.\d+\.\d+\.\d+$')
 
-    return count
+    return sum(1 for item in os.listdir(kernel_dir) if pattern.match(item))

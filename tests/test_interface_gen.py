@@ -566,8 +566,143 @@ class TestGenerateKernelCalleeBridge:
         assert "RESULT" in bridge or "bridge_result" in bridge
         assert "ComputeValue" in bridge
 
+    def test_logical_in_arg_converted_to_int(self):
+        """Fortran LOGICAL passed to an INTEGER(C_INT) parameter needs MERGE.
+
+        type_map.py maps LOGICAL/LOGICAL(4) to INTEGER(C_INT) -- correct memory
+        layout, but Fortran will not pass one as the other. Without an explicit
+        conversion gfortran rejects the generated wrapper with
+        "Type mismatch in argument 'reset'; passed LOGICAL(4) to INTEGER(4)".
+
+        Regression: ROSCO's HPFilter(..., reset, ...).
+        """
+        sig = FortranSignature(
+            name="HPFilter",
+            kind=SubprogramKind.FUNCTION,
+            args=[
+                FortranArg(name="InputSignal", fortran_type="REAL(DbKi)",
+                           intent=IntentKind.IN),
+                FortranArg(name="reset", fortran_type="LOGICAL(4)",
+                           intent=IntentKind.IN),
+            ],
+            result_type="REAL(DbKi)",
+            result_name="HPFilter_result",
+        )
+        wrapper = generate_fortran_wrapper(sig, KIND_ALIASES)
+        call_line = [l for l in wrapper.split("\n") if "hpfilter_c(" in l]
+        assert call_line, "expected a call to hpfilter_c in the wrapper"
+        assert "MERGE(1_C_INT, 0_C_INT, reset)" in call_line[0], (
+            "LOGICAL arg must be converted, got: " + call_line[0])
+
+
+    def test_assumed_length_character_gets_explicit_length_param(self):
+        """CHARACTER(*) must pass its length to C++.
+
+        The C buffer is blank-padded, not NUL-terminated, and the length is a
+        runtime property of the caller's actual argument, so nothing on the C++
+        side can recover it. Mirrors how an assumed-shape array passes SIZE.
+
+        Regression: ROSCO's GetRoot(GivenFil, RootName), both CHARACTER(*).
+        """
+        from vit.interface_gen import build_c_params
+        sig = FortranSignature(
+            name="GetRoot",
+            kind=SubprogramKind.SUBROUTINE,
+            args=[
+                FortranArg(name="GivenFil", fortran_type="CHARACTER(*)",
+                           intent=IntentKind.IN),
+                FortranArg(name="RootName", fortran_type="CHARACTER(*)",
+                           intent=IntentKind.OUT),
+            ],
+        )
+        params = build_c_params(sig, KIND_ALIASES)
+        assert params == [
+            ("char*", "GivenFil"), ("int", "len_GivenFil"),
+            ("char*", "RootName"), ("int", "len_RootName"),
+        ], params
+
+        wrapper = generate_fortran_wrapper(sig, KIND_ALIASES)
+        call_line = [l for l in wrapper.split("\n") if "getroot_c(" in l]
+        assert call_line, "expected a call to getroot_c"
+        assert "LEN(GivenFil)" in call_line[0], call_line[0]
+        assert "LEN(RootName)" in call_line[0], call_line[0]
+
 
 # === Run tests ===
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestAllocateOnReturn:
+    """INTENT(OUT) ALLOCATABLE dummies: the callee decides the extent.
+
+    The old behaviour passed SIZE(x) INTO the C function -- undefined on an
+    unallocated array -- and dropped the ALLOCATABLE attribute from the wrapper
+    dummy, leaving an interface that no longer matched the call site.
+    """
+
+    def _sig(self, rank=2):
+        dims = ":,:" if rank == 2 else ":"
+        return FortranSignature(
+            name="reader",
+            kind=SubprogramKind.SUBROUTINE,
+            args=[
+                FortranArg(name="n", fortran_type="INTEGER(IntKi)",
+                           intent=IntentKind.IN),
+                FortranArg(name="Chan", fortran_type="REAL(DbKi)",
+                           intent=IntentKind.OUT, is_array=True,
+                           array_dims=dims, is_allocatable=True),
+            ],
+        )
+
+    def test_c_params_are_pointer_to_pointer_plus_extents(self):
+        params = build_c_params(self._sig(), KIND_ALIASES)
+        assert params[0] == ("int", "n")
+        assert params[1] == ("double**", "Chan")
+        assert params[2] == ("int*", "n_Chan_rows")
+        assert params[3] == ("int*", "n_Chan_cols")
+        # Crucially: no by-value SIZE going IN.
+        assert ("int", "n_Chan_rows") not in params
+
+    def test_rank1_gets_one_extent(self):
+        params = build_c_params(self._sig(rank=1), KIND_ALIASES)
+        assert params[1] == ("double**", "Chan")
+        assert params[2] == ("int*", "n_Chan")
+
+    def test_wrapper_keeps_allocatable_and_allocates_after_the_call(self):
+        wrapper = generate_fortran_wrapper(self._sig(), KIND_ALIASES)
+        assert "REAL(8), INTENT(OUT), ALLOCATABLE :: Chan(:,:)" in wrapper
+        # The handshake, in order: seed null, call, then allocate/copy/free.
+        assert "Chan_cptr = C_NULL_PTR" in wrapper
+        assert wrapper.index("CALL reader_c(") < wrapper.index("IF (C_ASSOCIATED(Chan_cptr))")
+        assert "ALLOCATE(Chan(n_Chan_rows, n_Chan_cols))" in wrapper
+        assert "Chan = Chan_fptr" in wrapper
+        assert "CALL vit_free(Chan_cptr)" in wrapper
+
+    def test_vit_free_interface_is_local_to_the_wrapper(self):
+        """Two translated functions in one module must not both declare it."""
+        wrapper = generate_fortran_wrapper(self._sig(), KIND_ALIASES)
+        iface = wrapper.index("SUBROUTINE vit_free")
+        body = wrapper.index("SUBROUTINE reader(")
+        assert iface > body
+
+    def test_interface_block_passes_c_ptr_out(self):
+        block = generate_fortran_interface_block(self._sig(), KIND_ALIASES)
+        assert "TYPE(C_PTR), INTENT(OUT) :: Chan_cptr" in block
+        assert "INTEGER(C_INT), INTENT(OUT) :: n_Chan_rows" in block
+        assert "INTEGER(C_INT), INTENT(OUT) :: n_Chan_cols" in block
+
+    def test_inout_allocatable_is_not_covered(self):
+        """Reallocating an array that already has contents is a different case."""
+        sig = FortranSignature(
+            name="grow",
+            kind=SubprogramKind.SUBROUTINE,
+            args=[
+                FortranArg(name="Lst", fortran_type="REAL(DbKi)",
+                           intent=IntentKind.INOUT, is_array=True,
+                           array_dims=":", is_allocatable=True),
+            ],
+        )
+        params = build_c_params(sig, KIND_ALIASES)
+        assert params[0] == ("double*", "Lst")

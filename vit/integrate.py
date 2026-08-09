@@ -21,6 +21,7 @@ from .interface_gen import (
     generate_fortran_interface_block,
     generate_fortran_wrapper,
     build_c_params,
+    result_is_out_param,
 )
 
 
@@ -289,7 +290,17 @@ def apply_integration_plan(plan: IntegrationPlan, dry_run: bool = False) -> dict
                 else:
                     content = Path(patch.filepath).read_text()
                     if patch.original_snippet and patch.replacement_snippet:
-                        if patch.original_snippet in content:
+                        # Re-applying an integration used to corrupt the source
+                        # while reporting success: the second pass no longer
+                        # finds the ORIGINAL body, but its other patches still
+                        # fire, leaving a duplicated wrapper tail and invalid
+                        # Fortran. A patch whose replacement is already present
+                        # has nothing to do.
+                        if patch.replacement_snippet in content:
+                            result["applied"].append(
+                                f"Already applied, skipped: {patch.filepath}"
+                            )
+                        elif patch.original_snippet in content:
                             content = content.replace(
                                 patch.original_snippet,
                                 patch.replacement_snippet,
@@ -372,7 +383,18 @@ def _apply_header_patch(patch: IntegrationPatch) -> None:
             f"#ifndef {guard}",
             f"#define {guard}",
             "",
-            '#include "vit_types.h"',
+            "// vit_types.h is generated only once a translated function uses a derived",
+            "// type. A leaf-first translation order means the first few functions may be",
+            "// pure scalar arithmetic, so this header can legitimately not exist yet.",
+            "// Guarding the include lets it be picked up automatically as soon as some",
+            "// later function creates it, without regenerating this file.",
+            "#if defined(__has_include)",
+            '#  if __has_include("vit_types.h")',
+            '#    include "vit_types.h"',
+            "#  endif",
+            "#else",
+            '#  include "vit_types.h"',
+            "#endif",
             "",
             "#ifdef __cplusplus",
             'extern "C" {',
@@ -405,7 +427,7 @@ def _generate_c_declaration(sig: FortranSignature,
     c_params = build_c_params(sig, kind_aliases, derived_types)
     param_str = ", ".join(f"{p[0]} {p[1]}" for p in c_params)
 
-    if sig.is_function and not sig.result_is_array:
+    if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         ret_mapping = get_type_mapping(
             sig.result_type or "REAL(8)", kind_aliases, derived_types
         )
@@ -450,6 +472,12 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
 
     impl_func_name = sig.cpp_impl_name
 
+    # Allocate-on-return needs vit_free on the C side; see interface_gen.
+    from .interface_gen import generate_vit_free_definition
+    vit_free_lines = generate_vit_free_definition(sig)
+    if vit_free_lines:
+        lines.extend(vit_free_lines)
+
     # Generate extern "C" wrapper using shared param builder
     lines.append("// --- Fortran-callable C wrapper ---")
     c_func_name = sig.c_func_name
@@ -458,7 +486,7 @@ def _generate_standalone_cpp(sig: FortranSignature, impl_content: str,
     param_str = ", ".join(f"{p[0]} {p[1]}" for p in c_params)
     arg_str = ", ".join(p[1] for p in c_params)
 
-    if sig.is_function and not sig.result_is_array:
+    if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         ret_mapping = get_type_mapping(sig.result_type or "REAL(8)", kind_aliases, derived_types)
 
         lines.append(f'extern "C" {{')
@@ -529,17 +557,39 @@ def _generate_fortran_patches(sig: FortranSignature, source_file: str,
                                        allocations=allocations)
     end_keyword = "FUNCTION" if sig.is_function else "SUBROUTINE"
 
-    # Find the original function body
+    # Find the original function body.
+    #
+    # Nesting has to be counted, not assumed away. Taking the FIRST
+    # END SUBROUTINE after the header stops at the wrong place whenever the
+    # procedure contains an INTERFACE block -- ZeroMQInterface declares
+    # zmq_client that way, inside an #ifdef -- and the resulting patch replaces
+    # only the header, orphaning the whole real body. That produced invalid
+    # Fortran while integrate reported success.
     start_idx = None
     end_idx = None
+    depth = 0
+    proc_start_re = re.compile(
+        r'^\s*(?:(?:RECURSIVE|PURE|IMPURE|ELEMENTAL|MODULE)\s+)*'
+        r'(?:[A-Z0-9_()\s*]*?\s)?(?:SUBROUTINE|FUNCTION)\s+\w+')
     for i, line in enumerate(lines):
         stripped = line.strip().upper()
-        if re.search(rf'\b{end_keyword}\s+{name_upper}\s*\(', stripped):
-            if not stripped.startswith("END"):
+        if start_idx is None:
+            if (re.search(rf'\b{end_keyword}\s+{name_upper}\s*\(', stripped)
+                    and not stripped.startswith("END")):
                 start_idx = i
-        if start_idx is not None and re.match(rf'\s*END\s+{end_keyword}\b', stripped):
-            end_idx = i
-            break
+                depth = 1
+            continue
+        if re.match(r'^(ABSTRACT\s+)?INTERFACE\b', stripped):
+            depth += 1
+        elif re.match(r'^END\s+INTERFACE\b', stripped):
+            depth -= 1
+        elif re.match(r'^END\s+(SUBROUTINE|FUNCTION)\b', stripped):
+            depth -= 1
+            if depth == 0:
+                end_idx = i
+                break
+        elif not stripped.startswith("END") and proc_start_re.match(stripped):
+            depth += 1
 
     if start_idx is not None and end_idx is not None:
         original_func = "\n".join(lines[start_idx:end_idx + 1])

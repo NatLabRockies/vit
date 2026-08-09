@@ -98,8 +98,10 @@ def generate_cpp_wrapper(sig: FortranSignature, cpp_impl_file: str,
     lines.append(f'#include "{Path(cpp_impl_file).name}"')
     lines.append("")
 
+    lines.extend(generate_vit_free_definition(sig))
+
     # Generate extern "C" wrapper
-    if sig.is_function and not sig.result_is_array:
+    if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         # Scalar-returning function: return value directly
         ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
         ret_c_type = ret_mapping.c_type
@@ -156,7 +158,7 @@ def generate_fortran_interface_block(sig: FortranSignature,
     lines.append(f"    ! Auto-generated interface for C++ implementation of {sig.name}")
     lines.append(f"    INTERFACE")
 
-    if sig.is_function and not sig.result_is_array:
+    if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         # Scalar-returning function: BIND(C) FUNCTION with return type
         ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
 
@@ -228,7 +230,7 @@ def generate_fortran_wrapper(sig: FortranSignature,
     if sig.is_function:
         lines.extend(_generate_wrapper_function(
             sig, c_func_name, kind_aliases, derived_types, optional_forwarded,
-            view_args, is_kernel
+            view_args, is_kernel, reverse_copy
         ))
     else:
         lines.extend(_generate_wrapper_subroutine(
@@ -241,7 +243,7 @@ def generate_fortran_wrapper(sig: FortranSignature,
 
 def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
                                 optional_forwarded, view_args=None,
-                                is_kernel=False):
+                                is_kernel=False, reverse_copy=False):
     """Generate wrapper body for a FUNCTION."""
     view_args = view_args or []
     lines = []
@@ -256,8 +258,8 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     for use_stmt in _get_use_statements_for_derived_types(sig):
         lines.append(f"        {use_stmt}")
 
-    # Add USE for view type modules
-    lines.extend(_get_view_use_statements(view_args, is_kernel))
+    # Add USE for view type modules (include reverse-copy if requested)
+    lines.extend(_get_view_use_statements(view_args, is_kernel, reverse_copy))
 
     lines.append(f"        IMPLICIT NONE")
 
@@ -275,14 +277,18 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
         intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ", INTENT(IN)"
         optional_str = ", OPTIONAL" if arg.is_optional else ""
         target_str = _get_target_attr(arg, kind_aliases, derived_types)
+        # An allocate-on-return dummy MUST keep its ALLOCATABLE attribute:
+        # dropping it leaves a wrapper whose interface no longer matches the
+        # actual argument at the call site.
+        alloc_str = ", ALLOCATABLE" if is_alloc_return(arg) else ""
         if arg.is_array:
-            lines.append(f"        {resolved_type}{intent_str}{optional_str}{target_str} :: {arg.name}{_format_dims(arg)}")
+            lines.append(f"        {resolved_type}{intent_str}{optional_str}{alloc_str}{target_str} :: {arg.name}{_format_dims(arg)}")
         else:
             lines.append(f"        {resolved_type}{intent_str}{optional_str}{target_str} :: {arg.name}")
     for arg in char_args:
         resolved_type = _resolve_fortran_type(arg.fortran_type, kind_aliases)
         intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ", INTENT(IN)"
-        lines.append(f"        {resolved_type}{intent_str} :: {arg.name}")
+        lines.append(f"        {resolved_type}{intent_str} :: {arg.name}{_format_dims(arg)}")
 
     # Declare result with resolved type
     if sig.result_type:
@@ -302,6 +308,23 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     # CHARACTER local var declarations (before any executable statements)
     lines.extend(_generate_character_declarations(sig, kind_aliases, derived_types))
 
+    # Allocate-on-return locals + the vit_free interface
+    lines.extend(_generate_alloc_return_declarations(sig, kind_aliases))
+
+    # C_PTR locals for arguments that may alias a component of a view arg
+    lines.extend(_alias_cptr_declarations(sig, kind_aliases, derived_types))
+
+    # Staging INTEGER(C_INT) locals for by-reference LOGICAL arguments
+    lines.extend(_logical_ref_declarations(sig, kind_aliases, derived_types))
+
+    # CHARACTER-valued result: stage it in a C_CHAR buffer. A CHARACTER(n)
+    # scalar cannot be passed to a BIND(C) CHARACTER(KIND=C_CHAR) array dummy,
+    # so the C side fills the buffer and the wrapper copies it into the result.
+    res_char_len = result_char_len(sig, kind_aliases, derived_types)
+    if res_char_len:
+        lines.append(f"        CHARACTER(KIND=C_CHAR) :: {result_name}_c({res_char_len})")
+        lines.append(f"        INTEGER :: vit_i_result")
+
     # OPTIONAL preamble: local variables, PRESENT() checks
     if optional_forwarded:
         lines.extend(_generate_optional_preamble(optional_forwarded, kind_aliases, derived_types))
@@ -313,13 +336,19 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
     # CHARACTER copy loops (executable, before the C call)
     lines.extend(_generate_character_copy_loops(sig, kind_aliases, derived_types))
 
+    # Allocate-on-return handshake variables
+    lines.extend(_generate_alias_resolution(sig, kind_aliases, derived_types))
+    lines.extend(_generate_logical_ref_prologue(sig, kind_aliases, derived_types))
+    lines.extend(_generate_alloc_return_prologue(sig))
+
     # Build the C function call (only non-passthrough args, with size params for arrays)
     ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
     call_args = _build_wrapper_call_args(sig, kind_aliases, derived_types)
     call_str = ", ".join(call_args)
 
-    if sig.result_is_array:
-        # Array-valued result: CALL the C subroutine, which writes into result_name
+    if result_is_out_param(sig, kind_aliases, derived_types):
+        # Array- or CHARACTER-valued result: CALL the C subroutine, which
+        # writes into result_name (or, for CHARACTER, into its C_CHAR buffer).
         lines.append(f"        CALL {c_func_name}({call_str})")
     else:
         # Scalar result: assign from C function return value
@@ -336,6 +365,33 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
             lines.append(f"        {result_name} = REAL({c_call}, {ret_kind})")
         else:
             lines.append(f"        {result_name} = {c_call}")
+
+    # Allocate-on-return: allocate the dummy, copy, free
+    lines.extend(_generate_alloc_return_epilogue(sig))
+    lines.extend(_generate_logical_ref_epilogue(sig, kind_aliases, derived_types))
+
+    # Reverse-copy: copy modified scalars from view back to Fortran type.
+    # Placed after the result assignment, since the C call is what mutates the
+    # view. Mirrors the block in _generate_wrapper_subroutine.
+    if reverse_copy and view_args:
+        lines.append(f"        ! Copy modified scalars back from view to Fortran type")
+        for arg, mapping in view_args:
+            if arg.intent and arg.intent.value.upper() in ("INOUT", "OUT"):
+                type_lower = mapping.c_type.lower()
+                if arg.is_array and not arg.is_assumed_shape and arg.array_dims:
+                    lines.append(f"        DO vit_view_i = 1, {arg.array_dims}")
+                    lines.append(f"            CALL vit_copy_scalars_to_{type_lower}({arg.name}_view(vit_view_i), {arg.name}(vit_view_i))")
+                    lines.append(f"        END DO")
+                else:
+                    lines.append(f"        CALL vit_copy_scalars_to_{type_lower}({arg.name}_view, {arg.name})")
+
+    # Copy the C_CHAR result buffer back into the CHARACTER result. The C side
+    # is required to have filled all res_char_len bytes -- Fortran CHARACTER is
+    # blank-padded and fixed width, not NUL-terminated.
+    if res_char_len:
+        lines.append(f"        DO vit_i_result = 1, {res_char_len}")
+        lines.append(f"            {result_name}(vit_i_result:vit_i_result) = {result_name}_c(vit_i_result)")
+        lines.append(f"        END DO")
 
     lines.append(f"    END FUNCTION {sig.name}")
     return lines
@@ -376,17 +432,30 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
         intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ""
         optional_str = ", OPTIONAL" if arg.is_optional else ""
         target_str = _get_target_attr(arg, kind_aliases, derived_types)
+        # An allocate-on-return dummy MUST keep its ALLOCATABLE attribute:
+        # dropping it leaves a wrapper whose interface no longer matches the
+        # actual argument at the call site.
+        alloc_str = ", ALLOCATABLE" if is_alloc_return(arg) else ""
         if arg.is_array:
-            lines.append(f"        {resolved_type}{intent_str}{optional_str}{target_str} :: {arg.name}{_format_dims(arg)}")
+            lines.append(f"        {resolved_type}{intent_str}{optional_str}{alloc_str}{target_str} :: {arg.name}{_format_dims(arg)}")
         else:
             lines.append(f"        {resolved_type}{intent_str}{optional_str}{target_str} :: {arg.name}")
     for arg in char_args:
         resolved_type = _resolve_fortran_type(arg.fortran_type, kind_aliases)
         intent_str = f", INTENT({arg.intent.value})" if arg.intent != IntentKind.NONE else ""
-        lines.append(f"        {resolved_type}{intent_str} :: {arg.name}")
+        lines.append(f"        {resolved_type}{intent_str} :: {arg.name}{_format_dims(arg)}")
 
     # CHARACTER local var declarations (before any executable statements)
     lines.extend(_generate_character_declarations(sig, kind_aliases, derived_types))
+
+    # Allocate-on-return locals + the vit_free interface
+    lines.extend(_generate_alloc_return_declarations(sig, kind_aliases))
+
+    # C_PTR locals for arguments that may alias a component of a view arg
+    lines.extend(_alias_cptr_declarations(sig, kind_aliases, derived_types))
+
+    # Staging INTEGER(C_INT) locals for by-reference LOGICAL arguments
+    lines.extend(_logical_ref_declarations(sig, kind_aliases, derived_types))
 
     # View type declarations (must be before any executable statements)
     if view_args:
@@ -462,10 +531,19 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     # CHARACTER copy loops (executable, before the C call)
     lines.extend(_generate_character_copy_loops(sig, kind_aliases, derived_types))
 
+    # Allocate-on-return handshake variables
+    lines.extend(_generate_alias_resolution(sig, kind_aliases, derived_types))
+    lines.extend(_generate_logical_ref_prologue(sig, kind_aliases, derived_types))
+    lines.extend(_generate_alloc_return_prologue(sig))
+
     # Build call with conversions (only non-passthrough args)
     call_args = _build_wrapper_call_args(sig, kind_aliases, derived_types)
     call_str = ", ".join(call_args)
     lines.append(f"        CALL {c_func_name}({call_str})")
+
+    # Allocate-on-return: allocate the dummy, copy, free
+    lines.extend(_generate_alloc_return_epilogue(sig))
+    lines.extend(_generate_logical_ref_epilogue(sig, kind_aliases, derived_types))
 
     # Copy OPTIONAL INTENT(OUT/INOUT) values back to the actual arguments
     if optional_forwarded:
@@ -496,6 +574,91 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
     return lines
 
 
+def generate_vit_free_definition(sig) -> list:
+    """Emit vit_free for a translation that uses allocate-on-return.
+
+    Defined here rather than in a shared translation unit so that no build-system
+    plumbing is required: several translated functions may each carry a copy, and
+    the weak attribute lets the linker merge them. Fortran calls it, so C++ never
+    ODR-uses it -- an ordinary inline function would be discarded before reaching
+    the link.
+    """
+    if not alloc_return_args(sig):
+        return []
+    return [
+        "// VIT allocate-on-return support. Frees a buffer that the translation",
+        "// handed to the Fortran wrapper, using the allocator that made it.",
+        "// Weak: several translations may each define it; the linker keeps one.",
+        "#include <cstdlib>",
+        'extern "C" {',
+        "    __attribute__((weak)) void vit_free(void* vit_p) { std::free(vit_p); }",
+        "}",
+        "",
+    ]
+
+
+def is_alloc_return(arg) -> bool:
+    """True if this dummy uses the ALLOCATE-ON-RETURN convention.
+
+    An ``INTENT(OUT)`` ``ALLOCATABLE`` dummy arrives unallocated and the callee
+    is what decides its extent -- often from data it has to read or compute
+    first, so the extent cannot be known before the call. VIT's ordinary array
+    convention passes SIZE(x) INTO the C function, which is undefined here, and
+    the C side has no way to allocate a Fortran allocatable anyway.
+
+    The convention instead is:
+
+      * C receives ``T** x`` plus one ``int*`` per rank. It allocates with
+        malloc, fills in Fortran (column-major) order, writes the extents, and
+        sets ``*x``. If it does not allocate -- an error branch, say -- it
+        leaves ``*x`` null and the extents 0.
+      * The Fortran wrapper allocates the real dummy, copies, and frees.
+        ``C_NULL_PTR`` means "callee did not allocate", and the dummy is left
+        unallocated, which is what the Fortran did.
+
+    INTENT(INOUT) ALLOCATABLE -- a dummy that is REallocated, growing an array
+    that already has contents -- is deliberately NOT covered. That case has
+    different semantics (the old contents matter) and usually a different answer
+    entirely; see AddToList in the ROSCO replication log.
+    """
+    return (getattr(arg, "is_allocatable", False)
+            and arg.intent == IntentKind.OUT
+            and getattr(arg, "is_array", False))
+
+
+def alloc_return_args(sig) -> list:
+    """Every dummy of ``sig`` using the allocate-on-return convention."""
+    return [a for a in sig.args if is_alloc_return(a)]
+
+
+def _alloc_return_extent_names(arg) -> list[str]:
+    """The C ``int*`` extent parameter names for an allocate-on-return arg."""
+    if arg.array_rank <= 1:
+        return [f"n_{arg.name}"]
+    if arg.array_rank == 2:
+        return [f"n_{arg.name}_rows", f"n_{arg.name}_cols"]
+    raise ValueError(
+        f"allocate-on-return supports rank 1 and 2; {arg.name} is rank {arg.array_rank}")
+
+
+def _char_array_count_expr(arg) -> Optional[str]:
+    """Element count for a CHARACTER *array* dummy, or None if it is a scalar.
+
+    A CHARACTER(*) array dummy carries two independent sizes: the element
+    length (LEN) and the number of elements (SIZE). The C++ side receives one
+    flat buffer and needs both to index it, so the wrapper stages the array
+    into a C_CHAR buffer of LEN*count. Explicit-shape dims are reproduced
+    verbatim because they are usually other dummies (Words(NumWords));
+    assumed-shape falls back to SIZE().
+    """
+    if not getattr(arg, "is_array", False):
+        return None
+    if getattr(arg, "is_assumed_shape", False) or not arg.array_dims:
+        return f"SIZE({arg.name})"
+    dims = [d.strip() for d in arg.array_dims.split(',')]
+    return " * ".join(f"({d})" for d in dims)
+
+
 def _get_char_len_expr(arg, mapping, sig):
     """Get the length expression for a CHARACTER argument, using original case."""
     if mapping.character_len_param:
@@ -519,8 +682,172 @@ def _generate_character_declarations(sig, kind_aliases, derived_types):
         mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
         len_expr = _get_char_len_expr(arg, mapping, sig)
         if len_expr:
-            lines.append(f"        CHARACTER(KIND=C_CHAR) :: {arg.name}_c({len_expr})")
-            lines.append(f"        INTEGER :: vit_i_{arg.name}")
+            count = _char_array_count_expr(arg)
+            if count:
+                lines.append(f"        CHARACTER(KIND=C_CHAR) :: {arg.name}_c(({len_expr}) * ({count}))")
+                lines.append(f"        INTEGER :: vit_i_{arg.name}, vit_j_{arg.name}")
+            else:
+                lines.append(f"        CHARACTER(KIND=C_CHAR) :: {arg.name}_c({len_expr})")
+                lines.append(f"        INTEGER :: vit_i_{arg.name}")
+    return lines
+
+
+def _aliased_component_args(sig, kind_aliases=None, derived_types=None):
+    """
+    Find dummy arguments that may ALIAS a component of a view-type dummy.
+
+    ROSCO's PIDController is the type case:
+
+        PIDController(..., piP, reset, objInst, LocalVar)
+
+    is called as ``PIDController(..., LocalVar%piP, ..., LocalVar)``. The
+    wrapper copies LocalVar (including its nested piP) into LocalVar_view, hands
+    the C++ a DIRECT pointer to the real LocalVar%piP, and then copies the STALE
+    view back over LocalVar -- silently discarding every write the C++ made
+    through the piP pointer. Lost update, and the returned value can still be
+    correct, so it does not necessarily show up as a wrong answer.
+
+    Whether the two actually alias is a property of the CALL SITE, which the
+    wrapper cannot see. So this only identifies candidates statically -- a
+    non-view derived-type dummy whose type appears as a component of a view-type
+    dummy's type -- and the generated wrapper resolves it at RUNTIME by
+    comparing addresses. That is exact for both callers: aliased ones route the
+    pointer into the view, non-aliased ones keep the direct pointer.
+
+    Returns a list of (arg, view_arg, component_name).
+    """
+    if not derived_types:
+        return []
+
+    # Use VIT's own collector rather than re-deriving view-ness: whether a type
+    # is a view depends on vit.yaml's strategy, which is threaded through the
+    # mapping and is NOT visible from the type name alone.
+    view_args = _get_view_type_args(sig, kind_aliases, derived_types)
+    if not view_args:
+        return []
+
+    plain_derived = []
+    for a in sig.args:
+        if not a.is_derived_type or a.is_array:
+            continue
+        m = get_type_mapping(a.fortran_type, kind_aliases, derived_types)
+        if m.is_derived and m.is_c_compatible and not m.is_view_type:
+            plain_derived.append(a)
+    if not plain_derived:
+        return []
+
+    def _type_name(ft):
+        u = ft.strip()
+        if u.upper().startswith("TYPE(") and u.endswith(")"):
+            return u[5:-1].strip()
+        return u
+
+    # The registry preserves the source's capitalisation ('piParams',
+    # 'LocalVariables'), so look up case-insensitively.
+    by_lower = {k.lower(): v for k, v in derived_types.items()}
+
+    out = []
+    for varg, _vm in view_args:
+        if varg.is_array:
+            continue
+        info = by_lower.get(_type_name(varg.fortran_type).lower())
+        if info is None or not getattr(info, "fields", None):
+            continue
+        for parg in plain_derived:
+            ptype = _type_name(parg.fortran_type).lower()
+            for f in info.fields:
+                if f.is_array or getattr(f, "is_allocatable", False):
+                    continue
+                if _type_name(f.fortran_type).lower() == ptype:
+                    out.append((parg, varg, f.name))
+                    break
+    return out
+
+
+def _generate_alias_resolution(sig, kind_aliases=None, derived_types=None):
+    """
+    Emit the runtime aliasing check described in _aliased_component_args.
+
+    Cheap: two C_LOC calls and a pointer compare, once per invocation.
+    """
+    pairs = _aliased_component_args(sig, kind_aliases, derived_types)
+    if not pairs:
+        return []
+    lines = ["        ! Resolve aliasing: an argument that IS a component of a view-type",
+             "        ! argument must be written through the VIEW, or the view copy-back",
+             "        ! afterwards would discard those writes (see _aliased_component_args)."]
+    for parg, varg, comp in pairs:
+        lines.append(f"        IF (C_ASSOCIATED(C_LOC({parg.name}), C_LOC({varg.name}%{comp}))) THEN")
+        lines.append(f"            {parg.name}_cptr = C_LOC({varg.name}_view%{comp})")
+        lines.append(f"        ELSE")
+        lines.append(f"            {parg.name}_cptr = C_LOC({parg.name})")
+        lines.append(f"        END IF")
+    return lines
+
+
+def _alias_cptr_declarations(sig, kind_aliases=None, derived_types=None):
+    """TYPE(C_PTR) locals holding the resolved pointer for each alias candidate."""
+    pairs = _aliased_component_args(sig, kind_aliases, derived_types)
+    return [f"        TYPE(C_PTR) :: {parg.name}_cptr" for parg, _v, _c in pairs]
+
+
+def _logical_ref_args(sig, kind_aliases, derived_types):
+    """INTENT(OUT)/INTENT(INOUT) LOGICAL scalars, which cross as INTEGER(C_INT).
+
+    type_map.py sends a Fortran LOGICAL across the boundary as INTEGER(C_INT):
+    the right memory layout, and NOT assignment-compatible in Fortran. Every
+    other direction of that conversion is already handled -- passing a LOGICAL
+    by value (`e72235f`), converting one back inside a kernel callee bridge
+    (`05b70bc`), and test_validate's bridge (`ece0c3d`) -- but an INTENT(OUT)
+    scalar took the earlier "INOUT/OUT scalars passed by reference (no
+    conversion needed)" branch in _build_wrapper_call_args and went straight
+    through, which gfortran rejects:
+
+        Error: Type mismatch in argument 'foundline'; passed LOGICAL(4) to INTEGER(4)
+
+    A by-reference argument cannot be converted in the call itself, so it needs
+    a staging INTEGER(C_INT) local: seeded from the LOGICAL for INOUT, passed
+    to C, and copied back with (/= 0) afterwards.
+
+    OPTIONAL args are excluded -- they are already staged through
+    <name>_val by _generate_optional_preamble.
+    """
+    out = []
+    for arg in sig.args:
+        if arg.intent not in (IntentKind.OUT, IntentKind.INOUT):
+            continue
+        if arg.is_array or arg.is_derived_type or arg.is_optional:
+            continue
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+        if (mapping.fortran_type.upper().lstrip().startswith("LOGICAL")
+                and mapping.iso_c_type.startswith("INTEGER")):
+            out.append((arg, mapping))
+    return out
+
+
+def _logical_ref_declarations(sig, kind_aliases, derived_types):
+    """Staging INTEGER(C_INT) locals for by-reference LOGICAL arguments."""
+    return [f"        INTEGER({m.c_kind}) :: {a.name}_lgc"
+            for a, m in _logical_ref_args(sig, kind_aliases, derived_types)]
+
+
+def _generate_logical_ref_prologue(sig, kind_aliases, derived_types):
+    """Seed the staging locals. INTENT(OUT) has no incoming value to seed."""
+    lines = []
+    for arg, mapping in _logical_ref_args(sig, kind_aliases, derived_types):
+        if arg.intent == IntentKind.INOUT:
+            lines.append(f"        {arg.name}_lgc = MERGE(1_{mapping.c_kind}, "
+                         f"0_{mapping.c_kind}, {arg.name})")
+        else:
+            lines.append(f"        {arg.name}_lgc = 0")
+    return lines
+
+
+def _generate_logical_ref_epilogue(sig, kind_aliases, derived_types):
+    """Copy the staging locals back into the LOGICAL arguments."""
+    lines = []
+    for arg, _m in _logical_ref_args(sig, kind_aliases, derived_types):
+        lines.append(f"        {arg.name} = ({arg.name}_lgc /= 0)")
     return lines
 
 
@@ -536,9 +863,18 @@ def _generate_character_copy_loops(sig, kind_aliases, derived_types):
             if not has_any:
                 lines.append(f"        ! Convert CHARACTER args to C_CHAR arrays")
                 has_any = True
-            lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
-            lines.append(f"            {arg.name}_c(vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
-            lines.append(f"        END DO")
+            count = _char_array_count_expr(arg)
+            if count:
+                lines.append(f"        DO vit_j_{arg.name} = 1, {count}")
+                lines.append(f"            DO vit_i_{arg.name} = 1, {len_expr}")
+                lines.append(f"                {arg.name}_c((vit_j_{arg.name} - 1) * ({len_expr}) + vit_i_{arg.name}) = &")
+                lines.append(f"                    {arg.name}(vit_j_{arg.name})(vit_i_{arg.name}:vit_i_{arg.name})")
+                lines.append(f"            END DO")
+                lines.append(f"        END DO")
+            else:
+                lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
+                lines.append(f"            {arg.name}_c(vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
+                lines.append(f"        END DO")
     return lines
 
 
@@ -558,9 +894,80 @@ def _generate_character_reverse_copy_loops(sig, kind_aliases, derived_types):
             if not has_any:
                 lines.append(f"        ! Copy C_CHAR arrays back to CHARACTER args (INTENT OUT/INOUT)")
                 has_any = True
-            lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
-            lines.append(f"            {arg.name}(vit_i_{arg.name}:vit_i_{arg.name}) = {arg.name}_c(vit_i_{arg.name})")
-            lines.append(f"        END DO")
+            count = _char_array_count_expr(arg)
+            if count:
+                lines.append(f"        DO vit_j_{arg.name} = 1, {count}")
+                lines.append(f"            DO vit_i_{arg.name} = 1, {len_expr}")
+                lines.append(f"                {arg.name}(vit_j_{arg.name})(vit_i_{arg.name}:vit_i_{arg.name}) = &")
+                lines.append(f"                    {arg.name}_c((vit_j_{arg.name} - 1) * ({len_expr}) + vit_i_{arg.name})")
+                lines.append(f"            END DO")
+                lines.append(f"        END DO")
+            else:
+                lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
+                lines.append(f"            {arg.name}(vit_i_{arg.name}:vit_i_{arg.name}) = {arg.name}_c(vit_i_{arg.name})")
+                lines.append(f"        END DO")
+    return lines
+
+
+def _generate_alloc_return_declarations(sig, kind_aliases):
+    """Locals and the vit_free interface for allocate-on-return args.
+
+    The vit_free interface is emitted INSIDE the wrapper rather than at module
+    level on purpose: two translated functions in the same module would
+    otherwise each contribute a vit_free interface and collide.
+    """
+    allocs = alloc_return_args(sig)
+    if not allocs:
+        return []
+    lines = [
+        "        ! VIT allocate-on-return: the C++ side discovers the extent,",
+        "        ! allocates, and hands back a pointer; the wrapper copies into the",
+        "        ! Fortran ALLOCATABLE and frees. C_NULL_PTR means 'not allocated'.",
+        "        INTERFACE",
+        "            SUBROUTINE vit_free(vit_p) BIND(C, NAME='vit_free')",
+        "                USE ISO_C_BINDING",
+        "                TYPE(C_PTR), VALUE :: vit_p",
+        "            END SUBROUTINE vit_free",
+        "        END INTERFACE",
+    ]
+    for arg in allocs:
+        resolved = _resolve_fortran_type(arg.fortran_type, kind_aliases)
+        dims = ",".join(":" for _ in range(max(1, arg.array_rank)))
+        lines.append(f"        TYPE(C_PTR) :: {arg.name}_cptr")
+        for n in _alloc_return_extent_names(arg):
+            lines.append(f"        INTEGER(C_INT) :: {n}")
+        lines.append(f"        {resolved}, POINTER :: {arg.name}_fptr({dims})")
+    return lines
+
+
+def _generate_alloc_return_prologue(sig):
+    """Initialise the handshake variables before the C call."""
+    allocs = alloc_return_args(sig)
+    if not allocs:
+        return []
+    lines = []
+    for arg in allocs:
+        lines.append(f"        {arg.name}_cptr = C_NULL_PTR")
+        for n in _alloc_return_extent_names(arg):
+            lines.append(f"        {n} = 0")
+    return lines
+
+
+def _generate_alloc_return_epilogue(sig):
+    """Allocate the real dummy from what the C side returned, copy, free."""
+    allocs = alloc_return_args(sig)
+    if not allocs:
+        return []
+    lines = []
+    for arg in allocs:
+        extents = _alloc_return_extent_names(arg)
+        shape = ", ".join(extents)
+        lines.append(f"        IF (C_ASSOCIATED({arg.name}_cptr)) THEN")
+        lines.append(f"            CALL C_F_POINTER({arg.name}_cptr, {arg.name}_fptr, [{shape}])")
+        lines.append(f"            ALLOCATE({arg.name}({shape}))")
+        lines.append(f"            {arg.name} = {arg.name}_fptr")
+        lines.append(f"            CALL vit_free({arg.name}_cptr)")
+        lines.append(f"        END IF")
     return lines
 
 
@@ -736,6 +1143,46 @@ def _get_return_type_mapping(sig: FortranSignature,
     return get_type_mapping("REAL(8)", kind_aliases, derived_types)
 
 
+def result_is_out_param(sig: FortranSignature,
+                        kind_aliases: Optional[dict] = None,
+                        derived_types: Optional[dict] = None) -> bool:
+    """
+    True when a FUNCTION's result cannot be a C return value and must instead
+    be written through an output parameter.
+
+    Two cases: array-valued results, and CHARACTER(n) results with n > 1. A
+    CHARACTER(1) result is a single byte and still returns by value.
+
+    Fortran CHARACTER results are fixed-width and blank-padded, so they behave
+    exactly like the array case -- the caller owns the buffer and the callee
+    fills it. Returning `char` instead (which is what VIT did before this
+    existed) silently truncates the result to its first byte.
+    """
+    if not sig.is_function:
+        return False
+    if sig.result_is_array:
+        return True
+    if sig.result_type:
+        mapping = get_type_mapping(sig.result_type, kind_aliases, derived_types)
+        if mapping.character_len_param:
+            return True
+        if mapping.character_length and mapping.character_length > 1:
+            return True
+    return False
+
+
+def result_char_len(sig: FortranSignature,
+                    kind_aliases: Optional[dict] = None,
+                    derived_types: Optional[dict] = None) -> Optional[int]:
+    """Declared length of a CHARACTER function result, or None."""
+    if not sig.is_function or sig.result_is_array or not sig.result_type:
+        return None
+    mapping = get_type_mapping(sig.result_type, kind_aliases, derived_types)
+    if mapping.character_length and mapping.character_length > 1:
+        return mapping.character_length
+    return None
+
+
 def build_c_params(sig: FortranSignature,
                     kind_aliases: Optional[dict] = None,
                     derived_types: Optional[dict] = None) -> list[tuple[str, str]]:
@@ -797,6 +1244,14 @@ def build_c_params(sig: FortranSignature,
                     params.append(("int", f"n_{arg.name}_cols"))
             continue
 
+        if is_alloc_return(arg):
+            # Allocate-on-return: pointer-to-pointer plus one extent OUT param
+            # per rank. See is_alloc_return for the contract.
+            params.append((f"{mapping.c_type}**", arg.name))
+            for n in _alloc_return_extent_names(arg):
+                params.append(("int*", n))
+            continue
+
         if arg.is_array:
             params.append((f"{mapping.c_type}*", arg.name))
             # Add size parameter(s) for assumed-shape arrays
@@ -808,10 +1263,25 @@ def build_c_params(sig: FortranSignature,
                     params.append(("int", f"n_{arg.name}_cols"))
                 else:
                     raise ValueError(f"Unsupported array rank {arg.array_rank} for {arg.name}")
+            # A CHARACTER(*) ARRAY carries two independent sizes. The element
+            # count comes from the dims above (or is already another dummy);
+            # the element LENGTH is what the C++ side strides by, and without
+            # it the flat buffer cannot be indexed at all.
+            if mapping.character_len_param == "*":
+                params.append(("int", f"len_{arg.name}"))
         else:
             # CHARACTER with fixed length > 1 or parameterized length → always pointer
             if (mapping.character_length and mapping.character_length > 1) or mapping.character_len_param:
                 params.append((f"{mapping.c_type}*", arg.name))
+                # Assumed-length CHARACTER(*) carries no length the C++ side can
+                # recover: the buffer is blank-padded, not NUL-terminated, and
+                # the length is a runtime property of the caller's actual
+                # argument. Pass it explicitly, exactly as an assumed-shape array
+                # passes SIZE. A parameterized length -- CHARACTER(n) where n is
+                # another dummy -- needs nothing extra, since n is already a
+                # parameter.
+                if mapping.character_len_param == "*":
+                    params.append(("int", f"len_{arg.name}"))
             # Scalar INTENT(OUT/INOUT) args must be pointers —
             # the Fortran BIND(C) interface passes them by reference (no VALUE).
             # This applies to both functions and subroutines.
@@ -820,9 +1290,9 @@ def build_c_params(sig: FortranSignature,
             else:
                 params.append((mapping.c_type, arg.name))
 
-    # Array-valued function results become an output pointer parameter.
-    # The C function returns void; the result is written via this pointer.
-    if sig.is_function and sig.result_is_array:
+    # Array- and CHARACTER-valued function results become an output pointer
+    # parameter. The C function returns void; the result is written through it.
+    if result_is_out_param(sig, kind_aliases, derived_types):
         ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
         result_param_name = f"{sig.name}_result"
         params.append((f"{ret_mapping.c_type}*", result_param_name))
@@ -938,6 +1408,18 @@ def _build_interface_args(sig: FortranSignature,
                     })
             continue
 
+        if is_alloc_return(arg):
+            args.append({
+                "iface_name": f"{arg.name}_cptr",
+                "iface_decl": f"TYPE(C_PTR), INTENT(OUT) :: {arg.name}_cptr",
+            })
+            for n in _alloc_return_extent_names(arg):
+                args.append({
+                    "iface_name": n,
+                    "iface_decl": f"INTEGER(C_INT), INTENT(OUT) :: {n}",
+                })
+            continue
+
         if arg.is_array:
             intent_str = arg.intent.value or "IN"
             if not arg.intent.value:
@@ -963,6 +1445,12 @@ def _build_interface_args(sig: FortranSignature,
                         "iface_name": f"n_{arg.name}_cols",
                         "iface_decl": f"INTEGER(C_INT), VALUE :: n_{arg.name}_cols",
                     })
+            # See build_c_params: a CHARACTER(*) array passes its element length.
+            if mapping.character_len_param == "*":
+                args.append({
+                    "iface_name": f"len_{arg.name}",
+                    "iface_decl": f"INTEGER(C_INT), VALUE :: len_{arg.name}",
+                })
         else:
             # CHARACTER with fixed length > 1 or parameterized length → assumed-size array
             if (mapping.character_length and mapping.character_length > 1) or mapping.character_len_param:
@@ -971,6 +1459,12 @@ def _build_interface_args(sig: FortranSignature,
                     "iface_name": arg.name,
                     "iface_decl": f"CHARACTER(KIND=C_CHAR), INTENT({intent_str}) :: {arg.name}(*)",
                 })
+                # See build_c_params: assumed-length needs an explicit length.
+                if mapping.character_len_param == "*":
+                    args.append({
+                        "iface_name": f"len_{arg.name}",
+                        "iface_decl": f"INTEGER(C_INT), VALUE :: len_{arg.name}",
+                    })
             # Scalar INTENT(OUT/INOUT) → by reference (no VALUE)
             elif arg.intent in (IntentKind.OUT, IntentKind.INOUT):
                 intent_str = arg.intent.value
@@ -985,13 +1479,20 @@ def _build_interface_args(sig: FortranSignature,
                     "iface_decl": f"{mapping.iso_c_type}, VALUE :: {arg.name}",
                 })
 
-    # Array-valued function results become an INTENT(OUT) assumed-size parameter
-    if sig.is_function and sig.result_is_array:
+    # Array- and CHARACTER-valued function results become an INTENT(OUT)
+    # assumed-size parameter. For CHARACTER the element type is C_CHAR, so the
+    # Fortran side passes a CHARACTER(KIND=C_CHAR) buffer, not the result
+    # variable itself.
+    if result_is_out_param(sig, kind_aliases, derived_types):
         ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
         result_param_name = f"{sig.name}_result"
+        if result_char_len(sig, kind_aliases, derived_types):
+            iface_decl = f"CHARACTER(KIND=C_CHAR), INTENT(OUT) :: {result_param_name}(*)"
+        else:
+            iface_decl = f"{ret_mapping.iso_c_type}, INTENT(OUT) :: {result_param_name}(*)"
         args.append({
             "iface_name": result_param_name,
-            "iface_decl": f"{ret_mapping.iso_c_type}, INTENT(OUT) :: {result_param_name}(*)",
+            "iface_decl": iface_decl,
         })
 
     return args
@@ -1010,6 +1511,7 @@ def _build_wrapper_call_args(sig: FortranSignature,
     LOGICAL args get explicit conversion to C_BOOL.
     """
     call_args = []
+    _alias_names = {a.name for a, _v, _c in _aliased_component_args(sig, kind_aliases, derived_types)}
     for arg in sig.args:
         mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
 
@@ -1067,13 +1569,28 @@ def _build_wrapper_call_args(sig: FortranSignature,
                         call_args.append(d)
             elif mapping.is_view_type:
                 call_args.append(f"C_LOC({arg.name}_view)")
+            elif arg.name in _alias_names:
+                # May be a component of a view arg; the wrapper resolved which
+                # storage to write through at runtime.
+                call_args.append(f"{arg.name}_cptr")
             else:
                 call_args.append(f"C_LOC({arg.name})")
             continue
 
+        if is_alloc_return(arg):
+            call_args.append(f"{arg.name}_cptr")
+            call_args.extend(_alloc_return_extent_names(arg))
+            continue
+
         if arg.is_array:
-            # Arrays are passed by reference
-            call_args.append(arg.name)
+            # CHARACTER arrays go through the same C_CHAR staging buffer as
+            # CHARACTER scalars: a CHARACTER(n) array cannot be sequence-
+            # associated with a BIND(C) CHARACTER(KIND=C_CHAR) dummy.
+            if _get_char_len_expr(arg, mapping, sig):
+                call_args.append(f"{arg.name}_c")
+            else:
+                # Arrays are passed by reference
+                call_args.append(arg.name)
             # Pass SIZE for assumed-shape arrays
             if arg.is_assumed_shape:
                 if arg.array_rank == 1:
@@ -1081,15 +1598,38 @@ def _build_wrapper_call_args(sig: FortranSignature,
                 elif arg.array_rank == 2:
                     call_args.append(f"SIZE({arg.name}, 1)")
                     call_args.append(f"SIZE({arg.name}, 2)")
+            if mapping.character_len_param == "*":
+                call_args.append(f"LEN({arg.name})")
         elif (mapping.character_length and mapping.character_length > 1) or mapping.character_len_param:
             # CHARACTER with fixed/parameterized length: pass local C_CHAR array
             call_args.append(f"{arg.name}_c")
+            # See build_c_params: assumed-length also passes its length.
+            if mapping.character_len_param == "*":
+                call_args.append(f"LEN({arg.name})")
+        elif (arg.intent in (IntentKind.OUT, IntentKind.INOUT)
+                and not arg.is_array and not arg.is_derived_type
+                and not arg.is_optional
+                and mapping.fortran_type.upper().lstrip().startswith("LOGICAL")
+                and mapping.iso_c_type.startswith("INTEGER")):
+            # By reference, so the conversion cannot happen in the call --
+            # pass the staging local instead. See _logical_ref_args.
+            call_args.append(f"{arg.name}_lgc")
         elif arg.intent in (IntentKind.OUT, IntentKind.INOUT):
             # INOUT/OUT scalars passed by reference (no conversion needed)
             call_args.append(arg.name)
         elif mapping.iso_c_type.startswith("LOGICAL") and mapping.c_kind:
             # LOGICAL needs explicit conversion to C_BOOL
             call_args.append(f"LOGICAL({arg.name}, {mapping.c_kind})")
+        elif (mapping.fortran_type.upper().lstrip().startswith("LOGICAL")
+                and mapping.iso_c_type.startswith("INTEGER")):
+            # type_map.py maps Fortran LOGICAL/LOGICAL(4) to INTEGER(C_INT),
+            # which is the right memory layout but is NOT assignment-compatible
+            # in Fortran -- passing the LOGICAL straight through is a hard
+            # compile error ("passed LOGICAL(4) to INTEGER(4)"). The reverse
+            # direction already converts with (/= 0); this is the same
+            # conversion going out.
+            call_args.append(
+                f"MERGE(1_{mapping.c_kind}, 0_{mapping.c_kind}, {arg.name})")
         elif mapping.c_kind != mapping.fortran_kind and mapping.fortran_kind and \
                 mapping.byte_size != _fortran_kind_byte_size(mapping.fortran_kind):
             # Need to convert from project kind to C kind (different byte sizes)
@@ -1103,10 +1643,16 @@ def _build_wrapper_call_args(sig: FortranSignature,
         else:
             call_args.append(arg.name)
 
-    # Array-valued function results: pass the result variable as the output pointer
-    if sig.is_function and sig.result_is_array:
+    # Array-valued function results: pass the result variable as the output
+    # pointer. CHARACTER results pass a C_CHAR staging buffer instead, since a
+    # CHARACTER(n) scalar cannot be sequence-associated with a BIND(C)
+    # CHARACTER(KIND=C_CHAR) array dummy.
+    if result_is_out_param(sig, kind_aliases, derived_types):
         result_name = sig.result_name or f"{sig.name}_result"
-        call_args.append(result_name)
+        if result_char_len(sig, kind_aliases, derived_types):
+            call_args.append(f"{result_name}_c")
+        else:
+            call_args.append(result_name)
 
     return call_args
 
@@ -1164,6 +1710,55 @@ def _format_dims(arg: FortranArg) -> str:
 # Kernel callee bridges (C → Fortran)
 # ---------------------------------------------------------------------------
 
+def _bridge_char_args(sig, kind_aliases, derived_types):
+    """CHARACTER arguments of a kernel callee bridge, with bridge-side sizes.
+
+    The bridge receives what C sends -- a flat CHARACTER(KIND=C_CHAR) array of
+    bytes -- and the Fortran callee wants a CHARACTER(*) scalar or array. Those
+    are not the same thing: passing the C_CHAR array straight through is a rank
+    mismatch on a scalar dummy, and on an array dummy it would silently reshape
+    the element boundaries.
+
+    So each CHARACTER argument is staged through a local of the callee's own
+    shape. The sizes are the ones the BRIDGE has, not the ones the forward
+    wrapper has: `len_<name>` (a dummy of this bridge) rather than
+    `LEN(<name>)`, which would be the length of the C_CHAR array, and `n_<name>`
+    rather than `SIZE(<name>)`, which is not defined for an assumed-size dummy.
+
+    Returns (arg, len_expr, count_expr_or_None).
+    """
+    out = []
+    for arg in sig.args:
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+        if not mapping.iso_c_type.startswith("CHARACTER"):
+            continue
+        if mapping.character_len_param == "*":
+            len_expr = f"len_{arg.name}"
+        else:
+            len_expr = _get_char_len_expr(arg, mapping, sig)
+        if not len_expr:
+            continue
+        count = None
+        if getattr(arg, "is_array", False):
+            if getattr(arg, "is_assumed_shape", False) or not arg.array_dims:
+                count = f"n_{arg.name}"
+            else:
+                count = _char_array_count_expr(arg)
+        out.append((arg, len_expr, count))
+    return out
+
+
+def _bridge_char_copies_back(arg):
+    """Copy a staged CHARACTER local back to C? Yes unless it is INTENT(IN).
+
+    An argument with no declared intent is assumed to be modifiable. Copying
+    back something the callee did not touch is a no-op -- the local was seeded
+    from the same bytes -- while skipping a copy-back the callee did need is a
+    silent wrong answer.
+    """
+    return not (arg.intent and arg.intent.value.upper() == "IN")
+
+
 def generate_kernel_callee_bridge(
     sig: FortranSignature,
     kind_aliases: Optional[dict] = None,
@@ -1191,6 +1786,18 @@ def generate_kernel_callee_bridge(
     Returns:
         Complete Fortran source for the bridge function
     """
+
+    # CHARACTER-valued results are supported in the forward direction (the
+    # translated function returns through an output buffer) but NOT here. A
+    # bridge would have to stage the Fortran CHARACTER result into a C_CHAR
+    # array and blank-pad it, and none of the code below does that. Fail loudly
+    # rather than emit a bridge that compiles and truncates.
+    if result_char_len(sig, kind_aliases, derived_types):
+        raise NotImplementedError(
+            f"Callee bridge for '{sig.name}' returns CHARACTER, which is not yet "
+            f"supported. Translate the callee first, or extend "
+            f"generate_kernel_callee_bridge() to stage the result buffer."
+        )
     lines = []
     c_func_name = sig.c_func_name
     bridge_name = f"{sig.name.lower()}_bridge"
@@ -1245,7 +1852,7 @@ def generate_kernel_callee_bridge(
                 result_size_param = f"n_{a.name}"
                 break
 
-    if sig.is_function and not sig.result_is_array:
+    if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         # Scalar-returning function
         ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
         result_name = "bridge_result"
@@ -1286,7 +1893,7 @@ def generate_kernel_callee_bridge(
         lines.append(f"        {a['iface_decl']}")
 
     # Declare result for functions
-    if sig.is_function and not sig.result_is_array:
+    if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         lines.append(f"        {ret_mapping.iso_c_type} :: {result_name}")
 
     # Declare local Fortran pointer variables for regular struct args (not view types)
@@ -1301,18 +1908,18 @@ def generate_kernel_callee_bridge(
             type_lower = mapping.c_type.lower()
             lines.append(f"        TYPE({type_lower}_view_t), POINTER :: {arg.name}_view")
 
-    # Declare local CHARACTER buffers for CHARACTER OUT/INOUT args.
-    # Fortran expects CHARACTER(*) but BIND(C) bridge receives CHARACTER(C_CHAR) array.
-    # Use a local buffer and pass that to the Fortran callee instead.
-    char_buffer_args = []
-    for arg in sig.args:
-        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
-        if (mapping.iso_c_type.startswith("CHARACTER") and
-                arg.intent and arg.intent.value.upper() in ("OUT", "INOUT")):
-            lines.append(f"        CHARACTER(1024) :: local_{arg.name}")
-            char_buffer_args.append(arg.name)
-    if char_buffer_args:
-        lines.append(f"        INTEGER :: vit_i")
+    # Stage every CHARACTER argument through a local of the callee's own shape.
+    # These are automatic objects: their length and extent come from this
+    # bridge's own dummies, which is legal and is what makes an arbitrary
+    # caller-supplied length work.
+    char_stage_args = _bridge_char_args(sig, kind_aliases, derived_types)
+    for arg, len_expr, count in char_stage_args:
+        dims = f"({count})" if count else ""
+        lines.append(f"        CHARACTER({len_expr}) :: local_{arg.name}{dims}")
+        if count:
+            lines.append(f"        INTEGER :: vit_i_{arg.name}, vit_j_{arg.name}")
+        else:
+            lines.append(f"        INTEGER :: vit_i_{arg.name}")
 
     # Convert C struct pointers to Fortran pointers (regular structs only)
     if struct_args:
@@ -1344,6 +1951,25 @@ def generate_kernel_callee_bridge(
             reverse_copy = f"vit_copy_scalars_to_{type_lower}"
             lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_view)")
             lines.append(f"        CALL {reverse_copy}({arg.name}_view, {stash_name})")
+
+    # Seed the CHARACTER locals from the C buffers. Done for EVERY intent,
+    # including OUT: a Fortran callee is not required to assign every byte of
+    # an INTENT(OUT) CHARACTER, and a direct Fortran call would have left the
+    # caller's bytes in place.
+    if char_stage_args:
+        lines.append(f"        ! Stage CHARACTER args into Fortran-shaped locals")
+    for arg, len_expr, count in char_stage_args:
+        if count:
+            lines.append(f"        DO vit_j_{arg.name} = 1, {count}")
+            lines.append(f"            DO vit_i_{arg.name} = 1, {len_expr}")
+            lines.append(f"                local_{arg.name}(vit_j_{arg.name})(vit_i_{arg.name}:vit_i_{arg.name}) = &")
+            lines.append(f"                    {arg.name}((vit_j_{arg.name} - 1) * ({len_expr}) + vit_i_{arg.name})")
+            lines.append(f"            END DO")
+            lines.append(f"        END DO")
+        else:
+            lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
+            lines.append(f"            local_{arg.name}(vit_i_{arg.name}:vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name})")
+            lines.append(f"        END DO")
 
     # Build the call to the original Fortran function.
     # OPTIONAL args require IF/ELSE branching — Fortran uses argument
@@ -1378,19 +2004,22 @@ def generate_kernel_callee_bridge(
         opt_call_name = opt.name
         if opt_mapping.iso_c_type.startswith("LOGICAL"):
             opt_call_name = f"LOGICAL({opt.name})"
+        elif (opt_mapping.fortran_type.upper().lstrip().startswith("LOGICAL")
+                and opt_mapping.iso_c_type.startswith("INTEGER")):
+            opt_call_name = f"({opt.name} /= 0)"
 
         args_with = required_str + (", " if required_str else "") + opt_call_name
         args_without = required_str
 
         lines.append(f"        IF (has_{opt.name} /= 0) THEN")
-        if sig.is_function and not sig.result_is_array:
+        if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
             lines.append(_make_call(sig.name, args_with, True, result_name, ret_mapping))
         elif sig.is_function and sig.result_is_array:
             lines.append(_make_call(sig.name, args_with, True))
         else:
             lines.append(_make_call(sig.name, args_with, False))
         lines.append(f"        ELSE")
-        if sig.is_function and not sig.result_is_array:
+        if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
             lines.append(_make_call(sig.name, args_without, True, result_name, ret_mapping))
         elif sig.is_function and sig.result_is_array:
             lines.append(_make_call(sig.name, args_without, True))
@@ -1398,7 +2027,7 @@ def generate_kernel_callee_bridge(
             lines.append(_make_call(sig.name, args_without, False))
         lines.append(f"        END IF")
     else:
-        if sig.is_function and not sig.result_is_array:
+        if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
             lines.append(_make_call(sig.name, required_str, True, result_name, ret_mapping))
         elif sig.is_function and sig.result_is_array:
             lines.append(_make_call(sig.name, required_str, True))
@@ -1424,14 +2053,27 @@ def generate_kernel_callee_bridge(
             lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_view)")
             lines.append(f"        CALL {populator}({stash_name}, {arg.name}_view)")
 
-    # Copy local CHARACTER buffers back to C_CHAR arrays after the call
-    if char_buffer_args:
-        for buf_name in char_buffer_args:
-            lines.append(f"        DO vit_i = 1, MIN(LEN_TRIM(local_{buf_name}), 1024)")
-            lines.append(f"            {buf_name}(vit_i) = local_{buf_name}(vit_i:vit_i)")
+    # Copy the staged CHARACTER locals back to the C buffers. The full declared
+    # width, not LEN_TRIM: Fortran CHARACTER is blank-padded and fixed width,
+    # and stopping at the last non-blank would leave the caller's old bytes
+    # visible past the end of a result that got shorter.
+    writeback = [t for t in char_stage_args if _bridge_char_copies_back(t[0])]
+    if writeback:
+        lines.append(f"        ! Copy CHARACTER results back to the C buffers")
+    for arg, len_expr, count in writeback:
+        if count:
+            lines.append(f"        DO vit_j_{arg.name} = 1, {count}")
+            lines.append(f"            DO vit_i_{arg.name} = 1, {len_expr}")
+            lines.append(f"                {arg.name}((vit_j_{arg.name} - 1) * ({len_expr}) + vit_i_{arg.name}) = &")
+            lines.append(f"                    local_{arg.name}(vit_j_{arg.name})(vit_i_{arg.name}:vit_i_{arg.name})")
+            lines.append(f"            END DO")
+            lines.append(f"        END DO")
+        else:
+            lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
+            lines.append(f"            {arg.name}(vit_i_{arg.name}) = local_{arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
             lines.append(f"        END DO")
 
-    if sig.is_function and not sig.result_is_array:
+    if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         lines.append(f"    END FUNCTION {bridge_name}")
     else:
         lines.append(f"    END SUBROUTINE {bridge_name}")
@@ -1498,6 +2140,15 @@ def _build_bridge_call_args(sig: FortranSignature,
                 call_args.append(f"{arg.name}_f")
             continue
 
+        # CHARACTER of any shape: pass the staged local, never the raw C_CHAR
+        # buffer. A scalar CHARACTER(*) dummy cannot receive a rank-1 array
+        # ("Rank mismatch in argument"), and a CHARACTER array dummy would take
+        # the flat buffer with the wrong element boundaries. Must be tested
+        # before the is_array branch, which does not know about element length.
+        if mapping.iso_c_type.startswith("CHARACTER"):
+            call_args.append(f"local_{arg.name}")
+            continue
+
         if arg.is_array:
             if arg.is_assumed_shape:
                 # The bridge receives assumed-size (*) arrays from C, but the
@@ -1520,16 +2171,20 @@ def _build_bridge_call_args(sig: FortranSignature,
         # Scalar args — INOUT args must be passed directly (no conversion wrapping).
         # VALUE args may need kind conversion for LOGICAL.
         if arg.intent in (IntentKind.OUT, IntentKind.INOUT):
-            # CHARACTER OUT/INOUT: use local buffer (bridge receives C_CHAR array,
-            # Fortran expects CHARACTER(*) — incompatible without local buffer)
-            if mapping.iso_c_type.startswith("CHARACTER"):
-                call_args.append(f"local_{arg.name}")
-            else:
-                # INOUT/OUT: pass directly — can't wrap in conversion function
-                call_args.append(arg.name)
+            # INOUT/OUT: pass directly — can't wrap in conversion function.
+            # (CHARACTER is handled above, for every intent.)
+            call_args.append(arg.name)
         elif mapping.iso_c_type.startswith("LOGICAL("):
             # LOGICAL(C_BOOL) → LOGICAL: explicit conversion needed
             call_args.append(f"LOGICAL({arg.name})")
+        elif (mapping.fortran_type.upper().lstrip().startswith("LOGICAL")
+                and mapping.iso_c_type.startswith("INTEGER")):
+            # type_map sends Fortran LOGICAL across as INTEGER(C_INT), which is
+            # the right memory layout but is NOT assignment-compatible: passing
+            # the INTEGER straight to a LOGICAL dummy is a hard compile error.
+            # The wrapper direction already converts (MERGE going out); this is
+            # the same conversion coming back IN, which the bridge never did.
+            call_args.append(f"({arg.name} /= 0)")
         else:
             # Scalar VALUE args: direct pass-through.
             # BIND(C) VALUE args are already the right type for calling Fortran
@@ -1566,7 +2221,7 @@ def generate_callee_declarations_header(
     for sig in callee_sigs:
         params = build_c_params(sig, kind_aliases, derived_types)
         param_str = ", ".join(f"{p[0]} {p[1]}" for p in params)
-        if sig.is_function and not sig.result_is_array:
+        if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
             ret_mapping = _get_return_type_mapping(sig, kind_aliases, derived_types)
             lines.append(f"{ret_mapping.c_type} {sig.c_func_name}({param_str});")
         else:
