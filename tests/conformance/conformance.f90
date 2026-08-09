@@ -327,6 +327,32 @@ CONTAINS
         END BLOCK
     END SUBROUTINE c_with_block
 
+    ! ------------------------------------------- implicit external state
+    ! An INTEGER that is a HANDLE, not a value: a Fortran unit number. The
+    ! signature crosses perfectly -- it is just an int -- and the thing the
+    ! procedure actually reads crosses not at all. C++ cannot READ from a
+    ! Fortran unit, so no mirror translation exists, and a differential harness
+    ! is unsound besides: calling one implementation and then the other on the
+    ! same unit advances the file position, so the second call reads different
+    ! data. Same shape as sharing a mutable struct between the two sides, except
+    ! the state lives in the Fortran runtime and cannot be copied.
+    !
+    ! ROSCO's ParseInput_Int is exactly this, and ParseInput_Int_Opt is the same
+    ! job with the file already read into a CHARACTER array -- pure, and
+    ! directly harnessable. A codebase offering both shapes is telling you which
+    ! one to translate.
+    SUBROUTINE c_unit_read(unit, n)
+        INTEGER(I4), INTENT(IN)  :: unit
+        INTEGER(I4), INTENT(OUT) :: n
+        READ(unit, *) n
+    END SUBROUTINE c_unit_read
+
+    SUBROUTINE c_unit_write(unit, n)
+        INTEGER(I4), INTENT(IN) :: unit
+        INTEGER(I4), INTENT(IN) :: n
+        WRITE(unit, *) n
+    END SUBROUTINE c_unit_write
+
     ! A procedure containing an internal one, via CONTAINS.
     SUBROUTINE c_with_contains(x, y)
         REAL(R8), INTENT(IN)  :: x

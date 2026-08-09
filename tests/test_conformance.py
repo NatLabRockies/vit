@@ -51,6 +51,27 @@ STRATEGIES = {"AllocType": "view", "NestedType": "view", "CharFieldType": "view"
 # Why a cell does not cross. **The only hand-written thing in this file**, and
 # the reason the matrix is worth more than a pass count: a limit with a stated
 # cause tells the next campaign whether it matters to them.
+# Cells whose SIGNATURE crosses but whose SEMANTICS do not reach C++.
+#
+# This dimension is DECLARED, not measured, and it exists because the measured
+# stages cannot see it: a Fortran unit number is an int, so parse/c_params/
+# bridge/compile all say "yes" and the matrix would report full support for a
+# procedure no mirror translation can implement. Mechanical crossing is not
+# translatability, and a matrix that conflated them would be confidently wrong
+# in the one direction that matters.
+SEMANTICS = {
+    "c_unit_read":
+        "UNREACHABLE: `unit` is a HANDLE to state outside the signature. It crosses "
+        "as an int and the file it names does not cross at all -- C++ cannot READ from "
+        "a Fortran unit. A differential harness is unsound too: the two calls share one "
+        "file position, so the second reads different data. Translate the variant that "
+        "takes the data (ROSCO has ParseInput_Int_Opt beside ParseInput_Int), or leave "
+        "the I/O in Fortran as a boundary.",
+    "c_unit_write":
+        "UNREACHABLE: as c_unit_read. The observable effect is a side effect on a "
+        "handle the C++ side does not hold, so there is nothing to compare.",
+}
+
 REASONS = {
     "c_alloc_out":
         "UNSUPPORTED: an ALLOCATABLE dummy requires an ALLOCATABLE actual, and the "
@@ -242,7 +263,7 @@ def _unsupported(cell: dict) -> bool:
     cells sit in the matrix with no stated reason -- the matrix reproducing, in
     miniature, the gap it was built to close."""
     return (cell.get("c_params") == "no" or cell.get("bridge") == "no"
-            or cell.get("compiles") == "no")
+            or cell.get("compiles") == "no" or cell.get("semantics") == "unreachable")
 
 
 def _load_matrix() -> dict:
@@ -265,6 +286,7 @@ def test_the_fixture_covers_the_language_corners_that_have_bitten_us():
         "c_with_block",                                               # 2e57357
         "c_nested_field", "c_char_field", "c_fixed_array_field",      # today
         "c_assumed_size",                                             # today
+        "c_unit_read", "c_unit_write",                                # ParseInput_Int
     }
     missing = required - names
     assert not missing, f"the fixture does not exercise: {sorted(missing)}"
@@ -305,6 +327,26 @@ def test_cell_matches_the_record(name):
             f"{got['detail'] or 'no detail'}")
 
 
+def test_a_handle_to_external_state_is_marked_untranslatable():
+    """The cell that motivated the `semantics` column.
+
+    `ParseInput_Int(Un, ...)` reads from a Fortran unit. Every measured stage
+    says yes -- a unit number is an int -- so a matrix built only on measurement
+    would report it as fully supported, which is the one direction a coverage
+    claim must never be wrong in.
+    """
+    matrix = _load_matrix()
+    if not matrix:
+        pytest.skip("matrix.toml is empty; generate it first")
+    for name in SEMANTICS:
+        cell = matrix[name]
+        assert cell["compiles"] == "yes", (
+            f"{name} is meant to demonstrate that MECHANICAL success is not "
+            f"translatability; if it no longer crosses, the point is lost")
+        assert cell["semantics"] == "unreachable"
+        assert cell.get("why")
+
+
 def test_the_matrix_states_a_reason_for_every_unsupported_cell():
     """An `unsupported` with no reason is indistinguishable from one nobody
     understood. The reason is what tells the next campaign whether the limit
@@ -323,7 +365,8 @@ def summary() -> str:
             f"{sum(1 for c in m.values() if c['c_params'] == 'yes')} reach C params, "
             f"{sum(1 for c in m.values() if c['bridge'] == 'yes')} emit a bridge, "
             f"{sum(1 for c in m.values() if c['compiles'] == 'yes')} COMPILE "
-            f"({sum(1 for c in m.values() if c['compiles'] == 'n/a')} not compiled)")
+            f"({sum(1 for c in m.values() if c['compiles'] == 'n/a')} not compiled); "
+            f"{len(SEMANTICS)} cross mechanically but are NOT TRANSLATABLE")
 
 
 def _esc(s: str) -> str:
@@ -352,7 +395,9 @@ def write_matrix() -> str:
         lines.append(f"[{name}]")
         for stage in ("parse", "c_params", "bridge", "compiles"):
             lines.append(f'{stage} = "{cell[stage]}"')
-        why = (old.get(name) or {}).get("why", "") or REASONS.get(name, "")
+        lines.append(f'semantics = "{"unreachable" if name in SEMANTICS else "ok"}"')
+        why = ((old.get(name) or {}).get("why", "")
+               or REASONS.get(name, "") or SEMANTICS.get(name, ""))
         if not why and _unsupported(cell):
             why = "TODO: " + (cell["detail"] or "no detail recorded")
         if why:
