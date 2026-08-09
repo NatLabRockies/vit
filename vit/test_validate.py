@@ -283,7 +283,34 @@ def _decomposed_param_names(arg, type_info):
                 names["cols"] = uniq(f"{base}_cols")
             result.append((fld, "alloc", rank, names))
         elif fld.fortran_type.upper().startswith("TYPE("):
-            result.append((fld, "nested", 1, {"scalar": uniq(base)}))
+            result.append((fld, "nested", 1, {"ptr": uniq(f"{base}_ptr")}))
+        elif "CHARACTER" in fld.fortran_type.upper():
+            # A CHARACTER field of a decomposed type. Emitted as
+            # `CHARACTER(1024), VALUE`, which gfortran rejects outright ("must
+            # be of length 1 as it has the VALUE attribute"), so the bridge did
+            # not compile. It crosses the way a CHARACTER ARGUMENT does -- a
+            # C_CHAR buffer of the declared length, by reference -- which is
+            # also what makes `ErrMsg` comparable rather than merely present.
+            m = re.search(r"\((?:LEN\s*=\s*)?(\d+)\)", fld.fortran_type, re.IGNORECASE)
+            result.append((fld, "char", int(m.group(1)) if m else 0,
+                           {"scalar": uniq(base)}))
+        elif getattr(fld, "is_array", False) and fld.array_dims:
+            # A FIXED-SIZE array field -- `REAL(DbKi) :: CC_DesiredL(12)`.
+            #
+            # This used to fall through to "scalar", and the consequences were
+            # both silent and severe. The bridge declared ONE `REAL(C_DOUBLE),
+            # VALUE` and then assigned it to the whole array, so every element
+            # received the SAME value; and being VALUE it could not be written,
+            # so there was no copy-back and the field was invisible as an
+            # output. `CableControl` writes `LocalVar%CC_ActuatedL(I_GROUP)` --
+            # its principal result -- and a harness on this bridge could
+            # neither vary those elements independently nor read any of them
+            # back. That is the per-element blindness of the #55 defect,
+            # rebuilt inside the tool meant to catch it.
+            #
+            # `rank` here is the bound expression, not a number, because the
+            # declaration needs the bounds verbatim.
+            result.append((fld, "fixed", fld.array_dims, {"scalar": uniq(base)}))
         else:
             result.append((fld, "scalar", 1, {"scalar": uniq(base)}))
     return result
@@ -304,6 +331,9 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
     """
     local_var = f"vit_local_{arg.name}"
     spec = _decomposed_param_names(arg, type_info)
+    # A deferred-length CHARACTER field has no length to declare, so it cannot
+    # cross. Collected and reported rather than dropped in silence.
+    skipped_char: list[str] = []
 
     for fld, kind, rank, names in spec:
         if kind == "alloc":
@@ -317,8 +347,33 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
                 c_params.append((
                     f"        INTEGER(C_INT), VALUE :: {names['cols']}", names["cols"]))
         elif kind == "nested":
-            # Nested derived type — not yet supported
-            c_params.append((f"        ! TODO: nested derived type {fld.fortran_type}",
+            # A nested derived-type field -- `TYPE(piParams) :: piP` inside
+            # LocalVariables.
+            #
+            # This used to emit a Fortran COMMENT while still putting the name in
+            # the argument list, so the bridge did not compile at all: "Symbol
+            # 'vit_localvar_piP' has no IMPLICIT type". Every unit taking
+            # `LocalVariables` -- which is most of ROSCO's controllers, including
+            # CableControl -- was therefore outside test-validate entirely, and
+            # the failure came at build time with no hint that the generator was
+            # the cause.
+            #
+            # It crosses as an opaque pointer, exactly as a whole derived-type
+            # argument does, and is copied in and back out.
+            c_params.append((f"        TYPE(C_PTR), VALUE :: {names['ptr']}",
+                             names["ptr"]))
+        elif kind == "char":
+            if not rank:
+                skipped_char.append(fld.name)
+                continue
+            c_params.append((f"        CHARACTER(KIND=C_CHAR) :: "
+                             f"{names['scalar']}({rank})", names["scalar"]))
+            local_decls.append(f"        INTEGER :: vit_ci_{arg.name}_{fld.name}")
+        elif kind == "fixed":
+            iso_type = get_type_mapping(fld.fortran_type, kind_aliases).iso_c_type
+            # By reference, with the declared bounds: C passes the buffer, every
+            # element crosses, and INTENT(INOUT/OUT) can copy back.
+            c_params.append((f"        {iso_type} :: {names['scalar']}({rank})",
                              names["scalar"]))
         else:
             iso_type = get_type_mapping(fld.fortran_type, kind_aliases).iso_c_type
@@ -337,6 +392,13 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
         if rank == 2:
             local_decls.append(
                 f"        INTEGER :: vit_i_{fld.name}, vit_j_{fld.name}")
+
+    # Temp POINTERs for nested derived-type fields
+    for fld, kind, rank, names in spec:
+        if kind == "nested":
+            tname = fld.fortran_type.strip()[5:-1].strip()   # TYPE(x) -> x
+            local_decls.append(
+                f"        TYPE({tname}), POINTER :: vit_nested_{arg.name}_{fld.name}")
 
     # Pre-call: populate scalar fields
     for fld, kind, rank, names in spec:
@@ -369,8 +431,46 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
                 pre_call.append(f"                END DO")
                 pre_call.append(f"            END DO")
                 pre_call.append(f"        END IF")
+        elif kind == "char":
+            if not rank:
+                continue
+            ci = f"vit_ci_{arg.name}_{fld.name}"
+            pre_call.append(f"        DO {ci} = 1, {rank}")
+            pre_call.append(f"            {local_var}%{fld.name}({ci}:{ci}) = "
+                            f"{names['scalar']}({ci})")
+            pre_call.append(f"        END DO")
+        elif kind == "nested":
+            tmp = f"vit_nested_{arg.name}_{fld.name}"
+            pre_call.append(f"        IF (C_ASSOCIATED({names['ptr']})) THEN")
+            pre_call.append(f"            CALL C_F_POINTER({names['ptr']}, {tmp})")
+            pre_call.append(f"            {local_var}%{fld.name} = {tmp}")
+            pre_call.append(f"        END IF")
+        elif kind == "fixed":
+            pre_call.append(f"        {local_var}%{fld.name} = {names['scalar']}")
         elif kind == "scalar":
             pre_call.append(f"        {local_var}%{fld.name} = {names['scalar']}")
+
+    # Copy fixed-size array fields BACK. A struct crossing as a decomposed list
+    # loses the aliasing a pointer would have given it, so without this every
+    # such field is write-only from the harness's point of view -- supplied and
+    # never observed, which is R4 defeated at the bridge.
+    intent_text = str(getattr(getattr(arg, "intent", None), "value", None)
+                      or getattr(getattr(arg, "intent", None), "name", None)
+                      or getattr(arg, "intent", "") or "").upper()
+    if "OUT" in intent_text:
+        for fld, kind, rank, names in spec:
+            if kind == "fixed":
+                post_call.append(f"        {names['scalar']} = {local_var}%{fld.name}")
+            elif kind == "nested":
+                tmp = f"vit_nested_{arg.name}_{fld.name}"
+                post_call.append(f"        IF (C_ASSOCIATED({names['ptr']})) "
+                                 f"{tmp} = {local_var}%{fld.name}")
+            elif kind == "char" and rank:
+                ci = f"vit_ci_{arg.name}_{fld.name}"
+                post_call.append(f"        DO {ci} = 1, {rank}")
+                post_call.append(f"            {names['scalar']}({ci}) = "
+                                 f"{local_var}%{fld.name}({ci}:{ci})")
+                post_call.append(f"        END DO")
 
     # Post-call: DEALLOCATE ALLOCATABLEs
     for fld in type_info.fields:
@@ -380,6 +480,26 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
                 f"DEALLOCATE({local_var}%{fld.name})")
 
     call_args.append(local_var)
+
+
+def _iso_c_for(fortran_type: str, kind_aliases: Optional[dict]) -> str:
+    """The ISO_C_BINDING type for a Fortran declaration, via the kind aliases.
+
+    Several branches in the bridge generator wrote `REAL(C_DOUBLE)` as a literal,
+    which is right for `REAL(DbKi)` and wrong for `REAL(ReKi)` and `REAL(SiKi)` --
+    both REAL(4) in ROSCO. Falls back to the old literals only if the mapping
+    cannot resolve the type, so an unknown type degrades rather than raising.
+    """
+    try:
+        iso = get_type_mapping(fortran_type, kind_aliases).iso_c_type
+        if iso:
+            return iso
+    except Exception:
+        pass
+    up = fortran_type.upper()
+    return ("REAL(C_DOUBLE)" if "REAL" in up else
+            "INTEGER(C_INT)" if "INTEGER" in up else
+            "LOGICAL(C_BOOL)" if "LOGICAL" in up else f"! TODO: {fortran_type}")
 
 
 def generate_fortran_bridge(
@@ -510,19 +630,33 @@ def generate_fortran_bridge(
         elif arg.is_array and arg.is_assumed_shape:
             # Assumed-shape arrays: receive as assumed-size (*) + size parameter.
             # Pass explicit section to the Fortran function (which expects assumed-shape).
-            c_type = "REAL(C_DOUBLE)" if "REAL" in fortran_type else \
-                     "INTEGER(C_INT)" if "INTEGER" in fortran_type else \
-                     "LOGICAL(C_BOOL)" if "LOGICAL" in fortran_type else f"! TODO: array of {fortran_type}"
+            #
+            # The kind comes from the mapping, not from a literal. It used to be
+            # hardcoded REAL(C_DOUBLE), so every REAL(ReKi) or REAL(SiKi)
+            # argument -- REAL(4) in ROSCO -- got a REAL(8) dummy.
+            c_type = _iso_c_for(fortran_type, kind_aliases)
             c_params.append((f"        {c_type}, INTENT({intent}) :: {arg.name}(*)", arg.name))
             c_params.append((f"        INTEGER(C_INT), VALUE, INTENT(IN) :: n_{arg.name}", f"n_{arg.name}"))
             call_args.append(f"{arg.name}(1:n_{arg.name})")
+        elif arg.is_array:
+            # Assumed-SIZE `avrSWAP(*)` and explicit-shape arrays. Neither is
+            # assumed-shape, so both fell through to the SCALAR branches below
+            # and the bridge declared a scalar where the function takes an
+            # array. For `CableControl` that was a REAL(8) scalar against a
+            # REAL(ReKi) assumed-size dummy -- a hard type mismatch that stopped
+            # the bridge compiling, which is the good outcome; a matching kind
+            # would have passed one element and read past it.
+            c_type = _iso_c_for(fortran_type, kind_aliases)
+            c_params.append((f"        {c_type}, INTENT({intent}) :: {arg.name}(*)", arg.name))
+            call_args.append(arg.name)
         elif "INTEGER" in fortran_type:
             value_attr = ", VALUE" if intent == "IN" else ""
             c_params.append((f"        INTEGER(C_INT){value_attr}, INTENT({intent}) :: {arg.name}", arg.name))
             call_args.append(arg.name)
         elif "REAL" in fortran_type:
             value_attr = ", VALUE" if intent == "IN" else ""
-            c_params.append((f"        REAL(C_DOUBLE){value_attr}, INTENT({intent}) :: {arg.name}", arg.name))
+            c_params.append((f"        {_iso_c_for(fortran_type, kind_aliases)}{value_attr}, "
+                             f"INTENT({intent}) :: {arg.name}", arg.name))
             call_args.append(arg.name)
         elif "LOGICAL" in fortran_type:
             # The dummy is a default LOGICAL (kind 4). LOGICAL(C_BOOL) is kind
@@ -967,7 +1101,14 @@ def generate_test_harness_skeleton(
                             bridge_params.append(f"int {names['rows']}")
                             bridge_params.append(f"int {names['cols']}")
                     elif kind == "nested":
-                        bridge_params.append(f"void* {names['scalar']}")
+                        bridge_params.append(f"void* {names['ptr']}")
+                    elif kind == "char":
+                        if rank:
+                            bridge_params.append(f"char* {names['scalar']}")
+                    elif kind == "fixed":
+                        # By reference on the Fortran side, so a pointer here.
+                        c_type = get_type_mapping(fld.fortran_type, kind_aliases).c_type
+                        bridge_params.append(f"{c_type}* {names['scalar']}")
                     else:
                         c_type = get_type_mapping(fld.fortran_type, kind_aliases).c_type
                         bridge_params.append(f"{c_type} {names['scalar']}")
