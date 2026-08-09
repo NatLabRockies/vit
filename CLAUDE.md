@@ -237,6 +237,13 @@ When creating a dev note:
 
 ## Git
 
+**The canonical VIT is the local branch `unify-vit`, not `main`.** `main` is ~40 commits
+stale: the ROSCO replication's checkout carried all `vit/` source evolution (30 commits) and
+this session merged it plus 11 further fixes and `tests/conformance/`. It is **deliberately
+unpushed** — the replication runs against its own checkout and must not receive this
+mid-campaign. Push, and delete the now-redundant `translation-loop/vit-patches/`, only once
+the run ends. Dev note `202608091353`.
+
 Two sibling workspaces. **Active work is in the OpenFAST workspace.**
 
 | Repo | OpenFAST workspace path | Remote |
