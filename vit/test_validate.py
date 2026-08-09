@@ -653,6 +653,18 @@ def generate_fortran_bridge(
             value_attr = ", VALUE" if intent == "IN" else ""
             c_params.append((f"        INTEGER(C_INT){value_attr}, INTENT({intent}) :: {arg.name}", arg.name))
             call_args.append(arg.name)
+        elif "COMPLEX" in fortran_type:
+            # COMPLEX had no branch here at all, so the argument was named in the
+            # parameter list and never declared -- "Symbol 'z' has no IMPLICIT
+            # type". `type_map` learned COMPLEX when the replication found
+            # COMPLEX(DbKi) narrowing to REAL(8) (ActiveWakeControl, #58); the
+            # bridge did not, because no test-validate had ever run on a COMPLEX
+            # argument. Half a fix, and the half that was missing stayed
+            # invisible until the conformance fixture asked directly.
+            value_attr = ", VALUE" if intent == "IN" else ""
+            c_params.append((f"        {_iso_c_for(fortran_type, kind_aliases)}{value_attr}, "
+                             f"INTENT({intent}) :: {arg.name}", arg.name))
+            call_args.append(arg.name)
         elif "REAL" in fortran_type:
             value_attr = ", VALUE" if intent == "IN" else ""
             c_params.append((f"        {_iso_c_for(fortran_type, kind_aliases)}{value_attr}, "
