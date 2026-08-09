@@ -51,7 +51,7 @@ COLUMNS = (
 
 
 VALID_DISPOSITIONS = {"integrated", "out_of_scope", "deferred", "blocked",
-                      "integrated_unexercised", "abandoned"}
+                      "integrated_unexercised", "uncalled", "abandoned"}
 
 
 def load_dispositions(path):
@@ -88,6 +88,22 @@ def load_dispositions(path):
                     behind a mode flag that is off in every input file, or
                     behind a preprocessor macro this build does not define,
                     belongs here.
+
+    `uncalled`      the function has ZERO call sites in the codebase. Not
+                    "no scenario executes it" -- nothing refers to it at all,
+                    generically or directly. The test is destructive and
+                    decisive: delete the procedure and rebuild. If the link
+                    succeeds, nothing called it; if anything did, the compiler
+                    says so by name. A pure-C++ module has no counterpart
+                    because there is no call to translate, so the procedure is
+                    deleted rather than mirrored.
+
+                    Distinct from `integrated_unexercised`, which HAS call
+                    sites that the gate never reaches -- a fact about the
+                    scenarios, which a different input file could change.
+                    `uncalled` is a fact about the source, and no configuration
+                    can change it. Distinct from `out_of_scope`, where the call
+                    exists and survives in a different C++ form.
 
     `abandoned`     attempted and given up on.
 
