@@ -17,10 +17,11 @@ actual test code with semantic understanding of the validation conditions.
 """
 
 import glob as globmod
+import re
 from pathlib import Path
 from typing import Optional
 
-from .fortran_parser import FortranSignature
+from .fortran_parser import FortranSignature, parse_signature_from_source
 from .interface_gen import build_c_params
 from .type_map import get_type_mapping
 
@@ -637,6 +638,107 @@ def generate_fortran_bridge(
     return "\n".join(lines)
 
 
+_CALLEE_CALL = re.compile(r"\b(\w+)_c\s*\(")
+
+
+def generate_callee_bridges(
+    cpp_text: str,
+    unit_name: str,
+    source_dir: str,
+    kind_aliases: Optional[dict] = None,
+    derived_types: Optional[dict] = None,
+) -> tuple[Optional[str], list[str]]:
+    """Fortran BIND(C) bridges for every `<callee>_c` the translation calls.
+
+    Returns (module source or None, notes).
+
+    WHY THIS EXISTS. `test-validate` produced a bridge for the unit under test
+    and nothing else, so a translation that called another translated function
+    -- `picontroller.cpp` calls `saturate_c` -- failed at link with an undefined
+    reference. Only leaf functions could be validated this way, which is the
+    opposite of what a campaign needs: the leaves are the easy ones.
+
+    The bridges call the ORIGINAL FORTRAN callee, not the translated one. That
+    matters for what the comparison means. Linking `saturate.cpp` instead would
+    put the C++ `saturate` on one side and the Fortran `saturate` on the other,
+    so a mismatch could come from either unit and a *pair* of compensating
+    errors could cancel. Backing both sides with the same Fortran callee makes
+    the harness a test of this unit alone.
+
+    A callee whose Fortran source cannot be found, or whose bridge cannot be
+    generated, is REPORTED and skipped -- the link then fails with a name, which
+    is a better outcome than a harness that silently tests something else.
+    """
+    from vit.interface_gen import generate_kernel_callee_bridge
+
+    names = []
+    for m in _CALLEE_CALL.finditer(cpp_text):
+        n = m.group(1)
+        if n.lower() != unit_name.lower() and n not in names:
+            names.append(n)
+    if not names:
+        return None, []
+
+    notes: list[str] = []
+    bodies: list[str] = []
+    src_dir = Path(source_dir)
+    sources = sorted(src_dir.glob("*.f90")) + sorted(src_dir.glob("*.F90"))
+    for name in names:
+        sig, found_in = None, None
+        for f in sources:
+            text = f.read_text(errors="replace")
+            try:
+                sig = parse_signature_from_source(text, name)
+            except Exception:
+                sig = None
+            if sig is not None:
+                found_in = text
+                break
+        if sig is None:
+            notes.append(f"{name}_c: no Fortran definition found under {source_dir}; "
+                         f"the link will fail on this symbol by name")
+            continue
+        try:
+            body = generate_kernel_callee_bridge(sig, kind_aliases, derived_types)
+        except Exception as e:
+            notes.append(f"{name}_c: bridge not generated ({type(e).__name__}: {e})")
+            continue
+        # The kernel context supplies the callee's module; a standalone harness
+        # does not, and without it gfortran reports "has no IMPLICIT type" --
+        # which reads like a bridge bug rather than a missing USE. Inserted
+        # after USE ISO_C_BINDING because Fortran requires every USE to precede
+        # IMPLICIT NONE.
+        # `parse_signature_from_source` parses a signature out of arbitrary text
+        # and so cannot know the enclosing module. Take it from the file the
+        # signature was found in.
+        mod = getattr(sig, "module_name", None)
+        if not mod and found_in:
+            m = re.search(r"^\s*MODULE\s+(\w+)", found_in, re.MULTILINE | re.IGNORECASE)
+            if m and m.group(1).upper() != "PROCEDURE":
+                mod = m.group(1)
+        if mod:
+            body = body.replace("USE ISO_C_BINDING",
+                                f"USE ISO_C_BINDING\n        USE {mod}, ONLY : {sig.name}", 1)
+        else:
+            notes.append(f"{name}_c: no module recorded for the callee; the bridge "
+                         f"will not resolve it")
+        bodies.append(body)
+        notes.append(f"{name}_c: bridged to Fortran {name}"
+                     + (f" (USE {mod})" if mod else ""))
+
+    if not bodies:
+        return None, notes
+
+    header = [
+        f"! VIT: callee bridges for the {unit_name} test-validate harness.",
+        "! Each `<callee>_c` calls the ORIGINAL Fortran, so both sides of the",
+        "! comparison share one callee implementation and a mismatch is",
+        "! attributable to the unit under test.",
+        "",
+    ]
+    return "\n".join(header + bodies) + "\n", notes
+
+
 def generate_test_makefile(
     sig: FortranSignature,
     build_dir: str,
@@ -648,6 +750,7 @@ def generate_test_makefile(
     shared_files: Optional[list[str]] = None,
     cpp_file: Optional[str] = None,
     patched_source: Optional[str] = None,
+    callee_bridge: bool = False,
 ) -> str:
     """Generate a Makefile for building the test-validate harness.
 
@@ -707,6 +810,15 @@ def generate_test_makefile(
         lines.append("# WARNING: Could not derive libraries from CMake target.")
         lines.append("# Fill in LIBS manually with the libraries needed for linking.")
         lines.append("LIBS =")
+    # The harness is linked by $(CXX), so nothing pulls in the Fortran runtime.
+    # A target built as a Fortran shared library links it implicitly and the
+    # omission never shows; the object-file fallback above links raw .o files,
+    # and then every Fortran I/O, string or intrinsic call in the reference is
+    # an undefined symbol at link time (ROSCO's ZeroMQInterface.f90 alone brings
+    # in _gfortran_string_len_trim, _gfortran_concat_string and the transfer_*
+    # family). Appended rather than prepended: it must resolve after the objects
+    # that need it.
+    lines.append("LIBS += -lgfortran -lm")
     lines.append("")
 
     # Copy translation .cpp to .hpp for inclusion
@@ -722,6 +834,16 @@ def generate_test_makefile(
     # If patched source exists, compile it locally for the .mod file
     # (needed when the function is PRIVATE in the module)
     link_objs = [f"{func_lower}_test.o", f"{func_lower}_bridge.o"]
+    if callee_bridge:
+        # Every `<callee>_c` the translation calls, wired to the ORIGINAL
+        # Fortran. Both sides of the comparison then run the same callee, so a
+        # difference is attributable to the unit under test rather than to some
+        # other translation it happens to call.
+        link_objs.append(f"{func_lower}_callees.o")
+        lines.append("# Callee bridges: C++ `_c` entry points backed by Fortran originals")
+        lines.append(f"{func_lower}_callees.o: {func_lower}_callees.f90")
+        lines.append(f"\t$(FC) $(FC_FLAGS) -c $< -o $@")
+        lines.append("")
     if patched_source:
         patched_name = Path(patched_source).name
         patched_obj = Path(patched_name).stem + ".o"

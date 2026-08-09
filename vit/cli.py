@@ -1297,6 +1297,7 @@ def cmd_test_validate(args, config):
         generate_test_harness_skeleton,
         generate_test_makefile,
         generate_test_validate_prompt,
+        generate_callee_bridges,
     )
     from .translate import _extract_function_text
 
@@ -1367,6 +1368,19 @@ def cmd_test_validate(args, config):
         patched_source_name = patched_name
         print(f"  Function is PRIVATE — patched source: {patched_path}")
 
+    # Callee bridges: `<callee>_c` symbols the translation calls, backed by the
+    # ORIGINAL Fortran. Without these only leaf functions link, which excludes
+    # most of a campaign.
+    callee_src = None
+    if args.cpp_file and Path(args.cpp_file).is_file():
+        callee_src, callee_notes = generate_callee_bridges(
+            Path(args.cpp_file).read_text(), sig.name, config.abs_source_dir,
+            config.kind_aliases, derived_types)
+        for n in callee_notes:
+            print(f"  callee: {n}")
+        if callee_src:
+            (out_dir / f"{sig.name.lower()}_callees.f90").write_text(callee_src)
+
     # Generate and write Makefile
     cpp_file_abs = str(Path(args.cpp_file).resolve()) if args.cpp_file else None
     makefile_text = generate_test_makefile(
@@ -1380,6 +1394,7 @@ def cmd_test_validate(args, config):
         shared_files=shared_files,
         cpp_file=cpp_file_abs,
         patched_source=patched_source_name,
+        callee_bridge=bool(callee_src),
     )
     makefile_path = out_dir / "Makefile"
     makefile_path.write_text(makefile_text)
