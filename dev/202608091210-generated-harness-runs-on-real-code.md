@@ -125,7 +125,37 @@ Had I reported before checking, it would have read as *"the generated harness fo
 gate missed in a function that passed every layer"* — the most attractive possible result, and
 wrong. **Any harness on this boundary must state the flags both sides were built with.**
 
-## 6. What remains, and the exact blocker
+## 6. Six defects in `vit test-validate`, found by trying to reach `CableControl`
+
+Two were reported in §2. Four more turned up in the **decomposed-derived-type path**, and together
+they mean something worth stating plainly: **`vit test-validate` had never been usable on any unit
+taking `LocalVariables`** — most of ROSCO's controllers, `CableControl` among them. Every failure
+arrived at build time with nothing pointing back at the generator.
+
+| # | defect | effect |
+|---|---|---|
+| 3 | a **nested derived-type field** emitted a Fortran *comment* (`! TODO: nested derived type TYPE(piParams)`) while still naming itself in the argument list | *"Symbol `vit_localvar_piP` has no IMPLICIT type"* — the bridge did not compile at all |
+| 4 | a **CHARACTER field** declared `CHARACTER(1024), VALUE` | gfortran rejects it outright |
+| 5 | a **fixed-size array field** fell through to the scalar branch | see below |
+| 6 | the ISO_C kind written as the literal `REAL(C_DOUBLE)` in three branches; **assumed-*size*** arrays are not assumed-*shape* and fell through to the scalar branches | every `REAL(ReKi)`/`REAL(SiKi)` argument got a `REAL(8)` dummy; `avrSWAP(*)` was declared as a scalar |
+
+**Defect 5 is the one to remember.** The bridge declared one `REAL(C_DOUBLE), VALUE` and assigned it
+to the whole array, so **every element received the same value**; and being `VALUE` it could not be
+written, so there was **no copy-back** and the field was invisible as an output.
+
+`CableControl` writes `LocalVar%CC_ActuatedL(I_GROUP)` — its principal result. A harness built on
+that bridge could neither vary those elements independently nor read any of them back.
+
+**That is the per-element blindness of the #55 defect, rebuilt inside the tool meant to catch it.**
+The #55 stride collapse produced wrong *per-element* values; a bridge that broadcasts one scalar into
+every element and never returns them cannot see per-element differences at all. Two independent
+layers of the apparatus lost the same distinction, for unrelated reasons.
+
+All six are fixed in `translation-loop/vit-patches/`, and **the `CableControl` bridge now compiles for
+the first time** — 1280 lines, ~500 parameters, `vit_CntrPar_OL_CableControl_ptr/_rows/_cols`
+reachable.
+
+## 7. What remains, and the exact blocker
 
 `VIT_INTEGRATION.md` §7's fourth criterion — *a generated harness kills a known escape* — is **not
 met**. `CableControl`'s artifacts now generate cleanly (1280-line bridge, three callee bridges,
@@ -133,10 +163,20 @@ met**. `CableControl`'s artifacts now generate cleanly (1280-line bridge, three 
 
 **The bridge takes a decomposed flat list; the C++ takes struct pointers.** For an argument whose
 type has ALLOCATABLE fields, `test_validate` emits ~500 `vit_<arg>_<field>_ptr` / `_n` parameters,
-while `cablecontrol.cpp` takes `controlparameters_view_t*`. `emit.py` currently emits one call
-shape. It needs two, plus the allocation model for pointer fields — which is `statevary.py`.
+while `cablecontrol.cpp` takes `controlparameters_view_t*`. `emit.py` emits one call shape and needs
+two, plus the allocation model for pointer fields — which is `statevary.py`.
 
-Next session starts there. Everything else it needs is built and measured.
+Both sides are driven by the same per-field data, and both conventions are now known:
+
+| side | shape |
+|---|---|
+| Fortran | `_decomposed_param_names(arg, type_info)` — **the same helper the bridge itself uses**, so the two agree by construction rather than by both re-deriving names |
+| C++ | the view struct: `double* OL_CableControl; int32_t n_OL_CableControl_rows; int32_t n_OL_CableControl_cols;` |
+| non-decomposed args | `<arg>_ptr` (`void*`) on the Fortran side, a struct pointer on the C++ side |
+
+Each side needs **its own buffers**, or the second call sees the first's mutations.
+
+Next session starts there. Everything else it needs is built, compiled and measured.
 
 ## References
 
