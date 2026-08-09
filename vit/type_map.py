@@ -48,6 +48,17 @@ FORTRAN_TO_C = {
     "LOGICAL": TypeMapping("LOGICAL", "", "C_INT", "int32_t", "INTEGER(C_INT)", 4),
     "LOGICAL(4)": TypeMapping("LOGICAL(4)", "4", "C_INT", "int32_t", "INTEGER(C_INT)", 4),
 
+    # Complex types. A Fortran COMPLEX(k) is two contiguous REAL(k) values,
+    # real part first -- the same layout as C's double _Complex and as a
+    # struct of two doubles, which is what the C side gets so the header stays
+    # usable from C++ (where _Complex is a compiler extension).
+    "COMPLEX": TypeMapping("COMPLEX", "", "C_FLOAT_COMPLEX", "vit_complex_float",
+                           "COMPLEX(C_FLOAT_COMPLEX)", 8),
+    "COMPLEX(4)": TypeMapping("COMPLEX(4)", "4", "C_FLOAT_COMPLEX", "vit_complex_float",
+                              "COMPLEX(C_FLOAT_COMPLEX)", 8),
+    "COMPLEX(8)": TypeMapping("COMPLEX(8)", "8", "C_DOUBLE_COMPLEX", "vit_complex_double",
+                              "COMPLEX(C_DOUBLE_COMPLEX)", 16),
+
     # Character (single)
     "CHARACTER": TypeMapping("CHARACTER", "", "C_CHAR", "char", "CHARACTER(C_CHAR)", 1),
 }
@@ -107,10 +118,23 @@ def normalize_fortran_type(type_str: str, kind_aliases: Optional[dict] = None) -
         base = t[:t.index("(")].strip()
         kind = t[t.index("(") + 1:t.rindex(")")].strip()
 
-        # Resolve kind alias (case-insensitive lookup)
+        # Resolve kind alias (case-insensitive lookup).
+        # The alias maps a KIND NAME to a canonical "BASE(n)" string, so it
+        # carries a base type of its own. Only that base's WIDTH is meaningful
+        # here -- the declared base wins. Returning alias_val outright silently
+        # rewrote COMPLEX(DbKi) to REAL(8), which produced a view struct
+        # carrying the real part and dropping the imaginary one with no error.
+        # See TRANSLATION_TIPS.md (COMPLEX narrowing, ActiveWakeControl #58).
         for alias_key, alias_val in aliases.items():
             if kind.upper() == alias_key.upper():
-                return alias_val
+                if "(" in alias_val:
+                    alias_base = alias_val[:alias_val.index("(")].strip()
+                    alias_kind = alias_val[alias_val.index("(") + 1:alias_val.rindex(")")].strip()
+                else:
+                    alias_base, alias_kind = alias_val, ""
+                if base == alias_base or not alias_kind:
+                    return alias_val
+                return f"{base}({alias_kind})"
 
         # Already numeric
         return f"{base}({kind})"

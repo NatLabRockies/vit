@@ -580,6 +580,20 @@ def generate_view_struct_header(
     lines.append(f"#include <stdint.h>")
     lines.append(f"")
 
+    # A Fortran COMPLEX(k) is two contiguous REAL(k), real part first. That is
+    # the layout of C's double _Complex, but _Complex is a compiler extension
+    # in C++, so the view exposes an explicit two-member struct instead --
+    # same layout, usable from both languages.
+    if any(get_type_mapping(f.fortran_type, kind_aliases).c_type.startswith("vit_complex_")
+           for f in type_info.fields
+           if not f.fortran_type.upper().startswith("TYPE(")):
+        lines.append(f"#ifndef VIT_COMPLEX_T_DEFINED")
+        lines.append(f"#define VIT_COMPLEX_T_DEFINED")
+        lines.append(f"typedef struct {{ double re, im; }} vit_complex_double;")
+        lines.append(f"typedef struct {{ float  re, im; }} vit_complex_float;")
+        lines.append(f"#endif")
+        lines.append(f"")
+
     # --- Scalars and fixed-size arrays (non-ALLOCATABLE, non-POINTER) ---
     scalar_fields = [
         f for f in type_info.fields
