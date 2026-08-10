@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from .fortran_parser import FortranSignature, parse_signature_from_source
-from .interface_gen import build_c_params
+from .interface_gen import build_c_params, dropped_derived_args
 from .type_map import get_type_mapping
 
 
@@ -1194,6 +1194,37 @@ def generate_test_harness_skeleton(
             bridge_params.append("int* vit_result")
         elif "REAL" in result_type_upper:
             bridge_params.append("double* vit_result")
+
+    # The bridge needs a value for every derived-type argument -- it either
+    # decomposes it or takes it as `void* <arg>_ptr`. `build_c_params` drops a
+    # non-C-compatible one silently, and the two then describe the same
+    # function with different arities: the skeleton declares a C++ call of N
+    # arguments directly above an `#include` of a translation taking N+1.
+    #
+    # There is no false positive here, whatever the intent elsewhere. A genuine
+    # passthrough must keep being dropped from a PRODUCTION call, and it is --
+    # this check is local to test-validate, where the harness has to SUPPLY the
+    # argument the bridge is about to pass. If the C++ call has no such
+    # parameter, the harness cannot be built correctly, so refusing to emit one
+    # is the only honest outcome.
+    # Only when a registry was supplied. WITHOUT one `build_c_params` omits
+    # every derived type and `_has_allocatable_fields` decomposes none, so both
+    # sides are consistently degraded and there is no disagreement to report --
+    # the absence is a fact about the call, not about the function.
+    # `harness/vitbridge.py` draws the same line for the same reason.
+    emitted = {name for _, name in c_params}
+    unreachable = [(a, ty, why) for a, ty, why in
+                   (dropped_derived_args(sig, kind_aliases, derived_types)
+                    if derived_types else [])
+                   if a not in emitted]
+    if unreachable:
+        detail = "\n".join(f"    {a} : {ty}\n        {why}"
+                            for a, ty, why in unreachable)
+        raise ValueError(
+            f"{func_name}: the Fortran bridge passes {len(unreachable)} argument(s) "
+            f"that build_c_params omits from the C++ call, so the two disagree "
+            f"about this function's arity and nothing built from them can link:\n"
+            f"{detail}")
 
     bridge_param_str = ", ".join(bridge_params)
     lines.append(f"// Fortran reference (via BIND(C) bridge):")

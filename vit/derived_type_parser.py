@@ -610,15 +610,24 @@ def generate_view_struct_header(
     # the layout of C's double _Complex, but _Complex is a compiler extension
     # in C++, so the view exposes an explicit two-member struct instead --
     # same layout, usable from both languages.
-    if any(get_type_mapping(f.fortran_type, kind_aliases).c_type.startswith("vit_complex_")
-           for f in type_info.fields
-           if not f.fortran_type.upper().startswith("TYPE(")):
-        lines.append(f"#ifndef VIT_COMPLEX_T_DEFINED")
-        lines.append(f"#define VIT_COMPLEX_T_DEFINED")
-        lines.append(f"typedef struct {{ double re, im; }} vit_complex_double;")
-        lines.append(f"typedef struct {{ float  re, im; }} vit_complex_float;")
-        lines.append(f"#endif")
-        lines.append(f"")
+    # Emitted UNCONDITIONALLY, not only when a field of this type is complex.
+    #
+    # `type_map` hands out the name `vit_complex_double` to every caller that
+    # asks what `COMPLEX(8)` maps to -- including `test_validate`'s `extern "C"`
+    # builder, which wrote `vit_complex_double* vit_LocalVar_AWC_complexangle`
+    # into a skeleton while the only definition lived behind this condition in a
+    # header that consumer had not regenerated. One generator handing out a name
+    # another defines conditionally is a coupling, and it presents as an
+    # undeclared identifier a long way from either.
+    #
+    # The cost of always emitting is two typedefs nobody references; the
+    # include guard makes repeats harmless.
+    lines.append(f"#ifndef VIT_COMPLEX_T_DEFINED")
+    lines.append(f"#define VIT_COMPLEX_T_DEFINED")
+    lines.append(f"typedef struct {{ double re, im; }} vit_complex_double;")
+    lines.append(f"typedef struct {{ float  re, im; }} vit_complex_float;")
+    lines.append(f"#endif")
+    lines.append(f"")
 
     # --- Scalars and fixed-size arrays (non-ALLOCATABLE, non-POINTER) ---
     scalar_fields = [
@@ -1112,6 +1121,20 @@ def generate_consolidated_types_header(
         f"#define {guard}",
         "",
         "#include <stdint.h>",
+        "",
+        # `type_map` maps COMPLEX(k) to these names for EVERY caller, including
+        # `test_validate`'s extern "C" builder, which takes the name straight
+        # from the mapper and never consults a struct generator. So a unit with
+        # no view type -- the only generator that used to emit these -- got a
+        # declaration naming `vit_complex_double` and no definition anywhere.
+        # Defined here, in the header everything includes, and unconditionally:
+        # the guard makes a repeat harmless, and two unused typedefs cost less
+        # than one undeclared identifier a thousand lines from its cause.
+        "#ifndef VIT_COMPLEX_T_DEFINED",
+        "#define VIT_COMPLEX_T_DEFINED",
+        "typedef struct { double re, im; } vit_complex_double;",
+        "typedef struct { float  re, im; } vit_complex_float;",
+        "#endif",
         "",
     ]
     lines.append("\n\n".join(new_blocks))

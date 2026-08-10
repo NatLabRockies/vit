@@ -1312,8 +1312,21 @@ def cmd_test_validate(args, config):
 
     derived_types = _build_registry(sig, config)
 
-    # Determine output directory
-    out_dir = Path("translations") / module_name
+    # Determine output directory.
+    #
+    # PER UNIT, not per module. Everything written below is unit-specific --
+    # `vit_types.h` holds only the types this unit needs, the Makefile names
+    # this unit's objects, and both the `test` binary and `clean`'s `rm -f *.o
+    # test` are unqualified. A per-module directory made two units in one module
+    # overwrite each other: running this for `PIController` left a `vit_types.h`
+    # containing only `piparams_t`, and the next `CableControl` build failed on
+    # a type VIT had generated for it an hour earlier. `make` then built
+    # whichever Makefile landed last, so one unit's case file could be fed to
+    # another unit's binary. Order-dependent, so it read as intermittent.
+    #
+    # A subdirectory fixes all four collisions at once and needs no naming
+    # convention that a future artifact could forget to follow.
+    out_dir = Path("translations") / module_name / f"{sig.name.lower()}_test"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate consolidated types header into the test directory (not translations root).
