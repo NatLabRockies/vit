@@ -285,3 +285,47 @@ class TestHelpers:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# --------------------------------------------------------------------------
+# The scaffold carries what the campaign declares, so no tip has to say it.
+# Step 0 of POST_REPLICATION_ACTIONS.md; dev note 202608100030.
+
+class TestScaffoldCarriesTheCampaignsHeaders:
+    """Four translation tips existed only because the scaffold did not include
+    the shared headers `vit.yaml` already declares -- "use Fortran's constants,
+    not `M_PI`", "shared constants header", "use `vit_fortran_read.h`", and
+    "`PathSep` is platform-selected". Prose on rung 4 for want of one line on
+    rung 1."""
+
+    def _sig(self, src="SUBROUTINE Foo(x)\n  REAL(8), INTENT(IN) :: x\nEND SUBROUTINE Foo"):
+        from vit.fortran_parser import parse_signature_from_source
+        return parse_signature_from_source(src, "Foo")
+
+    def test_shared_headers_are_included(self):
+        out = generate_translation_scaffold(
+            self._sig(), shared_headers=["rosco_constants.h", "vit_fortran_read.h"])
+        assert '#include "rosco_constants.h"' in out
+        assert '#include "vit_fortran_read.h"' in out
+
+    def test_the_type_header_comes_first_and_nothing_is_duplicated(self):
+        out = generate_translation_scaffold(
+            self._sig(), struct_headers=["vit_types.h"],
+            shared_headers=["vit_types.h", "rosco_constants.h"])
+        assert out.count('#include "vit_types.h"') == 1, "a duplicate include"
+        assert out.index('vit_types.h') < out.index('rosco_constants.h')
+
+    def test_no_headers_means_no_blank_include_block(self):
+        out = generate_translation_scaffold(self._sig())
+        assert "#include" not in out
+
+    def test_the_reference_build_flags_are_stated(self):
+        """Whether a bare Fortran literal is single or double precision depends
+        on `-fdefault-real-8`, and nothing in the source says so."""
+        out = generate_translation_scaffold(
+            self._sig(), fortran_flags="-fdefault-real-8 -ffp-contract=off")
+        assert "-fdefault-real-8" in out
+        assert "Reference built with:" in out
+
+    def test_flags_are_omitted_when_the_campaign_declares_none(self):
+        assert "Reference built with:" not in generate_translation_scaffold(self._sig())

@@ -1115,8 +1115,20 @@ def _generate_optional_preamble(optional_args, kind_aliases, derived_types):
         lines.append(f"        IF (PRESENT({oarg.name})) THEN")
         lines.append(f"            has_{oarg.name}_flag = 1")
         if not oarg.is_array and not (omapping.is_derived and omapping.is_c_compatible):
+            if "LOGICAL" in oarg.fortran_type.upper():
+                # A LOGICAL crosses as INTEGER(C_INT), and `int_val = logical`
+                # is NOT standard Fortran -- gfortran accepts it as an
+                # extension, warning only, so it built and was correct, and the
+                # non-standard emission was written down as a translation tip
+                # ("if a build ever rejects it, this is the reason") instead of
+                # being fixed. The non-optional path has used MERGE since
+                # `e72235f`; this is the same conversion, and a campaign on ifx
+                # or flang should not be the thing that discovers the
+                # difference.
+                lines.append(f"            {oarg.name}_val = "
+                             f"MERGE(1_C_INT, 0_C_INT, {oarg.name})")
             # Apply kind conversion if needed
-            if omapping.c_kind != omapping.fortran_kind and omapping.fortran_kind:
+            elif omapping.c_kind != omapping.fortran_kind and omapping.fortran_kind:
                 if omapping.iso_c_type.startswith("REAL"):
                     lines.append(f"            {oarg.name}_val = REAL({oarg.name}, {omapping.c_kind})")
                 elif omapping.iso_c_type.startswith("INTEGER"):

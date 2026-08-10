@@ -535,8 +535,17 @@ def cmd_translate(args, config):
     # The actual header is generated on-demand in kernel/test/integration dirs.
     struct_header_names = ["vit_types.h"] if derived_types else []
 
+    # The campaign's shared headers, from vit.yaml. They were declared there and
+    # consumed everywhere EXCEPT the translate scaffold, so every translation had
+    # to be told in prose to include them -- which is what four TRANSLATION_TIPS
+    # entries were doing. Only headers: a shared .cpp is linked, not included.
+    shared_header_names = [Path(f).name for f in (config.shared_files or [])
+                           if Path(f).suffix in (".h", ".hpp")]
+
     # Generate scaffold
     scaffold = generate_translation_scaffold(
+        shared_headers=shared_header_names,
+        fortran_flags=config.fortran_flags,
         sig=sig,
         kind_aliases=config.kind_aliases,
         source_file=args.file,

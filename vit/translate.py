@@ -26,15 +26,31 @@ def generate_translation_scaffold(
     vit_version: str = "0.1.0",
     struct_headers: Optional[list[str]] = None,
     derived_types: Optional[dict] = None,
+    shared_headers: Optional[list[str]] = None,
+    fortran_flags: Optional[str] = None,
 ) -> str:
     """
     Generate a C++ translation scaffold with metadata header and correct signature.
 
     The scaffold has:
-    - A metadata comment block (source file, function name, hash, version, status)
-    - #include directives for shared type headers
+    - A metadata comment block (source file, function name, hash, version, status,
+      and the flags the REFERENCE is compiled with)
+    - #include directives for the type header and the campaign's shared headers
     - The correct C++ function signature (from build_c_params)
     - A placeholder body with TODO comment
+
+    **`shared_headers` is why four translation tips no longer need to exist.**
+    A campaign's shared headers -- ROSCO's `rosco_constants.h` and
+    `vit_fortran_read.h`, AeroDyn's `vit_nwtc.h` -- were declared in `vit.yaml`
+    and used everywhere EXCEPT here, so every translation had to be told in
+    prose to include them. Four tips ("use Fortran's constants, not `M_PI`",
+    "shared constants header", "use `vit_fortran_read.h`, not `scanf`",
+    "`PathSep` is platform-selected") existed only because the scaffold did not
+    say so itself. A scaffold that includes them makes all four unwritable.
+
+    `fortran_flags` is in the metadata for the same reason: whether a bare
+    Fortran literal is single or double precision depends on
+    `-fdefault-real-8`, and a translator cannot know that from the source.
 
     Args:
         sig: Parsed Fortran function signature
@@ -49,13 +65,17 @@ def generate_translation_scaffold(
     lines = []
 
     # Metadata header
-    lines.append(_generate_metadata_header(sig, kind_aliases, source_file, vit_version))
+    lines.append(_generate_metadata_header(sig, kind_aliases, source_file,
+                                           vit_version, fortran_flags))
     lines.append("")
 
-    # Include shared type headers
-    if struct_headers:
-        for h in struct_headers:
-            lines.append(f'#include "{h}"')
+    # The type header, then the campaign's shared headers. Deduplicated and
+    # order-stable: a scaffold that changes its include order between runs makes
+    # every regeneration look like an edit.
+    includes = list(struct_headers or []) + list(shared_headers or [])
+    for h in dict.fromkeys(includes):
+        lines.append(f'#include "{h}"')
+    if includes:
         lines.append("")
 
     # Generate C++ signature
@@ -222,6 +242,7 @@ def _generate_metadata_header(
     kind_aliases: Optional[dict] = None,
     source_file: Optional[str] = None,
     vit_version: str = "0.1.0",
+    fortran_flags: Optional[str] = None,
 ) -> str:
     """Generate the metadata comment block for a translation file."""
     lines = []
@@ -237,6 +258,10 @@ def _generate_metadata_header(
     ret_type = _get_c_return_type(sig, kind_aliases)
     fortran_sig = _format_fortran_signature(sig)
     lines.append(f"// Fortran: {fortran_sig}")
+    if fortran_flags:
+        # `-fdefault-real-8` decides whether a bare literal in the reference is
+        # single or double precision, and nothing in the source says so.
+        lines.append(f"// Reference built with: {fortran_flags}")
 
     # Source hash (for detecting when the Fortran source changes)
     if source_file:
