@@ -32,15 +32,25 @@ merged silently.
 ## Precision over coverage, deliberately
 
 A noisy check gets disabled, and then you have neither the check nor the tip.
-Where precision is not reachable — `**`-grouping that must not fire on a bare
-`x**2`, a `NINT` written as a cast — this module does **not** ship a lossy
+Where precision is not reachable — a `NINT` written as a bare cast, a CHARACTER
+local narrower than its argument — this module does **not** ship a lossy
 approximation. That is left to mutation scoring, which measures rather than
 guesses. `PUSHED_TO_MUTATION` records those with the reason, so the gap is
 visible instead of merely absent.
+
+Precision is earned by measuring, not by asserting. `exponent-grouping` was
+written off as undetectable until it was run over 49 accepted translations: the
+false positives fell into exactly two classes — `x*x*x` (an integer power
+written out, which is what gfortran emits anyway) and `2.0*x*x` (scaling by an
+exact power of two, where both associations are bit-identical) — and excluding
+those two left only genuine regroupings. A check that fires on correct code is
+not evidence that the shape is undetectable; it is usually evidence that the
+detector has not been run against enough correct code yet.
 """
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -101,6 +111,25 @@ def strip_cpp_comments(src: str) -> str:
     return "".join(out)
 
 
+_HANDOFF = "--- User-provided C++ implementation ---"
+
+
+def translator_region(cpp: str) -> str:
+    """Only the part a human wrote, not VIT's own integration preamble.
+
+    `vit integrate` prepends a header to the translation — including
+    `#include "vit_translated.h"`, which is exactly what a *translator* must not
+    write. Checking the whole file therefore flags VIT's output as a translator
+    error. Measured: this was 5 of 5 `forbidden-include` hits across AeroDyn's
+    40 translations, every one of them VIT's own preamble on a verified,
+    integrated function.
+
+    VIT already marks the boundary, so use its marker rather than guessing.
+    """
+    at = cpp.find(_HANDOFF)
+    return cpp[at + len(_HANDOFF):] if at >= 0 else cpp
+
+
 @dataclass(frozen=True)
 class Context:
     """What a check gets to look at."""
@@ -113,7 +142,7 @@ class Context:
 
     @property
     def c(self) -> str:
-        return strip_cpp_comments(self.cpp)
+        return strip_cpp_comments(translator_region(self.cpp))
 
 
 @dataclass(frozen=True)
@@ -269,6 +298,90 @@ def _save_static(ctx: Context) -> list:
     return []
 
 
+def _exponent_grouping(ctx: Context) -> list:
+    # The most expensive defect in this project's history. Fortran `a*x**2` is
+    # `a * (x*x)`; C++ `a * x * x` is `(a*x) * x`, and the different intermediate
+    # rounding is 1-3 ULP. ComputeTau2 verified 20/20 IDENTICAL in the kernel
+    # and diverged catastrophically in the baselines on exactly this.
+    #
+    # Precise because it is anchored on BOTH sides: the reference must actually
+    # use `**`, and the translation must repeat a factor with no parentheses
+    # around the pair. A bare `x * x` (no leading `*`) is the correct rendering
+    # of `x**2` standing alone and is not matched.
+    if not re.search(r"\*\*\s*\d", ctx.f):
+        return []
+    for m in re.finditer(r"([A-Za-z_]\w*|[\d.]+)\s*\*\s*([A-Za-z_]\w*)\s*\*\s*\2\b",
+                         ctx.c):
+        lead, var = m.group(1), m.group(2)
+
+        # `x * x * x` is `x**3` written out, and it is exactly what gfortran
+        # emits for an integer power. Not a regrouping at all.
+        if lead == var:
+            continue
+
+        # `2.0 * x * x` regroups to `(2.0*x) * x`, but scaling by an exact power
+        # of two only shifts the exponent, so the two associations are
+        # bit-identical (absent overflow or a subnormal result). Flagging it
+        # would be flagging arithmetic that cannot differ.
+        if _is_power_of_two_literal(lead):
+            continue
+
+        return _find("exponent-grouping",
+                     f"the reference uses `**` and the translation multiplies "
+                     f"`{var}` twice without grouping them; Fortran's `a*x**2` "
+                     f"is `a * (x*x)` but C++ `a * x * x` is `(a*x) * x`. Parenthesise "
+                     f"the power",
+                     f"{lead} * {var} * {var}")
+    return []
+
+
+def _is_power_of_two_literal(tok: str) -> bool:
+    try:
+        v = abs(float(tok))
+    except ValueError:
+        return False
+    if v == 0.0:
+        return False
+    m, _ = math.frexp(v)
+    return m == 0.5          # exactly representable as 2**k
+
+
+def _column_major_2d(ctx: Context) -> list:
+    # Fortran stores 2D arrays column-major, so `X(row, col)` flattens to
+    # `X[(col-1)*n_rows + (row-1)]` -- the stride is the ROW count. Using the
+    # column count as the stride is the row-major habit, and it is silently
+    # wrong for every non-square array.
+    #
+    # Anchored inside a subscript on purpose: `rows * cols` in a size or a
+    # malloc is legitimate and lives outside brackets.
+    m = re.search(r"\[[^\]]*\*\s*(?:\w+(?:->|\.))?n_(\w+)_cols\b[^\]]*\]", ctx.c)
+    if m:
+        return _find("column-major-2d",
+                     f"a 2D subscript strides by `n_{m.group(1)}_cols`; Fortran is "
+                     f"column-major, so `X(row, col)` is "
+                     f"`X[(col-1) * n_{m.group(1)}_rows + (row-1)]` — the stride is the "
+                     f"ROW count",
+                     f"n_{m.group(1)}_cols used as stride")
+    return []
+
+
+def _errmsg_blank_padding(ctx: Context) -> list:
+    # Fortran `ErrMsg = ""` fills the WHOLE buffer with spaces. `errMsg[0]='\0'`
+    # sets one byte and leaves the rest as garbage. It passes baselines, because
+    # Fortran callers trim at the first space, and fails KGen, which compares
+    # the buffer byte for byte.
+    m = re.search(r"\b(\w*(?:[Ee]rr)?[Mm]sg\w*)\s*\[\s*0\s*\]\s*=\s*'\\0'", ctx.c)
+    if m:
+        return _find("errmsg-blank-padding",
+                     f"`{m.group(1)}[0] = '\\0'` sets one byte; Fortran's "
+                     f"`ErrMsg = \"\"` blank-fills the whole buffer. This passes "
+                     f"baselines (callers trim at the first space) and fails a "
+                     f"byte-for-byte kernel compare. Use "
+                     f"`std::memset({m.group(1)}, ' ', ErrMsgLen)`",
+                     m.group(1))
+    return []
+
+
 def _delimiter_set(ctx: Context) -> list:
     # SCAN/INDEX/VERIFY take a SET of characters, and the set is load-bearing:
     # GetWords leans on >1 / ==1 / ==0 to mean word / skip / stop.
@@ -362,6 +475,38 @@ REGISTRY: list = [
         needs_fortran=True,
     ),
     Check(
+        id="exponent-grouping",
+        prompt_line=("Fortran `a*x**2` means `a * (x*x)`; C++ `a * x * x` means `(a*x) * x`, "
+                     "and the different intermediate rounding is 1-3 ULP. Parenthesise the "
+                     "power: `a * (x * x)`."),
+        detect=_exponent_grouping,
+        known_bad=Context(fortran="k_tau = 0.39 - 0.26*spanRatio**2\n",
+                          cpp="double k = 0.39 - 0.26 * spanRatio * spanRatio;\n"),
+        known_good=Context(fortran="k_tau = 0.39 - 0.26*spanRatio**2\n",
+                           cpp="double k = 0.39 - 0.26 * (spanRatio * spanRatio);\n"),
+        needs_fortran=True,
+    ),
+    Check(
+        id="column-major-2d",
+        prompt_line=("Fortran is column-major: `X(row, col)` flattens to "
+                     "`X[(col-1) * n_X_rows + (row-1)]` — the stride is the ROW count. "
+                     "Striding by the column count is silently wrong for any "
+                     "non-square array."),
+        detect=_column_major_2d,
+        known_bad=Context(cpp="double v = p->Coefs[(row - 1) * p->n_Coefs_cols + (col - 1)];\n"),
+        known_good=Context(cpp="double v = p->Coefs[(col - 1) * p->n_Coefs_rows + (row - 1)];\n"),
+    ),
+    Check(
+        id="errmsg-blank-padding",
+        prompt_line=("Fortran `ErrMsg = \"\"` blank-fills the entire buffer. "
+                     "`errMsg[0] = '\\0'` sets one byte, passes baselines because callers "
+                     "trim at the first space, and fails a byte-for-byte kernel compare. "
+                     "Use `std::memset(errMsg, ' ', ErrMsgLen)`."),
+        detect=_errmsg_blank_padding,
+        known_bad=Context(cpp="void f(char* errMsg) { errMsg[0] = '\\0'; }\n"),
+        known_good=Context(cpp="void f(char* errMsg) { std::memset(errMsg, ' ', ErrMsgLen); }\n"),
+    ),
+    Check(
         id="delimiter-set",
         prompt_line=("`SCAN`/`INDEX`/`VERIFY` take a character SET, and the set is "
                      "load-bearing — `>1`, `==1` and `==0` mean word, skip and stop. "
@@ -394,10 +539,6 @@ RETIRED: dict = {
 # Recorded so the gap is visible rather than merely absent -- these are rung 3
 # (measured, by mutation) not rung 4 (told).
 PUSHED_TO_MUTATION: dict = {
-    "exponent-grouping":
-        "`a*x**2` must become `a * (x*x)`, but a detector cannot tell a correct "
-        "`a * x * x` (where the Fortran grouped that way) from an incorrect one "
-        "without evaluating precedence against the reference expression.",
     "nint-as-cast":
         "`NINT` written as a bare cast is indistinguishable from a legitimate "
         "truncation of an already-rounded value. The `rint`/`nearbyint` half IS "
@@ -406,6 +547,22 @@ PUSHED_TO_MUTATION: dict = {
         "a CHARACTER local declared shorter than its argument is a semantic "
         "truncation, but the C++ side has no declaration to compare against — the "
         "buffer length lives in a parameter.",
+}
+
+
+# Shapes whose right fix is in VIT itself, not in a check and certainly not in a
+# tip. Recorded here so deleting the prose does not delete the knowledge, and so
+# the work is visible as work rather than as guidance nobody enforces.
+#
+# The tell, from the Step 0 audit: when a tip explains the TOOL's behaviour
+# rather than the language's, it is a bug report with a note attached.
+TOOL_GAPS: dict = {
+    "reverse-copy-detection":
+        "`vit integrate` needs `--reverse-copy` when a function writes a SCALAR field "
+        "of a view-type INOUT argument, and not when it writes only ALLOCATABLE arrays "
+        "(those travel through C_LOC). VIT can determine which from the reference "
+        "body it already parses, so the flag should be inferred and the human asked "
+        "only to confirm — not documented.",
 }
 
 

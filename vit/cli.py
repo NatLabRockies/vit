@@ -617,11 +617,15 @@ def cmd_translate(args, config):
     from .translate import _extract_function_text
     fortran_text = _extract_function_text(source_text, args.function_name)
 
-    # Load TRANSLATION_TIPS.md if it exists
-    tips_text = None
-    tips_path = Path("TRANSLATION_TIPS.md")
-    if tips_path.is_file():
-        tips_text = tips_path.read_text()
+    # What the shared headers actually provide, read from the headers at prompt
+    # time. This replaces the hand-written inventory `TRANSLATION_TIPS.md` used
+    # to carry: a copy of a header drifts from the header, and the drift is
+    # silent -- a translation that avoids a function because the list omitted it
+    # fails at nothing, it just reimplements it inline.
+    shared_header_paths = [str(Path(config.abs_source_dir or ".") / f)
+                           if not Path(f).is_absolute() and not Path(f).is_file()
+                           else f
+                           for f in (config.shared_files or [])]
 
     # Detect already-translated callees and generate their _c signatures
     # so the translator knows what functions are available to call.
@@ -663,7 +667,7 @@ def cmd_translate(args, config):
         source_file=args.file,
         fortran_source_text=fortran_text,
         scaffold_text=scaffold,
-        tips_text=tips_text,
+        shared_header_paths=shared_header_paths,
         derived_types=derived_types,
         callee_declarations=callee_declarations,
     )

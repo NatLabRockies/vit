@@ -161,6 +161,21 @@ def test_supplying_the_reference_runs_everything():
     assert len(rep.ran) == len(REGISTRY)
 
 
+def test_vits_own_integration_preamble_is_not_judged_as_translator_error():
+    """`vit integrate` prepends `#include "vit_translated.h"` itself. Checking
+    the whole file flags VIT's output as a human's mistake -- measured as 5 of 5
+    forbidden-include hits across AeroDyn's 40 translations, every one on a
+    verified, integrated function."""
+    integrated = ('// After verification: Foo kernel PASSED\n'
+                  '#include "vit_translated.h"\n\n'
+                  '// --- User-provided C++ implementation ---\n'
+                  '#include "vit_types.h"\n'
+                  'void Foo(void) {}\n')
+    assert run(cpp=integrated) == []
+    # ...but a translator writing it themselves is still caught.
+    assert run(cpp='#include "vit_translated.h"\nvoid Foo(void) {}\n')
+
+
 def test_an_untouched_scaffold_is_recognised_and_not_checked():
     """Measured on the real tree: an unimplemented scaffold was the only source
     of false signal across 62 files. Findings about absent code are what get a

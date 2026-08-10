@@ -237,20 +237,25 @@ class TestTranslationPrompt:
         )
         assert "double saturate(" in prompt
 
-    def test_prompt_includes_tips(self):
-        """Prompt includes translation tips when provided."""
+    def test_prompt_reads_the_shared_header_inventory(self, tmp_path):
+        """What replaced the tips file: the callable inventory is READ from the
+        shared headers, so it cannot drift from them."""
+        h = tmp_path / "vit_nwtc.h"
+        h.write_text("constexpr int ErrMsgLen = 1024;\n"
+                     "bool EqualRealNos(double a, double b);\n")
         sig = parse_signature_from_source(SATURATE_SOURCE, "saturate")
-        prompt = generate_translation_prompt(
-            sig=sig,
-            tips_text="Watch out for 1-based indexing!",
-        )
-        assert "Watch out for 1-based indexing!" in prompt
+        prompt = generate_translation_prompt(sig=sig, shared_header_paths=[str(h)])
+        assert "EqualRealNos" in prompt
+        assert "ErrMsgLen" in prompt
 
-    def test_prompt_without_tips(self):
-        """Prompt works without tips."""
+    def test_prompt_carries_no_hand_written_tips_section(self):
+        """`TRANSLATION_TIPS.md` is gone and nothing may reintroduce a prose
+        section beside the generated one -- two sources of guidance is exactly
+        the drift this replaced."""
         sig = parse_signature_from_source(SATURATE_SOURCE, "saturate")
         prompt = generate_translation_prompt(sig=sig)
         assert "Translation Tips" not in prompt
+        assert "TRANSLATION_TIPS" not in prompt
 
     def test_prompt_has_instructions(self):
         """Prompt includes general translation instructions."""

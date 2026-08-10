@@ -101,7 +101,7 @@ def generate_translation_prompt(
     fortran_source_text: Optional[str] = None,
     scaffold_text: Optional[str] = None,
     call_site_info: Optional[str] = None,
-    tips_text: Optional[str] = None,
+    shared_header_paths: Optional[list] = None,
     derived_types: Optional[dict] = None,
     callee_declarations: Optional[list[str]] = None,
 ) -> str:
@@ -118,7 +118,7 @@ def generate_translation_prompt(
         fortran_source_text: The original Fortran function source (verbatim)
         scaffold_text: The generated C++ scaffold (verbatim)
         call_site_info: Call site file and line (e.g., "Controllers.f90:102")
-        tips_text: Contents of TRANSLATION_TIPS.md, if it exists
+        shared_header_paths: Shared headers to read the callable inventory from
         callee_declarations: List of C declaration strings for already-translated
             callees (e.g., ["double computeua360_cnoffset_c(...);"]).
 
@@ -225,11 +225,14 @@ def generate_translation_prompt(
     sections.append(prompt_section())
     sections.append("")
 
-    # Translation tips
-    if tips_text and tips_text.strip():
-        sections.append("## Translation Tips (lessons from previous translations)\n")
-        sections.append(tips_text.strip())
-        sections.append("")
+    # What the shared headers provide, READ FROM THE HEADERS. Not a maintained
+    # list -- a maintained list is a copy, and a copy drifts silently.
+    if shared_header_paths:
+        from .header_api import inventory
+        inv = inventory(shared_header_paths)
+        if inv:
+            sections.append(inv)
+            sections.append("")
 
     # General instruction
     sections.append("## Instructions\n")
