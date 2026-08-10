@@ -32,20 +32,32 @@ merged silently.
 ## Precision over coverage, deliberately
 
 A noisy check gets disabled, and then you have neither the check nor the tip.
-Where precision is not reachable — a `NINT` written as a bare cast, a CHARACTER
-local narrower than its argument — this module does **not** ship a lossy
-approximation. That is left to mutation scoring, which measures rather than
-guesses. `PUSHED_TO_MUTATION` records those with the reason, so the gap is
-visible instead of merely absent.
+Where precision is not reachable — currently only a `NINT` written as a bare
+cast — this module does **not** ship a lossy approximation. That is left to
+mutation scoring, which measures rather than guesses. `PUSHED_TO_MUTATION`
+records those with the reason, so the gap is visible instead of merely absent.
 
-Precision is earned by measuring, not by asserting. `exponent-grouping` was
-written off as undetectable until it was run over 49 accepted translations: the
-false positives fell into exactly two classes — `x*x*x` (an integer power
-written out, which is what gfortran emits anyway) and `2.0*x*x` (scaling by an
-exact power of two, where both associations are bit-identical) — and excluding
-those two left only genuine regroupings. A check that fires on correct code is
-not evidence that the shape is undetectable; it is usually evidence that the
-detector has not been run against enough correct code yet.
+## Precision is earned by measuring, not by asserting
+
+Three shapes here were written off as undetectable before anyone ran a detector
+over accepted code, and all three ship:
+
+- `exponent-grouping` fired 4 times on 49 accepted translations. The false
+  positives fell into exactly two classes — `x*x*x` (an integer power written
+  out, which is what gfortran emits anyway) and `2.0*x*x` (scaling by an exact
+  power of two, where both associations are bit-identical). Excluding those left
+  only genuine regroupings.
+- `narrowing-local` fired 4 times, all ordinary scratch buffers, because the
+  first detector asked "is there a `CHARACTER(n)` local?" The defect is
+  narrower: a local assigned **from a `CHARACTER(*)` dummy**. With that
+  condition it is silent on all 89.
+- `real-exponent-pow`, `reciprocal-multiply` and `array-section-row` were silent
+  on the corpus at the first attempt — but silence had to be distinguished from
+  a **dead** detector, so each was also run against the defect as the campaign
+  recorded it, and each fired.
+
+That last step is the one worth keeping. *Zero findings* and *cannot produce a
+finding* look identical in a report, and only one of them is good news.
 """
 
 from __future__ import annotations
@@ -365,20 +377,120 @@ def _column_major_2d(ctx: Context) -> list:
     return []
 
 
-def _errmsg_blank_padding(ctx: Context) -> list:
-    # Fortran `ErrMsg = ""` fills the WHOLE buffer with spaces. `errMsg[0]='\0'`
-    # sets one byte and leaves the rest as garbage. It passes baselines, because
+def _character_padding(ctx: Context) -> list:
+    # Fortran `X = ""` fills the WHOLE declared width with spaces. `x[0]='\0'`
+    # sets one byte and leaves the rest as it was. It passes baselines, because
     # Fortran callers trim at the first space, and fails KGen, which compares
-    # the buffer byte for byte.
-    m = re.search(r"\b(\w*(?:[Ee]rr)?[Mm]sg\w*)\s*\[\s*0\s*\]\s*=\s*'\\0'", ctx.c)
-    if m:
-        return _find("errmsg-blank-padding",
-                     f"`{m.group(1)}[0] = '\\0'` sets one byte; Fortran's "
-                     f"`ErrMsg = \"\"` blank-fills the whole buffer. This passes "
+    # the buffer byte for byte. Written for ErrMsg, true of every CHARACTER
+    # out-parameter.
+    m = re.search(r"\b(\w+)\s*\[\s*0\s*\]\s*=\s*'\\0'", ctx.c)
+    if m and not re.search(r"\bmemset\s*\(", ctx.c):
+        return _find("character-padding",
+                     f"`{m.group(1)}[0] = '\\0'` sets one byte; a Fortran CHARACTER "
+                     f"assignment blank-fills the whole declared width. This passes "
                      f"baselines (callers trim at the first space) and fails a "
                      f"byte-for-byte kernel compare. Use "
-                     f"`std::memset({m.group(1)}, ' ', ErrMsgLen)`",
+                     f"`std::memset({m.group(1)}, ' ', <width>)`",
                      m.group(1))
+    return []
+
+
+def _real_exponent_pow(ctx: Context) -> list:
+    # gfortran compiles `x**N` by repeated multiplication for an INTEGER N, and
+    # for the REAL literal 2.0 as a special case -- but for a real exponent of
+    # 3.0 or more it emits a libm `pow` call, and `pow(x,3.0)` differs from
+    # `x*x*x` by 1 ULP on some inputs. The WSE covariance loop amplified exactly
+    # that into visible divergence.
+    #
+    # Complementary to `exponent-grouping`, which is about association and
+    # deliberately ignores `x*x*x`. Here `x*x*x` is the defect.
+    for m in re.finditer(r"(\w+)\s*\*\*\s*(\d+\.\d*)", ctx.f):
+        var, exp = m.group(1), float(m.group(2))
+        if exp < 3.0:
+            continue                        # **2.0 IS optimised to x*x
+        chain = rf"\b{re.escape(var)}\s*\*\s*{re.escape(var)}\s*\*\s*{re.escape(var)}"
+        if re.search(chain, ctx.c) and not re.search(r"\bpow\s*\(", ctx.c):
+            return _find("real-exponent-pow",
+                         f"the reference raises `{var}` to the REAL exponent {exp}; "
+                         f"gfortran emits a libm `pow` call for real exponents >= 3.0, "
+                         f"and it differs from repeated multiplication by 1 ULP. Use "
+                         f"`std::pow({var}, {exp})`",
+                         f"{var}**{m.group(2)}")
+    return []
+
+
+def _reciprocal_multiply(ctx: Context) -> list:
+    # `/` and `*` have equal precedence and associate left to right, so
+    # `1.0/a * b` is a reciprocal followed by a multiply. That rounds
+    # differently from the single division `b/a`. Transcribe the shape, not the
+    # algebra.
+    if not re.search(r"1\.(?:0*)\s*/\s*[\w%()]+\s*\*", ctx.f):
+        return []
+    if not re.search(r"1\.0*\s*/", ctx.c):
+        return _find("reciprocal-multiply",
+                     "the reference computes a reciprocal and then multiplies "
+                     "(`1.0/a * b`); that rounds differently from the single division "
+                     "`b/a`, which is what the translation appears to do. Transcribe "
+                     "the shape, not the algebra",
+                     "1.0/a * b")
+    return []
+
+
+def _array_section_row(ctx: Context) -> list:
+    # `A(i, :)` is a STRIDED row of a column-major array. Fortran packs a
+    # contiguous temporary wherever one is required -- including at the BIND(C)
+    # boundary -- and C++ does not. Two things go wrong silently: the slice
+    # length is the OTHER dimension, and for i == 1 the wrong contiguous run
+    # STARTS at the right value, so the first group looks plausible.
+    m = re.search(r"\b(\w+)\s*\(\s*[^,()]+\s*,\s*:\s*\)", ctx.f)
+    if not m:
+        return []
+    if not re.search(r"\bfor\s*\(|std::vector", ctx.c):
+        return _find("array-section-row",
+                     f"the reference passes the row section `{m.group(1)}(i, :)` of a "
+                     f"column-major array; a row is strided, so it cannot cross as a "
+                     f"bare pointer and must be gathered element by element. The slice "
+                     f"length is the other dimension",
+                     f"{m.group(1)}(i, :)")
+    return []
+
+
+def _narrowing_local(ctx: Context) -> list:
+    # The discriminator is NOT "a CHARACTER(n) local exists" -- that flagged four
+    # ordinary scratch buffers across the corpus. The defect is a local narrower
+    # than what is ASSIGNED INTO it: `ChkParseData` assigns CHARACTER(*) dummies
+    # into CHARACTER(20) locals, so two names agreeing to character 20 compare
+    # EQUAL. `F_VSRefSpdCornerFreq` is exactly 20 characters -- live, not
+    # theoretical.
+    names = set()
+    for group in re.findall(r"^\s*CHARACTER\(\s*\*\s*\)[^:]*::\s*([^\n!]+)$",
+                            ctx.f, re.IGNORECASE | re.MULTILINE):
+        for piece in group.split(","):
+            m = re.match(r"\s*([A-Za-z_]\w*)", piece)
+            if m:
+                names.add(m.group(1).lower())
+    if not names:
+        return []
+    for m in re.finditer(r"^\s*CHARACTER\(\s*(\d+)\s*\)\s*(?:,[^:]*)?::\s*([^\n!]+)$",
+                         ctx.f, re.IGNORECASE | re.MULTILINE):
+        if re.search(r"\bINTENT\b|\bPARAMETER\b", ctx.f[m.start():m.end()], re.IGNORECASE):
+            continue
+        width = m.group(1)
+        for piece in m.group(2).split(","):
+            local = re.match(r"\s*([A-Za-z_]\w*)", piece)
+            if not local:
+                continue
+            lname = local.group(1)
+            for asg in re.finditer(rf"^\s*{re.escape(lname)}\s*=\s*([A-Za-z_]\w*)",
+                                   ctx.f, re.IGNORECASE | re.MULTILINE):
+                if asg.group(1).lower() in names and width not in ctx.c:
+                    return _find("narrowing-local",
+                                 f"`{lname}` is CHARACTER({width}) but is assigned from "
+                                 f"`{asg.group(1)}`, which is CHARACTER(*); the "
+                                 f"assignment TRUNCATES to {width} characters and any "
+                                 f"later comparison runs on the truncated value. The "
+                                 f"width does not appear in the translation",
+                                 f"{lname} = {asg.group(1)}")
     return []
 
 
@@ -497,14 +609,73 @@ REGISTRY: list = [
         known_good=Context(cpp="double v = p->Coefs[(col - 1) * p->n_Coefs_rows + (row - 1)];\n"),
     ),
     Check(
-        id="errmsg-blank-padding",
-        prompt_line=("Fortran `ErrMsg = \"\"` blank-fills the entire buffer. "
-                     "`errMsg[0] = '\\0'` sets one byte, passes baselines because callers "
-                     "trim at the first space, and fails a byte-for-byte kernel compare. "
-                     "Use `std::memset(errMsg, ' ', ErrMsgLen)`."),
-        detect=_errmsg_blank_padding,
+        id="character-padding",
+        prompt_line=("A Fortran CHARACTER assignment blank-fills the entire declared "
+                     "width. `buf[0] = '\\0'` sets one byte, passes baselines because "
+                     "callers trim at the first space, and fails a byte-for-byte kernel "
+                     "compare. Use `std::memset(buf, ' ', <width>)`."),
+        detect=_character_padding,
         known_bad=Context(cpp="void f(char* errMsg) { errMsg[0] = '\\0'; }\n"),
         known_good=Context(cpp="void f(char* errMsg) { std::memset(errMsg, ' ', ErrMsgLen); }\n"),
+    ),
+    Check(
+        id="real-exponent-pow",
+        prompt_line=("gfortran expands `x**N` by repeated multiplication for an INTEGER "
+                     "exponent and for the real literal `2.0`, but emits a libm `pow` "
+                     "call for a REAL exponent of 3.0 or more — and the two differ by "
+                     "1 ULP. Match the reference: `std::pow(x, 3.0)`, not `x*x*x`."),
+        detect=_real_exponent_pow,
+        known_bad=Context(fortran="Q(2,2) = v_m**3.0*dt\n",
+                          cpp="double q = v_m * v_m * v_m * dt;\n"),
+        known_good=Context(fortran="Q(2,2) = v_m**3.0*dt\n",
+                           cpp="double q = std::pow(v_m, 3.0) * dt;\n"),
+        needs_fortran=True,
+    ),
+    Check(
+        id="reciprocal-multiply",
+        prompt_line=("`/` and `*` have equal precedence and associate left to right, so "
+                     "`1.0/a * b` is a reciprocal then a multiply — which rounds "
+                     "differently from `b/a`. Transcribe the shape, not the algebra."),
+        detect=_reciprocal_multiply,
+        known_bad=Context(fortran="y = 1.0/FP%nfs_a2(inst) * (b0*x)\n",
+                          cpp="double y = (b0 * x) / a2;\n"),
+        known_good=Context(fortran="y = 1.0/FP%nfs_a2(inst) * (b0*x)\n",
+                           cpp="double y = 1.0 / a2 * (b0 * x);\n"),
+        needs_fortran=True,
+    ),
+    Check(
+        id="array-section-row",
+        prompt_line=("A Fortran array section is not a pointer. `A(i, :)` is a STRIDED "
+                     "row of a column-major array and must be gathered element by "
+                     "element; its length is the other dimension. (`A(:, j)` is "
+                     "contiguous and can be passed as `&buf[(j-1)*rows]`.)"),
+        detect=_array_section_row,
+        known_bad=Context(fortran="CALL interp1d(CntrPar%OL_StructControl(I_GROUP, :), y)\n",
+                          cpp="interp1d_c(&p->OL_StructControl[i], n, &y);\n"),
+        known_good=Context(
+            fortran="CALL interp1d(CntrPar%OL_StructControl(I_GROUP, :), y)\n",
+            cpp=("std::vector<double> row(cols);\n"
+                 "for (int j = 0; j < cols; ++j) row[j] = b[j * rows + i];\n")),
+        needs_fortran=True,
+    ),
+    Check(
+        id="narrowing-local",
+        prompt_line=("A CHARACTER local narrower than what is assigned into it truncates "
+                     "silently — no cast, no warning — and every later comparison runs on "
+                     "the truncated value. Read each CHARACTER local's declared length "
+                     "before translating."),
+        detect=_narrowing_local,
+        known_bad=Context(
+            fortran=("    CHARACTER(*), INTENT(IN) :: ExpVarName\n"
+                     "    CHARACTER(20)            :: ExpUCVarName\n"
+                     "    ExpUCVarName = ExpVarName\n"),
+            cpp="std::string a = name;\n"),
+        known_good=Context(
+            fortran=("    CHARACTER(*), INTENT(IN) :: ExpVarName\n"
+                     "    CHARACTER(20)            :: ExpUCVarName\n"
+                     "    ExpUCVarName = ExpVarName\n"),
+            cpp="char a[20]; std::strncpy(a, name, 20);\n"),
+        needs_fortran=True,
     ),
     Check(
         id="delimiter-set",
@@ -543,10 +714,6 @@ PUSHED_TO_MUTATION: dict = {
         "`NINT` written as a bare cast is indistinguishable from a legitimate "
         "truncation of an already-rounded value. The `rint`/`nearbyint` half IS "
         "shipped, because that one is unambiguous.",
-    "narrowing-local":
-        "a CHARACTER local declared shorter than its argument is a semantic "
-        "truncation, but the C++ side has no declaration to compare against — the "
-        "buffer length lives in a parameter.",
 }
 
 

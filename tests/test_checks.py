@@ -88,6 +88,24 @@ def test_a_retired_check_contributes_no_prompt_line():
     assert RETIRED, "retirements are the mechanism; keep at least one recorded"
 
 
+def test_a_check_is_silent_on_accepted_code_without_being_dead():
+    """*Zero findings* and *cannot produce a finding* look identical in a
+    report, and only one is good news.
+
+    Every check must stay silent on a plausible ACCEPTED translation -- one that
+    exercises its shape correctly -- while still firing on its known-bad. A
+    detector that is silent on everything would pass the false-positive sweep
+    perfectly and be worth nothing.
+    """
+    for check in REGISTRY:
+        assert check.detect(check.known_good) == [], f"{check.id} noisy on known-good"
+        assert check.detect(check.known_bad), f"{check.id} is DEAD -- it cannot fire"
+        # ...and the two must actually differ, or the pair proves nothing.
+        assert check.known_bad.cpp != check.known_good.cpp or \
+               check.known_bad.fortran != check.known_good.fortran, \
+               f"{check.id}'s known-bad and known-good are identical"
+
+
 def test_gaps_are_recorded_rather_than_silently_absent():
     """A shape with no precise detector is rung 3 (measured by mutation), not
     rung 4 (told). Recording it is what keeps it from being forgotten."""
