@@ -214,6 +214,17 @@ def generate_translation_prompt(
             sections.append("\n\n".join(alloc_hints))
             sections.append("")
 
+    # Known-shape defects, GENERATED from the check registry.
+    #
+    # Derived, never hand-written: one line per active check, so the guidance
+    # cannot describe a rule that is not enforced, and a check retired because
+    # the tool made its defect impossible takes its line with it. That is the
+    # property `TRANSLATION_TIPS.md` could not have -- it grew to 2,314 lines
+    # and nothing in it was able to go red.
+    from .checks import prompt_section
+    sections.append(prompt_section())
+    sections.append("")
+
     # Translation tips
     if tips_text and tips_text.strip():
         sections.append("## Translation Tips (lessons from previous translations)\n")

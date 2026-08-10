@@ -106,6 +106,16 @@ def main():
     p_verify.add_argument("--no-field-log", action="store_true",
                           help="Suppress per-field value logging")
 
+    # --- check ---
+    p_check = subparsers.add_parser(
+        "check", help="Run the known-shape defect checks against a translation")
+    p_check.add_argument("cpp_file", help="Path to C++ implementation")
+    p_check.add_argument("--file", "-f",
+                         help="Reference Fortran source (enables cross-source checks)")
+    p_check.add_argument("--function", help="Function name, for the report header")
+    p_check.add_argument("--list", action="store_true",
+                         help="List the registry instead of running it")
+
     # --- integrate ---
     p_integrate = subparsers.add_parser("integrate", help="Generate integration plan")
     p_integrate.add_argument("function_name", help="Function to integrate")
@@ -228,6 +238,8 @@ def _dispatch(args, config, parser):
         return cmd_interface(args, config)
     elif args.command == "verify":
         return cmd_verify(args, config)
+    elif args.command == "check":
+        return cmd_check(args)
     elif args.command == "integrate":
         return cmd_integrate(args, config)
     elif args.command == "sim-compare":
@@ -718,6 +730,79 @@ def _format_verify_summary(verify_result) -> str:
         return "✗ VERIFICATION FAILED: no cases found"
     else:
         return f"✗ VERIFICATION FAILED: {verify_result.passed_cases}/{valid} passed{skip_note}"
+
+
+def cmd_check(args):
+    """Run the known-shape defect checks against a translation.
+
+    Cheap and structural: no kernel, no build. Runs before `vit verify` so a
+    defect with a known shape is caught before a kernel is built for it.
+
+    Exit code is 1 on any finding, so the cycle can gate on it. A skipped check
+    is reported explicitly and does NOT affect the exit code -- it is neither a
+    pass nor a failure, and printing it is the difference between "clean" and
+    "clean as far as I looked".
+    """
+    from . import checks
+
+    cpp_path = Path(args.cpp_file)
+
+    if getattr(args, "list", False):
+        print(f"{len(checks.REGISTRY)} active check(s):")
+        for c in checks.REGISTRY:
+            scope = "fortran+cpp" if c.needs_fortran else "cpp"
+            print(f"  {c.id:22s} [{scope}]")
+        if checks.RETIRED:
+            print(f"\n{len(checks.RETIRED)} retired (the tool made these impossible):")
+            for cid, why in checks.RETIRED.items():
+                print(f"  {cid}\n      {why}")
+        if checks.PUSHED_TO_MUTATION:
+            print(f"\n{len(checks.PUSHED_TO_MUTATION)} left to mutation "
+                  f"(no precise detector; measured, not told):")
+            for cid, why in checks.PUSHED_TO_MUTATION.items():
+                print(f"  {cid}\n      {why}")
+        return 0
+
+    if not cpp_path.is_file():
+        print(f"✗ No such translation: {cpp_path}")
+        return 2
+
+    fortran_text = ""
+    if getattr(args, "file", None):
+        f_path = Path(args.file)
+        if not f_path.is_file():
+            print(f"✗ No such Fortran source: {f_path}")
+            return 2
+        fortran_text = f_path.read_text()
+
+    cpp_text = cpp_path.read_text()
+    name = getattr(args, "function", None) or cpp_path.stem
+
+    # An untouched scaffold is not a translation, and running checks on one
+    # produces findings about absent code -- "the delimiter set is missing" is
+    # true of every empty function and tells nobody anything. Measured on the
+    # ROSCO tree, this was the ONLY source of noise across 62 files. Noise is
+    # what gets a check disabled, so it is refused here rather than tolerated.
+    if checks.is_unimplemented_scaffold(cpp_text):
+        print(f"~ {name}: NOT RUN — this is an unimplemented scaffold, not a "
+              f"translation yet")
+        return 0
+
+    rep = checks.report(fortran=fortran_text, cpp=cpp_text)
+
+    for f in rep.findings:
+        print(f"  ✗ {f}")
+    for cid, why in rep.skipped:
+        print(f"  ~ {cid}: NOT RUN — {why}")
+
+    scope = f"{len(rep.ran)} check(s) ran"
+    if rep.skipped:
+        scope += f", {len(rep.skipped)} not run"
+    if rep.findings:
+        print(f"\n✗ {name}: {len(rep.findings)} finding(s) — {scope}")
+        return 1
+    print(f"✓ {name}: no known-shape defects — {scope}")
+    return 0
 
 
 def cmd_verify(args, config):
