@@ -1115,8 +1115,20 @@ def _generate_optional_preamble(optional_args, kind_aliases, derived_types):
         lines.append(f"        IF (PRESENT({oarg.name})) THEN")
         lines.append(f"            has_{oarg.name}_flag = 1")
         if not oarg.is_array and not (omapping.is_derived and omapping.is_c_compatible):
+            if "LOGICAL" in oarg.fortran_type.upper():
+                # A LOGICAL crosses as INTEGER(C_INT), and `int_val = logical`
+                # is NOT standard Fortran -- gfortran accepts it as an
+                # extension, warning only, so it built and was correct, and the
+                # non-standard emission was written down as a translation tip
+                # ("if a build ever rejects it, this is the reason") instead of
+                # being fixed. The non-optional path has used MERGE since
+                # `e72235f`; this is the same conversion, and a campaign on ifx
+                # or flang should not be the thing that discovers the
+                # difference.
+                lines.append(f"            {oarg.name}_val = "
+                             f"MERGE(1_C_INT, 0_C_INT, {oarg.name})")
             # Apply kind conversion if needed
-            if omapping.c_kind != omapping.fortran_kind and omapping.fortran_kind:
+            elif omapping.c_kind != omapping.fortran_kind and omapping.fortran_kind:
                 if omapping.iso_c_type.startswith("REAL"):
                     lines.append(f"            {oarg.name}_val = REAL({oarg.name}, {omapping.c_kind})")
                 elif omapping.iso_c_type.startswith("INTEGER"):
@@ -1183,6 +1195,51 @@ def result_char_len(sig: FortranSignature,
     return None
 
 
+def dropped_derived_args(sig: FortranSignature,
+                         kind_aliases: Optional[dict] = None,
+                         derived_types: Optional[dict] = None) -> list[tuple[str, str, str]]:
+    """The derived-type arguments `build_c_params` omits, and why.
+
+    Returns `(argument, TYPE(...), reason)`. A dropped argument is invisible in
+    the output of `build_c_params` -- the list simply has one fewer entry -- so
+    any caller that needs the call to MATCH something else (a bridge, a
+    translation, a hand-written declaration) has to be able to ask.
+
+    The reason is not decoration. `is_c_compatible` is False if ANY field is
+    ALLOCATABLE, POINTER, or a nested TYPE, so "not C-compatible" spans a type
+    that cannot cross at all and one that needs `strategy: view` in `vit.yaml`
+    and would then cross fine. ROSCO's `LocalVariables` is the second: 168
+    fields, one of them `CHARACTER, DIMENSION(:), ALLOCATABLE`, and configuring
+    the view strategy makes it cross whole.
+    """
+    out: list[tuple[str, str, str]] = []
+    for arg in sig.args:
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+        if not (mapping.is_derived and not mapping.is_c_compatible):
+            continue
+        info = None
+        if derived_types:
+            for k, v in derived_types.items():
+                if k.upper() == (arg.derived_type_name or "").upper():
+                    info = v
+                    break
+        if info is None:
+            reason = ("no entry in the derived-type registry, so nothing is known "
+                      "about its fields")
+        else:
+            blockers = []
+            if any(f.is_allocatable for f in info.fields):
+                blockers.append("ALLOCATABLE field(s)")
+            if any(f.is_pointer for f in info.fields):
+                blockers.append("POINTER field(s)")
+            if any(f.fortran_type.upper().startswith("TYPE(") for f in info.fields):
+                blockers.append("nested derived-type field(s)")
+            reason = (", ".join(blockers) or "not C-compatible") + \
+                     "; set `strategy: view` for this type in vit.yaml to cross it"
+        out.append((arg.name, arg.fortran_type, reason))
+    return out
+
+
 def build_c_params(sig: FortranSignature,
                     kind_aliases: Optional[dict] = None,
                     derived_types: Optional[dict] = None) -> list[tuple[str, str]]:
@@ -1199,7 +1256,22 @@ def build_c_params(sig: FortranSignature,
     for arg in sig.args:
         mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
 
-        # Skip passthrough args (non-C-compatible derived types)
+        # Skip passthrough args (non-C-compatible derived types).
+        #
+        # This `continue` is silent, and `is_c_compatible` is a single boolean
+        # that two generators read to mean opposite things: here it means "omit
+        # the argument", while `test_validate._has_allocatable_fields` reads the
+        # same False to mean "decompose it into one bridge parameter per field".
+        # The two then emit a C++ declaration and a Fortran bridge that disagree
+        # about the function's arity, and the symptom is a link or compile error
+        # naming neither cause.
+        #
+        # It stays a skip, because a genuine passthrough must keep being
+        # skipped and nothing in the type model distinguishes "deliberately not
+        # crossed" from "no strategy configured yet". What it no longer does is
+        # happen quietly: `dropped_derived_args` reports it, and
+        # `test_validate` refuses to emit a skeleton whose bridge needs an
+        # argument the C++ call does not have.
         if mapping.is_derived and not mapping.is_c_compatible:
             continue
 

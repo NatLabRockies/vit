@@ -729,3 +729,55 @@ class TestCountKernelCases:
         from vit.extract import count_kernel_cases
         d = self._make(tmp_path, ["AddToList.0.0.1", "CurDate.0.0.1"])
         assert count_kernel_cases(d) == 2
+
+
+# --------------------------------------------------------------------------
+# The build-file patch must not be able to fail quietly.
+
+def _wrapper(tmp_path, **kw):
+    import os, pathlib
+    from vit.extract import generate_state_capture_build_script
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        return pathlib.Path(generate_state_capture_build_script(
+            "cmake --build .", cmake_file=str(tmp_path / "CMakeLists.txt"), **kw)).read_text()
+    finally:
+        os.chdir(cwd)
+
+
+def test_a_failed_source_patch_stops_the_build(tmp_path):
+    """The worst failure this toolchain had, and it was silent.
+
+    The `sed` that adds kgen_utils.f90 to the source list assumed a `src/`
+    prefix, a lowercase `.f90` extension and file names free of digits and
+    hyphens. When it matched nothing the wrapper printed "VIT: Patched
+    CMakeLists.txt" anyway; the build then succeeded, the shared library linked
+    with kgen_init_vars unresolved (a Linux .so permits that), the simulation
+    ran, and the only symptom was "No state data captured" -- with nothing
+    pointing back at the patch. See dev note 202608071141.
+
+    The pattern is wider now, but that is not the fix: the next layout will
+    break it too. The fix is that an unmatched pattern is FATAL.
+    """
+    script = _wrapper(tmp_path)
+    assert "VIT ERROR: could not add kgen_utils.f90" in script
+    assert "exit 1" in script
+    # And it must say what to do about it.
+    assert "add_source_cmd in vit.yaml" in script
+
+
+def test_a_missing_build_file_stops_the_build(tmp_path):
+    """`cmake_file` was configured, so its absence is a misconfiguration.
+    Skipping quietly produced the same empty capture, one step earlier."""
+    assert "VIT ERROR: cmake_file is configured but" in _wrapper(tmp_path)
+
+
+def test_add_source_cmd_replaces_the_heuristic(tmp_path):
+    """A heuristic that can be overridden is a heuristic; one that cannot is a
+    requirement on every future codebase. Build systems other than CMake, and
+    source lists the pattern cannot match, need an escape hatch rather than a
+    patch to VIT."""
+    script = _wrapper(tmp_path, add_source_cmd="my-custom-adder")
+    assert "( my-custom-adder )" in script
+    assert "sed -i -E" not in script, "the override must REPLACE the guess, not run beside it"

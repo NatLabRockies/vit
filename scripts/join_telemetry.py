@@ -20,6 +20,7 @@ import argparse
 import csv
 import json
 import sys
+from collections import OrderedDict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -286,20 +287,28 @@ def main(argv=None):
 
     unseen = sorted(set(dispositions) - {s["function"] for s in spans})
 
+    # `build_spans` returns one run per contiguous appearance, so a function
+    # that was worked on twice has two. The CSV is one row per FUNCTION, and
+    # its elapsed time is the sum of its runs -- not first-start to last-end,
+    # which is what produced `__precompact__`'s phantom 8,923-second window
+    # from 309 seconds of actual work.
+    runs_by_function = OrderedDict()
+    for span in spans:
+        runs_by_function.setdefault(span["function"], []).append(span)
+
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=COLUMNS)
         writer.writeheader()
-        for span in spans:
-            name = span["function"]
+        for name, runs in runs_by_function.items():
             owned = by_function.get(name, [])
             totals = per_function[name]
             row = {
                 "function": name,
                 "status": _resolve_status(name, dispositions, status_for(owned)),
                 "t_total_s": round(
-                    (span["end"] - span["start"]).total_seconds(), 3),
+                    sum((r["end"] - r["start"]).total_seconds() for r in runs), 3),
                 "verify_attempts": attempts_to_first_pass(owned, "verify"),
                 "integrate_attempts": attempts_to_first_pass(owned, "integrate"),
                 "verify_runs": total_runs(owned, "verify"),
@@ -307,7 +316,8 @@ def main(argv=None):
                 "tok_total_uncached": telemetry.total_uncached(totals),
                 "usage_records": totals["records"],
                 "model": ";".join(sorted(totals.get("models") or [])),
-                "interleaved_with": ";".join(sorted(set(span["overlaps"]))),
+                "interleaved_with": ";".join(sorted(
+                    {f for r in runs for f in r["overlaps"]})),
             }
             for step in STEP_COMMANDS:
                 seconds = sum(i["duration_s"] or 0 for i in owned if i["command"] == step)

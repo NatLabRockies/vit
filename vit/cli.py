@@ -106,6 +106,27 @@ def main():
     p_verify.add_argument("--no-field-log", action="store_true",
                           help="Suppress per-field value logging")
 
+    # --- check ---
+    p_check = subparsers.add_parser(
+        "check", help="Run the known-shape defect checks against a translation")
+    p_check.add_argument("cpp_file", help="Path to C++ implementation")
+    p_check.add_argument("--file", "-f",
+                         help="Reference Fortran source (enables cross-source checks)")
+    p_check.add_argument("--function", help="Function name, for the report header")
+    p_check.add_argument("--list", action="store_true",
+                         help="List the registry instead of running it")
+
+    # --- reachability ---
+    p_reach = subparsers.add_parser(
+        "reachability",
+        help="Settle whether a procedure is called, by deleting it and rebuilding")
+    p_reach.add_argument("function_name", help="Procedure to probe")
+    p_reach.add_argument("--file", "-f", required=True,
+                         help="Fortran source file containing the definition")
+    p_reach.add_argument("--build-cmd", help="Override the build command from vit.yaml")
+    p_reach.add_argument("--timeout", type=int, default=1800,
+                         help="Seconds to allow for the rebuild (default 1800)")
+
     # --- integrate ---
     p_integrate = subparsers.add_parser("integrate", help="Generate integration plan")
     p_integrate.add_argument("function_name", help="Function to integrate")
@@ -228,6 +249,10 @@ def _dispatch(args, config, parser):
         return cmd_interface(args, config)
     elif args.command == "verify":
         return cmd_verify(args, config)
+    elif args.command == "check":
+        return cmd_check(args)
+    elif args.command == "reachability":
+        return cmd_reachability(args, config)
     elif args.command == "integrate":
         return cmd_integrate(args, config)
     elif args.command == "sim-compare":
@@ -416,6 +441,7 @@ def cmd_extract(args, config):
             assumed_size_arrays=assumed_size or None,
             preprocessor_defines=config.preprocessor_defines or None,
             dll_persistence=config.dll_persistence or None,
+            add_source_cmd=config.add_source_cmd,
             function_name=args.function_name,
             dry_run=args.dry_run,
         )
@@ -534,8 +560,17 @@ def cmd_translate(args, config):
     # The actual header is generated on-demand in kernel/test/integration dirs.
     struct_header_names = ["vit_types.h"] if derived_types else []
 
+    # The campaign's shared headers, from vit.yaml. They were declared there and
+    # consumed everywhere EXCEPT the translate scaffold, so every translation had
+    # to be told in prose to include them -- which is what four TRANSLATION_TIPS
+    # entries were doing. Only headers: a shared .cpp is linked, not included.
+    shared_header_names = [Path(f).name for f in (config.shared_files or [])
+                           if Path(f).suffix in (".h", ".hpp")]
+
     # Generate scaffold
     scaffold = generate_translation_scaffold(
+        shared_headers=shared_header_names,
+        fortran_flags=config.fortran_flags,
         sig=sig,
         kind_aliases=config.kind_aliases,
         source_file=args.file,
@@ -595,11 +630,15 @@ def cmd_translate(args, config):
     from .translate import _extract_function_text
     fortran_text = _extract_function_text(source_text, args.function_name)
 
-    # Load TRANSLATION_TIPS.md if it exists
-    tips_text = None
-    tips_path = Path("TRANSLATION_TIPS.md")
-    if tips_path.is_file():
-        tips_text = tips_path.read_text()
+    # What the shared headers actually provide, read from the headers at prompt
+    # time. This replaces the hand-written inventory `TRANSLATION_TIPS.md` used
+    # to carry: a copy of a header drifts from the header, and the drift is
+    # silent -- a translation that avoids a function because the list omitted it
+    # fails at nothing, it just reimplements it inline.
+    shared_header_paths = [str(Path(config.abs_source_dir or ".") / f)
+                           if not Path(f).is_absolute() and not Path(f).is_file()
+                           else f
+                           for f in (config.shared_files or [])]
 
     # Detect already-translated callees and generate their _c signatures
     # so the translator knows what functions are available to call.
@@ -641,7 +680,7 @@ def cmd_translate(args, config):
         source_file=args.file,
         fortran_source_text=fortran_text,
         scaffold_text=scaffold,
-        tips_text=tips_text,
+        shared_header_paths=shared_header_paths,
         derived_types=derived_types,
         callee_declarations=callee_declarations,
     )
@@ -710,6 +749,115 @@ def _format_verify_summary(verify_result) -> str:
         return f"✗ VERIFICATION FAILED: {verify_result.passed_cases}/{valid} passed{skip_note}"
 
 
+def cmd_check(args):
+    """Run the known-shape defect checks against a translation.
+
+    Cheap and structural: no kernel, no build. Runs before `vit verify` so a
+    defect with a known shape is caught before a kernel is built for it.
+
+    Exit code is 1 on any finding, so the cycle can gate on it. A skipped check
+    is reported explicitly and does NOT affect the exit code -- it is neither a
+    pass nor a failure, and printing it is the difference between "clean" and
+    "clean as far as I looked".
+    """
+    from . import checks
+
+    cpp_path = Path(args.cpp_file)
+
+    if getattr(args, "list", False):
+        print(f"{len(checks.REGISTRY)} active check(s):")
+        for c in checks.REGISTRY:
+            scope = "fortran+cpp" if c.needs_fortran else "cpp"
+            print(f"  {c.id:22s} [{scope}]")
+        if checks.RETIRED:
+            print(f"\n{len(checks.RETIRED)} retired (the tool made these impossible):")
+            for cid, why in checks.RETIRED.items():
+                print(f"  {cid}\n      {why}")
+        if checks.PUSHED_TO_MUTATION:
+            print(f"\n{len(checks.PUSHED_TO_MUTATION)} left to mutation "
+                  f"(no precise detector; measured, not told):")
+            for cid, why in checks.PUSHED_TO_MUTATION.items():
+                print(f"  {cid}\n      {why}")
+        return 0
+
+    if not cpp_path.is_file():
+        print(f"✗ No such translation: {cpp_path}")
+        return 2
+
+    fortran_text = ""
+    if getattr(args, "file", None):
+        f_path = Path(args.file)
+        if not f_path.is_file():
+            print(f"✗ No such Fortran source: {f_path}")
+            return 2
+        fortran_text = f_path.read_text()
+
+    cpp_text = cpp_path.read_text()
+    name = getattr(args, "function", None) or cpp_path.stem
+
+    # An untouched scaffold is not a translation, and running checks on one
+    # produces findings about absent code -- "the delimiter set is missing" is
+    # true of every empty function and tells nobody anything. Measured on the
+    # ROSCO tree, this was the ONLY source of noise across 62 files. Noise is
+    # what gets a check disabled, so it is refused here rather than tolerated.
+    if checks.is_unimplemented_scaffold(cpp_text):
+        print(f"~ {name}: NOT RUN — this is an unimplemented scaffold, not a "
+              f"translation yet")
+        return 0
+
+    rep = checks.report(fortran=fortran_text, cpp=cpp_text)
+
+    for f in rep.findings:
+        print(f"  ✗ {f}")
+    for cid, why in rep.skipped:
+        print(f"  ~ {cid}: NOT RUN — {why}")
+
+    scope = f"{len(rep.ran)} check(s) ran"
+    if rep.skipped:
+        scope += f", {len(rep.skipped)} not run"
+    if rep.findings:
+        print(f"\n✗ {name}: {len(rep.findings)} finding(s) — {scope}")
+        return 1
+    print(f"✓ {name}: no known-shape defects — {scope}")
+    return 0
+
+
+def cmd_reachability(args, config):
+    """Settle "is this called?" with a rebuild instead of a scenario sweep.
+
+    Exit 0 when the probe reached a verdict either way; 2 when it could not.
+    `unreferenced` is deliberately NOT an error — it is a finding, and often the
+    one being looked for.
+    """
+    from . import reachability
+
+    build_cmd = getattr(args, "build_cmd", None) or config.build_cmd
+    if not build_cmd:
+        print("✗ No build command: pass --build-cmd or set kgen.build_cmd in vit.yaml")
+        return 2
+
+    print(f"Probing {args.function_name} — commenting it out and rebuilding...")
+    r = reachability.probe(
+        args.function_name, args.file, build_cmd,
+        cwd=str(Path(config.abs_source_dir).parent) if config.abs_source_dir else ".",
+        source_dir=config.abs_source_dir, timeout=args.timeout)
+
+    if r.verdict == "referenced":
+        print(f"\n✓ {r.function}: REFERENCED — {r.detail}")
+        for s in r.symbols[:10]:
+            print(f"    {s}")
+    elif r.verdict == "unreferenced":
+        print(f"\n✓ {r.function}: UNREFERENCED — {r.detail}")
+    else:
+        print(f"\n~ {r.function}: INCONCLUSIVE — {r.detail}")
+
+    # Caveats are printed for the verdict that needs them. An `uncalled` claim
+    # that hides its own scope is the failure this command exists to replace.
+    for c in r.caveats:
+        print(f"    ! {c}")
+    return 0 if r.ok else 2
+
+
 def cmd_verify(args, config):
     """Run KGen kernel verification with C++ implementation."""
     # Parse the function signature
@@ -773,6 +921,24 @@ def cmd_verify(args, config):
         if verify_result.max_error > 0:
             print(f"  Max error: {verify_result.max_error:.2e} (tolerance: {config.tolerance:.2e})")
 
+        # A pass means nothing until the kernel has been shown able to fail.
+        red = _run_red_test(args, config, sig, kernel_dir, derived_types,
+                            field_log, setup_kernel_cpp, run_kernel_verify)
+        print(f"\n  Red test: {red['message']}")
+        if red["verdict"] != "demonstrated":
+            print(f"\n✗ {args.function_name}: NON_DISCRIMINATING — "
+                  f"{verify_result.passed_cases} case(s) compared IDENTICAL, and the "
+                  f"kernel did not report a mismatch when the translation was "
+                  f"deliberately changed. The pass is not evidence.")
+            record_translation(config, args.function_name, "non_discriminating", {
+                "cases_passed": verify_result.passed_cases,
+                "cpp_file": args.cpp_file,
+                "kernel_dir": kernel_dir,
+                "red_test": red["verdict"],
+                "red_test_detail": red["message"],
+            })
+            return 1
+
         valid = verify_result.total_cases - verify_result.skipped_cases
         record_translation(config, args.function_name, "verified", {
             "cases_passed": verify_result.passed_cases,
@@ -780,6 +946,8 @@ def cmd_verify(args, config):
             "cases_skipped": verify_result.skipped_cases,
             "cpp_file": args.cpp_file,
             "kernel_dir": kernel_dir,
+            "red_test": red["verdict"],
+            "red_test_detail": red["message"],
         })
     else:
         for detail in verify_result.details:
@@ -787,6 +955,92 @@ def cmd_verify(args, config):
                 print(f"  FAILED: {detail['line']}")
 
     return 0 if verify_result.success else 1
+
+
+def _run_red_test(args, config, sig, kernel_dir, derived_types, field_log,
+                  setup_kernel_cpp, run_kernel_verify) -> dict:
+    """Rebuild the kernel against a deliberately wrong translation; require red.
+
+    Returns `{verdict, message}` where verdict is one of:
+
+      demonstrated     the kernel reported a mismatch -- the pass means something
+      not_discriminating  every perturbation still verified IDENTICAL
+      not_constructed  nothing could be perturbed safely (see `redtest.why_not`)
+
+    The last two both block a `verified` record. `not_constructed` is not a
+    failure of the translation and is not a pass either: it is the statement
+    that this kernel's discriminating power is unmeasured, which is what every
+    `vit verify` silently asserted before this existed.
+
+    The original translation is restored and re-verified at the end, so the
+    kernel directory is left in the state a passing verify should leave it.
+    """
+    import tempfile
+
+    from . import redtest
+
+    cpp_path = Path(args.cpp_file)
+    original = cpp_path.read_text()
+    perturbations = redtest.candidates(sig, original, config.kind_aliases,
+                                       derived_types)
+    if not perturbations:
+        return {"verdict": "not_constructed",
+                "message": f"NOT CONSTRUCTED — {redtest.why_not(sig, original, config.kind_aliases, derived_types)}"}
+
+    # The perturbed translation goes to a TEMP file; the user's `.cpp` is never
+    # written. Mutating it in place and restoring in a `finally` works until the
+    # run is killed between the two, and then a deliberately wrong translation
+    # is sitting on disk looking like the real one -- a fails-green artifact
+    # produced by the fails-green detector.
+    tmp = Path(tempfile.mkdtemp(prefix="vit_redtest_")) / cpp_path.name
+
+    def verify_with(path: str):
+        setup = setup_kernel_cpp(
+            kernel_dir=kernel_dir, sig=sig, cpp_impl_path=path,
+            kind_aliases=config.kind_aliases, field_log=False,
+            derived_types=derived_types, fortran_flags=config.fortran_flags,
+            translations=config.translations, source_dir=config.abs_source_dir,
+            fortran_compiler=config.fortran_compiler,
+            shared_files=config.shared_files)
+        if not setup["success"]:
+            return None
+        return run_kernel_verify(kernel_dir, tolerance=config.tolerance,
+                                 field_log=False, sig=sig)
+
+    try:
+        tried, absorbed = [], []
+        for p in perturbations:
+            tmp.write_text(p.text)
+            result = verify_with(str(tmp))
+            tried.append(p.description)
+            if result is None:
+                # A perturbation that will not build is a red of the crudest
+                # kind, and an honest one: the kernel noticed.
+                return {"verdict": "demonstrated",
+                        "message": f"the kernel failed to build with {p.description}"}
+            if not result.success:
+                msg = f"the kernel reported a mismatch with {p.description}"
+                if absorbed and p.kind == "return":
+                    # Worth saying out loud rather than discarding: the
+                    # comparison works, but these captured cases cannot see a
+                    # change to what the function was GIVEN. A saturating output
+                    # does this -- every case sits on the clamp -- and it means
+                    # the discriminating power here is weaker than the pass
+                    # suggests, even though the pass is real.
+                    msg += ("; note that the input perturbations were absorbed ("
+                            + ", ".join(absorbed) + "), so these cases cannot "
+                            "discriminate on input -- typically a saturated output")
+                return {"verdict": "demonstrated", "message": msg}
+            if p.kind == "input":
+                absorbed.append(p.description)
+        return {"verdict": "not_discriminating",
+                "message": ("NOT DISCRIMINATING — the kernel still verified IDENTICAL "
+                            "with " + ", and with ".join(tried))}
+    finally:
+        # Leave the kernel wired to the REAL translation, so the directory is in
+        # the state a passing verify should leave it.
+        verify_with(str(cpp_path))
+        shutil.rmtree(tmp.parent, ignore_errors=True)
 
 
 def _sync_shared_files(config) -> list:
@@ -1297,6 +1551,7 @@ def cmd_test_validate(args, config):
         generate_test_harness_skeleton,
         generate_test_makefile,
         generate_test_validate_prompt,
+        generate_callee_bridges,
     )
     from .translate import _extract_function_text
 
@@ -1310,8 +1565,21 @@ def cmd_test_validate(args, config):
 
     derived_types = _build_registry(sig, config)
 
-    # Determine output directory
-    out_dir = Path("translations") / module_name
+    # Determine output directory.
+    #
+    # PER UNIT, not per module. Everything written below is unit-specific --
+    # `vit_types.h` holds only the types this unit needs, the Makefile names
+    # this unit's objects, and both the `test` binary and `clean`'s `rm -f *.o
+    # test` are unqualified. A per-module directory made two units in one module
+    # overwrite each other: running this for `PIController` left a `vit_types.h`
+    # containing only `piparams_t`, and the next `CableControl` build failed on
+    # a type VIT had generated for it an hour earlier. `make` then built
+    # whichever Makefile landed last, so one unit's case file could be fed to
+    # another unit's binary. Order-dependent, so it read as intermittent.
+    #
+    # A subdirectory fixes all four collisions at once and needs no naming
+    # convention that a future artifact could forget to follow.
+    out_dir = Path("translations") / module_name / f"{sig.name.lower()}_test"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate consolidated types header into the test directory (not translations root).
@@ -1367,6 +1635,19 @@ def cmd_test_validate(args, config):
         patched_source_name = patched_name
         print(f"  Function is PRIVATE — patched source: {patched_path}")
 
+    # Callee bridges: `<callee>_c` symbols the translation calls, backed by the
+    # ORIGINAL Fortran. Without these only leaf functions link, which excludes
+    # most of a campaign.
+    callee_src = None
+    if args.cpp_file and Path(args.cpp_file).is_file():
+        callee_src, callee_notes = generate_callee_bridges(
+            Path(args.cpp_file).read_text(), sig.name, config.abs_source_dir,
+            config.kind_aliases, derived_types)
+        for n in callee_notes:
+            print(f"  callee: {n}")
+        if callee_src:
+            (out_dir / f"{sig.name.lower()}_callees.f90").write_text(callee_src)
+
     # Generate and write Makefile
     cpp_file_abs = str(Path(args.cpp_file).resolve()) if args.cpp_file else None
     makefile_text = generate_test_makefile(
@@ -1380,6 +1661,10 @@ def cmd_test_validate(args, config):
         shared_files=shared_files,
         cpp_file=cpp_file_abs,
         patched_source=patched_source_name,
+        callee_bridge=bool(callee_src),
+        fortran_compiler=config.fortran_compiler,
+        cxx_compiler=config.cxx_compiler,
+        fortran_runtime_libs=config.fortran_runtime_libs,
     )
     makefile_path = out_dir / "Makefile"
     makefile_path.write_text(makefile_text)

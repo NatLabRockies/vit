@@ -59,17 +59,34 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 
 **Callee declarations:** VIT handles these automatically. During kernel verification: `vit_kernel_callees.h`. During integration: `vit_translated.h`. No `extern "C"` boilerplate needed.
 
-**Always use `vit translate` to seed translations.** Do not write C++ from scratch. The scaffold includes callee `_c` signatures with OPTIONAL parameter handling that isn't obvious from the Fortran source. Skipping it leads to signature mismatches. `vit translate` also includes `openfast/TRANSLATION_TIPS.md` in the prompt automatically — add lessons learned from translation failures there so future prompts get smarter. **Warning:** `vit translate` overwrites the scaffold file every time. Do not re-run it after writing the C++ implementation unless you have saved the implementation elsewhere.
+**Always use `vit translate` to seed translations.** Do not write C++ from scratch. The scaffold includes callee `_c` signatures with OPTIONAL parameter handling that isn't obvious from the Fortran source. Skipping it leads to signature mismatches. The prompt's guidance section is **generated from VIT's check registry** (`vit/checks.py`), and the list of callable shared functions is **read from the shared headers** — neither is hand-maintained, so neither can drift. When you learn something from a translation failure, add a *check* (`vit check --list` shows the registry) rather than prose; if it has no precise detector, record it in `PUSHED_TO_MUTATION` or `TOOL_GAPS` with the reason. `TRANSLATION_TIPS.md` was deleted 2026-08-10 — see `translation-loop/POST_REPLICATION_ACTIONS.md` §3. **Warning:** `vit translate` overwrites the scaffold file every time. Do not re-run it after writing the C++ implementation unless you have saved the implementation elsewhere.
 
 **`vit translate` auto-generates type infrastructure.** When it encounters a derived type with ALLOCATABLE fields that has no strategy configured in vit.yaml, it automatically: (1) sets `strategy: view` in vit.yaml, (2) writes/updates `vit_types.h` with the C view struct, (3) creates the Fortran view populator module (.f90). No manual type setup needed before translating. `vit integrate` then auto-adds the populator .f90 to CMakeLists.txt.
 
 **`--reverse-copy` flag:** Use when the function modifies scalar fields in view-type INOUT arguments. Not needed when only ALLOCATABLE arrays are modified (those work through `C_LOC` pointers).
 
-**Operator precedence: Fortran `a*x**2` ≠ C++ `a * x * x`.** Fortran's `**` binds tighter than `*`, so `a*x**2` means `a * (x*x)`. C++ evaluates `a * x * x` left-to-right as `(a*x) * x`. The different intermediate rounding produces 1-3 ULP differences for certain values. Always parenthesize: `a * (x * x)`. See `TRANSLATION_TIPS.md` for this and other lessons.
+**Operator precedence: Fortran `a*x**2` ≠ C++ `a * x * x`.** Fortran's `**` binds tighter than `*`, so `a*x**2` means `a * (x*x)`. C++ evaluates `a * x * x` left-to-right as `(a*x) * x`. The different intermediate rounding produces 1-3 ULP differences for certain values. Always parenthesize: `a * (x * x)`. This is enforced by the `exponent-grouping` check, which excludes the two benign shapes (`x*x*x`, and a leading power-of-two literal) — run `vit check`.
 
 **Vectorization fix for DBEMT:** `CMakeLists.txt` sets `-fno-tree-loop-vectorize` on `DBEMT.f90`. Replacing a module-internal function body with a wrapper changes gfortran's vectorization decision for the caller's `exp()` loop (scalar libm vs SIMD libmvec, 1 ULP difference). The DBEMT exponential filter feedback loop amplifies this through UA-coupled timesteps. The flag ensures consistent scalar `exp()` regardless of wrapper insertion. Same root cause as the kernel verification libmvec issue (dev note `202604260357`). Other modules with similar sensitive feedback loops may need the same treatment.
 
 **Verification methods:** See `docs/VERIFICATION_METHODS.md` for test-validate, file-output comparison, simulation baselines, and FMA debugging.
+
+**Cycle telemetry.** Every `vit` command logs a start/end event to `.vit/cycle_log.jsonl` (override with `VIT_TELEMETRY_LOG`, disable with `VIT_TELEMETRY=0`). Joined against Claude Code session transcripts, this yields per-function tokens, wall clock, and attempts to first verification pass:
+
+```bash
+python3 scripts/join_telemetry.py --cycle-log .vit/cycle_log.jsonl \
+    --transcripts ~/.claude/projects/<project-key>/ \
+    --out analysis/per_function.csv
+```
+
+The two cycle steps that are not `vit` commands must log themselves, or rebuild and regress time vanishes from the totals:
+
+```bash
+python3 -m vit.telemetry start --function FuncName --command regress
+python3 -m vit.telemetry end   --function FuncName --command regress --exit-code $rc
+```
+
+Attribution assumes one function at a time. Interleaved work produces overlapping spans, which the joiner flags. Read `vit/telemetry.py`'s module docstring before trusting any number it produces.
 
 **VIT reference:** See `docs/VIT_REFERENCE.md` for CLI commands, config fields, exit codes, and known limitations.
 
@@ -220,6 +237,15 @@ When creating a dev note:
 
 ## Git
 
+**`main` is canonical and pushed** (`14d0a5b`, 2026-08-09). It was ~40 commits stale for a
+while: the ROSCO replication's checkout carried all `vit/` source evolution (30 commits), which
+was merged onto a `unify-vit` branch together with 11 further fixes and `tests/conformance/`,
+and held back so the live replication could not receive it mid-campaign. That run stopped at
+#59, so `unify-vit` was fast-forwarded into `main` — linear history, no merge commit — and
+both refs now point at the same commit. `translation-loop/vit-patches/` is deleted; the three
+VIT defects it was carrying are open, in dev note `202608092223`. Dev notes `202608091353`,
+`202608092223`.
+
 Two sibling workspaces. **Active work is in the OpenFAST workspace.**
 
 | Repo | OpenFAST workspace path | Remote |
@@ -235,7 +261,7 @@ Run `git add` and `git commit` directly when asked. Do not run `git push` unless
 **Shared C++ headers:** Translations share three headers (all listed in `vit.yaml` `shared_files` so VIT copies them to kernel directories):
 
 - **`vit_nwtc.h` / `vit_nwtc.cpp`** — C++ translations of NWTC Library utility functions (SetErrStat, EqualRealNos, InterpStp, CubicSplineInitM, etc.) and constants (ErrID_None, AbortErrLev, Pi, ErrMsgLen). Small functions are `inline` in the `.h`; larger functions (cubic spline, fZeros, kernelSmoothing) are in the `.cpp` and compiled once. See `docs/NWTC_UTILITIES.md` for the full reference.
-- **`vit_fortran_intrinsics.h`** — Header-only templates for Fortran array intrinsics with no C++ standard library equivalent: `fortran_minloc`, `fortran_maxloc` (templated on value/mask lambdas), `fortran_cshift`. Use these instead of writing inline loops. See `TRANSLATION_TIPS.md`.
+- **`vit_fortran_intrinsics.h`** — Header-only templates for Fortran array intrinsics with no C++ standard library equivalent: `fortran_minloc`, `fortran_maxloc` (templated on value/mask lambdas), `fortran_cshift`. Use these instead of writing inline loops. `vit translate` reads the callable inventory straight out of these headers, so adding a function here makes it visible to the next translation with no other edit.
 - **`vit_aerodyn_constants.h`** — AeroDyn module-level constants (DBEMT_Mod values, UA_Mod values, column indices).
 
 When adding a new shared function: if it's small enough to inline (under ~15 lines, no complex loops), put it `inline` in the `.h`. If it's larger, declare in the `.h` and implement in the `.cpp`.

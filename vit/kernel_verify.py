@@ -531,7 +531,13 @@ def _compare_field_logs(fortran_data: list[dict],
             # C++ is better than Fortran — unexpected but not a bug
             pass
 
-    # Check for Fortran entries missing from C++
+    # Check for Fortran entries missing from C++.
+    #
+    # This is what keeps the field log from licensing a false pass. The loop
+    # above walks C++ entries only, so a field the C++ log does not mention
+    # would never be examined -- and since a match here OVERRIDES a failing
+    # kernel result, an unexamined field would be an unnoticed divergence
+    # promoted to a pass. Absence must not render as agreement.
     for key in fortran_by_key:
         if key not in cpp_by_key:
             differences.append(
@@ -539,6 +545,27 @@ def _compare_field_logs(fortran_data: list[dict],
             )
 
     return len(differences) == 0, differences, n_artifacts
+
+
+def field_log_coverage(fortran_data: list[dict], cpp_data: list[dict]) -> str:
+    """One line saying what the field log actually observed.
+
+    The log is produced by pattern-matching KGen's *generated Fortran* --
+    `var%F == kgenref_var%F`, `diff_F = ABS(...)`, `rmsdiff_F` -- so a field
+    whose comparison KGen emits in a shape no pattern covers is absent from
+    BOTH logs and cancels out. The kernel's own verdict still covers it, so
+    this is not a correctness hole; but a reader who assumes the log is a
+    complete account of the comparison would be wrong, and a green that does
+    not say what it compared is the failure mode this project is about.
+    """
+    f_fields = {e["field"] for e in fortran_data or []}
+    c_fields = {e["field"] for e in cpp_data or []}
+    both = f_fields & c_fields
+    only_f = sorted(f_fields - c_fields)
+    line = f"field log: {len(both)} field(s) compared on both sides"
+    if only_f:
+        line += f"; {len(only_f)} logged only by Fortran ({', '.join(only_f[:4])})"
+    return line
 
 
 def run_kernel_verify(kernel_dir: str, env: Optional[dict] = None,
@@ -595,7 +622,11 @@ def run_kernel_verify(kernel_dir: str, env: Optional[dict] = None,
 
         if all_match:
             # C++ matches Fortran exactly — all cases pass
-            # Override pass count: failures that match Fortran are artifacts
+            # Override pass count: failures that match Fortran are artifacts.
+            # The override says what it compared: a pass that overrides a
+            # failing kernel has to be auditable, and "matched" is not auditable
+            # without a count of what was matched.
+            coverage = field_log_coverage(fortran_field_data, cpp_result.field_data)
             result = VerifyResult(
                 success=True,
                 total_cases=cpp_result.total_cases,
@@ -603,7 +634,7 @@ def run_kernel_verify(kernel_dir: str, env: Optional[dict] = None,
                 failed_cases=0,
                 skipped_cases=cpp_result.skipped_cases,
                 max_error=0.0,
-                output=cpp_result.output,
+                output=cpp_result.output + "\n" + coverage,
                 details=cpp_result.details,
                 field_data=cpp_result.field_data,
             )

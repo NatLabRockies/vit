@@ -454,6 +454,14 @@ def _make_allocatable_registry():
                                  is_allocatable=True, is_array=True,
                                  array_dims="(:,:)"),
             ],
+            # The bridge decomposes this type (it has an ALLOCATABLE field), so
+            # the C++ call has to receive it too or the two disagree about the
+            # function's arity. `strategy: view` is what makes `build_c_params`
+            # emit `dbemt_initinputtype_view_t*` for it; without it the argument
+            # is dropped and `generate_test_harness_skeleton` now refuses. The
+            # decomposition assertions below are unaffected -- `is_c_compatible`
+            # is still False, so the bridge still decomposes.
+            view_strategy="view",
         ),
     }
 
@@ -615,3 +623,147 @@ class TestAllocatableSkeleton:
         sig = _make_sig_with_derived_type()
         skeleton = generate_test_harness_skeleton(sig)
         assert "void*" in skeleton
+
+
+def _sig(src: str, name: str):
+    from vit.fortran_parser import parse_signature_from_source
+    return parse_signature_from_source(src, name)
+
+
+# --------------------------------------------------------------------------
+# The toolchain is configuration, not a literal.
+
+def test_the_makefile_honours_the_configured_compilers():
+    """`FC = gfortran` and `CXX = g++` were literals in a generator whose
+    Fortran compiler is a vit.yaml field. A campaign on ifx or flang got a
+    Makefile naming a compiler it does not have."""
+    from vit.test_validate import generate_test_makefile
+    sig = _sig("SUBROUTINE Foo(x)\n  REAL(8), INTENT(IN) :: x\nEND SUBROUTINE Foo", "Foo")
+    mk = generate_test_makefile(sig=sig, build_dir="/b", source_dir="/s",
+                                fortran_compiler="ifx", cxx_compiler="icpx")
+    assert "FC = ifx" in mk and "CXX = icpx" in mk
+    assert "FC = gfortran" not in mk
+
+
+def test_the_fortran_runtime_follows_the_compiler():
+    """The harness links with $(CXX), so nothing pulls in the Fortran runtime.
+    `-lgfortran -lm` was hardcoded; on another toolchain that is an undefined
+    symbol naming `_gfortran_*`, which reads as a source problem rather than a
+    configuration one."""
+    from vit.test_validate import fortran_runtime_for, generate_test_makefile
+    assert fortran_runtime_for("gfortran") == "-lgfortran -lm"
+    assert "-lifcore" in fortran_runtime_for("ifx")
+    assert "-lifcore" in fortran_runtime_for("/opt/intel/bin/ifort"), "a path must resolve"
+    # An unknown compiler must not pretend to know.
+    assert "set fortran.runtime_libs" in fortran_runtime_for("some-vendor-fc")
+
+    sig = _sig("SUBROUTINE Foo(x)\n  REAL(8), INTENT(IN) :: x\nEND SUBROUTINE Foo", "Foo")
+    mk = generate_test_makefile(sig=sig, build_dir="/b", source_dir="/s",
+                                fortran_compiler="ifx")
+    assert "-lifcore" in mk and "-lgfortran" not in mk
+    # And an explicit setting wins over the table.
+    mk = generate_test_makefile(sig=sig, build_dir="/b", source_dir="/s",
+                                fortran_compiler="ifx", fortran_runtime_libs="-lmyrt")
+    assert "LIBS += -lmyrt" in mk
+
+
+# --------------------------------------------------------------------------
+# Three generators over one type model, and where they disagreed.
+# Dev note 202608092223.
+
+class TestGeneratorsAgree:
+    """VIT has several independent generators over one type model. Each of
+    these was a place two of them contradicted each other, and every one
+    surfaced as a symptom naming neither cause -- an arity mismatch, a missing
+    struct, an undeclared identifier."""
+
+    def test_a_bridge_argument_the_cpp_call_lacks_is_refused(self):
+        """`build_c_params` drops a non-C-compatible derived type; the bridge
+        decomposes the same argument. The skeleton then declared a C++ call of
+        N arguments directly above an `#include` of a translation taking N+1,
+        and the disagreement surfaced as a link error naming neither."""
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        registry["DBEMT_InitInputType"].view_strategy = None   # unconfigured
+        with pytest.raises(ValueError, match="disagree about this function's arity"):
+            generate_test_harness_skeleton(sig, derived_types=registry)
+
+    def test_the_refusal_names_the_argument_the_type_and_the_remedy(self):
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        registry["DBEMT_InitInputType"].view_strategy = None
+        with pytest.raises(ValueError) as e:
+            generate_test_harness_skeleton(sig, derived_types=registry)
+        msg = str(e.value)
+        assert "InitInp" in msg                       # which argument
+        assert "DBEMT_InitInputType" in msg           # of what type
+        assert "ALLOCATABLE field(s)" in msg          # why it was dropped
+        assert "strategy: view" in msg                # what to do about it
+
+    def test_no_registry_is_not_a_disagreement(self):
+        """Without a registry `build_c_params` omits EVERY derived type and the
+        bridge decomposes none, so both sides are consistently degraded. That
+        is a fact about the call, not about the function, and reporting it as a
+        contradiction is absence rendered as a finding."""
+        sig = _make_sig_with_derived_type()
+        skeleton = generate_test_harness_skeleton(sig)     # no registry
+        assert "void*" in skeleton
+
+    def test_dropped_derived_args_reports_what_build_c_params_omits(self):
+        from vit.interface_gen import build_c_params, dropped_derived_args
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        registry["DBEMT_InitInputType"].view_strategy = None
+        emitted = {n for _, n in build_c_params(sig, None, registry)}
+        dropped = dropped_derived_args(sig, None, registry)
+        assert "InitInp" not in emitted, "precondition: the argument is dropped"
+        assert [a for a, _, _ in dropped] == ["InitInp"]
+
+    def test_a_configured_view_type_is_not_reported_as_dropped(self):
+        from vit.interface_gen import dropped_derived_args
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()          # view_strategy set
+        assert dropped_derived_args(sig, None, registry) == []
+
+
+class TestPerUnitArtifacts:
+
+    def test_the_output_directory_is_per_unit_not_per_module(self):
+        """`vit_types.h`, the Makefile, the `test` binary and `clean`'s
+        `rm -f *.o test` are all unit-specific. Sharing a module directory made
+        two units overwrite each other: running for one left a `vit_types.h`
+        without the other's types, and `make` built whichever Makefile landed
+        last -- so one unit's case file could be fed to another's binary."""
+        import inspect
+        from vit import cli
+        src = inspect.getsource(cli.cmd_test_validate)
+        assert 'Path("translations") / module_name / f"{sig.name.lower()}_test"' in src
+
+
+class TestComplexTypedef:
+
+    def test_the_complex_typedefs_are_defined_whenever_a_header_is_written(self):
+        """`type_map` hands `vit_complex_double` to every caller that asks what
+        COMPLEX(8) maps to -- including the extern "C" builder, which never
+        consults a struct generator. Defining it only when some type in the
+        header happened to have a complex field left that name undeclared."""
+        from vit.derived_type_parser import (DerivedTypeField, DerivedTypeInfo,
+                                             generate_consolidated_types_header)
+        plain = {"Plain": DerivedTypeInfo(
+            name="Plain",
+            fields=[DerivedTypeField(name="x", fortran_type="REAL(8)")])}
+        header = generate_consolidated_types_header(plain)
+        assert "vit_complex_double" in header, \
+            "no complex field here, and the name must still be defined"
+        assert "VIT_COMPLEX_T_DEFINED" in header, "guarded against repeats"
+
+    def test_the_mapper_and_the_header_use_the_same_name(self):
+        from vit.type_map import get_type_mapping
+        from vit.derived_type_parser import (DerivedTypeField, DerivedTypeInfo,
+                                             generate_consolidated_types_header)
+        name = get_type_mapping("COMPLEX(8)").c_type
+        header = generate_consolidated_types_header(
+            {"P": DerivedTypeInfo(name="P",
+                                  fields=[DerivedTypeField(name="x",
+                                                           fortran_type="REAL(8)")])})
+        assert f"}} {name};" in header

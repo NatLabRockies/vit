@@ -17,11 +17,12 @@ actual test code with semantic understanding of the validation conditions.
 """
 
 import glob as globmod
+import re
 from pathlib import Path
 from typing import Optional
 
-from .fortran_parser import FortranSignature
-from .interface_gen import build_c_params
+from .fortran_parser import FortranSignature, parse_signature_from_source
+from .interface_gen import build_c_params, dropped_derived_args
 from .type_map import get_type_mapping
 
 
@@ -282,7 +283,34 @@ def _decomposed_param_names(arg, type_info):
                 names["cols"] = uniq(f"{base}_cols")
             result.append((fld, "alloc", rank, names))
         elif fld.fortran_type.upper().startswith("TYPE("):
-            result.append((fld, "nested", 1, {"scalar": uniq(base)}))
+            result.append((fld, "nested", 1, {"ptr": uniq(f"{base}_ptr")}))
+        elif "CHARACTER" in fld.fortran_type.upper():
+            # A CHARACTER field of a decomposed type. Emitted as
+            # `CHARACTER(1024), VALUE`, which gfortran rejects outright ("must
+            # be of length 1 as it has the VALUE attribute"), so the bridge did
+            # not compile. It crosses the way a CHARACTER ARGUMENT does -- a
+            # C_CHAR buffer of the declared length, by reference -- which is
+            # also what makes `ErrMsg` comparable rather than merely present.
+            m = re.search(r"\((?:LEN\s*=\s*)?(\d+)\)", fld.fortran_type, re.IGNORECASE)
+            result.append((fld, "char", int(m.group(1)) if m else 0,
+                           {"scalar": uniq(base)}))
+        elif getattr(fld, "is_array", False) and fld.array_dims:
+            # A FIXED-SIZE array field -- `REAL(DbKi) :: CC_DesiredL(12)`.
+            #
+            # This used to fall through to "scalar", and the consequences were
+            # both silent and severe. The bridge declared ONE `REAL(C_DOUBLE),
+            # VALUE` and then assigned it to the whole array, so every element
+            # received the SAME value; and being VALUE it could not be written,
+            # so there was no copy-back and the field was invisible as an
+            # output. `CableControl` writes `LocalVar%CC_ActuatedL(I_GROUP)` --
+            # its principal result -- and a harness on this bridge could
+            # neither vary those elements independently nor read any of them
+            # back. That is the per-element blindness of the #55 defect,
+            # rebuilt inside the tool meant to catch it.
+            #
+            # `rank` here is the bound expression, not a number, because the
+            # declaration needs the bounds verbatim.
+            result.append((fld, "fixed", fld.array_dims, {"scalar": uniq(base)}))
         else:
             result.append((fld, "scalar", 1, {"scalar": uniq(base)}))
     return result
@@ -303,6 +331,9 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
     """
     local_var = f"vit_local_{arg.name}"
     spec = _decomposed_param_names(arg, type_info)
+    # A deferred-length CHARACTER field has no length to declare, so it cannot
+    # cross. Collected and reported rather than dropped in silence.
+    skipped_char: list[str] = []
 
     for fld, kind, rank, names in spec:
         if kind == "alloc":
@@ -316,8 +347,33 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
                 c_params.append((
                     f"        INTEGER(C_INT), VALUE :: {names['cols']}", names["cols"]))
         elif kind == "nested":
-            # Nested derived type — not yet supported
-            c_params.append((f"        ! TODO: nested derived type {fld.fortran_type}",
+            # A nested derived-type field -- `TYPE(piParams) :: piP` inside
+            # LocalVariables.
+            #
+            # This used to emit a Fortran COMMENT while still putting the name in
+            # the argument list, so the bridge did not compile at all: "Symbol
+            # 'vit_localvar_piP' has no IMPLICIT type". Every unit taking
+            # `LocalVariables` -- which is most of ROSCO's controllers, including
+            # CableControl -- was therefore outside test-validate entirely, and
+            # the failure came at build time with no hint that the generator was
+            # the cause.
+            #
+            # It crosses as an opaque pointer, exactly as a whole derived-type
+            # argument does, and is copied in and back out.
+            c_params.append((f"        TYPE(C_PTR), VALUE :: {names['ptr']}",
+                             names["ptr"]))
+        elif kind == "char":
+            if not rank:
+                skipped_char.append(fld.name)
+                continue
+            c_params.append((f"        CHARACTER(KIND=C_CHAR) :: "
+                             f"{names['scalar']}({rank})", names["scalar"]))
+            local_decls.append(f"        INTEGER :: vit_ci_{arg.name}_{fld.name}")
+        elif kind == "fixed":
+            iso_type = get_type_mapping(fld.fortran_type, kind_aliases).iso_c_type
+            # By reference, with the declared bounds: C passes the buffer, every
+            # element crosses, and INTENT(INOUT/OUT) can copy back.
+            c_params.append((f"        {iso_type} :: {names['scalar']}({rank})",
                              names["scalar"]))
         else:
             iso_type = get_type_mapping(fld.fortran_type, kind_aliases).iso_c_type
@@ -336,6 +392,13 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
         if rank == 2:
             local_decls.append(
                 f"        INTEGER :: vit_i_{fld.name}, vit_j_{fld.name}")
+
+    # Temp POINTERs for nested derived-type fields
+    for fld, kind, rank, names in spec:
+        if kind == "nested":
+            tname = fld.fortran_type.strip()[5:-1].strip()   # TYPE(x) -> x
+            local_decls.append(
+                f"        TYPE({tname}), POINTER :: vit_nested_{arg.name}_{fld.name}")
 
     # Pre-call: populate scalar fields
     for fld, kind, rank, names in spec:
@@ -368,8 +431,46 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
                 pre_call.append(f"                END DO")
                 pre_call.append(f"            END DO")
                 pre_call.append(f"        END IF")
+        elif kind == "char":
+            if not rank:
+                continue
+            ci = f"vit_ci_{arg.name}_{fld.name}"
+            pre_call.append(f"        DO {ci} = 1, {rank}")
+            pre_call.append(f"            {local_var}%{fld.name}({ci}:{ci}) = "
+                            f"{names['scalar']}({ci})")
+            pre_call.append(f"        END DO")
+        elif kind == "nested":
+            tmp = f"vit_nested_{arg.name}_{fld.name}"
+            pre_call.append(f"        IF (C_ASSOCIATED({names['ptr']})) THEN")
+            pre_call.append(f"            CALL C_F_POINTER({names['ptr']}, {tmp})")
+            pre_call.append(f"            {local_var}%{fld.name} = {tmp}")
+            pre_call.append(f"        END IF")
+        elif kind == "fixed":
+            pre_call.append(f"        {local_var}%{fld.name} = {names['scalar']}")
         elif kind == "scalar":
             pre_call.append(f"        {local_var}%{fld.name} = {names['scalar']}")
+
+    # Copy fixed-size array fields BACK. A struct crossing as a decomposed list
+    # loses the aliasing a pointer would have given it, so without this every
+    # such field is write-only from the harness's point of view -- supplied and
+    # never observed, which is R4 defeated at the bridge.
+    intent_text = str(getattr(getattr(arg, "intent", None), "value", None)
+                      or getattr(getattr(arg, "intent", None), "name", None)
+                      or getattr(arg, "intent", "") or "").upper()
+    if "OUT" in intent_text:
+        for fld, kind, rank, names in spec:
+            if kind == "fixed":
+                post_call.append(f"        {names['scalar']} = {local_var}%{fld.name}")
+            elif kind == "nested":
+                tmp = f"vit_nested_{arg.name}_{fld.name}"
+                post_call.append(f"        IF (C_ASSOCIATED({names['ptr']})) "
+                                 f"{tmp} = {local_var}%{fld.name}")
+            elif kind == "char" and rank:
+                ci = f"vit_ci_{arg.name}_{fld.name}"
+                post_call.append(f"        DO {ci} = 1, {rank}")
+                post_call.append(f"            {names['scalar']}({ci}) = "
+                                 f"{local_var}%{fld.name}({ci}:{ci})")
+                post_call.append(f"        END DO")
 
     # Post-call: DEALLOCATE ALLOCATABLEs
     for fld in type_info.fields:
@@ -379,6 +480,26 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
                 f"DEALLOCATE({local_var}%{fld.name})")
 
     call_args.append(local_var)
+
+
+def _iso_c_for(fortran_type: str, kind_aliases: Optional[dict]) -> str:
+    """The ISO_C_BINDING type for a Fortran declaration, via the kind aliases.
+
+    Several branches in the bridge generator wrote `REAL(C_DOUBLE)` as a literal,
+    which is right for `REAL(DbKi)` and wrong for `REAL(ReKi)` and `REAL(SiKi)` --
+    both REAL(4) in ROSCO. Falls back to the old literals only if the mapping
+    cannot resolve the type, so an unknown type degrades rather than raising.
+    """
+    try:
+        iso = get_type_mapping(fortran_type, kind_aliases).iso_c_type
+        if iso:
+            return iso
+    except Exception:
+        pass
+    up = fortran_type.upper()
+    return ("REAL(C_DOUBLE)" if "REAL" in up else
+            "INTEGER(C_INT)" if "INTEGER" in up else
+            "LOGICAL(C_BOOL)" if "LOGICAL" in up else f"! TODO: {fortran_type}")
 
 
 def generate_fortran_bridge(
@@ -506,43 +627,48 @@ def generate_fortran_bridge(
                     post_call.append(f"            {arg.name}_c(vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
                     post_call.append(f"        END DO")
             call_args.append(arg.name)
-        elif arg.is_array:
-            # Arrays cross as assumed-size (*). Where the extent comes from
-            # depends on whether the declaration states one.
+        elif arg.is_array and arg.is_assumed_shape:
+            # Assumed-shape arrays: receive as assumed-size (*) + size parameter.
+            # Pass explicit section to the Fortran function (which expects assumed-shape).
             #
-            # This branch used to test `arg.is_array and arg.is_assumed_shape`,
-            # so an EXPLICIT-SHAPE dummy -- `REAL(DbKi), INTENT(IN) ::
-            # rootMOOP(3)` -- fell through to the scalar REAL branch below and
-            # was declared `REAL(C_DOUBLE), VALUE :: rootMOOP`. The rank was
-            # dropped and the argument became a by-value scalar. Caught by
-            # gfortran ("Rank mismatch in argument 'rootmoop' ... rank-1 and
-            # scalar") only because the bridge USEs the module and so is
-            # type-checked against the real interface; nothing in the generator
-            # noticed. interface_gen -- VIT's OTHER bridge generator, the one
-            # the kernel uses -- gets the same argument right as `double*`, so
-            # the two disagreed about the same signature.
-            c_type = "REAL(C_DOUBLE)" if "REAL" in fortran_type else \
-                     "INTEGER(C_INT)" if "INTEGER" in fortran_type else \
-                     "LOGICAL(C_BOOL)" if "LOGICAL" in fortran_type else f"! TODO: array of {fortran_type}"
+            # The kind comes from the mapping, not from a literal. It used to be
+            # hardcoded REAL(C_DOUBLE), so every REAL(ReKi) or REAL(SiKi)
+            # argument -- REAL(4) in ROSCO -- got a REAL(8) dummy.
+            c_type = _iso_c_for(fortran_type, kind_aliases)
             c_params.append((f"        {c_type}, INTENT({intent}) :: {arg.name}(*)", arg.name))
-            if arg.is_assumed_shape or not arg.array_dims:
-                # No extent in the declaration: the caller must supply one.
-                c_params.append((f"        INTEGER(C_INT), VALUE, INTENT(IN) :: n_{arg.name}", f"n_{arg.name}"))
-                call_args.append(f"{arg.name}(1:n_{arg.name})")
-            else:
-                # The declaration states the extent, so no C parameter is added
-                # for it. That is not a style choice: build_c_params -- which is
-                # what the C side of the harness is generated from -- emits no
-                # size parameter for an explicit-shape array, and a bridge that
-                # invented one would take an argument nobody passes.
-                call_args.append(f"{arg.name}(1:{arg.array_dims})")
+            c_params.append((f"        INTEGER(C_INT), VALUE, INTENT(IN) :: n_{arg.name}", f"n_{arg.name}"))
+            call_args.append(f"{arg.name}(1:n_{arg.name})")
+        elif arg.is_array:
+            # Assumed-SIZE `avrSWAP(*)` and explicit-shape arrays. Neither is
+            # assumed-shape, so both fell through to the SCALAR branches below
+            # and the bridge declared a scalar where the function takes an
+            # array. For `CableControl` that was a REAL(8) scalar against a
+            # REAL(ReKi) assumed-size dummy -- a hard type mismatch that stopped
+            # the bridge compiling, which is the good outcome; a matching kind
+            # would have passed one element and read past it.
+            c_type = _iso_c_for(fortran_type, kind_aliases)
+            c_params.append((f"        {c_type}, INTENT({intent}) :: {arg.name}(*)", arg.name))
+            call_args.append(arg.name)
         elif "INTEGER" in fortran_type:
             value_attr = ", VALUE" if intent == "IN" else ""
             c_params.append((f"        INTEGER(C_INT){value_attr}, INTENT({intent}) :: {arg.name}", arg.name))
             call_args.append(arg.name)
+        elif "COMPLEX" in fortran_type:
+            # COMPLEX had no branch here at all, so the argument was named in the
+            # parameter list and never declared -- "Symbol 'z' has no IMPLICIT
+            # type". `type_map` learned COMPLEX when the replication found
+            # COMPLEX(DbKi) narrowing to REAL(8) (ActiveWakeControl, #58); the
+            # bridge did not, because no test-validate had ever run on a COMPLEX
+            # argument. Half a fix, and the half that was missing stayed
+            # invisible until the conformance fixture asked directly.
+            value_attr = ", VALUE" if intent == "IN" else ""
+            c_params.append((f"        {_iso_c_for(fortran_type, kind_aliases)}{value_attr}, "
+                             f"INTENT({intent}) :: {arg.name}", arg.name))
+            call_args.append(arg.name)
         elif "REAL" in fortran_type:
             value_attr = ", VALUE" if intent == "IN" else ""
-            c_params.append((f"        REAL(C_DOUBLE){value_attr}, INTENT({intent}) :: {arg.name}", arg.name))
+            c_params.append((f"        {_iso_c_for(fortran_type, kind_aliases)}{value_attr}, "
+                             f"INTENT({intent}) :: {arg.name}", arg.name))
             call_args.append(arg.name)
         elif "LOGICAL" in fortran_type:
             # The dummy is a default LOGICAL (kind 4). LOGICAL(C_BOOL) is kind
@@ -658,6 +784,137 @@ def generate_fortran_bridge(
     return "\n".join(lines)
 
 
+_FORTRAN_RUNTIME = {
+    "gfortran": "-lgfortran -lm",
+    "flang": "-lflang -lm",
+    "flang-new": "-lFortranRuntime -lFortranDecimal -lm",
+    "ifort": "-lifcore -limf -lm",
+    "ifx": "-lifcore -limf -lm",
+    "nvfortran": "-lnvf -lm",
+    "ftn": "-lgfortran -lm",       # Cray wrapper, usually over gfortran here
+}
+
+
+def fortran_runtime_for(compiler: str) -> str:
+    """Link flags for a Fortran compiler's runtime, by compiler.
+
+    The harness is linked with $(CXX), so nothing pulls the Fortran runtime in
+    on its own. `-lgfortran -lm` was written as a literal even though the
+    compiler is a vit.yaml field -- correct for exactly one toolchain, and
+    wrong silently on the others, because the failure is an undefined symbol
+    naming `_gfortran_*` that looks like a source problem.
+
+    Unknown compilers fall back to gfortran's and say so at the top of the
+    Makefile; override with `fortran.runtime_libs` in vit.yaml.
+    """
+    stem = Path(compiler).name.split()[0] if compiler else "gfortran"
+    for known, libs in _FORTRAN_RUNTIME.items():
+        if stem == known or stem.endswith("-" + known):
+            return libs
+    return _FORTRAN_RUNTIME["gfortran"] + f"   # guessed for {stem!r}; set fortran.runtime_libs"
+
+
+_CALLEE_CALL = re.compile(r"\b(\w+)_c\s*\(")
+
+
+def generate_callee_bridges(
+    cpp_text: str,
+    unit_name: str,
+    source_dir: str,
+    kind_aliases: Optional[dict] = None,
+    derived_types: Optional[dict] = None,
+) -> tuple[Optional[str], list[str]]:
+    """Fortran BIND(C) bridges for every `<callee>_c` the translation calls.
+
+    Returns (module source or None, notes).
+
+    WHY THIS EXISTS. `test-validate` produced a bridge for the unit under test
+    and nothing else, so a translation that called another translated function
+    -- `picontroller.cpp` calls `saturate_c` -- failed at link with an undefined
+    reference. Only leaf functions could be validated this way, which is the
+    opposite of what a campaign needs: the leaves are the easy ones.
+
+    The bridges call the ORIGINAL FORTRAN callee, not the translated one. That
+    matters for what the comparison means. Linking `saturate.cpp` instead would
+    put the C++ `saturate` on one side and the Fortran `saturate` on the other,
+    so a mismatch could come from either unit and a *pair* of compensating
+    errors could cancel. Backing both sides with the same Fortran callee makes
+    the harness a test of this unit alone.
+
+    A callee whose Fortran source cannot be found, or whose bridge cannot be
+    generated, is REPORTED and skipped -- the link then fails with a name, which
+    is a better outcome than a harness that silently tests something else.
+    """
+    from vit.interface_gen import generate_kernel_callee_bridge
+
+    names = []
+    for m in _CALLEE_CALL.finditer(cpp_text):
+        n = m.group(1)
+        if n.lower() != unit_name.lower() and n not in names:
+            names.append(n)
+    if not names:
+        return None, []
+
+    notes: list[str] = []
+    bodies: list[str] = []
+    src_dir = Path(source_dir)
+    sources = sorted(src_dir.glob("*.f90")) + sorted(src_dir.glob("*.F90"))
+    for name in names:
+        sig, found_in = None, None
+        for f in sources:
+            text = f.read_text(errors="replace")
+            try:
+                sig = parse_signature_from_source(text, name)
+            except Exception:
+                sig = None
+            if sig is not None:
+                found_in = text
+                break
+        if sig is None:
+            notes.append(f"{name}_c: no Fortran definition found under {source_dir}; "
+                         f"the link will fail on this symbol by name")
+            continue
+        try:
+            body = generate_kernel_callee_bridge(sig, kind_aliases, derived_types)
+        except Exception as e:
+            notes.append(f"{name}_c: bridge not generated ({type(e).__name__}: {e})")
+            continue
+        # The kernel context supplies the callee's module; a standalone harness
+        # does not, and without it gfortran reports "has no IMPLICIT type" --
+        # which reads like a bridge bug rather than a missing USE. Inserted
+        # after USE ISO_C_BINDING because Fortran requires every USE to precede
+        # IMPLICIT NONE.
+        # `parse_signature_from_source` parses a signature out of arbitrary text
+        # and so cannot know the enclosing module. Take it from the file the
+        # signature was found in.
+        mod = getattr(sig, "module_name", None)
+        if not mod and found_in:
+            m = re.search(r"^\s*MODULE\s+(\w+)", found_in, re.MULTILINE | re.IGNORECASE)
+            if m and m.group(1).upper() != "PROCEDURE":
+                mod = m.group(1)
+        if mod:
+            body = body.replace("USE ISO_C_BINDING",
+                                f"USE ISO_C_BINDING\n        USE {mod}, ONLY : {sig.name}", 1)
+        else:
+            notes.append(f"{name}_c: no module recorded for the callee; the bridge "
+                         f"will not resolve it")
+        bodies.append(body)
+        notes.append(f"{name}_c: bridged to Fortran {name}"
+                     + (f" (USE {mod})" if mod else ""))
+
+    if not bodies:
+        return None, notes
+
+    header = [
+        f"! VIT: callee bridges for the {unit_name} test-validate harness.",
+        "! Each `<callee>_c` calls the ORIGINAL Fortran, so both sides of the",
+        "! comparison share one callee implementation and a mismatch is",
+        "! attributable to the unit under test.",
+        "",
+    ]
+    return "\n".join(header + bodies) + "\n", notes
+
+
 def generate_test_makefile(
     sig: FortranSignature,
     build_dir: str,
@@ -665,10 +922,14 @@ def generate_test_makefile(
     config_dir: str = ".",
     target_name: str = "",
     fortran_flags: str = "",
+    fortran_compiler: str = "gfortran",
+    cxx_compiler: str = "g++",
+    fortran_runtime_libs: str = "",
     preprocessor_defines: Optional[list[str]] = None,
     shared_files: Optional[list[str]] = None,
     cpp_file: Optional[str] = None,
     patched_source: Optional[str] = None,
+    callee_bridge: bool = False,
 ) -> str:
     """Generate a Makefile for building the test-validate harness.
 
@@ -709,8 +970,8 @@ def generate_test_makefile(
     lines.append(f"# Generated by: vit test-validate")
     lines.append(f"# Build against production libraries — no project rebuild needed.")
     lines.append("")
-    lines.append("FC = gfortran")
-    lines.append("CXX = g++")
+    lines.append(f"FC = {fortran_compiler}")
+    lines.append(f"CXX = {cxx_compiler}")
     # Fortran flags: local .mod files first (for patched source), then production
     lines.append(f"FC_FLAGS = -fPIC -ffree-line-length-none {fortran_flags} {defines} \\")
     lines.append(f"           -I. -I{build_dir}/ftnmods -J.")
@@ -728,6 +989,18 @@ def generate_test_makefile(
         lines.append("# WARNING: Could not derive libraries from CMake target.")
         lines.append("# Fill in LIBS manually with the libraries needed for linking.")
         lines.append("LIBS =")
+    # The harness is linked by $(CXX), so nothing pulls in the Fortran runtime.
+    # Which runtime that is depends on the compiler, so it is derived rather
+    # than written as a literal -- `-lgfortran` was hardcoded here, in a
+    # generator whose Fortran compiler is a configuration field.
+    # A target built as a Fortran shared library links it implicitly and the
+    # omission never shows; the object-file fallback above links raw .o files,
+    # and then every Fortran I/O, string or intrinsic call in the reference is
+    # an undefined symbol at link time (ROSCO's ZeroMQInterface.f90 alone brings
+    # in _gfortran_string_len_trim, _gfortran_concat_string and the transfer_*
+    # family). Appended rather than prepended: it must resolve after the objects
+    # that need it.
+    lines.append(f"LIBS += {fortran_runtime_libs or fortran_runtime_for(fortran_compiler)}")
     lines.append("")
 
     # Copy translation .cpp to .hpp for inclusion
@@ -743,6 +1016,16 @@ def generate_test_makefile(
     # If patched source exists, compile it locally for the .mod file
     # (needed when the function is PRIVATE in the module)
     link_objs = [f"{func_lower}_test.o", f"{func_lower}_bridge.o"]
+    if callee_bridge:
+        # Every `<callee>_c` the translation calls, wired to the ORIGINAL
+        # Fortran. Both sides of the comparison then run the same callee, so a
+        # difference is attributable to the unit under test rather than to some
+        # other translation it happens to call.
+        link_objs.append(f"{func_lower}_callees.o")
+        lines.append("# Callee bridges: C++ `_c` entry points backed by Fortran originals")
+        lines.append(f"{func_lower}_callees.o: {func_lower}_callees.f90")
+        lines.append(f"\t$(FC) $(FC_FLAGS) -c $< -o $@")
+        lines.append("")
     if patched_source:
         patched_name = Path(patched_source).name
         patched_obj = Path(patched_name).stem + ".o"
@@ -759,18 +1042,8 @@ def generate_test_makefile(
         lines.append(f"\t$(FC) $(FC_FLAGS) -c $< -o $@")
     lines.append("")
 
-    # -lgfortran -lm, because $(LIBS) is the CMake target's OBJECT list and
-    # carries no runtime. Linking with $(CXX) means the Fortran runtime is not
-    # pulled in the way `gfortran` would pull it in, and every object that does
-    # I/O, string handling or MATMUL fails at link with hundreds of
-    # `undefined reference to _gfortran_*`. kernel_verify.py links the mirror
-    # image of this -- gfortran plus -lstdc++ -- and had to learn the same
-    # lesson from the other side.
-    lines.append("# The Fortran runtime, since the link driver is g++ and LIBS holds objects only.")
-    lines.append("FORTRAN_RUNTIME = -lgfortran -lm")
-    lines.append("")
     lines.append(f"test: {' '.join(link_objs)}")
-    lines.append(f"\t$(CXX) -o $@ $^ $(LIBS) $(FORTRAN_RUNTIME)")
+    lines.append(f"\t$(CXX) -o $@ $^ $(LIBS)")
     lines.append("")
     lines.append(f"{func_lower}_test.o: {test_deps}")
     lines.append(f"\t$(CXX) $(CXX_FLAGS) -c {func_lower}_test.cpp -o $@")
@@ -876,7 +1149,14 @@ def generate_test_harness_skeleton(
                             bridge_params.append(f"int {names['rows']}")
                             bridge_params.append(f"int {names['cols']}")
                     elif kind == "nested":
-                        bridge_params.append(f"void* {names['scalar']}")
+                        bridge_params.append(f"void* {names['ptr']}")
+                    elif kind == "char":
+                        if rank:
+                            bridge_params.append(f"char* {names['scalar']}")
+                    elif kind == "fixed":
+                        # By reference on the Fortran side, so a pointer here.
+                        c_type = get_type_mapping(fld.fortran_type, kind_aliases).c_type
+                        bridge_params.append(f"{c_type}* {names['scalar']}")
                     else:
                         c_type = get_type_mapping(fld.fortran_type, kind_aliases).c_type
                         bridge_params.append(f"{c_type} {names['scalar']}")
@@ -914,6 +1194,37 @@ def generate_test_harness_skeleton(
             bridge_params.append("int* vit_result")
         elif "REAL" in result_type_upper:
             bridge_params.append("double* vit_result")
+
+    # The bridge needs a value for every derived-type argument -- it either
+    # decomposes it or takes it as `void* <arg>_ptr`. `build_c_params` drops a
+    # non-C-compatible one silently, and the two then describe the same
+    # function with different arities: the skeleton declares a C++ call of N
+    # arguments directly above an `#include` of a translation taking N+1.
+    #
+    # There is no false positive here, whatever the intent elsewhere. A genuine
+    # passthrough must keep being dropped from a PRODUCTION call, and it is --
+    # this check is local to test-validate, where the harness has to SUPPLY the
+    # argument the bridge is about to pass. If the C++ call has no such
+    # parameter, the harness cannot be built correctly, so refusing to emit one
+    # is the only honest outcome.
+    # Only when a registry was supplied. WITHOUT one `build_c_params` omits
+    # every derived type and `_has_allocatable_fields` decomposes none, so both
+    # sides are consistently degraded and there is no disagreement to report --
+    # the absence is a fact about the call, not about the function.
+    # `harness/vitbridge.py` draws the same line for the same reason.
+    emitted = {name for _, name in c_params}
+    unreachable = [(a, ty, why) for a, ty, why in
+                   (dropped_derived_args(sig, kind_aliases, derived_types)
+                    if derived_types else [])
+                   if a not in emitted]
+    if unreachable:
+        detail = "\n".join(f"    {a} : {ty}\n        {why}"
+                            for a, ty, why in unreachable)
+        raise ValueError(
+            f"{func_name}: the Fortran bridge passes {len(unreachable)} argument(s) "
+            f"that build_c_params omits from the C++ call, so the two disagree "
+            f"about this function's arity and nothing built from them can link:\n"
+            f"{detail}")
 
     bridge_param_str = ", ".join(bridge_params)
     lines.append(f"// Fortran reference (via BIND(C) bridge):")

@@ -124,7 +124,8 @@ def normalize_fortran_type(type_str: str, kind_aliases: Optional[dict] = None) -
         # here -- the declared base wins. Returning alias_val outright silently
         # rewrote COMPLEX(DbKi) to REAL(8), which produced a view struct
         # carrying the real part and dropping the imaginary one with no error.
-        # See TRANSLATION_TIPS.md (COMPLEX narrowing, ActiveWakeControl #58).
+        # COMPLEX narrowing, ActiveWakeControl #58 (was in TRANSLATION_TIPS.md,
+        # deleted 2026-08-10; the campaign corpus keeps the original entry).
         for alias_key, alias_val in aliases.items():
             if kind.upper() == alias_key.upper():
                 if "(" in alias_val:

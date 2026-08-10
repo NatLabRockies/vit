@@ -187,7 +187,27 @@ Add to `tests/test_telemetry.py`:
 The last one matters: **unattributed tokens must be reported, not discarded.** A large
 unattributed fraction invalidates the per-function figures and must be visible.
 
-### 3.4 Acceptance for Phase 0
+### 3.4 Acceptance for Phase 0 — **MET 2026-08-07** (commit `cd4ea6a`)
+
+Delivered: `vit/telemetry.py` (recording + join primitives), the `cli.py` hook with dispatch
+extracted to `_dispatch()`, `python3 -m vit.telemetry` for shell steps,
+`scripts/join_telemetry.py`, and `tests/test_telemetry.py` (24 tests). **684 tests pass in both
+checkouts and inside `vit-dev`.**
+
+Two defects that would have corrupted every number, neither anticipated by this plan:
+
+1. **Transcript usage records are duplicated per content block.** Each record repeats the whole
+   message's usage. Naive summation
+   inflates every token count. `read_usage_records` deduplicates by `requestId`.
+2. **Shell-emitted `start` and `end` come from different processes.** Pairing on
+   `(pid, function, command)` silently dropped every rebuild and regress interval — most of a
+   cycle's mechanical cost. Found by the dry run, not by review. Pairing now falls back to
+   `(function, command)`.
+
+Backfill join over real transcript data: two spans attributed, **5.8%
+unattributed**, status and attempt counts derived correctly.
+
+Original criteria:
 
 - Full suite green in **both** checkouts. OpenFAST workspace is at 660 tests; ROSCO workspace
   (`vit_translation/vit`, the one `vit-dev` actually runs) is at 598 and must be

@@ -381,3 +381,93 @@ class TestTotals:
         totals = {"tok_in": 10, "tok_out": 20, "tok_cache_read": 1000,
                   "tok_cache_write": 5, "records": 1}
         assert telemetry.total_uncached(totals) == 35
+
+
+class TestDisjointAppearancesAndNesting:
+    """The two defects that made the replication's 78-unit dataset wrong.
+
+    Both were found by re-deriving the numbers, not by a failing test, and both
+    printed as plausible values rather than as errors -- `__precompact__` at
+    8,923 seconds, and four functions at zero cost with zero requests. A row of zeros
+    reads as free, not as missing, which is the failure mode this project keeps
+    finding: absence rendered as a value.
+    """
+
+    def _spans(self, tmp_path, events):
+        log_path = tmp_path / "cycle_log.jsonl"
+        log_path.write_text("".join(json.dumps(e) + "\n" for e in events))
+        return telemetry.build_spans(
+            telemetry.build_intervals(telemetry.read_cycle_log(log_path)))
+
+    def _cycle(self, function, start, end, pid=1):
+        return [
+            {"ts": start, "function": function, "command": "translate",
+             "phase": "start", "pid": pid},
+            {"ts": end, "function": function, "command": "translate",
+             "phase": "end", "pid": pid, "exit_code": 0},
+        ]
+
+    def test_two_disjoint_appearances_do_not_merge_into_one_window(self, tmp_path):
+        """`__precompact__` ran twice for 309 s and was recorded as 8,923 s.
+
+        min/max over a function's intervals bridges any gap, including one that
+        another function's entire cycle sits inside.
+        """
+        events = (self._cycle("__precompact__", "2026-08-07T09:11:58Z",
+                              "2026-08-07T09:14:19Z")
+                  + self._cycle("saturate", "2026-08-07T09:20:00Z",
+                                "2026-08-07T11:30:00Z", pid=2)
+                  + self._cycle("__precompact__", "2026-08-07T11:37:53Z",
+                                "2026-08-07T11:40:41Z", pid=3))
+        spans = self._spans(tmp_path, events)
+        precompact = [s for s in spans if s["function"] == "__precompact__"]
+        assert len(precompact) == 2, "the two appearances must stay separate"
+        total = sum((s["end"] - s["start"]).total_seconds() for s in precompact)
+        assert total == 141 + 168
+        assert max((s["end"] - s["start"]).total_seconds() for s in precompact) < 200
+
+    def test_splitting_runs_does_not_destroy_the_interleaving_signal(self, tmp_path):
+        """`b` runs between `a`'s two appearances. That IS interleaving.
+
+        Runs fix attribution, and moving the overlap scan onto them would have
+        silently removed this: `a`'s runs and `b`'s run never overlap pairwise,
+        so a run-level scan reports nothing for the very shape interleaving
+        means. The scan stays on each function's whole extent. A function is
+        never interleaved with itself.
+        """
+        events = (self._cycle("a", "2026-08-07T09:00:00Z", "2026-08-07T09:10:00Z")
+                  + self._cycle("b", "2026-08-07T09:20:00Z",
+                                "2026-08-07T09:30:00Z", pid=2)
+                  + self._cycle("a", "2026-08-07T09:40:00Z",
+                                "2026-08-07T09:50:00Z", pid=3))
+        spans = self._spans(tmp_path, events)
+        flagged = {s["function"]: set(s["overlaps"]) for s in spans}
+        assert flagged["a"] == {"b"} and flagged["b"] == {"a"}
+        assert "a" not in flagged["a"], "a function cannot interleave with itself"
+
+    def test_a_record_inside_a_nested_span_charges_the_inner_one(self, tmp_path):
+        """Scanning spans by start time and taking the first match charges the
+        outermost, so a nested phase priced at zero while its container took
+        the whole cost."""
+        events = (self._cycle("Read_OL_Input", "2026-08-07T10:00:00Z",
+                              "2026-08-07T10:00:01Z")
+                  + self._cycle("__alloc_return__", "2026-08-07T10:02:00Z",
+                                "2026-08-07T10:08:00Z", pid=2)
+                  + self._cycle("Read_OL_Input", "2026-08-07T10:30:00Z",
+                                "2026-08-07T10:31:00Z", pid=3))
+        log_path = tmp_path / "cycle_log.jsonl"
+        log_path.write_text("".join(json.dumps(e) + "\n" for e in events))
+        # One outer run would be 10:00-10:31 were the runs merged; they are not,
+        # so the nested phase is the only span containing 10:05 -- and even if a
+        # wider span did contain it, innermost-wins would still charge the phase.
+        spans = telemetry.build_spans(
+            telemetry.build_intervals(telemetry.read_cycle_log(log_path)))
+        spans.append({"function": "__outer__", "start": spans[0]["start"],
+                      "end": spans[-1]["end"], "overlaps": []})
+        transcript = write_transcript(
+            tmp_path / "s.jsonl",
+            [usage_record("2026-08-07T10:05:00Z", "req-1", out=500)])
+        per_function, _ = telemetry.attribute(
+            telemetry.read_usage_records([transcript]), spans)
+        assert per_function["__alloc_return__"]["tok_out"] == 500
+        assert per_function["__outer__"]["tok_out"] == 0

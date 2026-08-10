@@ -1107,3 +1107,34 @@ class TestVacuousPass:
         ])
         result = _parse_verify_output(output, 1e-14)
         assert result.success
+
+
+# --------------------------------------------------------------------------
+# The field log overrides a failing kernel, so it must be an honest account.
+
+def test_a_field_only_fortran_logged_blocks_the_override():
+    """The comparison walks C++ entries, so a field the C++ log never mentions
+    would go unexamined -- and a match here OVERRIDES a failing kernel result.
+    An unexamined field promoted to a pass is the exact shape of the defect this
+    project exists to catch."""
+    from vit.kernel_verify import _compare_field_logs
+    f = [{"case": 1, "field": "a", "status": "IDENTICAL"},
+         {"case": 1, "field": "b", "status": "IDENTICAL"}]
+    c = [{"case": 1, "field": "a", "status": "IDENTICAL"}]
+    ok, diffs, _ = _compare_field_logs(f, c)
+    assert not ok
+    assert any("present in Fortran but not C++" in d for d in diffs)
+
+
+def test_the_field_log_says_what_it_compared():
+    """A green that does not name what it compared is not auditable. The log is
+    built by pattern-matching KGen's generated Fortran, so a field emitted in a
+    shape no pattern covers is absent from BOTH logs and cancels -- harmless for
+    the verdict, misleading for a reader who assumes completeness."""
+    from vit.kernel_verify import field_log_coverage
+    f = [{"case": 1, "field": "a", "status": "IDENTICAL"},
+         {"case": 1, "field": "z", "status": "IDENTICAL"}]
+    c = [{"case": 1, "field": "a", "status": "IDENTICAL"}]
+    line = field_log_coverage(f, c)
+    assert "1 field(s) compared on both sides" in line
+    assert "logged only by Fortran" in line and "z" in line

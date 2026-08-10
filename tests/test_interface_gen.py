@@ -706,3 +706,23 @@ class TestAllocateOnReturn:
         )
         params = build_c_params(sig, KIND_ALIASES)
         assert params[0] == ("double*", "Lst")
+
+
+def test_an_optional_logical_crosses_by_MERGE_not_by_assignment():
+    """`int_val = logical` is not standard Fortran. gfortran accepts it as an
+    extension -- warning only -- so it built, was correct, and got written down
+    as a translation tip ("if a build ever rejects it, this is the reason,
+    and MERGE is the fix") rather than fixed. The non-optional path has used
+    MERGE since e72235f; a campaign on ifx or flang should not be what
+    discovers that the optional path did not.
+    """
+    from vit.fortran_parser import parse_signature_from_source
+    from vit.interface_gen import generate_fortran_wrapper
+    sig = parse_signature_from_source(
+        "SUBROUTINE Foo(x, Moving)\n"
+        "  REAL(8), INTENT(IN) :: x\n"
+        "  LOGICAL, OPTIONAL, INTENT(IN) :: Moving\n"
+        "END SUBROUTINE Foo", "Foo")
+    text = generate_fortran_wrapper(sig, {})
+    assert "MERGE(1_C_INT, 0_C_INT, Moving)" in text, text
+    assert "Moving_val = Moving\n" not in text, "the bare assignment is back"

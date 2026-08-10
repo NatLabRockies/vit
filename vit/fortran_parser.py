@@ -476,11 +476,48 @@ def find_function_in_file(filepath: str, function_name: str) -> FortranSignature
     sig = parse_signature_from_source(source, function_name)
     sig.source_file = str(filepath)
 
-    # Try to find enclosing module
-    for line in source.split("\n"):
-        m = re.match(r'\s*MODULE\s+(\w+)', line, re.IGNORECASE)
-        if m and m.group(1).upper() not in ("PROCEDURE", "FUNCTION", "SUBROUTINE"):
-            sig.module_name = m.group(1)
-            break
-
+    sig.module_name = enclosing_module(source, function_name)
     return sig
+
+
+def enclosing_module(source: str, procedure_name: str) -> Optional[str]:
+    """The module a procedure is actually declared in.
+
+    This used to take the FIRST `MODULE` statement in the file and stop. In a
+    file holding one module that is the same answer; in a file holding two it is
+    the wrong one, and the failure is quiet in a way that is hard to trace: the
+    generated bridge emits `USE <the-wrong-module>`, so the procedure it calls
+    has no visible interface. A SUBROUTINE still compiles -- Fortran permits an
+    implicit interface -- and only a FUNCTION fails, with "has no IMPLICIT
+    type", which reads like a problem in the function rather than in the USE
+    statement above it.
+
+    Multi-module files are ordinary: a types module beside the module that uses
+    it is the commonest layout in scientific Fortran. ROSCO happens to put one
+    module per file, which is why this survived 52 translated procedures.
+
+    Tracks module scope rather than guessing: push on MODULE, pop on END MODULE,
+    and report whatever is open when the procedure is declared. Returns None for
+    a procedure that is not inside a module at all, which is a real case and not
+    an error.
+    """
+    decl = re.compile(
+        r'^\s*(?:[A-Za-z0-9_()\s*]*?\s)?(?:SUBROUTINE|FUNCTION)\s+'
+        + re.escape(procedure_name) + r'\s*[(\s]', re.IGNORECASE)
+    open_mod = re.compile(r'^\s*MODULE\s+(\w+)\s*$', re.IGNORECASE)
+    end_mod = re.compile(r'^\s*END\s*MODULE\b', re.IGNORECASE)
+
+    stack: list[str] = []
+    for raw in source.split("\n"):
+        line = raw.split("!", 1)[0]
+        if end_mod.match(line):
+            if stack:
+                stack.pop()
+            continue
+        m = open_mod.match(line)
+        if m and m.group(1).upper() not in ("PROCEDURE", "FUNCTION", "SUBROUTINE"):
+            stack.append(m.group(1))
+            continue
+        if decl.match(line) and not line.strip().upper().startswith("END"):
+            return stack[-1] if stack else None
+    return stack[-1] if stack else None

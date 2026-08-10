@@ -85,6 +85,8 @@ class VitConfig:
         "IntKi": "INTEGER(4)",
     })
     fortran_compiler: str = "gfortran"
+    cxx_compiler: str = "g++"
+    fortran_runtime_libs: str = ""  # "" = derive from fortran_compiler
     fortran_flags: str = ""  # Extra Fortran flags for kernel compilation
     preprocessor_defines: list = field(default_factory=list)  # Preprocessor macros for KGen parsing (e.g., OPENFAST_DOUBLE_PRECISION)
 
@@ -94,6 +96,8 @@ class VitConfig:
     allocatable_helpers: list = field(default_factory=list)  # allocation helper patterns
     assumed_size_arrays: dict = field(default_factory=dict)  # varname → size for assumed-size (*) arrays
     dll_persistence: dict = field(default_factory=dict)  # DLL SAVE persistence workaround config
+    add_source_cmd: str = ""  # shell command to add kgen_utils.f90 to the build file,
+                               # for a build system or source list the default cannot match
     shared_files: list = field(default_factory=list)  # Shared headers/sources to copy to kernel (paths relative to project root)
 
     config_dir: str = "."  # Directory containing vit.yaml
@@ -167,6 +171,8 @@ def load_config(config_path: Optional[str] = None) -> VitConfig:
         target_name=build.get("target_name", "discon"),
         kind_aliases=fortran.get("kind_aliases", DEFAULT_CONFIG["fortran"]["kind_aliases"]),
         fortran_compiler=fortran.get("compiler", "gfortran"),
+        cxx_compiler=fortran.get("cxx_compiler", "g++"),
+        fortran_runtime_libs=fortran.get("runtime_libs", ""),
         fortran_flags=fortran.get("flags", ""),
         preprocessor_defines=fortran.get("preprocessor_defines", []),
         tolerance=verify.get("tolerance", 1e-14),
@@ -175,6 +181,7 @@ def load_config(config_path: Optional[str] = None) -> VitConfig:
         allocatable_helpers=_parse_allocatable_helpers(data.get("allocatable", {})),
         assumed_size_arrays={str(k): int(v) for k, v in kgen.get("assumed_size_arrays", {}).items()},
         dll_persistence=kgen.get("dll_persistence", {}),
+        add_source_cmd=kgen.get("add_source_cmd", ""),
         shared_files=data.get("shared_files", []),
         config_dir=config_dir,
     )

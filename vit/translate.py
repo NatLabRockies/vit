@@ -26,15 +26,31 @@ def generate_translation_scaffold(
     vit_version: str = "0.1.0",
     struct_headers: Optional[list[str]] = None,
     derived_types: Optional[dict] = None,
+    shared_headers: Optional[list[str]] = None,
+    fortran_flags: Optional[str] = None,
 ) -> str:
     """
     Generate a C++ translation scaffold with metadata header and correct signature.
 
     The scaffold has:
-    - A metadata comment block (source file, function name, hash, version, status)
-    - #include directives for shared type headers
+    - A metadata comment block (source file, function name, hash, version, status,
+      and the flags the REFERENCE is compiled with)
+    - #include directives for the type header and the campaign's shared headers
     - The correct C++ function signature (from build_c_params)
     - A placeholder body with TODO comment
+
+    **`shared_headers` is why four translation tips no longer need to exist.**
+    A campaign's shared headers -- ROSCO's `rosco_constants.h` and
+    `vit_fortran_read.h`, AeroDyn's `vit_nwtc.h` -- were declared in `vit.yaml`
+    and used everywhere EXCEPT here, so every translation had to be told in
+    prose to include them. Four tips ("use Fortran's constants, not `M_PI`",
+    "shared constants header", "use `vit_fortran_read.h`, not `scanf`",
+    "`PathSep` is platform-selected") existed only because the scaffold did not
+    say so itself. A scaffold that includes them makes all four unwritable.
+
+    `fortran_flags` is in the metadata for the same reason: whether a bare
+    Fortran literal is single or double precision depends on
+    `-fdefault-real-8`, and a translator cannot know that from the source.
 
     Args:
         sig: Parsed Fortran function signature
@@ -49,13 +65,17 @@ def generate_translation_scaffold(
     lines = []
 
     # Metadata header
-    lines.append(_generate_metadata_header(sig, kind_aliases, source_file, vit_version))
+    lines.append(_generate_metadata_header(sig, kind_aliases, source_file,
+                                           vit_version, fortran_flags))
     lines.append("")
 
-    # Include shared type headers
-    if struct_headers:
-        for h in struct_headers:
-            lines.append(f'#include "{h}"')
+    # The type header, then the campaign's shared headers. Deduplicated and
+    # order-stable: a scaffold that changes its include order between runs makes
+    # every regeneration look like an edit.
+    includes = list(struct_headers or []) + list(shared_headers or [])
+    for h in dict.fromkeys(includes):
+        lines.append(f'#include "{h}"')
+    if includes:
         lines.append("")
 
     # Generate C++ signature
@@ -81,7 +101,7 @@ def generate_translation_prompt(
     fortran_source_text: Optional[str] = None,
     scaffold_text: Optional[str] = None,
     call_site_info: Optional[str] = None,
-    tips_text: Optional[str] = None,
+    shared_header_paths: Optional[list] = None,
     derived_types: Optional[dict] = None,
     callee_declarations: Optional[list[str]] = None,
 ) -> str:
@@ -98,7 +118,7 @@ def generate_translation_prompt(
         fortran_source_text: The original Fortran function source (verbatim)
         scaffold_text: The generated C++ scaffold (verbatim)
         call_site_info: Call site file and line (e.g., "Controllers.f90:102")
-        tips_text: Contents of TRANSLATION_TIPS.md, if it exists
+        shared_header_paths: Shared headers to read the callable inventory from
         callee_declarations: List of C declaration strings for already-translated
             callees (e.g., ["double computeua360_cnoffset_c(...);"]).
 
@@ -194,11 +214,25 @@ def generate_translation_prompt(
             sections.append("\n\n".join(alloc_hints))
             sections.append("")
 
-    # Translation tips
-    if tips_text and tips_text.strip():
-        sections.append("## Translation Tips (lessons from previous translations)\n")
-        sections.append(tips_text.strip())
-        sections.append("")
+    # Known-shape defects, GENERATED from the check registry.
+    #
+    # Derived, never hand-written: one line per active check, so the guidance
+    # cannot describe a rule that is not enforced, and a check retired because
+    # the tool made its defect impossible takes its line with it. That is the
+    # property `TRANSLATION_TIPS.md` could not have -- it grew to 2,314 lines
+    # and nothing in it was able to go red.
+    from .checks import prompt_section
+    sections.append(prompt_section())
+    sections.append("")
+
+    # What the shared headers provide, READ FROM THE HEADERS. Not a maintained
+    # list -- a maintained list is a copy, and a copy drifts silently.
+    if shared_header_paths:
+        from .header_api import inventory
+        inv = inventory(shared_header_paths)
+        if inv:
+            sections.append(inv)
+            sections.append("")
 
     # General instruction
     sections.append("## Instructions\n")
@@ -222,6 +256,7 @@ def _generate_metadata_header(
     kind_aliases: Optional[dict] = None,
     source_file: Optional[str] = None,
     vit_version: str = "0.1.0",
+    fortran_flags: Optional[str] = None,
 ) -> str:
     """Generate the metadata comment block for a translation file."""
     lines = []
@@ -237,6 +272,10 @@ def _generate_metadata_header(
     ret_type = _get_c_return_type(sig, kind_aliases)
     fortran_sig = _format_fortran_signature(sig)
     lines.append(f"// Fortran: {fortran_sig}")
+    if fortran_flags:
+        # `-fdefault-real-8` decides whether a bare literal in the reference is
+        # single or double precision, and nothing in the source says so.
+        lines.append(f"// Reference built with: {fortran_flags}")
 
     # Source hash (for detecting when the Fortran source changes)
     if source_file:
