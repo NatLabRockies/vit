@@ -32,6 +32,19 @@ encoded here:
   finding: **a zero value eats the multiplicative direction** — scaling 0.0 by
   anything is still 0.0, which is the `ForeAftDamping` blindness exactly. So
   both are tried, scale first, and only failure of *both* is a verdict.
+- **It must be applied where the output can still move.** Direction is not
+  enough, because a clamp eats an *input* perturbation in **both** directions
+  and **at any magnitude**. Measured on `PIController`, whose every captured
+  case sits on the lower clamp: `error` scaled by 1.00001 verified 20/20, and so
+  did `error` doubled. The same kernel went 0/20 when the perturbation was
+  applied to the returned expression instead, downstream of the clamp. So the
+  result is perturbed too, always — never only as a fallback for functions that
+  have no by-value input.
+
+The last one is why a bigger perturbation is not a valid plumbing check. "It
+still passed at ×2, so the harness must be broken" is exactly the wrong
+inference for a saturating function; the control has to *bypass* the clamp, not
+merely lean on it harder.
 
 ## What it cannot do, and says so
 
@@ -66,6 +79,7 @@ class Perturbation:
     direction: str        # "scale" | "offset"
     target: str           # what it acts on, for the message
     text: str             # the perturbed translation
+    kind: str = "input"   # "input" (pre-computation) | "return" (post-computation)
 
     @property
     def description(self) -> str:
@@ -116,26 +130,39 @@ def candidates(sig, cpp_text: str, kind_aliases: Optional[dict] = None,
     """
     func = getattr(sig, "cpp_impl_name", None) or sig.name
     at = _body_open(cpp_text, func)
+    if at is None:
+        return []
     params = _by_value_float_params(sig, kind_aliases, derived_types)
     out: list[Perturbation] = []
 
+    # Inputs first: moving one exercises the whole computation, so a red here
+    # says the kernel is sensitive to what the function is actually given.
     for direction in ("scale", "offset"):
-        if at is not None and params:
+        if params:
             p = params[0]
             expr = (f"{p} = {p} * {SCALE!r};" if direction == "scale"
                     else f"{p} = {p} + {OFFSET!r};")
             out.append(Perturbation(
                 direction, f"input `{p}`",
-                cpp_text[:at] + f"\n    {expr}  // VIT red test\n" + cpp_text[at:]))
-        elif _returns_float(sig, kind_aliases):
-            # No by-value input to move, but the result is a float we can scale
-            # on the way out. Same properties: local, well-defined, no control
-            # flow touched.
+                cpp_text[:at] + f"\n    {expr}  // VIT red test\n" + cpp_text[at:],
+                "input"))
+
+    # Then the result, ALWAYS -- not only when there is no by-value input.
+    #
+    # `PIController` is why. Its return is `saturate_c(...)` and every captured
+    # case sits on the clamp, so an input perturbation is eaten *at any
+    # magnitude* -- x2 was measured green alongside x1.00001. Trying inputs
+    # alone declared a working kernel NON_DISCRIMINATING, which is a false
+    # negative that would fire on every saturating controller in the codebase.
+    # A perturbation applied to the returned expression is downstream of the
+    # clamp and went red 0/20 on the same kernel.
+    for direction in ("scale", "offset"):
+        if _returns_float(sig, kind_aliases):
             op = f"* {SCALE!r}" if direction == "scale" else f"+ {OFFSET!r}"
             text, n = re.subn(r"\breturn\s+([^;]+);",
                               lambda m: f"return ({m.group(1)}) {op};", cpp_text)
             if n:
-                out.append(Perturbation(direction, "the return value", text))
+                out.append(Perturbation(direction, "the return value", text, "return"))
     return out
 
 

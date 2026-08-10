@@ -66,7 +66,35 @@ def test_both_directions_are_offered_scale_first():
     multiplicative one -- which is `ForeAftDamping` exactly, 41/41 with the
     gains swapped. Trying only one is how a blind kernel passes a red test."""
     ps = candidates(sig(FUNC_SRC, "PIController"), FUNC_CPP)
-    assert [p.direction for p in ps] == ["scale", "offset"]
+    for kind in ("input", "return"):
+        assert [p.direction for p in ps if p.kind == kind] == ["scale", "offset"]
+
+
+# --------------------------------------------------- the clamp, measured once
+
+def test_the_return_is_perturbed_even_when_a_by_value_input_exists():
+    """The regression this file exists to prevent, measured on the real thing.
+
+    `PIController` has four by-value doubles AND a saturating return. Offering
+    only the input perturbations declared its kernel NON_DISCRIMINATING -- both
+    directions absorbed by the clamp, and `error` DOUBLED was absorbed too
+    (20/20). The same kernel went 0/20 the moment the perturbation moved to the
+    returned expression. Falling back to the return only when there is no
+    by-value input is therefore a false negative on every saturating
+    controller.
+    """
+    ps = candidates(sig(FUNC_SRC, "PIController"), FUNC_CPP)
+    kinds = {p.kind for p in ps}
+    assert kinds == {"input", "return"}, f"only got {kinds}"
+    assert any("return (out)" in p.text for p in ps)
+
+
+def test_inputs_are_tried_before_the_return():
+    """Order carries meaning downstream: `cli` reports inputs as *absorbed*
+    only because it has already tried them when a return perturbation goes
+    red. Reverse the order and that signal is silently lost."""
+    ps = candidates(sig(FUNC_SRC, "PIController"), FUNC_CPP)
+    assert [p.kind for p in ps] == ["input", "input", "return", "return"]
 
 
 def test_a_perturbation_actually_changes_the_source():

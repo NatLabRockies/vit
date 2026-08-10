@@ -870,7 +870,7 @@ def _run_red_test(args, config, sig, kernel_dir, derived_types, field_log,
                                  field_log=False, sig=sig)
 
     try:
-        tried = []
+        tried, absorbed = [], []
         for p in perturbations:
             tmp.write_text(p.text)
             result = verify_with(str(tmp))
@@ -881,8 +881,20 @@ def _run_red_test(args, config, sig, kernel_dir, derived_types, field_log,
                 return {"verdict": "demonstrated",
                         "message": f"the kernel failed to build with {p.description}"}
             if not result.success:
-                return {"verdict": "demonstrated",
-                        "message": f"the kernel reported a mismatch with {p.description}"}
+                msg = f"the kernel reported a mismatch with {p.description}"
+                if absorbed and p.kind == "return":
+                    # Worth saying out loud rather than discarding: the
+                    # comparison works, but these captured cases cannot see a
+                    # change to what the function was GIVEN. A saturating output
+                    # does this -- every case sits on the clamp -- and it means
+                    # the discriminating power here is weaker than the pass
+                    # suggests, even though the pass is real.
+                    msg += ("; note that the input perturbations were absorbed ("
+                            + ", ".join(absorbed) + "), so these cases cannot "
+                            "discriminate on input -- typically a saturated output")
+                return {"verdict": "demonstrated", "message": msg}
+            if p.kind == "input":
+                absorbed.append(p.description)
         return {"verdict": "not_discriminating",
                 "message": ("NOT DISCRIMINATING — the kernel still verified IDENTICAL "
                             "with " + ", and with ".join(tried))}
