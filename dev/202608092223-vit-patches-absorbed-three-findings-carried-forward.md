@@ -1,7 +1,7 @@
 # `vit-patches/` is absorbed — and three VIT defects it was carrying
 
 **Date:** 2026-08-09
-**Status:** completed
+**Status:** completed — all three fixed 2026-08-09, VIT `3f386d8`
 **Scope:** VIT `test_validate` / `interface_gen` / `type_map`; retiring `translation-loop/vit-patches/`
 
 ## Why the directory existed, and why it is gone
@@ -29,7 +29,10 @@ the reassuring message printed regardless of the result. A verification that can
 The six `test-validate` defects the patches carry are recorded in dev note `202608091210` §6 and are
 not restated here.
 
-## The three findings that were NOT patched
+## The three findings that were NOT patched — now fixed
+
+**All three are fixed in `3f386d8`**, verified on `CableControl` against the real tree, not only
+on fixtures. Each section below keeps the diagnosis and records what the fix was.
 
 These were appended to the directory's README as they were found and would have gone with it. Each
 is a disagreement between two VIT generators about the same type, and each is still open.
@@ -83,12 +86,43 @@ This is how it presented: `LocalVariables` has `COMPLEX(DbKi) :: AWC_complexangl
 at first as "a type no VIT header defines", which was wrong — a freshly generated header defines it
 three hundred lines up. The defect is the coupling, not the absence.
 
-## Status
+## What the fixes were
 
-Open. All three are in `unify-vit`'s working copy only as this note; none has a fix or a test. They
-are worth carrying because each one cost real time to diagnose from a symptom that pointed
-elsewhere — an undeclared type, a link error, an arity mismatch — and none of them names its own
-cause.
+1. **The drop stays a drop; it stops being silent.** A genuine passthrough must keep being dropped
+   from a production call, and nothing in the type model separates "deliberately not crossed" from
+   "no strategy configured yet" — so `build_c_params` still skips. What is new is
+   `dropped_derived_args()`, which reports each omission with its reason and the remedy, and a
+   refusal in `generate_test_harness_skeleton` when the bridge needs an argument the C++ call
+   lacks. **That check is local to test-validate and has no false positives**: there the harness
+   must supply what the bridge passes, so a missing parameter means the skeleton cannot work
+   whatever the intent elsewhere. It is gated on a registry actually being supplied — without one
+   both sides are consistently degraded and the absence is a fact about the call, not the function,
+   which is the same line `harness/vitbridge.py` draws.
+
+   Verified by removing `LocalVariables: strategy: view` from ROSCO's `vit.yaml`:
+
+       ERROR: CableControl: the Fortran bridge passes 1 argument(s) that build_c_params omits
+       from the C++ call, so the two disagree about this function's arity and nothing built
+       from them can link:
+           LocalVar : TYPE(LocalVariables)
+               ALLOCATABLE field(s), nested derived-type field(s); set `strategy: view` for
+               this type in vit.yaml to cross it
+
+   That is the same failure that used to arrive hours later as an unreadable link error.
+
+2. **Output moved to `translations/<Module>/<unit>_test/`.** Per-unit, so all four collisions —
+   `vit_types.h`, `Makefile`, the `test` binary, and `clean`'s `rm -f *.o test` — are fixed
+   structurally rather than by a naming convention some future artifact could forget to follow.
+
+3. **The complex typedefs go into the consolidated header unconditionally**, not only when a type
+   in it happens to have a complex field. The include guard makes repeats harmless, and two unused
+   typedefs cost less than one undeclared identifier a thousand lines from its cause.
+
+**Six existing tests went red, and were right to.** Three passed no registry at all — the gated
+case, not a disagreement. Three used a fixture with an ALLOCATABLE field and no view strategy,
+which is precisely the configuration that cannot work; the fixture is now configured and every
+decomposition assertion in it is untouched. A test that fails when a defect is fixed is a test that
+was pinning the defect.
 
 ## References
 
