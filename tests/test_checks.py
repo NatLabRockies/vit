@@ -161,13 +161,30 @@ def test_a_line_number_points_at_the_original_file_not_the_stripped_text():
     assert found[0].line == 4, f"reported line {found[0].line}, expected 4"
 
 
-def test_gaps_are_recorded_rather_than_silently_absent():
+def test_a_deferred_shape_is_recorded_rather_than_silently_absent():
     """A shape with no precise detector is rung 3 (measured by mutation), not
-    rung 4 (told). Recording it is what keeps it from being forgotten."""
-    assert PUSHED_TO_MUTATION
+    rung 4 (told), and recording it is what keeps it from being forgotten.
+
+    The dict is currently EMPTY, and that is a result rather than an omission:
+    all three shapes ever deferred here -- `exponent-grouping`,
+    `narrowing-local`, `nint-as-cast` -- were recorded as undetectable and all
+    three were closed by anchoring the same shape on both sides. So the
+    invariant is not "there must be entries"; it is that an entry, if one
+    exists, carries a real reason and is not also shipped.
+    """
     for shape, reason in PUSHED_TO_MUTATION.items():
         assert shape not in IDS, f"{shape} is both shipped and pushed to mutation"
         assert len(reason) > 40, f"{shape} needs a reason, not a label"
+
+
+def test_the_deferral_list_being_empty_is_load_bearing():
+    """If something is added back, it should be because a detector genuinely
+    could not be written -- not because writing one looked like work. This test
+    exists so that adding an entry is a deliberate act with a reader attached."""
+    assert PUSHED_TO_MUTATION == {}, (
+        f"a shape was deferred again: {list(PUSHED_TO_MUTATION)}. Three for three, "
+        f"the last detector written closed the gap; confirm this one truly cannot "
+        f"be anchored on both sides before accepting the deferral.")
 
 
 # ------------------------------------------------------------ source handling

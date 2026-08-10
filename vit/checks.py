@@ -256,14 +256,20 @@ def _toupper_locale(ctx: Context) -> list:
 def _strftime_locale(ctx: Context) -> list:
     # CurDate builds 'dd-mmm-yyyy' from a hardcoded English month table, and the
     # day is zero-padded from two raw characters. %b is locale-dependent.
+    #
+    # Only LOCALE-DEPENDENT conversion specifiers are flagged. `strftime` itself
+    # is not the defect: `"%H:%M:%S"` reproduces Fortran's
+    # `CTime(1:2)//':'//CTime(3:4)//':'//CTime(5:6)` exactly and is identical in
+    # every locale. Flagging it made one real defect read as two, and a check
+    # that cries wolf on correct code is the kind that gets switched off.
     out = []
-    for m in re.finditer(r"\bstrftime\s*\(|%b\b", ctx.c):
+    for m in re.finditer(r"%([aAbBcpxXZ])\b|%E[cxX]|%O[a-z]", ctx.c):
+        spec = m.group(0)
         out.extend(_find("strftime-locale",
-                     "`strftime`/`%b` is locale-dependent; the Fortran builds its "
-                     "date from a hardcoded English month table with a zero-padded "
-                          "day. Reproduce the table",
-                          m.group(0).strip("(").strip(),
-                          _line_of(ctx.c, m.start())))
+                         f"`{spec}` is locale-dependent; the Fortran builds its date "
+                         f"from a hardcoded English month table with a zero-padded "
+                         f"day. Reproduce the table",
+                         spec, _line_of(ctx.c, m.start())))
     return out
 
 
@@ -280,6 +286,31 @@ def _nint_rounding(ctx: Context) -> list:
                      f"half-to-even under the default rounding mode. Use `std::lround` "
                      f"(or `std::round`)",
                      m.group(1))
+    return []
+
+
+def _nint_as_cast(ctx: Context) -> list:
+    # The other half of `nint-rounding`. That one catches `rint`/`nearbyint`;
+    # this catches a bare cast, which TRUNCATES where NINT rounds half away
+    # from zero.
+    #
+    # Deferred once as "indistinguishable from a legitimate truncation of an
+    # already-rounded value" -- which was a claim about a ONE-SIDED detector.
+    # Anchored on both sides it is precise: the reference must use NINT, and the
+    # translation must contain NO rounding call at all. A function mixing NINT
+    # and INT has an `lround` somewhere, so it is exempt, and that is the case
+    # the ambiguity was really about.
+    if not re.search(r"\bNINT\s*\(", ctx.f, re.IGNORECASE):
+        return []
+    if re.search(r"\b(?:std::)?l?l?round\b|\brint\b|\bnearbyint\b", ctx.c):
+        return []
+    m = re.search(r"\(\s*(?:int|long|int64_t|long long)\s*\)\s*[A-Za-z_(]", ctx.c)
+    if m:
+        return _find("nint-as-cast",
+                     "the reference uses `NINT` but the translation contains no "
+                     "rounding call and casts to an integer type; a cast TRUNCATES "
+                     "and `NINT` is round-half-away-from-zero. Use `std::lround`",
+                     m.group(0).strip(), _line_of(ctx.c, m.start()))
     return []
 
 
@@ -583,8 +614,9 @@ REGISTRY: list = [
         detect=_strftime_locale,
         known_bad=Context(cpp='void d(char* o) { strftime(o, 12, "%d-%b-%Y", &tm); }\n'),
         known_good=Context(
-            cpp='static const char* M[12] = {"Jan","Feb","Mar","Apr","May","Jun",\n'
-                '                            "Jul","Aug","Sep","Oct","Nov","Dec"};\n'),
+            # A locale-FREE strftime is correct and must not be flagged: this is
+            # `CurTime`, which "%H:%M:%S" reproduces exactly in every locale.
+            cpp='void t(char* o) { strftime(o, 9, "%H:%M:%S", &tm); }\n'),
     ),
     Check(
         id="nint-rounding",
@@ -594,6 +626,17 @@ REGISTRY: list = [
         detect=_nint_rounding,
         known_bad=Context(fortran="i = NINT(x)\n", cpp="int i = (int)std::rint(x);\n"),
         known_good=Context(fortran="i = NINT(x)\n", cpp="int i = (int)std::lround(x);\n"),
+        needs_fortran=True,
+    ),
+    Check(
+        id="nint-as-cast",
+        prompt_line=("A bare cast TRUNCATES; Fortran `NINT` rounds half away from zero. "
+                     "If the reference uses `NINT`, the translation needs "
+                     "`std::lround` — a cast is only right where the Fortran says `INT`."),
+        detect=_nint_as_cast,
+        known_bad=Context(fortran="i = NINT(x)\n", cpp="int i = (int)x;\n"),
+        known_good=Context(fortran="i = NINT(x)\n",
+                           cpp="int i = (int)std::lround(x);\n"),
         needs_fortran=True,
     ),
     Check(
@@ -744,12 +787,18 @@ RETIRED: dict = {
 # Shapes deliberately NOT shipped as checks, because no precise detector exists.
 # Recorded so the gap is visible rather than merely absent -- these are rung 3
 # (measured, by mutation) not rung 4 (told).
-PUSHED_TO_MUTATION: dict = {
-    "nint-as-cast":
-        "`NINT` written as a bare cast is indistinguishable from a legitimate "
-        "truncation of an already-rounded value. The `rint`/`nearbyint` half IS "
-        "shipped, because that one is unambiguous.",
-}
+PUSHED_TO_MUTATION: dict = {}
+"""Empty, and that is a fact rather than an omission.
+
+Every shape this module deferred has since been closed by writing a better
+detector -- `exponent-grouping`, `narrowing-local` and finally `nint-as-cast`,
+each of which was recorded as undetectable and each of which was not. Three for
+three is enough to state the rule plainly: **a deferral here is a claim about a
+particular detector, and it expires the moment someone anchors the same shape on
+both sides.**
+
+If an entry is added, it needs a reason that survives that test.
+"""
 
 
 # Shapes whose right fix is in VIT itself, not in a check and certainly not in a
