@@ -109,6 +109,58 @@ Admissible ranges live in a committed `harness/ranges.toml` per campaign — 10 
 is printed. `statevary.constrain()` exists because `Param.type` was being set by the mapping and
 never resolved: a range could be written down, filed, and have no effect on any generated value.
 
+## The mutation score found the R2 defect, and then found my misdiagnosis of it
+
+`CableControl`, 71 mutants of the shipped translation:
+
+| case set | score | killed |
+|---|---|---|
+| before the R2 fix (332 cases) | 0.803 | 57 / 71 |
+| shipped (1376 cases, ladder and R6 stratified over flags) | **0.845** | 60 / 71 |
+
+The 14 survivors of the first run are what found the R2 hole. Of the 11 that remain, **10 are
+explained and 1 is a real gap** — each located at its source line rather than guessed at:
+
+| survivor | line | why |
+|---|---|---|
+| `aviFAIL < 0` → `<= 0`; the same condition negated; `0` → `1` | 100 | the `ErrMsg` blindness |
+| `char tmp[1024]` → `[1025]`; `1024` → `1025`; `sizeof - 1` → `- 2` ×2 | 101–104 | same block, same blindness |
+| `double row_slice[n_cols]` → `[n_cols + 1]` | 49 | larger VLA, extra element never read — **equivalent** |
+| `0, 0.0 // no InitialValue` → `1.0` | 73 | `has_InitialValue` is 0, so the callee ignores it — **equivalent** |
+| `col < n_cols` → `<=` | 50 | writes one past the VLA; `interp1d` gets `n_cols` as the length and never reads it |
+| `for (int I_GROUP = 0; ...)` → `I_GROUP = 1` | 44 | **real.** Skips cable group 0 in the open-loop fill; needs `CC_Mode == 2 ∧ Ind_CableControl[0] > 0` |
+
+Seven of the eleven are the CHARACTER-field gap `vitbridge.py` already records: CHARACTER
+*arguments* cross the bridge, CHARACTER *fields of a derived type* do not, so nothing in the
+error-message block is compared by any harness on this boundary. The last row is the useful output:
+the score does not merely say 0.845, it names **the one input condition the rules still
+under-reach** — and it is the same conjunction the escape needed.
+
+### The misdiagnosis, and why it is worth writing down
+
+Every R6 neighbour is ULP scale (`nextafter`, `L - |L|·1e-12`) while `harness/mutate.py`'s
+`const_tweak` perturbs a constant by ±1. Seeing `500 → 501` survive, I concluded the operator set
+and the input rules disagreed about scale, and widened R6 with `L ± 1`.
+
+**Both halves of that were wrong, and only measurement showed it.**
+
+- `nextafter(500)` distinguishes `> 500` from `> 501` perfectly well. The mutant was alive because
+  the *whole R6 stage ran at one value of every flag*, and the threshold is inside `CC_Mode == 1`.
+  Stratification alone kills it.
+- The widened R6 was scored on the real unit and changed **nothing**: same 0.845, same eleven
+  survivors. It also made `harness/independence.py` report `R_ladder` as **dead** on the tiny
+  campaign — everything the ladder uniquely killed was killed by the widened R6, which by the
+  repository's own doctrine makes them variants of one principle rather than two rules.
+
+So it is not shipped. Three attempts at this one mutant, in order: rotate the flags (no change,
+measured), widen R6 (no change, measured, and costs a rule its independence), stratify (0.803 →
+0.845). **Two of the three fixes I was confident in did nothing**, and the only reason that is
+known is that each was scored on the real unit rather than reasoned about.
+
+Cost, since §6.4 budgeted it as "seconds-per-mutant, not milliseconds": ~45 minutes for 71 mutants
+on a 467-parameter unit, dominated by recompiling the generated harness at `-O2`, not by the case
+count. Adding cases is nearly free; adding mutants is not.
+
 ## Three more places VIT's generators disagree with each other
 
 The previous session found six defects reaching a *compiling bridge*. Reaching a compiling **C++
