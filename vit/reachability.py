@@ -62,6 +62,29 @@ _UNDEF = [
     re.compile(r"^\s+_?(\w+)\s*$", re.MULTILINE),          # macOS symbol list
 ]
 
+# A reference to a MODULE procedure fails at COMPILE time, not at link time --
+# the caller is in the same compilation unit, so gfortran reports a type error
+# rather than the linker reporting a missing symbol. That is the common case in
+# modern Fortran, and the diagnostic is BETTER evidence than a link failure
+# because it names the calling line.
+#
+# Measured on ROSCO: probing `sigma` produced
+#   Error: Function 'sigma' at (1) has no IMPLICIT type
+# twice, from ControllerBlocks.f90:612 and :627. Link-only detection reported
+# `inconclusive` for it -- and would have done so for nearly every module
+# procedure in the codebase.
+_COMPILE_REF = [
+    # gfortran. Quotes may be ASCII or the Unicode pair it prefers.
+    r"(?:Function|Symbol|Variable)\s+[‘'\"`]{name}[’'\"`]\s+at\s+\(\d\)\s+"
+    r"has no IMPLICIT type",
+    r"[‘'\"`]{name}[’'\"`]\s+at\s+\(\d\)\s+is not a function",
+    r"There is no specific (?:function|subroutine) for the generic\s+"
+    r"[‘'\"`]{name}[’'\"`]",
+    # ifort / ifx
+    r"This name does not have a type.*\[{name}\]",
+    r"explicit interface.*\[{name}\]",
+]
+
 
 def undefined_symbols(build_output: str, function: str) -> list:
     """Undefined symbols the linker complained about, best effort.
@@ -78,6 +101,34 @@ def undefined_symbols(build_output: str, function: str) -> list:
             if want in sym.lower() and sym not in found:
                 found.append(sym)
     return found
+
+
+def compile_references(build_output: str, function: str) -> list:
+    """Compile-time diagnostics proving something still refers to the procedure.
+
+    Returns the diagnostic lines, each prefixed with the source line the
+    compiler quoted just above it when one is present — that quoted line IS the
+    call site, which is more useful than a mangled symbol name.
+    """
+    name = re.escape(function)
+    lines = build_output.splitlines()
+    hits = []
+    for pat in _COMPILE_REF:
+        rx = re.compile(pat.format(name=name), re.IGNORECASE)
+        for i, line in enumerate(lines):
+            if not rx.search(line):
+                continue
+            # gfortran prints the offending source line, then a caret, then the
+            # error. Walk back to the nearest quoted source line for context.
+            context = ""
+            for j in range(i - 1, max(-1, i - 4), -1):
+                if re.match(r"\s*\d+\s*\|", lines[j]):
+                    context = lines[j].strip()
+                    break
+            entry = f"{context}  ->  {line.strip()}" if context else line.strip()
+            if entry not in hits:
+                hits.append(entry)
+    return hits
 
 
 def _find_definition(source: str, function: str) -> Optional[tuple]:
@@ -154,14 +205,22 @@ def probe(function: str, source_file: str, build_cmd: str, cwd: str = ".",
                 f"anything else.")
 
     syms = undefined_symbols(output, function)
+    crefs = compile_references(output, function)
     if run.returncode != 0:
+        if crefs:
+            # The common case for a module procedure, and the better evidence:
+            # the diagnostic quotes the calling line.
+            return Probe(function, "referenced",
+                         f"the build failed at COMPILE time with {len(crefs)} "
+                         f"diagnostic(s) naming `{function}`, so something refers to it",
+                         symbols=crefs, static_call_sites=sites)
         if syms:
             return Probe(function, "referenced",
                          f"the link failed with {len(syms)} undefined symbol(s) naming "
                          f"`{function}`, so something refers to it",
                          symbols=syms, static_call_sites=sites)
         return Probe(function, "inconclusive",
-                     "the build failed, but no undefined symbol named this procedure — "
+                     "the build failed, but nothing in the output named this procedure — "
                      "the failure is probably unrelated (a syntax error from the probe, "
                      "or a pre-existing break). Check the build output",
                      static_call_sites=sites)

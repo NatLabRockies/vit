@@ -18,7 +18,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from vit.reachability import (_comment_out, _find_definition,        # noqa: E402
-                              probe, undefined_symbols)
+                              compile_references, probe, undefined_symbols)
 
 
 SRC = """\
@@ -115,6 +115,33 @@ def test_an_undefined_symbol_reads_as_referenced(tmp_path):
     r = probe("PIController", str(f), f"cat {log} >&2; exit 1", cwd=str(tmp_path))
     assert r.verdict == "referenced"
     assert r.symbols == ["__controllers_MOD_picontroller"]
+
+
+def test_a_module_procedure_reference_is_caught_at_compile_time(tmp_path):
+    """The COMMON case, and the one link-only detection missed.
+
+    A module procedure's callers are in the same compilation unit, so gfortran
+    reports a type error rather than the linker reporting a missing symbol.
+    Measured on ROSCO: probing `sigma` produced exactly this, twice, and the
+    link-only probe called it `inconclusive`.
+    """
+    f = tmp_path / "Controllers.f90"
+    f.write_text(SRC)
+    log = tmp_path / "build.err"
+    log.write_text(
+        "  612 |    LocalVar%PRC_R_Speed = PIController(LocalVar%Time, a)\n"
+        "      |                           1\n"
+        "Error: Function ‘PIController’ at (1) has no IMPLICIT type\n")
+    r = probe("PIController", str(f), f"cat {log} >&2; exit 1", cwd=str(tmp_path))
+    assert r.verdict == "referenced"
+    assert "COMPILE time" in r.detail
+    # The quoted call site is the useful part -- better than a mangled symbol.
+    assert "PRC_R_Speed" in r.symbols[0]
+
+
+def test_compile_reference_detection_ignores_an_unrelated_procedure():
+    out = "Error: Function ‘other_thing’ at (1) has no IMPLICIT type\n"
+    assert compile_references(out, "sigma") == []
 
 
 def test_an_unrelated_build_failure_is_inconclusive_not_unreferenced(tmp_path):
