@@ -188,6 +188,68 @@ call** found three more.
    header gets an undeclared type. (I recorded this as "a type no VIT header defines" before checking
    a current header — it is defined, in the one VIT writes alongside the skeleton.)
 
+## The corpus: two of the five "escapes" never happened
+
+`escape_coverage()` — the sixth exit criterion, and the number the method is meant to be judged on
+— is now computable. Getting there meant checking each entry of `VIT_INTEGRATION.md` §8's escape
+list against the record instead of against the list, and **two of the five are not escapes**:
+
+- **`ForeAftDamping`** (with `FloatingFeedback`) contributed a *gate blindness*, not a wrong
+  translation: their gain is `0.0` in every scenario, so the gate cannot see a scaling error, which
+  is exactly what the miniature's `scaled_sum` reproduces. The unit verified 40/40, and no wrong
+  `foreaftdamping.cpp` exists in either workspace or in the replication tree.
+- **`FlapControl`** appears in the record only for extraction difficulties and two *upstream
+  Fortran* bugs — an uninitialised `K` in the `Flp_Mode==2` init block, and an uninitialised `n` in
+  `PreFilterMeasuredSignals`. The "dropped `* R2D`" attribution has no source anywhere.
+
+Both had already been copied out of §8 into later documents, including my own summary this session.
+**A labelled positive that never happened inflates the denominator of the one number the method is
+judged on**, so recording them would have been worse than recording nothing.
+
+What is real, and what is now in the corpus:
+
+| escape | artifact | passed | verdict |
+|---|---|---|---|
+| `CableControl` — contiguous read of a strided row | translation | kernel 42/42, gate 429/0 | **caught**, 1376 cases |
+| `NonDecreasing` — `<= 0` written `< 0` | translation | all 27 scenarios | **missed**, by construction |
+| `ComputeTau2` — `a*x**2` written `a*x*x` | translation | KGen 20/20 | not yet run |
+| `CheckInputs` — wrapper with no copy-back | **integration** | kernel 1/1 over 426 fields, gate 429/0 *both ways* | unreachable by any input rule |
+
+`scripts/corpus_rosco.py` assembles each from a campaign tree at run time rather than vendoring it,
+so the only campaign text stored in the loop repository is the **wrong** line — the opposite of an
+answer key. Each entry cites the dev note that documents it, and a test asserts that.
+
+### Three states, not two
+
+`escape_coverage()` reported `1/3` on its first run, which was three different things wearing one
+label. It now distinguishes:
+
+- **caught / missed** — a harness was run against the recorded escape and the answer was observed.
+- **unmeasured** — nobody has run it. `ComputeTau2` is here. Counting an unknown as a miss makes the
+  rules look weaker than anything yet shows; omitting it silently makes them look stronger. Same
+  rule as NOT_APPLICABLE never printing like a pass.
+- **unreachable** — `CheckInputs`' defect is in the *integration wrapper*, and the harness calls the
+  translation. No choice of inputs reaches it, so it is out of the denominator and printed anyway;
+  the instrument for it is re-running the purpose-built harness against the integrated build
+  (`SPEC.md` §8.2). It stays in the corpus because it is the most expensive escape the reference
+  campaign has.
+
+Result: **1 of 2 measured reachable escapes caught.**
+
+### The miss is the finding
+
+`NonDecreasing` is separated from its accepted translation by exactly one input — an array with two
+equal adjacent elements — and **R5's last clause makes every generated array pairwise distinct**.
+Measured, offline, on the generator itself: **0 plateaus in 201 cases.** It is not bad luck; the
+rule set cannot produce the input.
+
+**The clause that catches `CableControl` is the clause that hides `NonDecreasing`.** R5's
+distinctness exists because equal array elements make a wrong gather agree with a right one; a
+plateau is exactly what an equality-boundary predicate needs. Closing this is a change to R5 in
+`SPEC.md`'s normative set — not a range file, not a generator tweak — and after today it should not
+land without a mutation score behind it. `tests/test_corpus_escapes.py` pins the bind, so relaxing
+R5 turns that test red rather than quietly changing what the corpus reports.
+
 ## Where the code is
 
 - `translation-loop/harness/statevary.py` — new; read set, dispositions, `constrain`
