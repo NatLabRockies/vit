@@ -237,12 +237,14 @@ When creating a dev note:
 
 ## Git
 
-**The canonical VIT is the local branch `unify-vit`, not `main`.** `main` is ~40 commits
-stale: the ROSCO replication's checkout carried all `vit/` source evolution (30 commits) and
-this session merged it plus 11 further fixes and `tests/conformance/`. It is **deliberately
-unpushed** — the replication runs against its own checkout and must not receive this
-mid-campaign. Push, and delete the now-redundant `translation-loop/vit-patches/`, only once
-the run ends. Dev note `202608091353`.
+**`main` is canonical and pushed** (`14d0a5b`, 2026-08-09). It was ~40 commits stale for a
+while: the ROSCO replication's checkout carried all `vit/` source evolution (30 commits), which
+was merged onto a `unify-vit` branch together with 11 further fixes and `tests/conformance/`,
+and held back so the live replication could not receive it mid-campaign. That run stopped at
+#59, so `unify-vit` was fast-forwarded into `main` — linear history, no merge commit — and
+both refs now point at the same commit. `translation-loop/vit-patches/` is deleted; the three
+VIT defects it was carrying are open, in dev note `202608092223`. Dev notes `202608091353`,
+`202608092223`.
 
 Two sibling workspaces. **Active work is in the OpenFAST workspace.**
 
