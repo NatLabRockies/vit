@@ -506,15 +506,36 @@ def generate_fortran_bridge(
                     post_call.append(f"            {arg.name}_c(vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
                     post_call.append(f"        END DO")
             call_args.append(arg.name)
-        elif arg.is_array and arg.is_assumed_shape:
-            # Assumed-shape arrays: receive as assumed-size (*) + size parameter.
-            # Pass explicit section to the Fortran function (which expects assumed-shape).
+        elif arg.is_array:
+            # Arrays cross as assumed-size (*). Where the extent comes from
+            # depends on whether the declaration states one.
+            #
+            # This branch used to test `arg.is_array and arg.is_assumed_shape`,
+            # so an EXPLICIT-SHAPE dummy -- `REAL(DbKi), INTENT(IN) ::
+            # rootMOOP(3)` -- fell through to the scalar REAL branch below and
+            # was declared `REAL(C_DOUBLE), VALUE :: rootMOOP`. The rank was
+            # dropped and the argument became a by-value scalar. Caught by
+            # gfortran ("Rank mismatch in argument 'rootmoop' ... rank-1 and
+            # scalar") only because the bridge USEs the module and so is
+            # type-checked against the real interface; nothing in the generator
+            # noticed. interface_gen -- VIT's OTHER bridge generator, the one
+            # the kernel uses -- gets the same argument right as `double*`, so
+            # the two disagreed about the same signature.
             c_type = "REAL(C_DOUBLE)" if "REAL" in fortran_type else \
                      "INTEGER(C_INT)" if "INTEGER" in fortran_type else \
                      "LOGICAL(C_BOOL)" if "LOGICAL" in fortran_type else f"! TODO: array of {fortran_type}"
             c_params.append((f"        {c_type}, INTENT({intent}) :: {arg.name}(*)", arg.name))
-            c_params.append((f"        INTEGER(C_INT), VALUE, INTENT(IN) :: n_{arg.name}", f"n_{arg.name}"))
-            call_args.append(f"{arg.name}(1:n_{arg.name})")
+            if arg.is_assumed_shape or not arg.array_dims:
+                # No extent in the declaration: the caller must supply one.
+                c_params.append((f"        INTEGER(C_INT), VALUE, INTENT(IN) :: n_{arg.name}", f"n_{arg.name}"))
+                call_args.append(f"{arg.name}(1:n_{arg.name})")
+            else:
+                # The declaration states the extent, so no C parameter is added
+                # for it. That is not a style choice: build_c_params -- which is
+                # what the C side of the harness is generated from -- emits no
+                # size parameter for an explicit-shape array, and a bridge that
+                # invented one would take an argument nobody passes.
+                call_args.append(f"{arg.name}(1:{arg.array_dims})")
         elif "INTEGER" in fortran_type:
             value_attr = ", VALUE" if intent == "IN" else ""
             c_params.append((f"        INTEGER(C_INT){value_attr}, INTENT({intent}) :: {arg.name}", arg.name))
@@ -738,8 +759,18 @@ def generate_test_makefile(
         lines.append(f"\t$(FC) $(FC_FLAGS) -c $< -o $@")
     lines.append("")
 
+    # -lgfortran -lm, because $(LIBS) is the CMake target's OBJECT list and
+    # carries no runtime. Linking with $(CXX) means the Fortran runtime is not
+    # pulled in the way `gfortran` would pull it in, and every object that does
+    # I/O, string handling or MATMUL fails at link with hundreds of
+    # `undefined reference to _gfortran_*`. kernel_verify.py links the mirror
+    # image of this -- gfortran plus -lstdc++ -- and had to learn the same
+    # lesson from the other side.
+    lines.append("# The Fortran runtime, since the link driver is g++ and LIBS holds objects only.")
+    lines.append("FORTRAN_RUNTIME = -lgfortran -lm")
+    lines.append("")
     lines.append(f"test: {' '.join(link_objs)}")
-    lines.append(f"\t$(CXX) -o $@ $^ $(LIBS)")
+    lines.append(f"\t$(CXX) -o $@ $^ $(LIBS) $(FORTRAN_RUNTIME)")
     lines.append("")
     lines.append(f"{func_lower}_test.o: {test_deps}")
     lines.append(f"\t$(CXX) $(CXX_FLAGS) -c {func_lower}_test.cpp -o $@")
