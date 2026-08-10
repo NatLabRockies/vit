@@ -116,6 +116,17 @@ def main():
     p_check.add_argument("--list", action="store_true",
                          help="List the registry instead of running it")
 
+    # --- reachability ---
+    p_reach = subparsers.add_parser(
+        "reachability",
+        help="Settle whether a procedure is called, by deleting it and rebuilding")
+    p_reach.add_argument("function_name", help="Procedure to probe")
+    p_reach.add_argument("--file", "-f", required=True,
+                         help="Fortran source file containing the definition")
+    p_reach.add_argument("--build-cmd", help="Override the build command from vit.yaml")
+    p_reach.add_argument("--timeout", type=int, default=1800,
+                         help="Seconds to allow for the rebuild (default 1800)")
+
     # --- integrate ---
     p_integrate = subparsers.add_parser("integrate", help="Generate integration plan")
     p_integrate.add_argument("function_name", help="Function to integrate")
@@ -240,6 +251,8 @@ def _dispatch(args, config, parser):
         return cmd_verify(args, config)
     elif args.command == "check":
         return cmd_check(args)
+    elif args.command == "reachability":
+        return cmd_reachability(args, config)
     elif args.command == "integrate":
         return cmd_integrate(args, config)
     elif args.command == "sim-compare":
@@ -807,6 +820,42 @@ def cmd_check(args):
         return 1
     print(f"✓ {name}: no known-shape defects — {scope}")
     return 0
+
+
+def cmd_reachability(args, config):
+    """Settle "is this called?" with a rebuild instead of a scenario sweep.
+
+    Exit 0 when the probe reached a verdict either way; 2 when it could not.
+    `unreferenced` is deliberately NOT an error — it is a finding, and often the
+    one being looked for.
+    """
+    from . import reachability
+
+    build_cmd = getattr(args, "build_cmd", None) or config.build_cmd
+    if not build_cmd:
+        print("✗ No build command: pass --build-cmd or set kgen.build_cmd in vit.yaml")
+        return 2
+
+    print(f"Probing {args.function_name} — commenting it out and rebuilding...")
+    r = reachability.probe(
+        args.function_name, args.file, build_cmd,
+        cwd=str(Path(config.abs_source_dir).parent) if config.abs_source_dir else ".",
+        source_dir=config.abs_source_dir, timeout=args.timeout)
+
+    if r.verdict == "referenced":
+        print(f"\n✓ {r.function}: REFERENCED — {r.detail}")
+        for s in r.symbols[:10]:
+            print(f"    {s}")
+    elif r.verdict == "unreferenced":
+        print(f"\n✓ {r.function}: UNREFERENCED — {r.detail}")
+    else:
+        print(f"\n~ {r.function}: INCONCLUSIVE — {r.detail}")
+
+    # Caveats are printed for the verdict that needs them. An `uncalled` claim
+    # that hides its own scope is the failure this command exists to replace.
+    for c in r.caveats:
+        print(f"    ! {c}")
+    return 0 if r.ok else 2
 
 
 def cmd_verify(args, config):
