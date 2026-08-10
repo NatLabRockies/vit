@@ -267,35 +267,64 @@ def build_intervals(events):
 
 
 def build_spans(intervals):
-    """Collapse command intervals into one span per function.
+    """Coalesce a function's CONSECUTIVE intervals into one run.
 
-    A function's span runs from its first command start to its last command
-    end. Attribution uses spans, not individual commands, because the agent
-    writes the C++ *between* `vit translate` and `vit verify` and that work
-    belongs to the function.
+    Attribution uses spans, not individual commands, because the agent writes
+    the C++ *between* `vit translate` and `vit verify` and that work belongs to
+    the function. So a run absorbs the gaps inside it — but only until another
+    function's interval begins, which is where this used to go wrong.
 
-    Functions whose spans overlap are marked; overlap means work interleaved,
-    which breaks attribution and makes those functions unusable as data points.
+    **It kept one span per function, from its first start to its last end.**
+    `__precompact__` ran 09:11:58–09:14:19 and again 11:37:53–11:40:41, and
+    min/max turned those 309 seconds into a single 8,923-second window spanning
+    almost the whole session between two compactions. Every record inside it was
+    then charged to `__precompact__` by `attribute`, and the four functions
+    nested within priced at zero with 0 requests — absence rendered as a value,
+    since a row of zeros reads as free rather than as missing.
+
+    A function that appears twice therefore gets two runs. Callers that report
+    per function must sum them; `scripts/join_telemetry.py` does.
+
+    **Interleaving is still detected on the function's whole EXTENT**, first
+    start to last end, and not run by run. Splitting runs is what fixes
+    attribution, and it would have destroyed this signal if the overlap scan
+    had moved with it: two functions whose cycles alternate produce runs that
+    never overlap pairwise, so a run-level scan reports no interleaving at all
+    for the very case interleaving means. Overlap means work interleaved, which
+    breaks attribution and makes those functions unusable as data points, so
+    the two questions are answered on the two different shapes.
     """
-    spans = OrderedDict()
+    runs = []
     for interval in intervals:
         name = interval["function"]
         if not name:
             continue
         end = interval["end"] or interval["start"]
-        if name not in spans:
-            spans[name] = {"function": name, "start": interval["start"], "end": end}
+        if runs and runs[-1]["function"] == name:
+            runs[-1]["end"] = max(runs[-1]["end"], end)
         else:
-            spans[name]["start"] = min(spans[name]["start"], interval["start"])
-            spans[name]["end"] = max(spans[name]["end"], end)
-    ordered = sorted(spans.values(), key=lambda s: s["start"])
+            runs.append({"function": name, "start": interval["start"], "end": end})
+    ordered = sorted(runs, key=lambda s: s["start"])
+
+    extents = OrderedDict()
     for span in ordered:
-        span["overlaps"] = []
-    for i, span in enumerate(ordered):
-        for other in ordered[i + 1:]:
-            if other["start"] < span["end"] and span["start"] < other["end"]:
-                span["overlaps"].append(other["function"])
-                other["overlaps"].append(span["function"])
+        name = span["function"]
+        if name in extents:
+            extents[name]["start"] = min(extents[name]["start"], span["start"])
+            extents[name]["end"] = max(extents[name]["end"], span["end"])
+        else:
+            extents[name] = {"start": span["start"], "end": span["end"]}
+
+    interleaved = {name: set() for name in extents}
+    names = list(extents)
+    for i, name in enumerate(names):
+        for other in names[i + 1:]:
+            a, b = extents[name], extents[other]
+            if b["start"] < a["end"] and a["start"] < b["end"]:
+                interleaved[name].add(other)
+                interleaved[other].add(name)
+    for span in ordered:
+        span["overlaps"] = sorted(interleaved[span["function"]])
     return ordered
 
 
@@ -366,11 +395,17 @@ def attribute(usage_records, spans):
             _add_usage(buckets["session_overhead"], record["_usage"])
             buckets["session_overhead"]["sessions"].add(record["_session"])
             continue
+        # The INNERMOST containing run, not the first by start time. A nested
+        # phase is more specific than whatever encloses it, so a record inside
+        # `__alloc_return__` inside `Read_OL_Input` belongs to
+        # `__alloc_return__`. Taking the first match charged everything to the
+        # outermost span, which is how one phantom window swallowed four
+        # functions whole. Shortest wins; ties break to the later start.
         holder = None
-        for span in spans:
-            if span["start"] <= timestamp <= span["end"]:
-                holder = span["function"]
-                break
+        hits = [s for s in spans if s["start"] <= timestamp <= s["end"]]
+        if hits:
+            holder = min(hits, key=lambda s: ((s["end"] - s["start"]).total_seconds(),
+                                              -s["start"].timestamp()))["function"]
         if holder is not None:
             _add_usage(per_function[holder], record["_usage"])
             if record["_model"]:
