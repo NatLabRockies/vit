@@ -783,6 +783,24 @@ def cmd_verify(args, config):
         if verify_result.max_error > 0:
             print(f"  Max error: {verify_result.max_error:.2e} (tolerance: {config.tolerance:.2e})")
 
+        # A pass means nothing until the kernel has been shown able to fail.
+        red = _run_red_test(args, config, sig, kernel_dir, derived_types,
+                            field_log, setup_kernel_cpp, run_kernel_verify)
+        print(f"\n  Red test: {red['message']}")
+        if red["verdict"] != "demonstrated":
+            print(f"\n✗ {args.function_name}: NON_DISCRIMINATING — "
+                  f"{verify_result.passed_cases} case(s) compared IDENTICAL, and the "
+                  f"kernel did not report a mismatch when the translation was "
+                  f"deliberately changed. The pass is not evidence.")
+            record_translation(config, args.function_name, "non_discriminating", {
+                "cases_passed": verify_result.passed_cases,
+                "cpp_file": args.cpp_file,
+                "kernel_dir": kernel_dir,
+                "red_test": red["verdict"],
+                "red_test_detail": red["message"],
+            })
+            return 1
+
         valid = verify_result.total_cases - verify_result.skipped_cases
         record_translation(config, args.function_name, "verified", {
             "cases_passed": verify_result.passed_cases,
@@ -790,6 +808,8 @@ def cmd_verify(args, config):
             "cases_skipped": verify_result.skipped_cases,
             "cpp_file": args.cpp_file,
             "kernel_dir": kernel_dir,
+            "red_test": red["verdict"],
+            "red_test_detail": red["message"],
         })
     else:
         for detail in verify_result.details:
@@ -797,6 +817,80 @@ def cmd_verify(args, config):
                 print(f"  FAILED: {detail['line']}")
 
     return 0 if verify_result.success else 1
+
+
+def _run_red_test(args, config, sig, kernel_dir, derived_types, field_log,
+                  setup_kernel_cpp, run_kernel_verify) -> dict:
+    """Rebuild the kernel against a deliberately wrong translation; require red.
+
+    Returns `{verdict, message}` where verdict is one of:
+
+      demonstrated     the kernel reported a mismatch -- the pass means something
+      not_discriminating  every perturbation still verified IDENTICAL
+      not_constructed  nothing could be perturbed safely (see `redtest.why_not`)
+
+    The last two both block a `verified` record. `not_constructed` is not a
+    failure of the translation and is not a pass either: it is the statement
+    that this kernel's discriminating power is unmeasured, which is what every
+    `vit verify` silently asserted before this existed.
+
+    The original translation is restored and re-verified at the end, so the
+    kernel directory is left in the state a passing verify should leave it.
+    """
+    import tempfile
+
+    from . import redtest
+
+    cpp_path = Path(args.cpp_file)
+    original = cpp_path.read_text()
+    perturbations = redtest.candidates(sig, original, config.kind_aliases,
+                                       derived_types)
+    if not perturbations:
+        return {"verdict": "not_constructed",
+                "message": f"NOT CONSTRUCTED — {redtest.why_not(sig, original, config.kind_aliases, derived_types)}"}
+
+    # The perturbed translation goes to a TEMP file; the user's `.cpp` is never
+    # written. Mutating it in place and restoring in a `finally` works until the
+    # run is killed between the two, and then a deliberately wrong translation
+    # is sitting on disk looking like the real one -- a fails-green artifact
+    # produced by the fails-green detector.
+    tmp = Path(tempfile.mkdtemp(prefix="vit_redtest_")) / cpp_path.name
+
+    def verify_with(path: str):
+        setup = setup_kernel_cpp(
+            kernel_dir=kernel_dir, sig=sig, cpp_impl_path=path,
+            kind_aliases=config.kind_aliases, field_log=False,
+            derived_types=derived_types, fortran_flags=config.fortran_flags,
+            translations=config.translations, source_dir=config.abs_source_dir,
+            fortran_compiler=config.fortran_compiler,
+            shared_files=config.shared_files)
+        if not setup["success"]:
+            return None
+        return run_kernel_verify(kernel_dir, tolerance=config.tolerance,
+                                 field_log=False, sig=sig)
+
+    try:
+        tried = []
+        for p in perturbations:
+            tmp.write_text(p.text)
+            result = verify_with(str(tmp))
+            tried.append(p.description)
+            if result is None:
+                # A perturbation that will not build is a red of the crudest
+                # kind, and an honest one: the kernel noticed.
+                return {"verdict": "demonstrated",
+                        "message": f"the kernel failed to build with {p.description}"}
+            if not result.success:
+                return {"verdict": "demonstrated",
+                        "message": f"the kernel reported a mismatch with {p.description}"}
+        return {"verdict": "not_discriminating",
+                "message": ("NOT DISCRIMINATING — the kernel still verified IDENTICAL "
+                            "with " + ", and with ".join(tried))}
+    finally:
+        # Leave the kernel wired to the REAL translation, so the directory is in
+        # the state a passing verify should leave it.
+        verify_with(str(cpp_path))
+        shutil.rmtree(tmp.parent, ignore_errors=True)
 
 
 def _sync_shared_files(config) -> list:
