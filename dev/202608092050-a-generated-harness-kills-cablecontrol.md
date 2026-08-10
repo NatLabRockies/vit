@@ -20,8 +20,9 @@ The escape is defect #55 reconstructed verbatim: `CableControl` slices
 reads it contiguously (`[I_GROUP * n_cols + col]`) instead of at stride `n_rows`. It passed kernel
 replay 42/42 and the 33-scenario gate 429/0.
 
-The first divergence is `LocalVar.CC_DesiredL` element 1 — the *second* cable group, the first index
-a row-major read gets wrong — propagating to `CC_ActuatedDL` and `avrSWAP`. Seeds 0–4 fail 2, 2, 7,
+Four outputs differ per failing case. `LocalVar.CC_DesiredL` diverges at **element 1** — the
+*second* cable group, the first index a contiguous read gets wrong; element 0 is bit-identical, as it
+must be — and it propagates to `CC_ActuatedDL`, `LocalVar.FP` and `avrSWAP`. Seeds 0–4 fail 2, 2, 7,
 8, 8 cases; the correct translation passes all five. `PIController` still passes, 1201/0.
 
 **The third row is the result, not the second.** Pinning the cable-group count to 1 makes only row
