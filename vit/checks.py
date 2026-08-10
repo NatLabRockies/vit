@@ -90,7 +90,13 @@ def strip_fortran_comments(src: str) -> str:
 
 
 def strip_cpp_comments(src: str) -> str:
-    """Drop `//` and `/* */`, honouring quoted strings and escapes."""
+    """Blank out `//` and `/* */`, honouring quoted strings and escapes.
+
+    Blanked rather than removed: a finding reports a LINE NUMBER, and deleting
+    characters shifts every offset after them. Replacing with spaces keeps the
+    text the same length and the newlines in place, so an offset in the stripped
+    text is an offset in the original.
+    """
     out, i, n = [], 0, len(src)
     while i < n:
         ch = src[i]
@@ -112,11 +118,14 @@ def strip_cpp_comments(src: str) -> str:
             continue
         if src.startswith("//", i):
             while i < n and src[i] != "\n":
+                out.append(" ")
                 i += 1
             continue
         if src.startswith("/*", i):
             end = src.find("*/", i + 2)
-            i = n if end < 0 else end + 2
+            stop = n if end < 0 else end + 2
+            out.extend("\n" if src[j] == "\n" else " " for j in range(i, stop))
+            i = stop
             continue
         out.append(ch)
         i += 1
@@ -139,7 +148,11 @@ def translator_region(cpp: str) -> str:
     VIT already marks the boundary, so use its marker rather than guessing.
     """
     at = cpp.find(_HANDOFF)
-    return cpp[at + len(_HANDOFF):] if at >= 0 else cpp
+    if at < 0:
+        return cpp
+    head = cpp[:at + len(_HANDOFF)]
+    blanked = "".join("\n" if c == "\n" else " " for c in head)
+    return blanked + cpp[at + len(_HANDOFF):]
 
 
 @dataclass(frozen=True)
@@ -162,10 +175,12 @@ class Finding:
     check_id: str
     message: str
     evidence: str = ""
+    line: int = 0          # 1-based; 0 when the check is about the file as a whole
 
     def __str__(self) -> str:
+        where = f"line {self.line}: " if self.line else ""
         tail = f"  [{self.evidence}]" if self.evidence else ""
-        return f"{self.check_id}: {self.message}{tail}"
+        return f"{self.check_id}: {where}{self.message}{tail}"
 
 
 @dataclass(frozen=True)
@@ -197,8 +212,13 @@ class Report:
         return not self.findings
 
 
-def _find(cid: str, msg: str, ev: str = "") -> list:
-    return [Finding(cid, msg, ev)]
+def _find(cid: str, msg: str, ev: str = "", line: int = 0) -> list:
+    return [Finding(cid, msg, ev, line)]
+
+
+def _line_of(text: str, pos: int) -> int:
+    """1-based line for an offset. Exact, because stripping preserves offsets."""
+    return text.count("\n", 0, pos) + 1
 
 
 # --------------------------------------------------------------- the checks
@@ -223,27 +243,28 @@ def _forbidden_include(ctx: Context) -> list:
 def _toupper_locale(ctx: Context) -> list:
     # Fortran's CHAR(ICHAR(c)-32) guarded by 'a'..'z' is exactly ASCII, always.
     # std::toupper is locale-dependent and undefined on negative char.
-    m = re.search(r"\b(?:std::)?(toupper|tolower)\s*\(", ctx.c)
-    if m:
-        return _find("toupper-locale",
+    out = []
+    for m in re.finditer(r"\b(?:std::)?(toupper|tolower)\s*\(", ctx.c):
+        out.extend(_find("toupper-locale",
                      f"`{m.group(1)}` is locale-dependent and undefined for negative "
                      f"`char`; Fortran's case conversion is plain ASCII. Compare "
-                     f"through `unsigned char` and shift by 32 explicitly",
-                     m.group(1))
-    return []
+                          f"through `unsigned char` and shift by 32 explicitly",
+                          m.group(1), _line_of(ctx.c, m.start())))
+    return out
 
 
 def _strftime_locale(ctx: Context) -> list:
     # CurDate builds 'dd-mmm-yyyy' from a hardcoded English month table, and the
     # day is zero-padded from two raw characters. %b is locale-dependent.
-    m = re.search(r"\bstrftime\s*\(|%b\b", ctx.c)
-    if m:
-        return _find("strftime-locale",
+    out = []
+    for m in re.finditer(r"\bstrftime\s*\(|%b\b", ctx.c):
+        out.extend(_find("strftime-locale",
                      "`strftime`/`%b` is locale-dependent; the Fortran builds its "
                      "date from a hardcoded English month table with a zero-padded "
-                     "day. Reproduce the table",
-                     m.group(0).strip("(").strip())
-    return []
+                          "day. Reproduce the table",
+                          m.group(0).strip("(").strip(),
+                          _line_of(ctx.c, m.start())))
+    return out
 
 
 def _nint_rounding(ctx: Context) -> list:
@@ -320,31 +341,42 @@ def _exponent_grouping(ctx: Context) -> list:
     # use `**`, and the translation must repeat a factor with no parentheses
     # around the pair. A bare `x * x` (no leading `*`) is the correct rendering
     # of `x**2` standing alone and is not matched.
+    #
+    # EVERY instance is reported, not the first. Measured the hard way: fixing
+    # the three flagged lines in ROSCO left three more of the same defect on
+    # lines the report never named, including a second one on the very line it
+    # did name. A count that understates the work reads as "one line to fix".
     if not re.search(r"\*\*\s*\d", ctx.f):
         return []
-    for m in re.finditer(r"([A-Za-z_]\w*|[\d.]+)\s*\*\s*([A-Za-z_]\w*)\s*\*\s*\2\b",
-                         ctx.c):
-        lead, var = m.group(1), m.group(2)
-
-        # `x * x * x` is `x**3` written out, and it is exactly what gfortran
-        # emits for an integer power. Not a regrouping at all.
-        if lead == var:
-            continue
-
-        # `2.0 * x * x` regroups to `(2.0*x) * x`, but scaling by an exact power
-        # of two only shifts the exponent, so the two associations are
-        # bit-identical (absent overflow or a subnormal result). Flagging it
-        # would be flagging arithmetic that cannot differ.
-        if _is_power_of_two_literal(lead):
-            continue
-
-        return _find("exponent-grouping",
-                     f"the reference uses `**` and the translation multiplies "
-                     f"`{var}` twice without grouping them; Fortran's `a*x**2` "
-                     f"is `a * (x*x)` but C++ `a * x * x` is `(a*x) * x`. Parenthesise "
-                     f"the power",
-                     f"{lead} * {var} * {var}")
-    return []
+    c = ctx.c
+    out = []
+    # Find each REPEATED FACTOR first, then look back for what multiplies it.
+    #
+    # Not one combined pattern: `re.finditer` is non-overlapping, so a benign
+    # leading match consumes the text and hides a real one behind it. Measured
+    # on `2.0 * DT * DT * CornerFreq * CornerFreq` -- the `2.0 * DT * DT` prefix
+    # is exempt (scaling by a power of two is exact), and matching it swallowed
+    # the `CornerFreq` pair, which is a genuine regrouping.
+    for m in re.finditer(r"([A-Za-z_]\w*)\s*\*\s*\1\b", c):
+        var = m.group(1)
+        # A closing paren counts: `(x0 - 3*x1) * x0 * x0` regroups exactly like
+        # `a * x0 * x0`, and requiring an identifier missed it. Found by running
+        # the check over the very code it had just been used to fix.
+        lead = re.search(r"(\)|[A-Za-z_]\w*|[\d.]+)\s*\*\s*$", c[:m.start()])
+        if lead is None:
+            continue                      # `x * x` standing alone is correct
+        head = lead.group(1)
+        if head == var:
+            continue                      # `x * x * x` is an integer power
+        if _is_power_of_two_literal(head):
+            continue                      # exact scaling; both associations agree
+        out.extend(_find("exponent-grouping",
+                         f"the reference uses `**` and the translation multiplies "
+                         f"`{var}` twice without grouping them; Fortran's `a*x**2` "
+                         f"is `a * (x*x)` but C++ `a * x * x` is `(a*x) * x`. "
+                         f"Parenthesise the power",
+                         f"{head} * {var} * {var}", _line_of(c, m.start())))
+    return out
 
 
 def _is_power_of_two_literal(tok: str) -> bool:
@@ -366,15 +398,16 @@ def _column_major_2d(ctx: Context) -> list:
     #
     # Anchored inside a subscript on purpose: `rows * cols` in a size or a
     # malloc is legitimate and lives outside brackets.
-    m = re.search(r"\[[^\]]*\*\s*(?:\w+(?:->|\.))?n_(\w+)_cols\b[^\]]*\]", ctx.c)
-    if m:
-        return _find("column-major-2d",
+    out = []
+    for m in re.finditer(r"\[[^\]]*\*\s*(?:\w+(?:->|\.))?n_(\w+)_cols\b[^\]]*\]", ctx.c):
+        out.extend(_find("column-major-2d",
                      f"a 2D subscript strides by `n_{m.group(1)}_cols`; Fortran is "
                      f"column-major, so `X(row, col)` is "
                      f"`X[(col-1) * n_{m.group(1)}_rows + (row-1)]` — the stride is the "
-                     f"ROW count",
-                     f"n_{m.group(1)}_cols used as stride")
-    return []
+                          f"ROW count",
+                          f"n_{m.group(1)}_cols used as stride",
+                          _line_of(ctx.c, m.start())))
+    return out
 
 
 def _character_padding(ctx: Context) -> list:
@@ -383,16 +416,18 @@ def _character_padding(ctx: Context) -> list:
     # Fortran callers trim at the first space, and fails KGen, which compares
     # the buffer byte for byte. Written for ErrMsg, true of every CHARACTER
     # out-parameter.
-    m = re.search(r"\b(\w+)\s*\[\s*0\s*\]\s*=\s*'\\0'", ctx.c)
-    if m and not re.search(r"\bmemset\s*\(", ctx.c):
-        return _find("character-padding",
+    if re.search(r"\bmemset\s*\(", ctx.c):
+        return []
+    out = []
+    for m in re.finditer(r"\b(\w+)\s*\[\s*0\s*\]\s*=\s*'\\0'", ctx.c):
+        out.extend(_find("character-padding",
                      f"`{m.group(1)}[0] = '\\0'` sets one byte; a Fortran CHARACTER "
                      f"assignment blank-fills the whole declared width. This passes "
                      f"baselines (callers trim at the first space) and fails a "
                      f"byte-for-byte kernel compare. Use "
-                     f"`std::memset({m.group(1)}, ' ', <width>)`",
-                     m.group(1))
-    return []
+                          f"`std::memset({m.group(1)}, ' ', <width>)`",
+                          m.group(1), _line_of(ctx.c, m.start())))
+    return out
 
 
 def _real_exponent_pow(ctx: Context) -> list:

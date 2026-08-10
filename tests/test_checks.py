@@ -106,6 +106,61 @@ def test_a_check_is_silent_on_accepted_code_without_being_dead():
                f"{check.id}'s known-bad and known-good are identical"
 
 
+# ------------------------------------------- every instance, not just the first
+
+def test_every_offending_line_is_reported_with_its_line_number():
+    """Measured the hard way, on the fix that motivated it.
+
+    The first version returned at the first match, so `vit check` reported ONE
+    finding for a function with six. Three real ROSCO translations were fixed
+    from that report and three more instances of the identical defect remained,
+    found only by reading. A count that understates the work reads as "one line
+    to fix" -- silence about the rest, in the tool built to end silence.
+    """
+    fortran = "a = k*x**2 + c*y**2\n"
+    cpp = ("double f(double k, double x, double c, double y) {\n"
+           "    double a = k * x * x;\n"
+           "    double b = c * y * y;\n"
+           "    return a + b;\n}\n")
+    found = run(fortran=fortran, cpp=cpp)
+    assert len(found) == 2, f"expected both, got {[str(f) for f in found]}"
+    assert sorted(f.line for f in found) == [2, 3]
+
+
+def test_a_benign_match_does_not_swallow_a_real_one_behind_it():
+    """`re.finditer` is non-overlapping, so exempting `2.0 * DT * DT` consumed
+    the text and hid the `CornerFreq` pair on the same line. Measured on
+    `SecLPFilter`, where it silently cost two of six lines."""
+    fortran = "x = 2.0*DT**2.0*CornerFreq**2.0\n"
+    cpp = "double x = 2.0 * DT * DT * CornerFreq * CornerFreq;\n"
+    found = run(fortran=fortran, cpp=cpp)
+    assert len(found) == 1
+    assert "CornerFreq" in found[0].evidence
+    assert "2.0 * DT * DT" not in found[0].evidence
+
+
+def test_a_parenthesised_leading_factor_still_regroups():
+    """`(x0 - 3.0*x1) * x0 * x0` regroups exactly like `a * x0 * x0`. Requiring
+    an identifier missed it -- found by running the check over the very code it
+    had just been used to fix."""
+    fortran = "a0 = (x0-3*x1)*x0**2/d3\n"
+    cpp = "double a0 = (x0 - 3.0 * x1) * x0 * x0 / d3;\n"
+    assert len(run(fortran=fortran, cpp=cpp)) == 1
+
+
+def test_a_line_number_points_at_the_original_file_not_the_stripped_text():
+    """Comments are blanked rather than deleted so offsets survive; a line
+    number computed on shortened text would drift further the more prose a
+    translation carries."""
+    fortran = "a = k*x**2\n"
+    cpp = ("// a comment mentioning k * x * x that must not be flagged\n"
+           "/* a block\n   comment */\n"
+           "double f(double k, double x) { return k * x * x; }\n")
+    found = run(fortran=fortran, cpp=cpp)
+    assert len(found) == 1
+    assert found[0].line == 4, f"reported line {found[0].line}, expected 4"
+
+
 def test_gaps_are_recorded_rather_than_silently_absent():
     """A shape with no precise detector is rung 3 (measured by mutation), not
     rung 4 (told). Recording it is what keeps it from being forgotten."""
