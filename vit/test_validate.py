@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Optional
 
 from .fortran_parser import FortranSignature, parse_signature_from_source
-from .interface_gen import build_c_params, dropped_derived_args
+from .interface_gen import (build_c_params, dropped_derived_args,
+                            is_cfi_inout_array)
 from .type_map import get_type_mapping
 
 
@@ -626,6 +627,23 @@ def generate_fortran_bridge(
                     post_call.append(f"        DO vit_i_{arg.name} = 1, len_{arg.name}")
                     post_call.append(f"            {arg.name}_c(vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
                     post_call.append(f"        END DO")
+            call_args.append(arg.name)
+        elif is_cfi_inout_array(arg):
+            # ALLOCATABLE, INTENT(INOUT): the bridge takes the dummy exactly as
+            # the function declares it, and the C++ harness passes a
+            # `CFI_cdesc_t*` it established itself.
+            #
+            # The obvious alternative -- receive a pointer plus an extent, stage
+            # them into a local ALLOCATABLE, call, and copy back -- cannot work:
+            # the harness has to see the extent the callee CHOSE, and a copy-back
+            # into a caller-sized buffer is exactly the shape that hides a
+            # reallocation. It also would not be the same calling convention the
+            # integration wrapper uses, so the harness would be measuring a
+            # bridge that ships nowhere. See interface_gen.is_cfi_inout_array.
+            dims = ", ".join(":" for _ in range(getattr(arg, "array_rank", 1) or 1))
+            c_params.append(
+                (f"        {_iso_c_for(fortran_type, kind_aliases)}, DIMENSION({dims}), "
+                 f"ALLOCATABLE, INTENT(INOUT) :: {arg.name}", arg.name))
             call_args.append(arg.name)
         elif arg.is_array and arg.is_assumed_shape:
             # Assumed-shape arrays: receive as assumed-size (*) + size parameter.

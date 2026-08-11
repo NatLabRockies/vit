@@ -19,10 +19,10 @@ semantics = "ok"
 parse = "yes"
 c_params = "yes"
 bridge = "yes"
-compiles = "no"
-integrates = "refused"
+compiles = "yes"
+integrates = "yes"
 semantics = "ok"
-why = "REFUSED deliberately since rosco-r2 unit #1. The harness bridge does not compile (`Actual argument for 'v' must be ALLOCATABLE`); the integration wrapper USED TO compile, silently dropping the ALLOCATABLE attribute and passing a bare pointer plus a by-value extent, so a reallocation could not reach the caller. Measured on ROSCO's AddToList: three appends, the array still the four elements it started with, the values written one past the end of the heap block, no diagnostic at any stage. interface_gen.assert_integration_bridgeable now raises instead. The limit is VIT's, not Fortran's -- a F2018 BIND(C) interface takes the ALLOCATABLE dummy directly and the C side gets a CFI_cdesc_t* it can CFI_allocate through, demonstrated byte-identical to the original on both branches under gfortran 13."
+why = "CROSSES AS A FORTRAN 2018 C DESCRIPTOR since rosco-r2 unit #1's second dispatch, and this cell has now been all three things. FIRST it read `compiles = no` from `test_validate.generate_fortran_bridge` while the INTEGRATION wrapper compiled clean and silently dropped the ALLOCATABLE attribute -- a bare pointer plus a by-value extent, so a reallocation could not reach the caller. Measured on ROSCO's AddToList: three appends, the array still the four elements it started with, the values written one past the end of the heap block, no diagnostic at any stage. THEN both generators refused, which was honest and was not the feature. NOW the dummy is declared in the BIND(C) interface exactly as the original declares it (`DIMENSION(:), ALLOCATABLE, INTENT(INOUT)`), no extent parameter is emitted, and the C side receives the caller's own CFI_cdesc_t* -- CFI_deallocate + CFI_allocate through it do what move_alloc does. Both columns compile; ROSCO's AddToList is integrated on this path with a differential harness (43 cases, 0 failed) and a mutation score of 1.000. STILL REFUSED, for being unmeasured rather than impossible: a SCALAR allocatable, rank >= 2, a CHARACTER or derived-type element, and any type/kind the interface cannot declare as the actual's own (LOGICAL, COMPLEX)."
 
 [c_alloc_out]
 parse = "yes"

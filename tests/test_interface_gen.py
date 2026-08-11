@@ -693,8 +693,15 @@ class TestAllocateOnReturn:
         assert "INTEGER(C_INT), INTENT(OUT) :: n_Chan_rows" in block
         assert "INTEGER(C_INT), INTENT(OUT) :: n_Chan_cols" in block
 
-    def test_inout_allocatable_is_not_covered(self):
-        """Reallocating an array that already has contents is a different case."""
+    def test_inout_allocatable_takes_the_descriptor_path_not_this_one(self):
+        """Reallocating an array that already has contents is a different case.
+
+        It used to reach the ORDINARY array path and this test asserted the
+        result: `("double*", "Lst")`. That WAS the defect -- a bare pointer
+        cannot carry a reallocation to the caller. Since rosco-r2 unit #1 it
+        crosses as a Fortran 2018 C descriptor. Still not allocate-on-return's
+        convention, which is what this class is about.
+        """
         sig = FortranSignature(
             name="grow",
             kind=SubprogramKind.SUBROUTINE,
@@ -705,7 +712,7 @@ class TestAllocateOnReturn:
             ],
         )
         params = build_c_params(sig, KIND_ALIASES)
-        assert params[0] == ("double*", "Lst")
+        assert params == [("CFI_cdesc_t*", "Lst")], params
 
 
 def test_an_optional_logical_crosses_by_MERGE_not_by_assignment():
@@ -728,7 +735,7 @@ def test_an_optional_logical_crosses_by_MERGE_not_by_assignment():
     assert "Moving_val = Moving\n" not in text, "the bare assignment is back"
 
 
-class TestAnInoutAllocatableIsRefusedRatherThanSilentlyDropped:
+class TestAnInoutAllocatableCrossesAsAFortran2018CDescriptor:
     """rosco-r2 unit #1, `AddToList`.
 
         Integer(IntKi), dimension(:), allocatable, intent(inout) :: list
@@ -745,8 +752,13 @@ class TestAnInoutAllocatableIsRefusedRatherThanSilentlyDropped:
     still four elements, the values written one past the end of its heap block,
     no diagnostic at any stage.
 
-    A wrapper that compiles and does nothing is worse than one that does not
-    compile, so the generators refuse.
+    The first fix was a REFUSAL, and these tests asserted it. The second
+    dispatch of the same unit replaced it with the feature the refusal existed
+    to admit was missing: the dummy is declared in the BIND(C) interface exactly
+    as the original declares it, and the C side receives the caller's own
+    `CFI_cdesc_t *`. What the refusal was guarding -- the silently dropped
+    attribute, the by-value extent -- is asserted here directly, so the
+    regression it caught cannot come back unnoticed.
     """
 
     @staticmethod
@@ -758,26 +770,85 @@ class TestAnInoutAllocatableIsRefusedRatherThanSilentlyDropped:
             f"  INTEGER(4), DIMENSION(:), ALLOCATABLE, INTENT({intent}) :: list\n"
             f"END SUBROUTINE AddToList", "AddToList")
 
-    def test_the_wrapper_generator_refuses(self):
-        import pytest
-        from vit.interface_gen import UnbridgeableSignature, generate_fortran_wrapper
-        with pytest.raises(UnbridgeableSignature, match="ALLOCATABLE, INTENT.INOUT"):
-            generate_fortran_wrapper(self._sig("INOUT"), KIND_ALIASES)
+    def test_the_c_side_gets_a_descriptor_and_no_extent_parameter(self):
+        """A separate SIZE() would be stale the moment the callee reallocates."""
+        from vit.interface_gen import build_c_params
+        assert build_c_params(self._sig("INOUT"), KIND_ALIASES) == [
+            ("CFI_cdesc_t*", "list"), ("int", "element")]
 
-    def test_the_interface_block_generator_refuses(self):
-        import pytest
-        from vit.interface_gen import (UnbridgeableSignature,
-                                       generate_fortran_interface_block)
-        with pytest.raises(UnbridgeableSignature):
-            generate_fortran_interface_block(self._sig("INOUT"), KIND_ALIASES)
+    def test_the_interface_block_keeps_ALLOCATABLE(self):
+        from vit.interface_gen import generate_fortran_interface_block
+        block = generate_fortran_interface_block(self._sig("INOUT"), KIND_ALIASES)
+        assert ("INTEGER(C_INT), DIMENSION(:), ALLOCATABLE, INTENT(INOUT) :: list"
+                in block), block
+        assert "n_list" not in block, block
 
-    def test_the_cpp_scaffold_refuses(self):
-        """`vit translate` is the earliest point the wasted body is avoidable."""
-        import pytest
-        from vit.interface_gen import UnbridgeableSignature
+    def test_the_wrapper_keeps_ALLOCATABLE_and_passes_no_SIZE(self):
+        """The exact regression: the attribute was dropped, silently."""
+        from vit.interface_gen import generate_fortran_wrapper
+        text = generate_fortran_wrapper(self._sig("INOUT"), KIND_ALIASES)
+        assert "INTEGER(4), INTENT(INOUT), ALLOCATABLE :: list(:)" in text, text
+        assert "CALL addtolist_c(list, element)" in text, text
+        assert "SIZE(list)" not in text, text
+
+    def test_the_scaffold_offers_a_signature_that_can_reallocate(self):
         from vit.translate import generate_translation_scaffold
-        with pytest.raises(UnbridgeableSignature):
-            generate_translation_scaffold(self._sig("INOUT"), KIND_ALIASES)
+        text = generate_translation_scaffold(self._sig("INOUT"), KIND_ALIASES)
+        assert "#include <ISO_Fortran_binding.h>" in text, text
+        assert "void AddToList(CFI_cdesc_t* list, int element)" in text, text
+
+    def test_a_scalar_allocatable_is_still_refused(self):
+        """Refused for being UNMEASURED, not impossible -- and the message says so."""
+        import pytest
+        from vit.fortran_parser import parse_signature_from_source
+        from vit.interface_gen import (UnbridgeableSignature,
+                                       generate_fortran_wrapper)
+        sig = parse_signature_from_source(
+            "SUBROUTINE Grow(x)\n"
+            "  REAL(8), ALLOCATABLE, INTENT(INOUT) :: x\n"
+            "END SUBROUTINE Grow", "Grow")
+        with pytest.raises(UnbridgeableSignature, match="SCALAR ALLOCATABLE"):
+            generate_fortran_wrapper(sig, KIND_ALIASES)
+
+    def test_a_rank_2_allocatable_is_still_refused(self):
+        """The descriptor carries any rank; the C++ indexing convention for
+        rank >= 2 is what has not been measured against an oracle."""
+        import pytest
+        from vit.fortran_parser import parse_signature_from_source
+        from vit.interface_gen import (UnbridgeableSignature,
+                                       generate_fortran_wrapper)
+        sig = parse_signature_from_source(
+            "SUBROUTINE Grow(a)\n"
+            "  REAL(8), DIMENSION(:,:), ALLOCATABLE, INTENT(INOUT) :: a\n"
+            "END SUBROUTINE Grow", "Grow")
+        with pytest.raises(UnbridgeableSignature, match="rank-2"):
+            generate_fortran_wrapper(sig, KIND_ALIASES)
+
+    def test_a_real_allocatable_is_NOT_refused(self):
+        """The measured set is INTEGER and REAL, not INTEGER alone."""
+        from vit.fortran_parser import parse_signature_from_source
+        from vit.interface_gen import generate_fortran_wrapper
+        sig = parse_signature_from_source(
+            "SUBROUTINE Grow(v)\n"
+            "  REAL(DbKi), DIMENSION(:), ALLOCATABLE, INTENT(INOUT) :: v\n"
+            "END SUBROUTINE Grow", "Grow")
+        text = generate_fortran_wrapper(sig, KIND_ALIASES)
+        assert "REAL(8), INTENT(INOUT), ALLOCATABLE :: v(:)" in text, text
+        assert "CALL grow_c(v)" in text, text
+
+    def test_a_logical_allocatable_is_refused(self):
+        """`type_map` sends LOGICAL to INTEGER(C_INT) -- the right layout and
+        the wrong TYPE for a dummy the caller's own descriptor is passed to."""
+        import pytest
+        from vit.fortran_parser import parse_signature_from_source
+        from vit.interface_gen import (UnbridgeableSignature,
+                                       generate_fortran_wrapper)
+        sig = parse_signature_from_source(
+            "SUBROUTINE Grow(v)\n"
+            "  LOGICAL, DIMENSION(:), ALLOCATABLE, INTENT(INOUT) :: v\n"
+            "END SUBROUTINE Grow", "Grow")
+        with pytest.raises(UnbridgeableSignature, match="type and width"):
+            generate_fortran_wrapper(sig, KIND_ALIASES)
 
     def test_an_intent_out_allocatable_is_NOT_refused(self):
         """The allocate-on-return convention (d4ba20b) covers INTENT(OUT), and

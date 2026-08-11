@@ -16,7 +16,7 @@ from typing import Optional
 
 from .fortran_parser import FortranSignature
 from .interface_gen import (assert_integration_bridgeable, build_c_params,
-                            result_is_out_param)
+                            cfi_args, result_is_out_param)
 from .type_map import get_type_mapping
 
 
@@ -70,6 +70,12 @@ def generate_translation_scaffold(
                                            vit_version, fortran_flags))
     lines.append("")
 
+    # An ALLOCATABLE INTENT(INOUT) dummy arrives as a Fortran 2018 C descriptor,
+    # so the body needs the interop header before anything else it includes.
+    if cfi_args(sig):
+        lines.append("#include <ISO_Fortran_binding.h>")
+        lines.append("")
+
     # The type header, then the campaign's shared headers. Deduplicated and
     # order-stable: a scaffold that changes its include order between runs makes
     # every regeneration look like an edit.
@@ -85,7 +91,7 @@ def generate_translation_scaffold(
     # int element)` -- under a header saying "Do not change the function
     # signature", and no body of that signature can reallocate the caller's
     # array. See interface_gen.assert_integration_bridgeable.
-    assert_integration_bridgeable(sig)
+    assert_integration_bridgeable(sig, kind_aliases)
 
     # Generate C++ signature
     params = build_c_params(sig, kind_aliases, derived_types)
@@ -198,6 +204,40 @@ def generate_translation_prompt(
         sections.append("```c")
         sections.append("\n".join(callee_declarations))
         sections.append("```\n")
+
+    # The C descriptor convention, for the dummies that actually use it.
+    #
+    # Generated from the signature rather than written as prose: the section
+    # appears only when `build_c_params` emitted a `CFI_cdesc_t*`, so it cannot
+    # describe a convention this scaffold does not use.
+    cfi = cfi_args(sig)
+    if cfi:
+        names = ", ".join(f"`{a.name}`" for a in cfi)
+        sections.append("## ALLOCATABLE INTENT(INOUT) arguments — C descriptors\n")
+        sections.append(
+            f"{names} arrives as `CFI_cdesc_t*` — the CALLER'S OWN Fortran "
+            "descriptor, not a copy of its data pointer. That is what lets the "
+            "body do what the Fortran does: replace both the data and the "
+            "extent, as `allocate` + `move_alloc` does.\n"
+            "\n"
+            "```c\n"
+            "d->base_addr == nullptr           // .NOT. ALLOCATED(x)\n"
+            "d->dim[0].extent                  // SIZE(x)\n"
+            "d->dim[0].lower_bound             // LBOUND(x, 1)\n"
+            "CFI_index_t s = lb + i;\n"
+            "*(T*)CFI_address(d, &s)           // x(s) -- SUBSCRIPTS ARE FORTRAN'S,\n"
+            "                                  // so they start at lower_bound, not 0\n"
+            "CFI_deallocate(d);                // DEALLOCATE(x)\n"
+            "CFI_index_t lo = 1, hi = n;\n"
+            "CFI_allocate(d, &lo, &hi, 0);     // ALLOCATE(x(1:n))\n"
+            "```\n"
+            "\n"
+            "Copy the old contents out BEFORE `CFI_deallocate` — it frees the "
+            "storage `CFI_address` was reading. `move_alloc` gives the result "
+            "the SOURCE's bounds, and an `allocate(tmp(n))` source is `1:n`, so "
+            "a Fortran `move_alloc` into this dummy leaves its lower bound 1 "
+            "whatever the caller's was. Reproduce that; do not improve on it.\n"
+        )
 
     # ALLOCATABLE field hints for view types
     if derived_types:
