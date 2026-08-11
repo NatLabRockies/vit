@@ -210,6 +210,68 @@ def _get_module_use_statements(source_text: str) -> list[str]:
     return uses
 
 
+def _get_procedure_use_statements(source_text: str, proc_name: str) -> list[str]:
+    """USE statements written INSIDE one procedure's own specification part.
+
+    Beside `_get_module_use_statements`, not instead of it. That function stops
+    at the first CONTAINS/SUBROUTINE/FUNCTION, so a type imported inside the
+    procedure body is invisible to it -- and the bridge then declares a dummy of
+    a type nothing in its scope defines.
+
+    Measured rather than anticipated: ROSCO's `Filters.f90` declares its filter
+    procedures with
+
+        REAL(DbKi) FUNCTION HPFilter( ... )
+            USE ROSCO_Types, ONLY : FilterParameters
+            TYPE(FilterParameters), INTENT(INOUT) :: FP
+
+    and `Filters` itself does not USE `ROSCO_Types` at module scope. The bridge
+    emitted `TYPE(FilterParameters), POINTER :: FP` under `USE Filters` alone,
+    which gfortran rejects with "Derived type 'filterparameters' at (1) is being
+    used before it is defined" followed by "Symbol 'fp' has no IMPLICIT type".
+    Every one of that file's seven filters has the same shape.
+
+    Scans from the procedure's own SUBROUTINE/FUNCTION statement to the first
+    executable-looking line, which is where a specification part must end.
+    """
+    import re
+    lines = source_text.split("\n")
+    uses: list[str] = []
+    in_proc = False
+    # `HPFilter` appears both in `REAL(DbKi) FUNCTION HPFilter(` and in
+    # assignments to the result variable, so the opener is matched on the
+    # keyword immediately preceding the name.
+    opener = re.compile(
+        r'^\s*(?:.*\s)?(?:SUBROUTINE|FUNCTION)\s+' + re.escape(proc_name.upper()) + r'\s*\(')
+    for line in lines:
+        stripped = line.strip()
+        upper = stripped.upper()
+        if "!" in upper:
+            upper = upper[:upper.index("!")]
+            stripped = stripped[:stripped.index("!")]
+        if not upper.strip():
+            continue
+        if not in_proc:
+            if opener.match(upper):
+                in_proc = True
+            continue
+        if upper.strip().startswith("USE "):
+            uses.append(stripped.strip())
+            continue
+        # The specification part is over at the first statement that cannot
+        # appear in one. Being conservative here costs nothing: a USE must
+        # precede every declaration, so anything after the first declaration
+        # is already past the point where one could appear.
+        if re.match(r'^\s*(END\s+(SUBROUTINE|FUNCTION)|CONTAINS)\b', upper):
+            break
+        if not re.match(r'^\s*(IMPLICIT|TYPE\s*\(|REAL|INTEGER|LOGICAL|COMPLEX|'
+                        r'CHARACTER|DOUBLE|PROCEDURE|INTENT|DIMENSION|'
+                        r'ALLOCATABLE|POINTER|TARGET|SAVE|PARAMETER|EXTERNAL|'
+                        r'INTRINSIC|OPTIONAL|VALUE|&)', upper):
+            break
+    return uses
+
+
 def _has_allocatable_fields(arg, derived_types):
     """Check if a derived-type arg's type has ALLOCATABLE fields.
 
@@ -940,6 +1002,70 @@ def generate_fortran_bridge(
         # unspecified intent permits.
         intent = arg.intent.value if (arg.intent and arg.intent.value) else "INOUT"
 
+        if getattr(arg, "is_optional", False):
+            # AN OPTIONAL DUMMY IS TWO THINGS ON THE C SIDE, AND THIS BRIDGE
+            # USED TO EMIT ONE OF THEM.
+            #
+            # `interface_gen.build_c_params` emits `has_<x>` immediately before
+            # `<x>` for every OPTIONAL argument, and the generated C++ test
+            # declares and passes it. This generator had no OPTIONAL branch at
+            # all: the argument fell through to the scalar branches below, the
+            # bridge took one fewer dummy than the caller passed, and the
+            # reference was called with the argument ALWAYS PRESENT.
+            #
+            # Two defects in one, and the second is the dangerous one:
+            #   1. an argument-count mismatch across a BIND(C) boundary that no
+            #      linker checks -- the reference would have read `InitialValue`
+            #      out of the `has_InitialValue` slot;
+            #   2. `PRESENT(x) == .FALSE.` unreachable through the reference,
+            #      which is precisely the branch the harness's flag rule
+            #      generates `has_<x> = 0` cases to exercise. A green with that
+            #      path unreachable is a green about half the procedure.
+            #
+            # Absence is expressed by passing an UNALLOCATED ALLOCATABLE local.
+            # Measured under `gfortran -std=f2008 -Wall`, both that and a
+            # disassociated POINTER make PRESENT() false; ALLOCATABLE is used
+            # because it needs no TARGET and introduces no aliasing.
+            #
+            # DELIBERATELY NARROW, in the shape unit #6's KGen predicate
+            # established: scalar, intrinsic type, INTENT(IN). All 24 OPTIONAL
+            # dummies in ROSCO are exactly that. Anything else RAISES rather
+            # than falling through, because falling through is what produced
+            # this defect and a refusal is the only outcome that cannot be
+            # mistaken for a measurement.
+            if (arg.is_array or arg.is_derived_type
+                    or "CHARACTER" in fortran_type or intent != "IN"):
+                raise ValueError(
+                    f"{sig.name}: OPTIONAL argument '{arg.name}' is "
+                    f"{'an array' if arg.is_array else 'a derived type' if arg.is_derived_type else 'CHARACTER' if 'CHARACTER' in fortran_type else f'INTENT({intent})'}; "
+                    f"the bridge only stages scalar intrinsic INTENT(IN) "
+                    f"OPTIONALs, and this shape is UNMEASURED. Emitting it as "
+                    f"always-present is what this branch exists to stop.")
+            is_logical = "LOGICAL" in fortran_type
+            iso = "INTEGER(C_INT)" if is_logical else _iso_c_for(fortran_type, kind_aliases)
+            c_params.append(
+                (f"        INTEGER(C_INT), VALUE, INTENT(IN) :: has_{arg.name}",
+                 f"has_{arg.name}"))
+            c_params.append(
+                (f"        {iso}, VALUE, INTENT(IN) :: {arg.name}", arg.name))
+            # The staging local is declared in the ISO_C type, not the
+            # original's kind alias -- the same choice every non-optional
+            # branch below already makes when it passes its C dummy straight
+            # through to the reference, so the two paths cannot drift apart.
+            # `LOGICAL` is the default kind 4, matching the `<name>_f` local
+            # the LOGICAL branch declares.
+            local_type = "LOGICAL" if is_logical else iso
+            local_decls.append(
+                f"        {local_type}, ALLOCATABLE :: {arg.name}_opt")
+            pre_call.append(f"        IF (has_{arg.name} /= 0) THEN")
+            pre_call.append(f"            ALLOCATE({arg.name}_opt)")
+            pre_call.append(
+                f"            {arg.name}_opt = "
+                + (f"({arg.name} /= 0)" if is_logical else arg.name))
+            pre_call.append(f"        END IF")
+            call_args.append(f"{arg.name}_opt")
+            continue
+
         if arg.is_derived_type:
             type_name = arg.derived_type_name
             type_info = _has_allocatable_fields(arg, derived_types)
@@ -1137,7 +1263,13 @@ def generate_fortran_bridge(
     # guessing a naming convention (e.g., _Types).
     if any(arg.is_derived_type for arg in sig.args) and source_file:
         source_text = Path(source_file).read_text()
-        module_uses = _get_module_use_statements(source_text)
+        # Module scope FIRST, then the procedure's own specification part. A
+        # type may be imported at either, and a bridge that reads only the
+        # first declares a dummy of a type nothing in its scope defines --
+        # measured on ROSCO's `Filters.f90`, whose seven filter procedures each
+        # carry `USE ROSCO_Types, ONLY : FilterParameters` inside the FUNCTION.
+        module_uses = (_get_module_use_statements(source_text)
+                       + _get_procedure_use_statements(source_text, sig.name))
         # Add all module-level USE statements — the bridge needs access
         # to all types the module imports (PRIVATE default hides re-exports).
         added = set()
