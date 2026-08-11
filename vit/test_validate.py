@@ -226,6 +226,137 @@ def _has_allocatable_fields(arg, derived_types):
     return None
 
 
+
+def _safe_break_pieces(line: str) -> list:
+    """Split a Fortran line at points a continuation may legally go.
+
+    The pieces CONCATENATE BACK TO THE ORIGINAL, exactly -- that is what makes
+    the packing above content-preserving rather than a reformatter.
+
+    Commas are preferred and used alone when there are any: a comma-separated
+    list is the shape that produces these lines, and breaking it anywhere else
+    is harder to read. Spaces are the fallback for a long assignment, which has
+    no commas at its top level.
+
+    Quoted text is opaque. A break inside a string literal changes the string,
+    silently, and no compiler would object.
+    """
+    commas: list = []
+    spaces: list = []
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+        elif ch == ",":
+            commas.append(i + 1)
+        elif ch == " " and i > 0 and line[i - 1] != " ":
+            spaces.append(i)
+
+    cuts = commas or spaces
+    # A cut at 0 or at the end produces an empty piece and no progress.
+    cuts = [c for c in cuts if 0 < c < len(line)]
+    if not cuts:
+        return [line]
+
+    pieces = []
+    prev = 0
+    for c in cuts:
+        pieces.append(line[prev:c])
+        prev = c
+    pieces.append(line[prev:])
+    return pieces
+
+
+def _wrap_long_fortran_lines(lines: list, limit: int = 120) -> list:
+    """Wrap generated free-form Fortran onto continuation lines.
+
+    A RULE ABOUT LINE CONTENTS, not a list of the places that emit long lines.
+    The dummy-argument list was the longest offender and fixing only it left the
+    array copy-in statements at 133-153 columns, which fail the same way:
+
+        vit_local_CntrPar%F_GenSpdNotch_Ind(1:vit_CntrPar_F_GenSpdNotch_Ind_n) =
+            vit_tmp_CntrPar_F_GenSpdNotch_Ind(1:vit_CntrPar_F_GenSpdNotch_Ind_n)
+
+    -- one statement, two decomposed field names, neither shortenable. Any
+    generator that names decomposed fields will keep producing them.
+
+    Breaks only at a comma or a space OUTSIDE a quoted string, and refuses to
+    break a line it cannot break safely, returning it unchanged rather than
+    corrupting it. An over-long line that reaches the compiler is a loud
+    failure; a line broken inside a string literal is a quiet one.
+
+    SPLIT FIRST, THEN PACK. The first version cut the line repeatedly and
+    tracked the offset of the remainder against the original break positions --
+    and `lstrip()` on the remainder made that mapping wrong by an unknown
+    amount, so a break point could become usable again and the loop never
+    terminated. It hung the test suite rather than producing a wrong answer,
+    which was the good outcome; the shape below cannot loop at all, because
+    every piece is consumed exactly once.
+    """
+    out: list = []
+    for line in lines:
+        if len(line) <= limit:
+            out.append(line)
+            continue
+
+        pieces = _safe_break_pieces(line)
+        if len(pieces) < 2:
+            out.append(line)                  # nothing safe to break on
+            continue
+
+        indent = " " * (len(line) - len(line.lstrip()) + 4)
+        cur = ""
+        for p in pieces:
+            # `+ 2` leaves room for the " &" this line will need if another
+            # piece follows it.
+            if cur.strip() and len(cur) + len(p.rstrip()) + 2 > limit:
+                out.append(cur.rstrip() + " &")
+                cur = indent + p.lstrip()
+            else:
+                cur += p
+        out.append(cur)
+    return out
+
+
+def _wrapped_dummy_list(head: str, names: list, tail: str,
+                        limit: int = 100) -> list:
+    """A Fortran dummy-argument list, wrapped onto continuation lines.
+
+    FREE-FORM FORTRAN HAS A LINE-LENGTH LIMIT, and gfortran's default is 132
+    columns. Past it the line is TRUNCATED -- with `-Werror=line-truncation` a
+    hard error, and without it a silent one, which is worse: the argument list
+    simply ends mid-name and the compiler reports something else entirely a few
+    lines further down ("USE statement cannot follow attribute declaration").
+
+    This list is not a style question here. Decomposing a derived type emits one
+    dummy per field, so `ControlParameters` (214 fields) and `LocalVariables`
+    (168) between them produced a SUBROUTINE statement 11,747 characters long.
+    Measured on the rosco-r2 campaign's `StateMachine`: 1,153 diagnostics, none
+    of which named the cause. Every unit in that campaign taking either type --
+    which is most of ROSCO's controllers -- was therefore outside test-validate
+    entirely, and nothing said so.
+
+    The limit is 100 rather than 132 so that the wrapped lines stay comfortably
+    inside the standard's minimum even after an indent change; the cost of
+    wrapping earlier than necessary is nothing.
+    """
+    out: list = []
+    cur = head
+    for i, n in enumerate(names):
+        piece = n + ("" if i == len(names) - 1 else ", ")
+        if len(cur) + len(piece) > limit and cur.strip() not in ("", head.strip()):
+            out.append(cur + "&")
+            cur = "        " + piece
+        else:
+            cur += piece
+    out.append(cur + tail)
+    return out
+
+
 def _decomposed_param_names(arg, type_info):
     """Ordered, collision-free bridge parameter names for a decomposed type.
 
@@ -733,7 +864,8 @@ def generate_fortran_bridge(
     # Build the bridge parameter names (for the SUBROUTINE declaration)
     param_names = [name for _, name in c_params]
 
-    lines.append(f"    SUBROUTINE {bridge_name}({', '.join(param_names)}) &")
+    lines.extend(_wrapped_dummy_list(
+        f"    SUBROUTINE {bridge_name}(", param_names, ") &"))
     lines.append(f"        BIND(C, NAME='{bridge_name}')")
     lines.append(f"        USE ISO_C_BINDING")
     if sig.module_name:
@@ -799,7 +931,11 @@ def generate_fortran_bridge(
 
     lines.append(f"    END SUBROUTINE {bridge_name}")
 
-    return "\n".join(lines)
+    # Wrap anything still past the free-form line limit. Applied to the WHOLE
+    # bridge rather than at each emission site on purpose: the dummy list was
+    # only the longest offender, and a fix that names emission sites is a fix
+    # that the next one escapes. See `_wrap_long_fortran_lines`.
+    return "\n".join(_wrap_long_fortran_lines(lines))
 
 
 _FORTRAN_RUNTIME = {

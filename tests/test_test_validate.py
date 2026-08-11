@@ -796,3 +796,96 @@ class TestComplexTypedef:
                                   fields=[DerivedTypeField(name="x",
                                                            fortran_type="REAL(8)")])})
         assert f"}} {name};" in header
+
+
+# ---------------------------------------------------------------------------
+# Free-form Fortran line length
+#
+# Decomposing a derived type emits one dummy argument per field, so ROSCO's
+# ControlParameters (214 fields) and LocalVariables (168) between them produced
+# a SUBROUTINE statement 11,747 characters long. Free-form Fortran's line limit
+# is 132 columns; gfortran TRUNCATES past it, and then reports something else
+# entirely a few lines further down ("USE statement cannot follow attribute
+# declaration statement"). 1,153 diagnostics, none naming the cause.
+#
+# Every unit in that campaign taking either type -- most of ROSCO's controllers
+# -- was therefore outside `vit test-validate` entirely, and nothing said so.
+# ---------------------------------------------------------------------------
+
+class TestFortranLineWrapping:
+    def _wrap(self, *a, **k):
+        from vit.test_validate import _wrap_long_fortran_lines
+        return _wrap_long_fortran_lines(*a, **k)
+
+    def test_short_lines_are_untouched(self):
+        lines = ["    CALL foo(a, b)", "    x = y + 1"]
+        assert self._wrap(lines) == lines
+
+    def test_long_line_is_split_with_continuations(self):
+        names = ", ".join(f"vit_CntrPar_field_number_{i}" for i in range(60))
+        out = self._wrap([f"    SUBROUTINE bridge({names}) &"], limit=100)
+        assert len(out) > 1
+        assert all(len(l) <= 120 for l in out)
+        assert all(l.endswith("&") for l in out[:-1])
+        # The content survives the wrapping: joining the continuations back up
+        # must reproduce the original token sequence exactly.
+        rejoined = "".join(l.rstrip("&").strip() for l in out)
+        assert rejoined.replace(" ", "") == \
+            f"SUBROUTINEbridge({names})".replace(" ", "")
+
+    def test_split_at_a_comma_not_inside_an_identifier(self):
+        names = ", ".join(f"aaaaaaaaaaaaaaaaaaaa_{i}" for i in range(20))
+        out = self._wrap([f"    CALL f({names})"], limit=60)
+        for line in out:
+            body = line.rstrip("&").strip()
+            # No continuation may end mid-identifier.
+            assert not body.endswith("_")
+
+    def test_never_breaks_inside_a_string_literal(self):
+        """The commas and spaces INSIDE the quotes are not break points.
+
+        Checked on the CONTENT, not on the shape: breaking outside the literal
+        is legal and expected, and the first version of this test asserted the
+        line came back untouched -- which failed against a correct
+        implementation that had split at the comma in `WRITE(*,*)`.
+        """
+        literal = "a, b, c " * 40
+        line = f"        WRITE(*,*) '{literal}'"
+        out = self._wrap([line], limit=60)
+        rejoined = "".join(l[:-1] if l.rstrip().endswith("&") else l
+                           for l in (x.rstrip() for x in out))
+        assert f"'{literal}'" in rejoined
+
+    def test_unbreakable_line_is_returned_unchanged(self):
+        """One long token, nothing outside the quotes to break on.
+
+        Returned as it is rather than corrupted. An over-long line that reaches
+        the compiler is a loud failure; a line broken inside a string literal
+        is a quiet one.
+        """
+        line = "        vit_x='" + "y" * 200 + "'"
+        assert self._wrap([line], limit=60) == [line]
+
+    def test_a_line_it_can_only_partly_shorten_is_still_split(self):
+        """Best effort, not all-or-nothing.
+
+        `CALL f('<200 chars>')` has exactly one break point -- the space after
+        CALL -- and using it still leaves a long line. Taking it is right: the
+        alternative is to give up on a line that had a legal break in it.
+        """
+        line = "        CALL f('" + "x" * 200 + "')"
+        out = self._wrap([line], limit=60)
+        assert len(out) == 2
+        assert out[0].rstrip().endswith("&")
+
+    def test_assignment_between_two_long_names_is_wrapped(self):
+        """The statement shape the dummy-list fix alone left broken, at 153."""
+        line = ("            vit_local_CntrPar%F_GenSpdNotch_Ind"
+                "(1:vit_CntrPar_F_GenSpdNotch_Ind_n) = "
+                "vit_tmp_CntrPar_F_GenSpdNotch_Ind"
+                "(1:vit_CntrPar_F_GenSpdNotch_Ind_n)")
+        assert len(line) > 132
+        out = self._wrap([line])
+        assert len(out) == 2
+        assert all(len(l) <= 132 for l in out)
+        assert out[0].endswith("&")
