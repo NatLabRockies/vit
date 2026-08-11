@@ -149,6 +149,7 @@ def generate_fortran_interface_block(sig: FortranSignature,
     Passthrough args (non-C-compatible derived types) are excluded.
     Assumed-shape arrays become assumed-size (*) with size parameters.
     """
+    assert_integration_bridgeable(sig)
     lines = []
     c_func_name = sig.c_func_name
 
@@ -216,6 +217,7 @@ def generate_fortran_wrapper(sig: FortranSignature,
         is_kernel: If True, generates kernel-specific code (view-type stash for
                    callee bridges). If False (default), generates integration code.
     """
+    assert_integration_bridgeable(sig)
     lines = []
     c_func_name = sig.c_func_name
 
@@ -629,6 +631,65 @@ def is_alloc_return(arg) -> bool:
 def alloc_return_args(sig) -> list:
     """Every dummy of ``sig`` using the allocate-on-return convention."""
     return [a for a in sig.args if is_alloc_return(a)]
+
+
+class UnbridgeableSignature(ValueError):
+    """A signature whose integration wrapper cannot be made to mean the same
+    thing as the original. Raised instead of emitting one that compiles."""
+
+
+def assert_integration_bridgeable(sig) -> None:
+    """Refuse to generate an integration wrapper that would silently lie.
+
+    MEASURED AT rosco-r2 UNIT #1, on ROSCO's ``AddToList``:
+
+        Integer(IntKi), dimension(:), allocatable, intent(inout) :: list
+
+    ``fortran_parser`` records ``is_allocatable=True`` and every generator below
+    then ignored it. ``generate_fortran_wrapper`` attaches ``, ALLOCATABLE``
+    only for ``is_alloc_return`` dummies, so the wrapper came out as
+
+        INTEGER(4), INTENT(INOUT) :: list(:)
+        CALL addtolist_c(list, SIZE(list), element)
+
+    which **compiles clean** and passes a bare pointer plus a by-value extent.
+    ``AddToList``'s entire contract is ``allocate`` -> copy -> ``move_alloc``:
+    it replaces the caller's data pointer AND its extent, and neither is
+    reachable through that signature. Measured against the original: after
+    three appends the caller's array was still the four elements it started
+    with, and the appended values had been written one past the end of the
+    heap block. No diagnostic, at any stage.
+
+    That is worse than a failure to compile. The conformance matrix's
+    ``compiles`` column measures ``test_validate.generate_fortran_bridge`` --
+    the differential harness, a different code path -- so nothing in the
+    toolchain looked at what would ship.
+
+    Refusing here is not the feature. A Fortran 2018 ``BIND(C)`` interface may
+    take an ``ALLOCATABLE`` dummy directly, and the C side receives a
+    ``CFI_cdesc_t *`` it can ``CFI_allocate`` through; that was demonstrated
+    against this same function, byte-identical to the Fortran on both branches
+    (``evidence/AddToList/bridge_probe/`` in the rosco-r2 campaign). VIT does
+    not generate that yet. Until it does, the honest output is no output.
+
+    Only INTENT(INOUT) is refused, because only INTENT(INOUT) was measured.
+    INTENT(IN) ALLOCATABLE has the same dropped attribute and the same
+    undefined ``SIZE()`` on an unallocated actual, but no campaign has hit one,
+    and inventing a verdict for an unmeasured cell is the habit this refusal
+    exists to break.
+    """
+    for arg in sig.args:
+        if (getattr(arg, "is_allocatable", False)
+                and arg.intent == IntentKind.INOUT
+                and not is_alloc_return(arg)):
+            raise UnbridgeableSignature(
+                f"{sig.name}: dummy '{arg.name}' is ALLOCATABLE, INTENT(INOUT). "
+                f"The generated wrapper would drop the ALLOCATABLE attribute and "
+                f"pass a bare pointer plus a by-value extent, so a reallocation in "
+                f"the C++ body -- which is the whole point of such a dummy -- cannot "
+                f"reach the caller. It would compile and do nothing. Crossing this "
+                f"needs a Fortran 2018 C descriptor (CFI_cdesc_t); VIT does not "
+                f"generate one yet.")
 
 
 def _alloc_return_extent_names(arg) -> list[str]:

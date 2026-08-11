@@ -726,3 +726,73 @@ def test_an_optional_logical_crosses_by_MERGE_not_by_assignment():
     text = generate_fortran_wrapper(sig, {})
     assert "MERGE(1_C_INT, 0_C_INT, Moving)" in text, text
     assert "Moving_val = Moving\n" not in text, "the bare assignment is back"
+
+
+class TestAnInoutAllocatableIsRefusedRatherThanSilentlyDropped:
+    """rosco-r2 unit #1, `AddToList`.
+
+        Integer(IntKi), dimension(:), allocatable, intent(inout) :: list
+
+    `fortran_parser` recorded `is_allocatable=True`; every generator below then
+    ignored it. The wrapper came out as
+
+        INTEGER(4), INTENT(INOUT) :: list(:)
+        CALL addtolist_c(list, SIZE(list), element)
+
+    which COMPILES, passes a bare pointer plus a by-value extent, and cannot
+    carry the `allocate` -> copy -> `move_alloc` that is the function's entire
+    contract. Measured against the original: three appends, the caller's array
+    still four elements, the values written one past the end of its heap block,
+    no diagnostic at any stage.
+
+    A wrapper that compiles and does nothing is worse than one that does not
+    compile, so the generators refuse.
+    """
+
+    @staticmethod
+    def _sig(intent: str):
+        from vit.fortran_parser import parse_signature_from_source
+        return parse_signature_from_source(
+            f"SUBROUTINE AddToList(list, element)\n"
+            f"  INTEGER(4), INTENT(IN) :: element\n"
+            f"  INTEGER(4), DIMENSION(:), ALLOCATABLE, INTENT({intent}) :: list\n"
+            f"END SUBROUTINE AddToList", "AddToList")
+
+    def test_the_wrapper_generator_refuses(self):
+        import pytest
+        from vit.interface_gen import UnbridgeableSignature, generate_fortran_wrapper
+        with pytest.raises(UnbridgeableSignature, match="ALLOCATABLE, INTENT.INOUT"):
+            generate_fortran_wrapper(self._sig("INOUT"), KIND_ALIASES)
+
+    def test_the_interface_block_generator_refuses(self):
+        import pytest
+        from vit.interface_gen import (UnbridgeableSignature,
+                                       generate_fortran_interface_block)
+        with pytest.raises(UnbridgeableSignature):
+            generate_fortran_interface_block(self._sig("INOUT"), KIND_ALIASES)
+
+    def test_the_cpp_scaffold_refuses(self):
+        """`vit translate` is the earliest point the wasted body is avoidable."""
+        import pytest
+        from vit.interface_gen import UnbridgeableSignature
+        from vit.translate import generate_translation_scaffold
+        with pytest.raises(UnbridgeableSignature):
+            generate_translation_scaffold(self._sig("INOUT"), KIND_ALIASES)
+
+    def test_an_intent_out_allocatable_is_NOT_refused(self):
+        """The allocate-on-return convention (d4ba20b) covers INTENT(OUT), and
+        refusing it would delete a working feature. Only the measured case is
+        refused."""
+        from vit.interface_gen import generate_fortran_wrapper
+        text = generate_fortran_wrapper(self._sig("OUT"), KIND_ALIASES)
+        assert "ALLOCATABLE" in text, text
+
+    def test_a_plain_inout_array_is_NOT_refused(self):
+        """The refusal keys on ALLOCATABLE, not on INTENT(INOUT)."""
+        from vit.fortran_parser import parse_signature_from_source
+        from vit.interface_gen import generate_fortran_wrapper
+        sig = parse_signature_from_source(
+            "SUBROUTINE Bump(v)\n"
+            "  REAL(8), DIMENSION(:), INTENT(INOUT) :: v\n"
+            "END SUBROUTINE Bump", "Bump")
+        assert "CALL bump_c" in generate_fortran_wrapper(sig, KIND_ALIASES)

@@ -78,8 +78,24 @@ REASONS = {
         "bridge passes a plain local. The allocate-on-return convention (d4ba20b) "
         "covers the C++ direction; the Fortran reference side of test-validate does not.",
     "c_alloc_inout":
-        "UNSUPPORTED: as c_alloc_out. INTENT(INOUT) ALLOCATABLE needs an ALLOCATABLE "
-        "local plus MOVE_ALLOC in and out.",
+        "REFUSED deliberately since rosco-r2 unit #1. The harness bridge does not "
+        "compile (`Actual argument for 'v' must be ALLOCATABLE`); the integration "
+        "wrapper USED TO compile, silently dropping the ALLOCATABLE attribute and "
+        "passing a bare pointer plus a by-value extent, so a reallocation could not "
+        "reach the caller. Measured on ROSCO's AddToList: three appends, the array "
+        "still the four elements it started with, the values written one past the "
+        "end of the heap block, no diagnostic at any stage. "
+        "interface_gen.assert_integration_bridgeable now raises instead. The limit is "
+        "VIT's, not Fortran's -- a F2018 BIND(C) interface takes the ALLOCATABLE "
+        "dummy directly and the C side gets a CFI_cdesc_t* it can CFI_allocate "
+        "through, demonstrated byte-identical to the original on both branches under "
+        "gfortran 13.",
+    "c_complex_in":
+        "UNSUPPORTED, found by the `integrates` column on the day it was added. The "
+        "integration wrapper emits `CALL c_complex_in_c(COMPLEX(z, C_DOUBLE_COMPLEX), "
+        "m)` for a dummy `z` that is ALREADY COMPLEX, and gfortran rejects it: `'x' "
+        "argument of 'complex' intrinsic must be INTEGER or REAL`. The harness bridge "
+        "compiles, so every column that existed before this one said the cell crossed.",
     "c_assumed_shape_2d":
         "UNSUPPORTED: a rank-2 assumed-shape dummy is passed as m(1:n_m), a rank-1 "
         "section. The C side already emits n_<x>_rows and n_<x>_cols; the bridge must "
@@ -125,16 +141,33 @@ def _procedures(source: str) -> list[str]:
 def probe(name: str, source: str, registry: dict) -> dict:
     """What VIT does with one procedure. Never raises: the failure IS the datum.
 
-    Three stages, because they fail independently and the distinction matters:
+    Five stages, because they fail independently and the distinction matters:
     a signature VIT cannot parse is a different problem from one it parses and
     cannot bridge.
+
+    `bridge` / `compiles` measure `test_validate.generate_fortran_bridge` -- the
+    DIFFERENTIAL HARNESS's Fortran side, which is linked into a test binary and
+    never into the library. `integrates` measures
+    `interface_gen.generate_fortran_interface_block` +
+    `generate_fortran_wrapper`, which is what `vit integrate` writes into the
+    shipped source. **They are different code paths and they can disagree.**
+
+    That column was added at rosco-r2 unit #1, because they did. `plan.json`
+    predicted `AddToList` could not cross, citing this file's
+    `[c_alloc_inout] compiles = "no"`. The verdict was right and the basis was
+    about the wrong generator: the harness bridge does not compile (`Actual
+    argument for 'list' must be ALLOCATABLE`), while the integration wrapper
+    compiles clean, silently drops the ALLOCATABLE attribute, and appends to
+    an array that never grows. A matrix reporting only the first says nothing
+    about what would have been shipped.
     """
     from vit.fortran_parser import find_function_in_file
-    from vit.interface_gen import build_c_params
+    from vit.interface_gen import (build_c_params, generate_fortran_interface_block,
+                                   generate_fortran_wrapper)
     from vit.test_validate import generate_fortran_bridge
 
     out = {"parse": "no", "c_params": "no", "bridge": "no", "compiles": "n/a",
-           "detail": "", "params": 0}
+           "integrates": "no", "detail": "", "params": 0}
     try:
         # The CLI's entry point, not `parse_signature_from_source`. It records
         # the enclosing module, which is what puts `USE <module>` in the bridge;
@@ -165,20 +198,54 @@ def probe(name: str, source: str, registry: dict) -> dict:
         bridge = generate_fortran_bridge(sig, ALIASES, derived_types=registry,
                                          source_file=str(FIXTURE))
         out["bridge"] = "yes"
+        # A generator that did not raise has not produced a bridge -- it has
+        # produced text. `CableControl`'s bridge was emitted without complaint
+        # for months and had never once compiled: nested derived-type fields
+        # came out as a Fortran COMMENT while still occupying a slot in the
+        # argument list. So "bridge = yes" is not allowed to be the last word.
+        ok, why = _compiles(bridge)
+        out["compiles"] = ok
+        if ok == "no" and not out["detail"]:
+            out["detail"] = f"compile: {why}"[:160]
     except Exception as e:                                   # noqa: BLE001
         out["detail"] = f"bridge: {type(e).__name__}: {e}"[:160]
-        return out
 
-    # A generator that did not raise has not produced a bridge -- it has
-    # produced text. `CableControl`'s bridge was emitted without complaint for
-    # months and had never once compiled: nested derived-type fields came out as
-    # a Fortran COMMENT while still occupying a slot in the argument list. So
-    # "bridge = yes" is not allowed to be the last word.
-    ok, why = _compiles(bridge)
-    out["compiles"] = ok
-    if ok == "no" and not out["detail"]:
-        out["detail"] = f"compile: {why}"[:160]
+    # The INTEGRATION path. Measured even when the harness bridge failed:
+    # the two generators are independent, and a cell where one works and the
+    # other does not is the most useful row in this file.
+    out["integrates"], detail = _integrates(sig, registry)
+    if out["integrates"] != "yes" and not out["detail"]:
+        out["detail"] = f"integrate: {detail}"[:160]
     return out
+
+
+def _integrates(sig, registry) -> tuple[str, str]:
+    """Does `vit integrate`'s Fortran output generate AND compile?
+
+    The interface block goes above CONTAINS and the wrapper below it, which is
+    exactly where `vit integrate` places them, so they are compiled together in
+    one synthetic module rather than separately.
+    """
+    from vit.interface_gen import (generate_fortran_interface_block,
+                                   generate_fortran_wrapper)
+    try:
+        iface = generate_fortran_interface_block(sig, ALIASES, registry)
+        wrap = generate_fortran_wrapper(sig, ALIASES, registry)
+    except Exception as e:                                   # noqa: BLE001
+        # A refusal is a RESULT, not an error: it is the generator declining to
+        # emit a wrapper it cannot make correct, which is the outcome this
+        # column exists to be able to record.
+        return "refused", f"{type(e).__name__}: {e}"
+    # `USE vit_conformance_types` because `vit integrate` inserts the wrapper
+    # INTO the module that already has the derived types in scope. Without it
+    # seven cells reported `Derived type 'plaintype' is being used before it is
+    # defined` -- a fact about this synthetic module, not about VIT. Measuring
+    # the probe is the failure mode this whole file is written against.
+    module = (f"MODULE vit_conformance_integrate_{sig.name}\n"
+              f"    USE vit_conformance_types\n{iface}\n"
+              f"CONTAINS\n{wrap}\nEND MODULE vit_conformance_integrate_{sig.name}\n")
+    ok, why = _compiles(module)
+    return ("yes" if ok == "yes" else ok), why
 
 
 _FC = None
@@ -217,15 +284,29 @@ def _compiles(bridge_text: str) -> tuple[str, str]:
                            capture_output=True, text=True)
         if r.returncode == 0:
             return "yes", ""
-        first = next((l for l in r.stderr.splitlines() if l.startswith("Error")), "")
-        return "no", first or r.stderr.strip().splitlines()[-1:][0] if r.stderr else "unknown"
+        # `Fatal Error:` too, not only `Error:`. A missing .mod is reported as
+        # Fatal, so the old predicate matched nothing and fell through to the
+        # last stderr line -- `compilation terminated.`, which names no cause
+        # and sends the reader looking in the wrong place.
+        first = next((l for l in r.stderr.splitlines()
+                      if l.startswith("Error") or l.startswith("Fatal Error")), "")
+        return "no", first or (r.stderr.strip().splitlines()[-1] if r.stderr else "unknown")
 
 
 _MODS = "unset"
 
 
 def _fixture_mods(fc: str):
-    """Compile the fixture once; return the directory holding its .mod files."""
+    """Compile the fixture once; return the directory holding its .mod files.
+
+    The VIEW POPULATOR modules are generated into the same directory. An
+    integration wrapper for a view-strategy type opens with
+    `USE vit_<type>_view, ONLY: ...`, a module `vit analyze-types` generates and
+    a campaign builds alongside its sources. Without it, three cells scored
+    `integrates = no` on a missing .mod -- a fact about this test, not about
+    VIT, and precisely the "measuring the probe" failure the rest of this file
+    is written against.
+    """
     global _MODS
     if _MODS != "unset":
         return _MODS
@@ -233,9 +314,35 @@ def _fixture_mods(fc: str):
     d = tempfile.mkdtemp(prefix="vit-conformance-")
     r = subprocess.run([fc, "-fsyntax-only", "-J", d, str(FIXTURE)],
                        capture_output=True, text=True)
-    _MODS = d if r.returncode == 0 else None
-    if _MODS is None:
+    if r.returncode != 0:
         print("conformance fixture did not compile:\n" + r.stderr[-1500:], file=sys.stderr)
+        _MODS = None
+        return _MODS
+    _MODS = d
+
+    from vit.view_populator import generate_view_populator
+    registry = _registry(FIXTURE.read_text())
+    for tname in sorted(STRATEGIES):
+        info = registry.get(tname)
+        if info is None:
+            continue
+        try:
+            text = generate_view_populator(info, [], ALIASES,
+                                           source_module="vit_conformance_types",
+                                           registry=registry)
+        except Exception as e:                               # noqa: BLE001
+            print(f"view populator for {tname} did not generate: {e}", file=sys.stderr)
+            continue
+        p = Path(d) / f"vit_{tname.lower()}_view.f90"
+        p.write_text(text)
+        rv = subprocess.run([fc, "-fsyntax-only", f"-I{d}", "-J", d, str(p)],
+                            capture_output=True, text=True)
+        if rv.returncode != 0:
+            # Stated, not swallowed: a cell that then fails to integrate is
+            # failing on a populator VIT could not build, which is itself a
+            # finding rather than noise.
+            print(f"view populator for {tname} did not compile:\n{rv.stderr[-600:]}",
+                  file=sys.stderr)
     return _MODS
 
 
@@ -261,9 +368,16 @@ def _unsupported(cell: dict) -> bool:
 
     `compiles == "no"` counts. It did not, at first, and the omission let five
     cells sit in the matrix with no stated reason -- the matrix reproducing, in
-    miniature, the gap it was built to close."""
+    miniature, the gap it was built to close.
+
+    So does `integrates != "yes"`, for the same reason one step further out: a
+    cell whose harness bridge compiles and whose integration wrapper does not
+    is a cell that cannot ship, and the matrix said nothing about it until the
+    column existed."""
     return (cell.get("c_params") == "no" or cell.get("bridge") == "no"
-            or cell.get("compiles") == "no" or cell.get("semantics") == "unreachable")
+            or cell.get("compiles") == "no"
+            or cell.get("integrates", "yes") != "yes"
+            or cell.get("semantics") == "unreachable")
 
 
 def _load_matrix() -> dict:
@@ -319,8 +433,8 @@ def test_cell_matches_the_record(name):
         pytest.skip("matrix.toml is empty; generate it first")
     expected = _load_matrix()[name]
     got = measure()[name]
-    for stage in ("parse", "c_params", "bridge", "compiles"):
-        if stage == "compiles" and "n/a" in (got[stage], expected.get(stage, "n/a")):
+    for stage in ("parse", "c_params", "bridge", "compiles", "integrates"):
+        if stage in ("compiles", "integrates") and "n/a" in (got[stage], expected.get(stage, "n/a")):
             continue      # no compiler here, or none when the record was made
         assert got[stage] == expected.get(stage), (
             f"{name}.{stage}: recorded {expected[stage]!r}, measured {got[stage]!r}. "
@@ -361,11 +475,16 @@ def test_the_matrix_states_a_reason_for_every_unsupported_cell():
 def summary() -> str:
     m = measure()
     n = len(m)
+    split = sum(1 for c in m.values()
+                if (c['compiles'] == 'no') != (c['integrates'] != 'yes'))
     return (f"{n} cells: "
             f"{sum(1 for c in m.values() if c['c_params'] == 'yes')} reach C params, "
             f"{sum(1 for c in m.values() if c['bridge'] == 'yes')} emit a bridge, "
             f"{sum(1 for c in m.values() if c['compiles'] == 'yes')} COMPILE "
-            f"({sum(1 for c in m.values() if c['compiles'] == 'n/a')} not compiled); "
+            f"({sum(1 for c in m.values() if c['compiles'] == 'n/a')} not compiled), "
+            f"{sum(1 for c in m.values() if c['integrates'] == 'yes')} INTEGRATE "
+            f"({sum(1 for c in m.values() if c['integrates'] == 'refused')} refused); "
+            f"{split} cells where the harness column and the integration column DISAGREE; "
             f"{len(SEMANTICS)} cross mechanically but are NOT TRANSLATABLE")
 
 
@@ -393,7 +512,7 @@ def write_matrix() -> str:
     ]
     for name, cell in sorted(measure().items()):
         lines.append(f"[{name}]")
-        for stage in ("parse", "c_params", "bridge", "compiles"):
+        for stage in ("parse", "c_params", "bridge", "compiles", "integrates"):
             lines.append(f'{stage} = "{cell[stage]}"')
         lines.append(f'semantics = "{"unreachable" if name in SEMANTICS else "ok"}"')
         why = ((old.get(name) or {}).get("why", "")
@@ -415,6 +534,7 @@ if __name__ == "__main__":
         print(f"wrote {MATRIX}")
     print(summary())
     for n, c in sorted(measure().items()):
-        if c["bridge"] != "yes" or c["compiles"] == "no":
+        if c["bridge"] != "yes" or c["compiles"] == "no" or c["integrates"] != "yes":
             print(f"  {n:26s} params={c['c_params']} bridge={c['bridge']} "
-                  f"compiles={c['compiles']}  {c['detail'][:100]}")
+                  f"compiles={c['compiles']} integrates={c['integrates']}  "
+                  f"{c['detail'][:100]}")

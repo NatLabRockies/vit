@@ -12,6 +12,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_alloc_inout]
@@ -19,14 +20,16 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "no"
+integrates = "refused"
 semantics = "ok"
-why = "UNSUPPORTED: as c_alloc_out. INTENT(INOUT) ALLOCATABLE needs an ALLOCATABLE local plus MOVE_ALLOC in and out."
+why = "REFUSED deliberately since rosco-r2 unit #1. The harness bridge does not compile (`Actual argument for 'v' must be ALLOCATABLE`); the integration wrapper USED TO compile, silently dropping the ALLOCATABLE attribute and passing a bare pointer plus a by-value extent, so a reallocation could not reach the caller. Measured on ROSCO's AddToList: three appends, the array still the four elements it started with, the values written one past the end of the heap block, no diagnostic at any stage. interface_gen.assert_integration_bridgeable now raises instead. The limit is VIT's, not Fortran's -- a F2018 BIND(C) interface takes the ALLOCATABLE dummy directly and the C side gets a CFI_cdesc_t* it can CFI_allocate through, demonstrated byte-identical to the original on both branches under gfortran 13."
 
 [c_alloc_out]
 parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "no"
+integrates = "yes"
 semantics = "ok"
 why = "UNSUPPORTED: an ALLOCATABLE dummy requires an ALLOCATABLE actual, and the bridge passes a plain local. The allocate-on-return convention (d4ba20b) covers the C++ direction; the Fortran reference side of test-validate does not."
 
@@ -35,6 +38,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_assumed_shape_2d]
@@ -42,6 +46,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "no"
+integrates = "yes"
 semantics = "ok"
 why = "UNSUPPORTED: a rank-2 assumed-shape dummy is passed as m(1:n_m), a rank-1 section. The C side already emits n_<x>_rows and n_<x>_cols; the bridge must declare the local with both extents."
 
@@ -50,6 +55,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_bindc_type]
@@ -57,6 +63,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_char_field]
@@ -64,6 +71,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_character_array]
@@ -71,6 +79,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_character_in]
@@ -78,6 +87,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_character_inout]
@@ -85,6 +95,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_complex_in]
@@ -92,13 +103,16 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "no"
 semantics = "ok"
+why = "UNSUPPORTED, found by the `integrates` column on the day it was added. The integration wrapper emits `CALL c_complex_in_c(COMPLEX(z, C_DOUBLE_COMPLEX), m)` for a dummy `z` that is ALREADY COMPLEX, and gfortran rejects it: `'x' argument of 'complex' intrinsic must be INTEGER or REAL`. The harness bridge compiles, so every column that existed before this one said the cell crossed."
 
 [c_complex_inout]
 parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_elemental]
@@ -106,6 +120,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_explicit_shape]
@@ -113,6 +128,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_fixed_array_field]
@@ -120,6 +136,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_fn_alloc_character]
@@ -127,6 +144,7 @@ parse = "yes"
 c_params = "no"
 bridge = "no"
 compiles = "n/a"
+integrates = "no"
 semantics = "ok"
 why = "UNSUPPORTED and deliberate: a deferred-length CHARACTER(:) result has no length to declare and cannot cross a fixed-width C buffer. type_map raises rather than guessing a width. A campaign converts such fields to CHARACTER(n) first, as ROSCO did for ErrMsg."
 
@@ -135,6 +153,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "no"
+integrates = "yes"
 semantics = "ok"
 why = "UNSUPPORTED: an array-valued FUNCTION result is assigned to the scalar vit_result. build_c_params already appends a result pointer for this case; the bridge does not use it."
 
@@ -143,6 +162,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_fn_logical]
@@ -150,6 +170,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_fn_recursive]
@@ -157,6 +178,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_fn_scalar]
@@ -164,6 +186,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_integer_inout]
@@ -171,6 +194,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_logical_in]
@@ -178,6 +202,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_logical_out]
@@ -185,6 +210,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_nested_field]
@@ -192,6 +218,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_optional_arg]
@@ -199,6 +226,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_optional_array]
@@ -206,6 +234,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_plain_type]
@@ -213,6 +242,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_pointer_field]
@@ -220,6 +250,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_pure]
@@ -227,6 +258,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_real4_in]
@@ -234,6 +266,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_real8_in]
@@ -241,6 +274,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_unit_read]
@@ -248,6 +282,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "unreachable"
 why = "UNREACHABLE: `unit` is a HANDLE to state outside the signature. It crosses as an int and the file it names does not cross at all -- C++ cannot READ from a Fortran unit. A differential harness is unsound too: the two calls share one file position, so the second reads different data. Translate the variant that takes the data (ROSCO has ParseInput_Int_Opt beside ParseInput_Int), or leave the I/O in Fortran as a boundary."
 
@@ -256,6 +291,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "unreachable"
 why = "UNREACHABLE: as c_unit_read. The observable effect is a side effect on a handle the C++ side does not hold, so there is nothing to compare."
 
@@ -264,6 +300,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_with_block]
@@ -271,6 +308,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_with_contains]
@@ -278,6 +316,7 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"
 
 [c_with_interface]
@@ -285,4 +324,5 @@ parse = "yes"
 c_params = "yes"
 bridge = "yes"
 compiles = "yes"
+integrates = "yes"
 semantics = "ok"

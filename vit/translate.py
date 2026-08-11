@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Optional
 
 from .fortran_parser import FortranSignature
-from .interface_gen import build_c_params, result_is_out_param
+from .interface_gen import (assert_integration_bridgeable, build_c_params,
+                            result_is_out_param)
 from .type_map import get_type_mapping
 
 
@@ -77,6 +78,14 @@ def generate_translation_scaffold(
         lines.append(f'#include "{h}"')
     if includes:
         lines.append("")
+
+    # Refuse before a human writes a body for a signature that cannot carry its
+    # own effect. `vit translate` is the earliest point the cost is avoidable:
+    # ROSCO's AddToList got a scaffold -- `void AddToList(int* list, int n_list,
+    # int element)` -- under a header saying "Do not change the function
+    # signature", and no body of that signature can reallocate the caller's
+    # array. See interface_gen.assert_integration_bridgeable.
+    assert_integration_bridgeable(sig)
 
     # Generate C++ signature
     params = build_c_params(sig, kind_aliases, derived_types)
