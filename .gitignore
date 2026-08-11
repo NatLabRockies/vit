@@ -3,3 +3,9 @@ vit.egg-info/
 scratch/
 .DS_Store
 .vit/
+# A revision pin cannot be tracked: writing HEAD into a file changes the
+# tree, which changes the hash, so the committed value is stale the moment it
+# lands -- and it reads as authoritative. Found reading 37f8bdf at HEAD 22c3bc5,
+# two commits behind the fix a campaign was about to test AGAINST it. Generated
+# at read time instead.
+.vit_rev
