@@ -581,7 +581,7 @@ def generate_view_struct_header(
     Returns:
         Complete C header file content with include guard
     """
-    from .type_map import get_type_mapping
+    from .type_map import get_type_mapping, is_deferred_character
 
     name_lower = type_info.name.lower()
     guard = f"{type_info.name.upper()}_VIEW_T_H"
@@ -748,6 +748,34 @@ def generate_view_struct_header(
                 lines.append(f"    int32_t n_{f.name}_dim1;")
                 lines.append(f"    int32_t n_{f.name}_dim2;")
                 lines.append(f"    int32_t n_{f.name}_dim3;")
+            continue
+
+        # A deferred-length CHARACTER field -- `CHARACTER(:), ALLOCATABLE`. It is
+        # a SCALAR string whose length is part of its allocation, not an array,
+        # so `rank` above does not describe it, and `get_type_mapping` below
+        # would (correctly) refuse it.
+        #
+        # Three members, and the third is what makes the field WRITABLE rather
+        # than merely readable:
+        #
+        #   char*    <f>        a blank-padded staging buffer owned by the view
+        #                       populator module, holding the current contents
+        #   int32_t  n_<f>      LEN() on the way in; on the way out, the length
+        #                       the C++ wants the field to have
+        #   int32_t  n_<f>_cap  how many bytes of that buffer the C++ may write
+        #
+        # Fortran reassignment of a deferred-length allocatable REALLOCATES it,
+        # and C++ cannot reallocate Fortran's storage. So the split is: C++ owns
+        # the bytes and the length it wants, Fortran owns the allocation and
+        # performs it in the reverse-copy. `n_<f>_cap` is what lets the C++ side
+        # find out it would not fit before it writes rather than after; the
+        # reverse-copy checks it independently and refuses rather than
+        # truncating, because a silently shortened error message is exactly the
+        # defect no value comparison can see.
+        if is_deferred_character(f.fortran_type, kind_aliases):
+            lines.append(f"    char* {f.name};  // deferred-length CHARACTER — blank-padded staging buffer")
+            lines.append(f"    int32_t n_{f.name};      // current LEN; set to the new LEN to reassign")
+            lines.append(f"    int32_t n_{f.name}_cap;  // bytes of {f.name} the C++ may write")
             continue
 
         mapping = get_type_mapping(f.fortran_type, kind_aliases)

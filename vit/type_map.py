@@ -143,6 +143,34 @@ def normalize_fortran_type(type_str: str, kind_aliases: Optional[dict] = None) -
     return t
 
 
+def is_deferred_character(fortran_type: str,
+                          kind_aliases: Optional[dict] = None) -> bool:
+    """Is this `CHARACTER(:)` -- deferred length, only legal on ALLOCATABLE/POINTER?
+
+    A PREDICATE, deliberately, rather than a `TypeMapping`. `get_type_mapping`
+    raises on this type and keeps raising: the raise is correct for every caller
+    that wants "the C type of this thing", because a deferred-length CHARACTER
+    has no C type. What it has is a *representation* -- a pointer, a current
+    length and a capacity -- and only the generators that can emit all three
+    (the view struct header, the view populator, and the reverse-copy) are
+    entitled to it.
+
+    So this is additive: nothing that called `get_type_mapping` before changes
+    behaviour, and a generator opts in by asking this question first. A
+    generator that has not been taught the three-field shape still gets the
+    error, which is what should happen -- silently emitting one field of three
+    would be a bridge that compiles and truncates.
+
+    `CHARACTER(*)` is NOT this. Assumed length is a dummy-argument shape whose
+    length the caller supplies; deferred length is a variable whose length is
+    part of its allocation and changes when it is reassigned.
+    """
+    normalized = normalize_fortran_type(fortran_type, kind_aliases)
+    if not normalized.startswith("CHARACTER("):
+        return False
+    return normalized[10:-1].strip() == ":"
+
+
 def get_type_mapping(fortran_type: str, kind_aliases: Optional[dict] = None,
                      derived_types: Optional[dict] = None) -> TypeMapping:
     """

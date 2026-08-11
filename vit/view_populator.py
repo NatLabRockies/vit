@@ -16,7 +16,32 @@ mirror type matching the C view struct layout exactly.
 from typing import Optional
 
 from .derived_type_parser import DerivedTypeInfo, DerivedTypeField, _extract_fixed_sizes
-from .type_map import get_type_mapping
+from .type_map import get_type_mapping, is_deferred_character
+
+# How many bytes beyond the field's current LEN the C++ side may write into a
+# deferred-length CHARACTER staging buffer.
+#
+# A number, and therefore a limit -- there is no way to give C++ an unbounded
+# Fortran allocation through a raw pointer. What matters is that the limit is
+# STATED to both sides rather than assumed: the populator publishes it as
+# `n_<field>_cap`, and the reverse-copy re-checks it and REFUSES a longer
+# assignment instead of truncating. A truncated error message is a plausible
+# wrong answer, which is the one kind of wrong answer a bit-comparison cannot
+# distinguish from a right one.
+#
+# 4096 is chosen against the shape these fields actually have: a diagnostic
+# string that grows by a routine-name prefix per call frame. It is not derived
+# from anything, and if a unit ever needs more, the reverse-copy says so.
+VIT_DEFERRED_CHAR_HEADROOM = 4096
+
+
+def _deferred_char_buffer(type_name_lower: str, field_name: str) -> str:
+    """Name of the module-level staging buffer for one deferred-length field.
+
+    Qualified by BOTH the type and the field: two view modules for two types
+    that happen to share a field name are compiled into the same program.
+    """
+    return f"vit_defchar_{field_name.lower()}_{type_name_lower}"
 
 
 def _lookup_type(registry: dict, type_name: str) -> Optional[DerivedTypeInfo]:
@@ -86,6 +111,11 @@ def generate_view_populator(
     alloc_names = {f.name for f in type_info.fields if f.is_allocatable}
     pointer_names = {f.name for f in type_info.fields if f.is_pointer}
     alloc_fields = [f for f in type_info.fields if f.is_allocatable]
+    # Deferred-length CHARACTER fields are ALLOCATABLE too, but they are scalars
+    # whose allocation carries a LENGTH rather than an extent, so every rank-
+    # driven branch below is wrong for them and they are handled on their own.
+    deferred_char_fields = [f for f in alloc_fields
+                            if is_deferred_character(f.fortran_type, kind_aliases)]
 
     # Identify embeddable nested types (non-ALLOCATABLE TYPE() fields)
     embeddable_nested = {}  # field_name → DerivedTypeInfo
@@ -134,6 +164,11 @@ def generate_view_populator(
     lines.append(f"")
     lines.append(f"MODULE {module_name}")
     lines.append(f"    USE ISO_C_BINDING")
+    if deferred_char_fields:
+        # The reverse-copy REFUSES an over-long assignment rather than
+        # truncating it, and says so. Refusing in silence would be the same
+        # defect one level down.
+        lines.append(f"    USE ISO_FORTRAN_ENV, ONLY: ERROR_UNIT")
     if source_module:
         lines.append(f"    USE {source_module}, ONLY: {name}")
     # USE child populator modules for ALLOCATABLE TYPE() view fields
@@ -166,6 +201,38 @@ def generate_view_populator(
         child_view_type = f"{child_lower}_view_t"
         save_array_name = f"vit_{field_name.lower()}_views_{name_lower}"
         lines.append(f"    TYPE({child_view_type}), ALLOCATABLE, TARGET, SAVE :: {save_array_name}(:)")
+    # Module-level SAVE staging buffers for deferred-length CHARACTER fields.
+    #
+    # `CHARACTER(:), ALLOCATABLE` has no C type, because its LENGTH is part of
+    # its allocation: assigning a longer string to it reallocates it. C++ cannot
+    # reallocate Fortran's storage, so the field crosses as a buffer Fortran
+    # owns, plus the length the C++ wants, and the REVERSE-COPY does the
+    # reallocation. This is that buffer.
+    #
+    # It cannot be `C_LOC(src%<f>(1:1))` directly onto the real field: that would
+    # give the C++ exactly LEN() bytes and no room to write a longer answer, so
+    # the field would be readable and not writable, and the branch that grows an
+    # error message could not be translated at all.
+    #
+    # SAVE, and one per field rather than one per call, because the C view struct
+    # holds a raw pointer that must stay valid for the whole of the C++ call.
+    if deferred_char_fields:
+        lines.append(f"")
+        lines.append(f"    ! Staging buffers for deferred-length CHARACTER fields. The view's")
+        lines.append(f"    ! pointer aims here, not at the Fortran field, so the C++ has room to")
+        lines.append(f"    ! write a LONGER string than it was given; {reverse_name} performs the")
+        lines.append(f"    ! reallocating assignment back onto the real type.")
+        lines.append(f"    !")
+        lines.append(f"    ! HEADROOM is what the C++ may add. It is finite and therefore a limit,")
+        lines.append(f"    ! so it is REPORTED to the C++ as n_<field>_cap and CHECKED again in the")
+        lines.append(f"    ! reverse copy -- a request that does not fit is refused, never")
+        lines.append(f"    ! truncated. Truncating would produce a shorter-but-plausible string")
+        lines.append(f"    ! that no value comparison could tell from a correct one.")
+        lines.append(f"    INTEGER, PARAMETER :: VIT_DEFERRED_CHAR_HEADROOM = "
+                     f"{VIT_DEFERRED_CHAR_HEADROOM}")
+    for f in deferred_char_fields:
+        buf = _deferred_char_buffer(name_lower, f.name)
+        lines.append(f"    CHARACTER(LEN=:), ALLOCATABLE, TARGET, SAVE :: {buf}")
     lines.append(f"")
 
     # --- Nested BIND(C) types (emitted before the main mirror type) ---
@@ -219,6 +286,11 @@ def generate_view_populator(
         m = mapping_by_name.get(f.name)
         rank = m.rank if m else (f.array_dims.count(",") + 1 if f.array_dims else 1)
         lines.append(f"        TYPE(C_PTR) :: {f.name} = C_NULL_PTR")
+        if f in deferred_char_fields:
+            # Deferred-length CHARACTER: a length and a capacity, not an extent.
+            lines.append(f"        INTEGER(C_INT32_T) :: n_{f.name} = 0")
+            lines.append(f"        INTEGER(C_INT32_T) :: n_{f.name}_cap = 0")
+            continue
         if rank == 1:
             lines.append(f"        INTEGER(C_INT32_T) :: n_{f.name} = 0")
         elif rank == 2:
@@ -288,6 +360,45 @@ def generate_view_populator(
         # ALLOCATABLE TYPE() handling
         is_type_alloc = f.fortran_type.upper().startswith("TYPE(")
         is_view_type_alloc = f.name in view_type_alloc_fields
+
+        # Deferred-length CHARACTER: copy into the staging buffer, aim the view
+        # at THAT, and publish both the current length and the writable
+        # capacity. The buffer is reallocated only when it is too small, so a
+        # repeated call does not churn the heap and the pointer the C++ holds
+        # from one call is not silently reused across a resize.
+        if f in deferred_char_fields:
+            buf = _deferred_char_buffer(name_lower, f.name)
+            lines.append(f"        IF (ALLOCATED(src%{f.name})) THEN")
+            lines.append(f"            IF (ALLOCATED({buf})) THEN")
+            lines.append(f"                IF (LEN({buf}) < LEN(src%{f.name}) + VIT_DEFERRED_CHAR_HEADROOM) &")
+            lines.append(f"                    DEALLOCATE({buf})")
+            lines.append(f"            END IF")
+            lines.append(f"            IF (.NOT. ALLOCATED({buf})) &")
+            lines.append(f"                ALLOCATE(CHARACTER(LEN=LEN(src%{f.name}) + VIT_DEFERRED_CHAR_HEADROOM) :: {buf})")
+            # SUBSTRING on the left, not the whole variable. `buf = src%<f>` is
+            # a whole-variable assignment to a deferred-length ALLOCATABLE, so
+            # Fortran 2003 AUTOMATIC REALLOCATION applies and buf comes back out
+            # at LEN(src%<f>) -- the headroom allocated one line above is
+            # silently discarded, and the capacity published to the C++ is a
+            # lie in the dangerous direction. Measured, not reasoned about: the
+            # generator's round-trip test reported cap=5 where 4101 was
+            # allocated, and the grow case wrote 18 bytes into 4.
+            #
+            # Assignment to a SUBSTRING is not a reallocating assignment. It
+            # blank-pads to the substring's length, which is what is wanted.
+            lines.append(f"            {buf}(1:LEN({buf})) = src%{f.name}   ! blank-pads; substring so it does not reallocate")
+            lines.append(f"            view%{f.name} = C_LOC({buf}(1:1))")
+            lines.append(f"            view%n_{f.name} = INT(LEN(src%{f.name}), C_INT32_T)")
+            lines.append(f"            view%n_{f.name}_cap = INT(LEN({buf}), C_INT32_T)")
+            lines.append(f"        ELSE")
+            # NOT ALLOCATED is a distinct input from length 0, and it must not
+            # render as one (P6): a null pointer is the only value the C++ can
+            # tell apart from an allocated empty string.
+            lines.append(f"            view%{f.name} = C_NULL_PTR")
+            lines.append(f"            view%n_{f.name} = 0")
+            lines.append(f"            view%n_{f.name}_cap = 0")
+            lines.append(f"        END IF")
+            continue
 
         lines.append(f"        IF (ALLOCATED(src%{f.name})) THEN")
         if is_view_type_alloc:
@@ -408,6 +519,44 @@ def generate_view_populator(
         if reverse:
             for line in reverse:
                 lines.append(f"        {line}")
+
+    # --- Deferred-length CHARACTER fields: the REALLOCATING half ---
+    #
+    # This is the only place a view-struct field changes the ALLOCATION of the
+    # Fortran object rather than its contents, and it is the reason the field is
+    # writable at all. The C++ wrote bytes into the staging buffer and set
+    # `n_<f>` to the length it wants; the assignment below reallocates
+    # `dest%<f>` to exactly that length.
+    #
+    # Three guards, and each one is a distinct wrong answer being refused rather
+    # than a defensive habit:
+    #
+    #   * buffer not allocated  -> the populator never ran, or ran on an
+    #                              unallocated field. There is nothing to copy
+    #                              back and copying zero bytes would ALLOCATE a
+    #                              field the caller left unallocated.
+    #   * n_<f> < 0             -> not a length. Left alone.
+    #   * n_<f> > LEN(buffer)   -> the C++ asked for more than the capacity it
+    #                              was handed. REFUSED, not truncated: the
+    #                              truncated string is the plausible wrong
+    #                              answer no bit comparison can catch. It is
+    #                              reported on stderr because a silent refusal
+    #                              is the same defect one level down.
+    if deferred_char_fields:
+        lines.append(f"")
+        lines.append(f"        ! --- Deferred-length CHARACTER fields (reallocating assignment) ---")
+    for f in deferred_char_fields:
+        buf = _deferred_char_buffer(name_lower, f.name)
+        lines.append(f"        IF (ALLOCATED({buf}) .AND. view%n_{f.name} >= 0) THEN")
+        lines.append(f"            IF (view%n_{f.name} <= LEN({buf})) THEN")
+        lines.append(f"                dest%{f.name} = {buf}(1:view%n_{f.name})")
+        lines.append(f"            ELSE")
+        lines.append(f"                WRITE(ERROR_UNIT,'(A,I0,A,I0,A)') &")
+        lines.append(f"                    'VIT: {name}%{f.name} assignment of ', view%n_{f.name}, &")
+        lines.append(f"                    ' bytes exceeds the ', LEN({buf}), &")
+        lines.append(f"                    '-byte staging buffer; field left unchanged'")
+        lines.append(f"            END IF")
+        lines.append(f"        END IF")
 
     lines.append(f"")
     lines.append(f"    END SUBROUTINE {reverse_name}")

@@ -533,3 +533,90 @@ class TestPointerFieldHandling:
         header = generate_view_struct_header(ti, [])
         assert "ptr_field: POINTER" in header
         assert "double* ptr_field;" not in header
+
+
+# ---------------------------------------------------------------------------
+# Deferred-length CHARACTER fields — `CHARACTER(:), ALLOCATABLE`
+#
+# The field VIT refused until unit #5 of the rosco-r2 campaign, where it blocked
+# `TYPE(ErrorVariables)` and with it 37 of that campaign's 69 units. It has no C
+# type: its LENGTH is part of its allocation, so reassigning it REALLOCATES it,
+# and C++ cannot reallocate Fortran's storage.
+#
+# What crosses instead is three members -- a staging buffer Fortran owns, the
+# length, and the CAPACITY -- with the reallocating assignment performed by the
+# reverse-copy. `n_<f>_cap` is the member that makes the field writable rather
+# than merely readable; without it the C++ has no way to know how much room it
+# has, and the branch that grows an error message cannot be translated.
+#
+# The generated code's RUNTIME behaviour is checked by compiling and running it
+# (`tests/fixtures/deferred_char/`); these tests pin the SHAPE, which is the part
+# a later refactor can break silently.
+# ---------------------------------------------------------------------------
+
+class TestDeferredLengthCharacter:
+    def _type(self):
+        return _make_type_info("ErrLike", [
+            ("ErrStat", "INTEGER(4)"),
+            ("ErrMsg", "CHARACTER(:)", True, None),
+        ])
+
+    def test_predicate_matches_only_deferred(self):
+        from vit.type_map import is_deferred_character
+        assert is_deferred_character("CHARACTER(:)")
+        assert is_deferred_character("character(:)")
+        # An assumed-LENGTH dummy is a different thing and still has a C type.
+        assert not is_deferred_character("CHARACTER(*)")
+        assert not is_deferred_character("CHARACTER(1024)")
+        assert not is_deferred_character("REAL(8)")
+
+    def test_header_emits_pointer_length_and_capacity(self):
+        header = generate_view_struct_header(self._type(), [])
+        assert "char* ErrMsg;" in header
+        assert "int32_t n_ErrMsg;" in header
+        assert "int32_t n_ErrMsg_cap;" in header
+        # NOT the array shape: a deferred-length CHARACTER is a scalar string,
+        # and `rank` does not describe it.
+        assert "n_ErrMsg_rows" not in header
+
+    def test_populator_publishes_capacity_and_does_not_reallocate_the_buffer(self):
+        code = generate_view_populator(self._type(), [], None, "TestModule")
+        buf = "vit_defchar_errmsg_errlike"
+        assert f"CHARACTER(LEN=:), ALLOCATABLE, TARGET, SAVE :: {buf}" in code
+        assert f"view%ErrMsg = C_LOC({buf}(1:1))" in code
+        assert f"view%n_ErrMsg_cap = INT(LEN({buf}), C_INT32_T)" in code
+        # THE REGRESSION THIS PINS. `buf = src%ErrMsg` is a whole-variable
+        # assignment to a deferred-length ALLOCATABLE, so Fortran 2003
+        # automatic reallocation applies and the buffer comes back out at
+        # LEN(src%ErrMsg) -- discarding the headroom just allocated and making
+        # the published capacity a lie in the dangerous direction. The
+        # round-trip fixture measured cap=5 where 4101 had been allocated.
+        # Assignment to a SUBSTRING does not reallocate.
+        assert f"{buf}(1:LEN({buf})) = src%ErrMsg" in code
+        assert f"\n            {buf} = src%ErrMsg" not in code
+
+    def test_populator_distinguishes_unallocated_from_empty(self):
+        code = generate_view_populator(self._type(), [], None, "TestModule")
+        # P6: absence must not render as a value. A null pointer is the only
+        # thing the C++ can tell apart from an allocated zero-length string,
+        # both of which report n_ErrMsg == 0.
+        assert "view%ErrMsg = C_NULL_PTR" in code
+
+    def test_reverse_copy_reallocates_and_refuses_rather_than_truncating(self):
+        code = generate_view_populator(self._type(), [], None, "TestModule")
+        buf = "vit_defchar_errmsg_errlike"
+        assert f"dest%ErrMsg = {buf}(1:view%n_ErrMsg)" in code
+        assert f"IF (view%n_ErrMsg <= LEN({buf})) THEN" in code
+        # An over-long request is REFUSED and reported, never truncated: a
+        # shortened error message is a plausible wrong answer, which is the one
+        # kind of wrong answer a bit-for-bit comparison cannot catch.
+        assert "ERROR_UNIT" in code
+        assert "field left unchanged" in code
+
+    def test_buffer_name_is_qualified_by_type(self):
+        """Two types with a field of the same name compile into one program."""
+        a = generate_view_populator(self._type(), [], None, "TestModule")
+        other = _make_type_info("OtherLike", [("ErrMsg", "CHARACTER(:)", True, None)])
+        b = generate_view_populator(other, [], None, "TestModule")
+        assert "vit_defchar_errmsg_errlike" in a
+        assert "vit_defchar_errmsg_otherlike" in b
