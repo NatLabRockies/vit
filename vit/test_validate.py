@@ -24,7 +24,7 @@ from typing import Optional
 from .fortran_parser import FortranSignature, parse_signature_from_source
 from .interface_gen import (build_c_params, dropped_derived_args,
                             is_cfi_inout_array)
-from .type_map import get_type_mapping
+from .type_map import get_type_mapping, is_deferred_character
 
 
 def _parse_link_libraries(build_dir: str, target_name: str) -> Optional[list[str]]:
@@ -357,12 +357,13 @@ def _wrapped_dummy_list(head: str, names: list, tail: str,
     return out
 
 
-def _decomposed_param_names(arg, type_info):
+def _decomposed_param_names(arg, type_info, kind_aliases=None):
     """Ordered, collision-free bridge parameter names for a decomposed type.
 
     Returns a list of (field, kind, rank, names) where `kind` is one of
-    "alloc" / "nested" / "scalar" and `names` maps a role ("ptr", "n", "rows",
-    "cols", "scalar") to the parameter name to emit.
+    "alloc" / "nested" / "char" / "defchar" / "fixed" / "scalar" and `names`
+    maps a role ("ptr", "n", "rows", "cols", "buf", "cap", "scalar") to the
+    parameter name to emit.
 
     WHY THIS EXISTS. The naive scheme is `vit_<arg>_<field>` with `_ptr`/`_n`
     appended for an ALLOCATABLE field, and it breaks when a SCALAR field is
@@ -405,11 +406,45 @@ def _decomposed_param_names(arg, type_info):
         if fld.is_pointer:
             continue
         base = f"{prefix}_{fld.name}"
+        if is_deferred_character(fld.fortran_type, kind_aliases):
+            # `CHARACTER(:), ALLOCATABLE :: ErrMsg`. Asked BEFORE is_allocatable,
+            # because it is allocatable and the allocatable path would ask
+            # `get_type_mapping` for the C type of `CHARACTER(:)` -- which has
+            # none, and which raises. That raise is the whole of what kept
+            # TYPE(ErrorVariables) out of test-validate, and with it every unit
+            # in the rosco-r2 campaign taking an error argument.
+            #
+            # Three parameters, the same shape the view struct already crosses
+            # (see view_populator.VIT_DEFERRED_CHAR_HEADROOM), because the
+            # LENGTH of a deferred-length CHARACTER is part of its allocation:
+            #
+            #   buf  CHARACTER(KIND=C_CHAR) (*)     the bytes, C-owned
+            #   n    INTEGER(C_INT), by REFERENCE   LEN() in; LEN() out
+            #   cap  INTEGER(C_INT), by VALUE       how many bytes may be written
+            #
+            # `n` is by reference and not by VALUE, unlike every other extent
+            # here, and that is the point: the function under test may REPLACE
+            # the string with a longer one, so its length is an OUTPUT. An
+            # extent passed by value would let the bridge run and would leave
+            # the caller unable to see that the length had changed.
+            result.append((fld, "defchar", 0, {
+                "buf": uniq(base),
+                "n": uniq(f"{base}_n"),
+                "cap": uniq(f"{base}_cap"),
+            }))
+            continue
         if fld.is_allocatable:
             rank = fld.array_dims.count(",") + 1 if fld.array_dims else 1
             names = {"ptr": uniq(f"{base}_ptr")}
             if rank == 1:
                 names["n"] = uniq(f"{base}_n")
+                # CAPACITY, and it is what makes a rank-1 ALLOCATABLE field an
+                # OUTPUT rather than only an input. The callee may allocate the
+                # field itself, or reallocate it to a different extent, and the
+                # caller's buffer has to be big enough to receive whatever it
+                # chose -- so the buffer's size and the number of elements
+                # SUPPLIED are two different numbers and both have to be stated.
+                names["cap"] = uniq(f"{base}_cap")
             else:
                 names["rows"] = uniq(f"{base}_rows")
                 names["cols"] = uniq(f"{base}_cols")
@@ -462,17 +497,38 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
     names imported via USE statements.
     """
     local_var = f"vit_local_{arg.name}"
-    spec = _decomposed_param_names(arg, type_info)
-    # A deferred-length CHARACTER field has no length to declare, so it cannot
-    # cross. Collected and reported rather than dropped in silence.
+    spec = _decomposed_param_names(arg, type_info, kind_aliases)
+    is_out = decomposed_arg_is_out(arg)
+    # A CHARACTER field whose declared length cannot be read out of the
+    # declaration has no length to declare, so it cannot cross. Collected and
+    # reported rather than dropped in silence. (A DEFERRED-length field is not
+    # this case -- it crosses as buf/n/cap, see the "defchar" branches.)
     skipped_char: list[str] = []
 
     for fld, kind, rank, names in spec:
         if kind == "alloc":
             c_params.append((f"        TYPE(C_PTR), VALUE :: {names['ptr']}", names["ptr"]))
             if rank == 1:
+                # `n` BY REFERENCE, not by VALUE, and this is a change of shape
+                # rather than of spelling. Every ALLOCATABLE field used to cross
+                # as (pointer, extent-by-value) with NO copy-back at all, so a
+                # field the callee WRITES -- `ExtDLL%avrSWAP`, which is the whole
+                # output of ExtController -- was supplied to the reference and
+                # then discarded, while the translation wrote into the caller's
+                # buffer. Input-only, silently, for every such field in the
+                # campaign.
+                #
+                # Three states have to be distinguishable and one of them is
+                # ABSENCE (P6), so the encoding is stated here and re-stated in
+                # the copy-back:
+                #     n <  0   the field is NOT ALLOCATED
+                #     n == 0   allocated, empty
+                #     n >  0   allocated with n elements
+                # and `cap` is the buffer's size in either direction.
                 c_params.append((
-                    f"        INTEGER(C_INT), VALUE :: {names['n']}", names["n"]))
+                    f"        INTEGER(C_INT) :: {names['n']}", names["n"]))
+                c_params.append((
+                    f"        INTEGER(C_INT), VALUE :: {names['cap']}", names["cap"]))
             else:
                 c_params.append((
                     f"        INTEGER(C_INT), VALUE :: {names['rows']}", names["rows"]))
@@ -501,6 +557,13 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
             c_params.append((f"        CHARACTER(KIND=C_CHAR) :: "
                              f"{names['scalar']}({rank})", names["scalar"]))
             local_decls.append(f"        INTEGER :: vit_ci_{arg.name}_{fld.name}")
+        elif kind == "defchar":
+            c_params.append((f"        CHARACTER(KIND=C_CHAR) :: "
+                             f"{names['buf']}(*)", names["buf"]))
+            c_params.append((f"        INTEGER(C_INT) :: {names['n']}", names["n"]))
+            c_params.append((f"        INTEGER(C_INT), VALUE :: {names['cap']}",
+                             names["cap"]))
+            local_decls.append(f"        INTEGER :: vit_dc_{arg.name}_{fld.name}")
         elif kind == "fixed":
             iso_type = get_type_mapping(fld.fortran_type, kind_aliases).iso_c_type
             # By reference, with the declared bounds: C passes the buffer, every
@@ -508,8 +571,16 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
             c_params.append((f"        {iso_type} :: {names['scalar']}({rank})",
                              names["scalar"]))
         else:
-            iso_type = get_type_mapping(fld.fortran_type, kind_aliases).iso_c_type
-            c_params.append((f"        {iso_type}, VALUE :: {names['scalar']}", names["scalar"]))
+            iso_type = _decomposed_scalar_iso_c(fld, kind_aliases)
+            # BY REFERENCE when the owning argument is INOUT/OUT, so the field
+            # can be copied back. `ErrVar%ErrStat` is `ExtController`'s error
+            # output and it used to cross by VALUE with no copy-back at all --
+            # the reference set it, the bridge dropped it, and the harness
+            # compared the caller's own input against the translation's answer
+            # and called the translation wrong on all 163 cases.
+            value_attr = "" if is_out else ", VALUE"
+            c_params.append((f"        {iso_type}{value_attr} :: {names['scalar']}",
+                             names["scalar"]))
 
     # Local: real Fortran type (not POINTER)
     local_decls.append(f"        TYPE({type_info.name}) :: {local_var}")
@@ -517,6 +588,12 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
     # Temp pointers and loop variables for ALLOCATABLE fields
     for fld in type_info.fields:
         if not fld.is_allocatable:
+            continue
+        if is_deferred_character(fld.fortran_type, kind_aliases):
+            # Staged through a CHARACTER local, not a POINTER to an element
+            # type: `CHARACTER(:)` has no element type to point at. This is the
+            # second place the allocatable path would have called
+            # `get_type_mapping` on it and raised.
             continue
         iso_type = get_type_mapping(fld.fortran_type, kind_aliases).iso_c_type
         local_decls.append(f"        {iso_type}, POINTER :: vit_tmp_{arg.name}_{fld.name}(:)")
@@ -537,13 +614,17 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
         if kind == "alloc":
             tmp = f"vit_tmp_{arg.name}_{fld.name}"
             if rank == 1:
-                p_ptr, p_n = names["ptr"], names["n"]
-                pre_call.append(f"        IF (C_ASSOCIATED({p_ptr})) THEN")
+                p_ptr, p_n, p_cap = names["ptr"], names["n"], names["cap"]
+                # The Fortran pointer spans the whole BUFFER, not the supplied
+                # elements: the copy-back writes into the part beyond `n`.
+                pre_call.append(f"        IF (C_ASSOCIATED({p_ptr})) &")
+                pre_call.append(
+                    f"            CALL C_F_POINTER({p_ptr}, {tmp}, [MAX({p_cap}, 1)])")
+                pre_call.append(f"        IF ({p_n} >= 0) THEN")
                 pre_call.append(f"            ALLOCATE({local_var}%{fld.name}({p_n}))")
+                pre_call.append(f"            IF ({p_n} > 0 .AND. C_ASSOCIATED({p_ptr})) &")
                 pre_call.append(
-                    f"            CALL C_F_POINTER({p_ptr}, {tmp}, [{p_n}])")
-                pre_call.append(
-                    f"            {local_var}%{fld.name}(1:{p_n}) = {tmp}(1:{p_n})")
+                    f"                {local_var}%{fld.name}(1:{p_n}) = {tmp}(1:{p_n})")
                 pre_call.append(f"        END IF")
             elif rank == 2:
                 p_ptr, p_rows, p_cols = names["ptr"], names["rows"], names["cols"]
@@ -563,6 +644,23 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
                 pre_call.append(f"                END DO")
                 pre_call.append(f"            END DO")
                 pre_call.append(f"        END IF")
+        elif kind == "defchar":
+            di = f"vit_dc_{arg.name}_{fld.name}"
+            # `cap > 0` IS "the field is allocated", and it is the only thing
+            # the C side states that can say so. The populator publishes a NULL
+            # pointer with n = 0 AND cap = 0 for an unallocated field, and
+            # cap = LEN + HEADROOM (> 0) for an allocated one -- including an
+            # allocated EMPTY string, whose n is also 0. Branching on `n` would
+            # collapse those two into one input, which is P6: absence rendering
+            # as a value.
+            pre_call.append(f"        IF ({names['cap']} > 0) THEN")
+            pre_call.append(f"            ALLOCATE(CHARACTER(LEN={names['n']}) :: "
+                            f"{local_var}%{fld.name})")
+            pre_call.append(f"            DO {di} = 1, {names['n']}")
+            pre_call.append(f"                {local_var}%{fld.name}({di}:{di}) = "
+                            f"{names['buf']}({di})")
+            pre_call.append(f"            END DO")
+            pre_call.append(f"        END IF")
         elif kind == "char":
             if not rank:
                 continue
@@ -586,23 +684,112 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
     # loses the aliasing a pointer would have given it, so without this every
     # such field is write-only from the harness's point of view -- supplied and
     # never observed, which is R4 defeated at the bridge.
-    intent_text = str(getattr(getattr(arg, "intent", None), "value", None)
-                      or getattr(getattr(arg, "intent", None), "name", None)
-                      or getattr(arg, "intent", "") or "").upper()
-    if "OUT" in intent_text:
+    if is_out:
         for fld, kind, rank, names in spec:
-            if kind == "fixed":
+            if kind == "alloc" and rank == 1:
+                # THE COPY-BACK THAT DID NOT EXIST. Without it the reference
+                # writes into a Fortran allocation the bridge then deallocates,
+                # while the translation writes into the caller's buffer -- so the
+                # two sides are not being compared on this field at all.
+                #
+                # The callee's chosen EXTENT comes back too, in `n`, because a
+                # translation that allocates a different number of elements is
+                # exactly the defect a fixed-size comparison cannot see (unit
+                # #1's CFI descriptor, one container in).
+                #
+                # REFUSED and REPORTED, never truncated, when the result does
+                # not fit the buffer the caller stated: a short prefix of the
+                # right answer is the one wrong answer a bit comparison passes.
+                tmp = f"vit_tmp_{arg.name}_{fld.name}"
+                p_n, p_cap = names["n"], names["cap"]
+                post_call.append(f"        IF (.NOT. ALLOCATED({local_var}%{fld.name})) THEN")
+                post_call.append(f"            {p_n} = -1_C_INT")
+                # An EMPTY result needs no buffer, so it must not be reported as
+                # one that did not fit. Without this a field the caller supplied
+                # unallocated and the callee left empty printed a refusal on
+                # every case -- a true statement about a buffer of zero, and
+                # noise that would teach a reader to ignore the message.
+                post_call.append(f"        ELSE IF (SIZE({local_var}%{fld.name}) == 0) THEN")
+                post_call.append(f"            {p_n} = 0_C_INT")
+                post_call.append(f"        ELSE IF (SIZE({local_var}%{fld.name}) <= {p_cap} "
+                                 f".AND. C_ASSOCIATED({names['ptr']})) THEN")
+                post_call.append(f"            {p_n} = INT(SIZE({local_var}%{fld.name}), C_INT)")
+                post_call.append(f"            IF ({p_n} > 0) &")
+                post_call.append(f"                {tmp}(1:{p_n}) = {local_var}%{fld.name}(1:{p_n})")
+                post_call.append(f"        ELSE")
+                post_call.append(f"            WRITE(ERROR_UNIT,'(A,I0,A,I0,A)') &")
+                post_call.append(f"                'VIT bridge: {arg.name}%{fld.name} came back with ', &")
+                post_call.append(f"                SIZE({local_var}%{fld.name}), ' element(s), past the ', &")
+                post_call.append(f"                {p_cap}, '-element buffer the caller supplied; not copied back'")
+                post_call.append(f"        END IF")
+            elif kind == "alloc" and rank == 2:
+                # Rank 2 has TWO extents and no capacity, so it can only be
+                # copied back when the callee kept the shape the caller stated.
+                # Anything else is reported rather than reshaped: guessing which
+                # of two dimensions moved is how a stride collapse is written.
+                tmp = f"vit_tmp_{arg.name}_{fld.name}"
+                vi, vj = f"vit_i_{fld.name}", f"vit_j_{fld.name}"
+                p_rows, p_cols = names["rows"], names["cols"]
+                post_call.append(f"        IF (ALLOCATED({local_var}%{fld.name}) "
+                                 f".AND. C_ASSOCIATED({names['ptr']})) THEN")
+                post_call.append(f"            IF (SIZE({local_var}%{fld.name}, 1) == {p_rows} "
+                                 f".AND. SIZE({local_var}%{fld.name}, 2) == {p_cols}) THEN")
+                post_call.append(f"                DO {vj} = 1, {p_cols}")
+                post_call.append(f"                    DO {vi} = 1, {p_rows}")
+                post_call.append(f"                        {tmp}(({vj}-1)*{p_rows} + {vi}) = &")
+                post_call.append(f"                            {local_var}%{fld.name}({vi}, {vj})")
+                post_call.append(f"                    END DO")
+                post_call.append(f"                END DO")
+                post_call.append(f"            ELSE")
+                post_call.append(f"                WRITE(ERROR_UNIT,'(A,I0,A,I0,A)') &")
+                post_call.append(f"                    'VIT bridge: {arg.name}%{fld.name} came back ', &")
+                post_call.append(f"                    SIZE({local_var}%{fld.name}, 1), ' x ', &")
+                post_call.append(f"                    SIZE({local_var}%{fld.name}, 2), &")
+                post_call.append(f"                    ', not the shape the caller stated; not copied back'")
+                post_call.append(f"            END IF")
+                post_call.append(f"        END IF")
+            elif kind == "fixed":
                 post_call.append(f"        {names['scalar']} = {local_var}%{fld.name}")
             elif kind == "nested":
                 tmp = f"vit_nested_{arg.name}_{fld.name}"
                 post_call.append(f"        IF (C_ASSOCIATED({names['ptr']})) "
                                  f"{tmp} = {local_var}%{fld.name}")
+            elif kind == "scalar":
+                post_call.append(f"        {names['scalar']} = {local_var}%{fld.name}")
             elif kind == "char" and rank:
                 ci = f"vit_ci_{arg.name}_{fld.name}"
                 post_call.append(f"        DO {ci} = 1, {rank}")
                 post_call.append(f"            {names['scalar']}({ci}) = "
                                  f"{local_var}%{fld.name}({ci}:{ci})")
                 post_call.append(f"        END DO")
+            elif kind == "defchar":
+                di = f"vit_dc_{arg.name}_{fld.name}"
+                # REFUSED, not truncated, and the refusal is REPORTED. The
+                # capacity is finite, so a function that grows the string past
+                # it cannot be honoured -- and writing the first `cap` bytes
+                # would produce a shorter-but-plausible string, which is the one
+                # kind of wrong answer a bit-for-bit comparison cannot catch.
+                # Same rule as the view populator's reverse copy, for the same
+                # reason; if the two disagreed, the harness and the shipped
+                # bridge would be measuring different functions.
+                post_call.append(f"        IF (ALLOCATED({local_var}%{fld.name})) THEN")
+                post_call.append(f"            IF (LEN({local_var}%{fld.name}) <= "
+                                 f"{names['cap']}) THEN")
+                post_call.append(f"                DO {di} = 1, LEN({local_var}%{fld.name})")
+                post_call.append(f"                    {names['buf']}({di}) = "
+                                 f"{local_var}%{fld.name}({di}:{di})")
+                post_call.append(f"                END DO")
+                post_call.append(f"                {names['n']} = "
+                                 f"INT(LEN({local_var}%{fld.name}), C_INT)")
+                post_call.append(f"            ELSE")
+                post_call.append(f"                WRITE(ERROR_UNIT,'(A,I0,A,I0,A)') &")
+                post_call.append(f"                    'VIT bridge: {arg.name}%{fld.name} "
+                                 f"assignment of ', LEN({local_var}%{fld.name}), &")
+                post_call.append(f"                    ' bytes exceeds the ', {names['cap']}, &")
+                post_call.append(f"                    '-byte buffer the caller supplied; "
+                                 f"left unchanged'")
+                post_call.append(f"            END IF")
+                post_call.append(f"        END IF")
 
     # Post-call: DEALLOCATE ALLOCATABLEs
     for fld in type_info.fields:
@@ -612,6 +799,74 @@ def _emit_decomposed_bridge_params(arg, type_info, kind_aliases,
                 f"DEALLOCATE({local_var}%{fld.name})")
 
     call_args.append(local_var)
+
+
+def decomposed_scalar_c_type(fld, kind_aliases=None) -> str:
+    """The C type of a SCALAR field of a decomposed derived type.
+
+    `get_type_mapping` alone is not the answer, and the exception is LOGICAL.
+    The VIEW STRUCT generator emits `LOGICAL(C_BOOL)` / `bool` for it
+    (`view_populator._field_to_iso_c_decl`) while the general type map says
+    `INTEGER(C_INT)` / `int32_t` -- two generators over one type, which is the
+    disagreement this bridge exists to be measured against rather than to
+    contain. While such a field crossed by VALUE the mismatch was an implicit
+    conversion nobody saw; by reference it is `cannot convert 'int8_t*' to
+    'int32_t*'`, which is the same defect finally saying so.
+
+    PUBLIC for the same reason as `decomposed_arg_is_out`: the loop's harness
+    emitter needs the identical answer.
+    """
+    if fld.fortran_type.upper().startswith("LOGICAL"):
+        # `int8_t`, which is what VIT's C-struct generator emits for a LOGICAL
+        # field, and it is one byte -- the same object `LOGICAL(C_BOOL)` is on
+        # the Fortran side. `bool` would be the natural spelling and is the
+        # WRONG one here: the struct member is what the pointer has to point at.
+        return "int8_t"
+    return get_type_mapping(fld.fortran_type, kind_aliases).c_type
+
+
+def _decomposed_scalar_iso_c(fld, kind_aliases=None) -> str:
+    """The Fortran ISO_C_BINDING type matching `decomposed_scalar_c_type`."""
+    if fld.fortran_type.upper().startswith("LOGICAL"):
+        return "LOGICAL(C_BOOL)"
+    return get_type_mapping(fld.fortran_type, kind_aliases).iso_c_type
+
+
+def decomposed_arg_is_out(arg) -> bool:
+    """Is a decomposed derived-type argument written by the callee?
+
+    PUBLIC, and it is the only reason it is not a `_name`: the loop's harness
+    emitter has to agree with this exactly -- a field the bridge takes by
+    reference and the caller passes by value is a wrong answer the linker
+    cannot see. One spelling, imported, like `_decomposed_param_names`.
+
+    An argument with NO declared INTENT counts as written: that is what Fortran
+    permits, and the safe direction here is to compare a field that could not
+    change rather than to drop one that did.
+    """
+    intent = getattr(arg, "intent", None)
+    text = str(getattr(intent, "value", None) or getattr(intent, "name", None)
+               or intent or "").upper()
+    return "OUT" in text or text in ("", "NONE")
+
+
+def _bridge_reports_on_stderr(sig, kind_aliases, derived_types) -> bool:
+    """Does this bridge contain a branch that REFUSES a copy-back and says so?
+
+    True whenever any argument decomposes, because both refusal branches -- the
+    deferred-length CHARACTER field that will not fit its buffer, and the
+    ALLOCATABLE field that came back a different size -- live in the decomposed
+    emitter. Asked of `_has_allocatable_fields`, the same authority the emitter
+    uses, rather than by re-reading the declarations already emitted: a
+    predicate that parses generated text is a second spelling of the rule, and
+    the two drift.
+    """
+    for arg in getattr(sig, "args", ()):
+        if not getattr(arg, "is_derived_type", False):
+            continue
+        if _has_allocatable_fields(arg, derived_types) is not None:
+            return True
+    return False
 
 
 def _iso_c_for(fortran_type: str, kind_aliases: Optional[dict]) -> str:
@@ -868,6 +1123,13 @@ def generate_fortran_bridge(
         f"    SUBROUTINE {bridge_name}(", param_names, ") &"))
     lines.append(f"        BIND(C, NAME='{bridge_name}')")
     lines.append(f"        USE ISO_C_BINDING")
+    # A copy-back that does not fit is REFUSED and REPORTED on ERROR_UNIT.
+    # `_get_module_use_statements` is filtered to skip ISO_FORTRAN_ENV, so the
+    # name has to be imported here or the generated bridge does not compile --
+    # and the failure would land on the refusal branches, which are the branches
+    # that most need to exist.
+    if _bridge_reports_on_stderr(sig, kind_aliases, derived_types):
+        lines.append(f"        USE, INTRINSIC :: ISO_FORTRAN_ENV, ONLY: ERROR_UNIT")
     if sig.module_name:
         lines.append(f"        USE {sig.module_name}")
     # USE modules that provide derived types.
@@ -1293,12 +1555,15 @@ def generate_test_harness_skeleton(
             if type_info is not None:
                 # Same helper as the Fortran side, so the two agree by
                 # construction rather than by both re-deriving the names.
-                for fld, kind, rank, names in _decomposed_param_names(arg, type_info):
+                for fld, kind, rank, names in _decomposed_param_names(
+                        arg, type_info, kind_aliases):
                     if kind == "alloc":
                         c_type = get_type_mapping(fld.fortran_type, kind_aliases).c_type
                         bridge_params.append(f"{c_type}* {names['ptr']}")
                         if rank == 1:
-                            bridge_params.append(f"int {names['n']}")
+                            # A POINTER: the extent the callee chose comes back.
+                            bridge_params.append(f"int* {names['n']}")
+                            bridge_params.append(f"int {names['cap']}")
                         else:
                             bridge_params.append(f"int {names['rows']}")
                             bridge_params.append(f"int {names['cols']}")
@@ -1307,13 +1572,20 @@ def generate_test_harness_skeleton(
                     elif kind == "char":
                         if rank:
                             bridge_params.append(f"char* {names['scalar']}")
+                    elif kind == "defchar":
+                        # `n` is a POINTER here: the callee may replace the
+                        # string with a longer one, so its length comes back.
+                        bridge_params.append(f"char* {names['buf']}")
+                        bridge_params.append(f"int* {names['n']}")
+                        bridge_params.append(f"int {names['cap']}")
                     elif kind == "fixed":
                         # By reference on the Fortran side, so a pointer here.
                         c_type = get_type_mapping(fld.fortran_type, kind_aliases).c_type
                         bridge_params.append(f"{c_type}* {names['scalar']}")
                     else:
-                        c_type = get_type_mapping(fld.fortran_type, kind_aliases).c_type
-                        bridge_params.append(f"{c_type} {names['scalar']}")
+                        c_type = decomposed_scalar_c_type(fld, kind_aliases)
+                        star = "*" if decomposed_arg_is_out(arg) else ""
+                        bridge_params.append(f"{c_type}{star} {names['scalar']}")
             else:
                 bridge_params.append(f"void* {arg.name}_ptr")
         elif "CHARACTER" in arg.fortran_type.upper():
