@@ -572,6 +572,21 @@ def _delimiter_set(ctx: Context) -> list:
         literals += re.findall(r"'((?:[^'\\]|\\.)*)'", ctx.c)
         decoded = [lit.replace("\\\\", "\\").replace('\\"', '"').replace("\\'", "'")
                    for lit in literals]
+        # A character set written as an ARRAY -- `{ '\\', '/' }` -- is the same
+        # set in C++'s other syntax for one, and reading only string literals
+        # calls it missing. This campaign's own "name a size once" rule pushes
+        # translations INTO that form: an array states its length once via
+        # `sizeof`, where a string literal needs the length written beside it and
+        # carries a NUL terminator the Fortran set does not have. So the check
+        # would fire on every translation that followed the rule. Measured on
+        # rosco-r2 GetRoot, whose `INDEX( '\/', ... )` became
+        # `index_first(Separators, (int)sizeof Separators, ...)`.
+        for braced in re.finditer(r"\{([^{}]*)\}", ctx.c):
+            chars = re.findall(r"'((?:[^'\\]|\\.)*)'", braced.group(1))
+            if chars:
+                decoded.append("".join(
+                    ch.replace("\\\\", "\\").replace('\\"', '"').replace("\\'", "'")
+                    for ch in chars))
         if not any(set(want) <= set(d) for d in decoded):
             return _find("delimiter-set",
                          f"the Fortran matches against the character set {want!r}, "
