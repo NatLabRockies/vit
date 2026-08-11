@@ -725,6 +725,35 @@ class TestGeneratorsAgree:
         registry = _make_allocatable_registry()          # view_strategy set
         assert dropped_derived_args(sig, None, registry) == []
 
+    def test_generating_a_wrapper_says_on_stderr_what_it_dropped(self, capsys):
+        """The drop must not be silent in the command that SHIPS the wrapper.
+
+        `dropped_derived_args` existed and only `test_validate` asked it, so
+        `vit interface` and `vit integrate` emitted a wrapper that accepts an
+        argument and does not forward it, with no diagnostic anywhere in the
+        output. Every path that ships a wrapper goes through
+        `generate_fortran_wrapper`, so the warning is asserted there rather
+        than once per command.
+        """
+        from vit.interface_gen import generate_fortran_wrapper
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()
+        registry["DBEMT_InitInputType"].view_strategy = None
+        wrapper = generate_fortran_wrapper(sig, None, registry)
+        err = capsys.readouterr().err
+        assert "InitInp" in err
+        assert "NOT forwarded" in err
+        # The wrapper still ACCEPTS the argument. That is what makes silence
+        # dangerous: it compiles, it links, and it cannot see one of its inputs.
+        assert "InitInp" in wrapper
+
+    def test_a_wrapper_that_drops_nothing_warns_nothing(self, capsys):
+        from vit.interface_gen import generate_fortran_wrapper
+        sig = _make_allocatable_sig()
+        registry = _make_allocatable_registry()          # view_strategy set
+        generate_fortran_wrapper(sig, None, registry)
+        assert capsys.readouterr().err == ""
+
 
 class TestPerUnitArtifacts:
 
