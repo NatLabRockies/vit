@@ -1378,7 +1378,34 @@ def generate_fortran_bridge(
     # FUNCTION return type: add output parameter for the return value
     if sig.is_function:
         result_type_upper = (sig.result_type or "").upper()
-        if "LOGICAL" in result_type_upper:
+        if sig.result_is_array and "CHARACTER" not in result_type_upper:
+            # An ARRAY-valued FUNCTION RESULT. `interface_gen.result_is_out_param`
+            # has said so since the campaign began and `build_c_params` appends
+            # `<type>* <Func>_result`; this generator did not, so it declared the
+            # result as a SCALAR and emitted `vit_result = identity(n)` --
+            # *Incompatible ranks 0 and 2 in assignment*, which is a bridge that
+            # does not compile rather than one that compares the wrong thing.
+            #
+            # Mirrors `interface_gen`: assumed-size on this side, the extent
+            # compiled into neither, and the elements crossing in Fortran's own
+            # array-element order. Ask BOTH generators before believing a
+            # `bridge_feasible` -- they are two spellings of one ABI and this is
+            # the second time they have disagreed.
+            #
+            # Narrow on purpose: a REAL or INTEGER element type, which is what
+            # `build_c_params` maps to `double*`/`int*`. A LOGICAL or
+            # derived-type array result is UNMEASURED and is refused with its
+            # own reason rather than approximated.
+            if "REAL" in result_type_upper:
+                c_params.append(("        REAL(C_DOUBLE), INTENT(OUT) :: vit_result(*)",
+                                 "vit_result"))
+            elif "INTEGER" in result_type_upper:
+                c_params.append(("        INTEGER(C_INT), INTENT(OUT) :: vit_result(*)",
+                                 "vit_result"))
+            else:
+                c_params.append((f"        ! TODO: unsupported array return type "
+                                 f"{sig.result_type}", "vit_result"))
+        elif "LOGICAL" in result_type_upper:
             c_params.append((f"        LOGICAL(C_BOOL), INTENT(OUT) :: vit_result", "vit_result"))
         elif "INTEGER" in result_type_upper:
             c_params.append((f"        INTEGER(C_INT), INTENT(OUT) :: vit_result", "vit_result"))
@@ -1453,6 +1480,22 @@ def generate_fortran_bridge(
         lines.append(f"        {sig.result_type} :: vit_char_result")
         lines.append(f"        INTEGER :: vit_i_result")
 
+    # Staging buffer for an ARRAY-valued result. Declared with the FUNCTION's
+    # own DIMENSION, exactly as `interface_gen` declares the wrapper's result,
+    # so the two spellings of one ABI cannot drift: an automatic array whose
+    # extents are the dummies already in scope. The result is then flattened
+    # into the assumed-size dummy in Fortran ARRAY-ELEMENT ORDER, which is the
+    # order the C side lays the buffer out in.
+    #
+    # SIZE(), not a product of the declared extents: a DIMENSION(n, n) with
+    # n < 0 is a zero-sized array, not an array of n*n elements, and writing
+    # n*n of them would run off the caller's buffer.
+    array_result = (sig.is_function and sig.result_is_array
+                    and "CHARACTER" not in (sig.result_type or "").upper())
+    if array_result and sig.result_dims:
+        arr_type = _resolve_fortran_type(sig.result_type, kind_aliases)
+        lines.append(f"        {arr_type}, DIMENSION({sig.result_dims}) :: vit_array_result")
+
     # Pre-call conversions
     for conv in pre_call:
         lines.append(conv)
@@ -1460,7 +1503,11 @@ def generate_fortran_bridge(
     # Call the original function
     if sig.is_function:
         result_type_upper = (sig.result_type or "").upper()
-        if "LOGICAL" in result_type_upper:
+        if array_result and sig.result_dims:
+            lines.append(f"        vit_array_result = {func_name}({', '.join(call_args)})")
+            lines.append(f"        vit_result(1:SIZE(vit_array_result)) = "
+                         f"RESHAPE(vit_array_result, (/ SIZE(vit_array_result) /))")
+        elif "LOGICAL" in result_type_upper:
             lines.append(f"        vit_result = LOGICAL({func_name}({', '.join(call_args)}), C_BOOL)")
         elif "CHARACTER" in result_type_upper:
             lines.append(f"        vit_char_result = {func_name}({', '.join(call_args)})")
