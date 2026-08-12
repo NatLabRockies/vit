@@ -674,6 +674,34 @@ def run_kernel_verify(kernel_dir: str, env: Optional[dict] = None,
     return result
 
 
+def _cxx_header_deps(cpp_source: str) -> str:
+    """
+    Prerequisites for a generated C++ object beyond its own .cpp.
+
+    VIT writes the TRANSLATION to `<stem>.hpp` and only a three-line extern "C"
+    wrapper to `<stem>.cpp`. A rule naming just the .cpp therefore does not
+    depend on the file the translation lives in, and `make` reuses a stale
+    object after the translation changed -- reporting the PREVIOUS
+    translation's verdict as this one's.
+
+    `vit verify` never saw this because `_build_and_run_kernel` runs
+    `make clean` first. A hand-run `make` in the kernel directory does, and
+    that is not a hypothetical usage: re-running a stub, or replaying the
+    original Fortran through an existing kernel, is done exactly that way.
+    Measured at rosco-r2 unit #18 -- a zero stub that reads no argument and
+    returns 0.0 "PASSED verification 62/62" against an object built from the
+    real translation; removing the object by hand turned the same stub 0/62.
+
+    `$(wildcard ...)` rather than a literal list, because the Makefile is
+    patched before those files are necessarily on disk and a named
+    prerequisite make cannot build is a hard error. wildcard is re-expanded on
+    every make invocation, so the dependency appears as soon as the file does.
+    `$<` is still the .cpp, so no recipe changes.
+    """
+    hpp = cpp_source.replace(".cpp", ".hpp")
+    return f"$(wildcard {hpp} vit_types.h)"
+
+
 def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
                            cpp_source: str, fortran_flags: str = "",
                            view_populator_sources: Optional[list] = None,
@@ -777,7 +805,7 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
             "CXX ?= g++",
             "CXXFLAGS ?= -O2 -fPIC -ffp-contract=off",
             "",
-            f"{obj_name}: {cpp_source}",
+            f"{obj_name}: {cpp_source} {_cxx_header_deps(cpp_source)}",
             f"\t$(CXX) $(CXXFLAGS) -c $< -o $@",
         ]
         # Add rules for extra shared C++ sources (e.g., vit_nwtc.cpp)
@@ -785,7 +813,7 @@ def _patch_kernel_makefile(kernel: Path, sig: FortranSignature,
             extra_obj = extra_src.replace(".cpp", ".o")
             cxx_lines.extend([
                 "",
-                f"{extra_obj}: {extra_src}",
+                f"{extra_obj}: {extra_src} {_cxx_header_deps(extra_src)}",
                 f"\t$(CXX) $(CXXFLAGS) -c $< -o $@",
             ])
         cxx_lines.append("")
