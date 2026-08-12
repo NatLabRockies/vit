@@ -274,6 +274,72 @@ def _get_procedure_use_statements(source_text: str, proc_name: str) -> list[str]
     return uses
 
 
+def _nested_type_use_statements(copied_uses: set, local_decls: list[str]) -> list[str]:
+    """Import the NESTED types the bridge declares but the reference never named.
+
+    The bridge copies the reference's own USE statements verbatim, which is
+    right for the reference and insufficient for the bridge: decomposing a
+    derived-type argument makes the bridge declare
+
+        TYPE(rlParams), POINTER :: vit_nested_LocalVar_rlP
+
+    for every nested-type FIELD, and those type names appear nowhere in the
+    reference, so an `ONLY` list written for the reference cannot contain them.
+
+    Measured on ROSCO's `ZeroMQInterface.f90`, whose `UpdateZeroMQ` carries
+
+        USE ROSCO_Types, ONLY : LocalVariables, ControlParameters, ErrorVariables
+
+    -- gfortran rejects the generated bridge with "Derived type 'rlparams' at
+    (1) is being used before it is defined" and five "has no IMPLICIT type".
+
+    IT COMPILED FOR EVERY EARLIER UNIT BY ACCIDENT. `ReadAvrSWAP` decomposes the
+    same `LocalVariables` and its bridge also imports only three names -- and it
+    builds, because `ReadSetParameters` USEs `ROSCO_Types` at module scope and
+    re-exports it, so the bridge's `USE ReadSetParameters` reaches the nested
+    types by a route this unit's module does not have. A file whose module keeps
+    its imports inside its procedures escapes it.
+
+    Additive: a name is imported only when no copied `ONLY` list already names
+    it, and the module is taken from the copied statement that supplies the
+    argument types rather than guessed. An unrestricted `USE M` (no `ONLY`)
+    already makes every type accessible and suppresses the addition entirely, so
+    no bridge that compiled before gains a line.
+    """
+    import re
+    nested = []
+    for decl in local_decls:
+        m = re.match(r'\s*TYPE\(([^)]+)\)\s*,\s*POINTER\s*::\s*vit_nested_', decl)
+        if m and m.group(1).strip() not in nested:
+            nested.append(m.group(1).strip())
+    if not nested:
+        return []
+
+    # Which copied statements restrict what they import, and which module does
+    # each name come from. A bare `USE M` is unrestricted: nothing to add.
+    restricted: list[tuple[str, set]] = []
+    for stmt in copied_uses:
+        m = re.match(r'\s*USE\s*(?:,\s*[^:]+::)?\s*(\w+)\s*,\s*ONLY\s*:(.*)$',
+                     stmt, re.IGNORECASE)
+        if not m:
+            return []          # an unrestricted USE is present; every name is in scope
+        names = {n.strip().split("=>")[-1].strip().upper()
+                 for n in m.group(2).split(",") if n.strip()}
+        restricted.append((m.group(1), names))
+    if not restricted:
+        return []
+
+    already = set().union(*(names for _, names in restricted))
+    missing = [t for t in nested if t.upper() not in already]
+    if not missing:
+        return []
+    # The types module is the one whose ONLY list is longest -- it is the
+    # statement that imported the argument types, and a nested field's type is
+    # declared beside them by construction.
+    module = max(restricted, key=lambda r: len(r[1]))[0]
+    return [f"        USE {module}, ONLY : {', '.join(missing)}"]
+
+
 def _has_allocatable_fields(arg, derived_types):
     """Check if a derived-type arg's type has ALLOCATABLE fields.
 
@@ -1371,6 +1437,7 @@ def generate_fortran_bridge(
             if use_stmt not in added:
                 lines.append(f"        {use_stmt}")
                 added.add(use_stmt)
+        lines.extend(_nested_type_use_statements(added, local_decls))
     lines.append(f"        IMPLICIT NONE")
 
     # Parameter declarations
