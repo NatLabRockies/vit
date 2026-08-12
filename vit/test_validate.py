@@ -23,7 +23,9 @@ from typing import Optional
 
 from .fortran_parser import FortranSignature, parse_signature_from_source
 from .interface_gen import (build_c_params, dropped_derived_args,
-                            is_cfi_inout_array)
+                            is_alloc_return, is_cfi_inout_array,
+                            _alloc_return_extent_names, _get_char_len_expr,
+                            _resolve_fortran_type)
 from .type_map import get_type_mapping, is_deferred_character
 
 
@@ -1081,6 +1083,69 @@ def generate_fortran_bridge(
                 local_decls.append(f"        TYPE({type_name}), POINTER :: {arg.name}")
                 pre_call.append(f"        CALL C_F_POINTER({arg.name}_ptr, {arg.name})")
                 call_args.append(arg.name)
+        elif is_alloc_return(arg):
+            # ALLOCATE-ON-RETURN, the convention `interface_gen` SHIPS for an
+            # `INTENT(OUT), ALLOCATABLE` array: `build_c_params` emits
+            # `double** <x>` plus one `int* n_<x>[_rows|_cols]` per rank, the
+            # callee mallocs and hands the pointer back, and the caller frees
+            # with `vit_free`.
+            #
+            # This bridge used to have no branch for it. An INTENT(OUT)
+            # ALLOCATABLE array is also assumed-shape, so it fell into the
+            # assumed-shape branch below and came out as
+            # `REAL(C_DOUBLE), INTENT(OUT) :: X(*)` + `n_X`, called as
+            # `X(1:n_X)` -- a rank-1 non-allocatable section passed to a rank-2
+            # ALLOCATABLE dummy, which is not Fortran and does not compile.
+            # That is the `c_assumed_shape_2d` cell the conformance matrix
+            # records as UNSUPPORTED, and it is a statement about THIS
+            # generator; `interface_gen` crosses the same argument (rosco-r2
+            # unit #17).
+            #
+            # The two generators must agree, because the harness calls both
+            # sides through one C prototype: the reference through this bridge,
+            # the translation directly. So the parameter list here is
+            # `_alloc_return_extent_names` -- the same helper `interface_gen`
+            # names its extents with -- rather than a second spelling.
+            resolved = _resolve_fortran_type(arg.fortran_type, kind_aliases)
+            dims = ",".join(":" for _ in range(max(1, arg.array_rank)))
+            extents = _alloc_return_extent_names(arg)
+            c_params.append(
+                (f"        TYPE(C_PTR), INTENT(OUT) :: {arg.name}_cptr",
+                 f"{arg.name}_cptr"))
+            for n in extents:
+                c_params.append(
+                    (f"        INTEGER(C_INT), INTENT(OUT) :: {n}", n))
+            local_decls.append(
+                f"        {resolved}, ALLOCATABLE :: {arg.name}({dims})")
+            local_decls.append(f"        {resolved}, POINTER :: {arg.name}_fptr({dims})")
+            # The C side owns the buffer either way, so the bridge allocates it
+            # with the SAME allocator the translation uses and the harness frees
+            # both with the same `free`. `vit_malloc` is emitted by the harness
+            # beside `vit_free`.
+            local_decls.append("        INTERFACE")
+            local_decls.append("            FUNCTION vit_malloc(vit_n) BIND(C, NAME='vit_malloc') RESULT(vit_p)")
+            local_decls.append("                USE ISO_C_BINDING")
+            local_decls.append("                INTEGER(C_SIZE_T), VALUE :: vit_n")
+            local_decls.append("                TYPE(C_PTR) :: vit_p")
+            local_decls.append("            END FUNCTION vit_malloc")
+            local_decls.append("        END INTERFACE")
+            call_args.append(arg.name)
+            # C_NULL_PTR means NOT ALLOCATED. An extent of 0 does not: an
+            # allocated zero-size array and an unallocated one are different
+            # answers, and this is the only place the difference survives.
+            post_call.append(f"        {arg.name}_cptr = C_NULL_PTR")
+            for n in extents:
+                post_call.append(f"        {n} = 0")
+            post_call.append(f"        IF (ALLOCATED({arg.name})) THEN")
+            for i, n in enumerate(extents, start=1):
+                post_call.append(f"            {n} = INT(SIZE({arg.name}, {i}), C_INT)")
+            post_call.append(f"            {arg.name}_cptr = vit_malloc("
+                             f"MAX(INT(SIZE({arg.name}), C_SIZE_T), 1_C_SIZE_T) * "
+                             f"INT(STORAGE_SIZE({arg.name}) / 8, C_SIZE_T))")
+            post_call.append(f"            CALL C_F_POINTER({arg.name}_cptr, "
+                             f"{arg.name}_fptr, [{', '.join(extents)}])")
+            post_call.append(f"            {arg.name}_fptr = {arg.name}")
+            post_call.append(f"        END IF")
         elif "CHARACTER" in fortran_type:
             # CHARACTER is not directly C-interoperable, so it crosses as a
             # C_CHAR buffer plus its length and is staged through a local
@@ -1090,12 +1155,33 @@ def generate_fortran_bridge(
             # pass THAT, exposing no C-side parameter at all: the bridge
             # compiled, ran, and tested nothing. Any function whose input is a
             # CHARACTER argument was silently unverifiable.
+            #
+            # THE LENGTH IS A C PARAMETER ONLY WHEN IT IS ONE. `build_c_params`
+            # emits `int len_<x>` for `CHARACTER(*)` -- a width the CALLER
+            # chooses -- and emits NOTHING for `CHARACTER(1024)`, whose width is
+            # a literal COMPILED INTO BOTH SIDES. This branch used to emit
+            # `len_<x>` unconditionally, so on a fixed-width dummy the bridge
+            # took one more argument than the prototype the harness calls it
+            # through, on a C linkage no linker checks. rosco-r2 unit #17
+            # (`Read_OL_Input`, `CHARACTER(1024), INTENT(IN)`): the mapper
+            # refused the argument -- "build_c_params emitted no len_" -- and
+            # the unit had no differential harness at all.
+            #
+            # `_get_char_len_expr` is `interface_gen`'s own answer to "how many
+            # bytes", so the two generators cannot drift; only the DECISION to
+            # pass it is restated, and it is restated as the same test
+            # `build_c_params` makes.
+            _cmap = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+            _len_is_param = (_cmap.character_len_param == "*")
+            len_expr = (f"len_{arg.name}" if _len_is_param
+                        else (_get_char_len_expr(arg, _cmap, sig) or "1"))
             c_params.append(
                 (f"        CHARACTER(KIND=C_CHAR), INTENT({intent}) :: {arg.name}_c(*)",
                  f"{arg.name}_c"))
-            c_params.append(
-                (f"        INTEGER(C_INT), VALUE, INTENT(IN) :: len_{arg.name}",
-                 f"len_{arg.name}"))
+            if _len_is_param:
+                c_params.append(
+                    (f"        INTEGER(C_INT), VALUE, INTENT(IN) :: len_{arg.name}",
+                     f"len_{arg.name}"))
             # A CHARACTER ARRAY dummy has a second, independent size. Dropping
             # it produced a bridge declaring a CHARACTER SCALAR where the
             # function takes an array -- which does not even match the
@@ -1114,29 +1200,29 @@ def generate_fortran_bridge(
                     count_expr = arg.array_dims
             if count_expr:
                 local_decls.append(
-                    f"        CHARACTER(len_{arg.name}) :: {arg.name}({count_expr})")
+                    f"        CHARACTER({len_expr}) :: {arg.name}({count_expr})")
                 local_decls.append(f"        INTEGER :: vit_i_{arg.name}, vit_j_{arg.name}")
                 pre_call.append(f"        DO vit_j_{arg.name} = 1, {count_expr}")
-                pre_call.append(f"            DO vit_i_{arg.name} = 1, len_{arg.name}")
+                pre_call.append(f"            DO vit_i_{arg.name} = 1, {len_expr}")
                 pre_call.append(f"                {arg.name}(vit_j_{arg.name})(vit_i_{arg.name}:vit_i_{arg.name}) = &")
-                pre_call.append(f"                    {arg.name}_c((vit_j_{arg.name} - 1) * len_{arg.name} + vit_i_{arg.name})")
+                pre_call.append(f"                    {arg.name}_c((vit_j_{arg.name} - 1) * {len_expr} + vit_i_{arg.name})")
                 pre_call.append(f"            END DO")
                 pre_call.append(f"        END DO")
                 if intent in ("INOUT", "OUT"):
                     post_call.append(f"        DO vit_j_{arg.name} = 1, {count_expr}")
-                    post_call.append(f"            DO vit_i_{arg.name} = 1, len_{arg.name}")
-                    post_call.append(f"                {arg.name}_c((vit_j_{arg.name} - 1) * len_{arg.name} + vit_i_{arg.name}) = &")
+                    post_call.append(f"            DO vit_i_{arg.name} = 1, {len_expr}")
+                    post_call.append(f"                {arg.name}_c((vit_j_{arg.name} - 1) * {len_expr} + vit_i_{arg.name}) = &")
                     post_call.append(f"                    {arg.name}(vit_j_{arg.name})(vit_i_{arg.name}:vit_i_{arg.name})")
                     post_call.append(f"            END DO")
                     post_call.append(f"        END DO")
             else:
-                local_decls.append(f"        CHARACTER(len_{arg.name}) :: {arg.name}")
+                local_decls.append(f"        CHARACTER({len_expr}) :: {arg.name}")
                 local_decls.append(f"        INTEGER :: vit_i_{arg.name}")
-                pre_call.append(f"        DO vit_i_{arg.name} = 1, len_{arg.name}")
+                pre_call.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
                 pre_call.append(f"            {arg.name}(vit_i_{arg.name}:vit_i_{arg.name}) = {arg.name}_c(vit_i_{arg.name})")
                 pre_call.append(f"        END DO")
                 if intent in ("INOUT", "OUT"):
-                    post_call.append(f"        DO vit_i_{arg.name} = 1, len_{arg.name}")
+                    post_call.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
                     post_call.append(f"            {arg.name}_c(vit_i_{arg.name}) = {arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
                     post_call.append(f"        END DO")
             call_args.append(arg.name)
