@@ -24,11 +24,20 @@ Six behaviours, each a different wrong answer being ruled out:
   4. overrun    a request past the capacity is REFUSED and the field is left
                 alone -- never truncated, because a shortened error message is
                 a plausible wrong answer no bit comparison can catch
-  5. null       an unallocated field renders as a NULL pointer (P6: absence must
-                not render as a value)
-  6. empty      an allocated ZERO-LENGTH field is a DIFFERENT input, and is
-                non-null; both report length 0, so the pointer is the only thing
-                that separates them
+  5. unalloc    an unallocated field renders as LENGTH -1 (P6: absence must not
+                render as a value), and -1 survives the trip back rather than
+                materialising a zero-length string on the way out
+  6. empty      an allocated ZERO-LENGTH field is a DIFFERENT input: length 0,
+                not -1. Both now carry a non-null buffer, so the LENGTH is the
+                only thing that separates them
+  7. assign     the C side writes into a field Fortran left UNALLOCATED, which
+                Fortran itself permits. This is why 5 and 6 read the way they
+                do: `ErrVar%ErrMsg = '...'` on an unallocated allocatable is
+                legal, the C++ translation of such a routine must perform it,
+                and it cannot write through a null pointer. Handing it a buffer
+                is what forfeited null-as-absence and moved absence to the
+                length -- a forced trade, and this case is what fails if it is
+                ever traded back
 
 Skipped, not silently passed, when gfortran or gcc is absent.
 """

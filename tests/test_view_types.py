@@ -579,6 +579,30 @@ class TestDeferredLengthCharacter:
         # and `rank` does not describe it.
         assert "n_ErrMsg_rows" not in header
 
+    def test_header_publishes_the_unallocated_constant_and_its_value(self):
+        header = generate_view_struct_header(self._type(), [])
+        # The VALUE, not merely the name. Every consumer of this contract --
+        # extcontroller.cpp, read_ol_input.cpp, the round-trip fixture -- tests
+        # against -1 written out literally, which is correct for them: a test
+        # that imports the constant it checks agrees by construction. That only
+        # works while the generator emits the value they were written against,
+        # so this is where the two are tied together.
+        assert "#define VIT_CHAR_UNALLOCATED (-1)" in header
+        # And the three states must be stated where a consumer will meet them.
+        # The convention lived in two C++ comments and nothing else for a day,
+        # which is how the two integrated units came to disagree about it.
+        assert "n <  0" in header
+        assert "n == 0" in header
+        assert "n >  0" in header
+
+    def test_consolidated_header_publishes_the_contract_too(self):
+        # Two emit paths, and a consumer includes whichever one VIT wrote. The
+        # per-type path having the contract is no use to a unit that got the
+        # consolidated one.
+        from vit.derived_type_parser import generate_consolidated_types_header
+        consolidated = generate_consolidated_types_header({"ErrLike": self._type()})
+        assert "#define VIT_CHAR_UNALLOCATED (-1)" in consolidated
+
     def test_populator_publishes_capacity_and_does_not_reallocate_the_buffer(self):
         code = generate_view_populator(self._type(), [], None, "TestModule")
         buf = "vit_defchar_errmsg_errlike"
@@ -597,10 +621,26 @@ class TestDeferredLengthCharacter:
 
     def test_populator_distinguishes_unallocated_from_empty(self):
         code = generate_view_populator(self._type(), [], None, "TestModule")
-        # P6: absence must not render as a value. A null pointer is the only
-        # thing the C++ can tell apart from an allocated zero-length string,
-        # both of which report n_ErrMsg == 0.
-        assert "view%ErrMsg = C_NULL_PTR" in code
+        # P6: absence must not render as a value. UNALLOCATED and allocated-
+        # length-zero are different inputs and must stay tellable apart.
+        #
+        # Absence used to be the NULL POINTER, which distinguished the two
+        # perfectly well. It moved to the LENGTH under duress: Fortran permits
+        # `ErrVar%ErrMsg = '...'` on an UNALLOCATED allocatable, so the C++ must
+        # be able to write one -- and it cannot write into a null pointer. The
+        # buffer has to be there, which forfeits null-as-absence. So the length
+        # carries absence now, and n == -1 is the signal.
+        unalloc = code.split("IF (ALLOCATED(src%ErrMsg)) THEN")[1].split("ELSE")[1]
+        assert "view%n_ErrMsg = -1_C_INT32_T" in unalloc
+
+        # The half that is easy to lose. If this reverts to C_NULL_PTR the
+        # length signal above still reads correct, and the unit stays unable to
+        # assign to an unallocated field -- which is the defect that forced the
+        # encoding, not a tidiness point. So pin the buffer, and the capacity
+        # that tells the C++ how much of it it may use.
+        assert "view%ErrMsg = C_LOC(vit_defchar_errmsg_errlike(1:1))" in unalloc
+        assert "view%n_ErrMsg_cap = INT(LEN(" in unalloc
+        assert "C_NULL_PTR" not in unalloc
 
     def test_reverse_copy_reallocates_and_refuses_rather_than_truncating(self):
         code = generate_view_populator(self._type(), [], None, "TestModule")

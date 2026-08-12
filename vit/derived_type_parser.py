@@ -556,6 +556,50 @@ def _lookup_type(registry: dict, type_name: str) -> Optional[DerivedTypeInfo]:
     return None
 
 
+def _deferred_char_contract_lines() -> list:
+    """The wire contract for a deferred-length CHARACTER, as C the compiler sees.
+
+    Emitted UNCONDITIONALLY into every generated header, for the same reason
+    `VIT_COMPLEX_T_DEFINED` is: a generator that hands out a name another
+    defines conditionally is a coupling, and it presents far from its cause.
+
+    This exists because the convention it names spent its first day living in
+    two C++ comments and nothing else. `extcontroller.cpp` was written against
+    the encoding that preceded it and kept compiling -- there was no declared
+    contract for a consumer to be checked against, so the two integrated units
+    disagreed about the wire format in silence. A constant a consumer can be
+    grepped for is the smallest thing that makes that disagreement visible.
+    """
+    return [
+        "#ifndef VIT_CHAR_UNALLOCATED",
+        "// A deferred-length `CHARACTER(:), ALLOCATABLE` field crosses as three",
+        "// members: the buffer `<f>`, its current length `n_<f>`, and the number of",
+        "// bytes `n_<f>_cap` the C++ side may write into it.",
+        "//",
+        "// `n_<f>` carries THREE states, and a consumer that collapses the first two",
+        "// into one is wrong:",
+        "//",
+        "//     n <  0   VIT_CHAR_UNALLOCATED -- NOT ALLOCATED; ALLOCATED() is .FALSE.",
+        "//     n == 0   ALLOCATED, and of length zero",
+        "//     n >  0   ALLOCATED, with that many significant bytes",
+        "//",
+        "// Absence is carried by the LENGTH, not by a NULL pointer. `<f>` always",
+        "// points at a writable buffer, because C++ must be able to perform",
+        "// `X = '...'` on a field Fortran left unallocated -- which Fortran itself",
+        "// permits, and which no amount of pointer-checking makes possible without a",
+        "// buffer to write into. Supplying that buffer forfeits null-as-absence, so",
+        "// the length carries absence instead. It is a forced trade, not a repair.",
+        "//",
+        "// Before using `n_<f>` AS A LENGTH -- to size a buffer, to bound a copy, to",
+        "// pass to a bridge -- test it against this constant. It is negative, so it",
+        "// does not fail loudly: cast to an unsigned size it becomes SIZE_MAX, and",
+        "// `(size_t)n + 1` wraps to a zero-length allocation that then overflows.",
+        "#define VIT_CHAR_UNALLOCATED (-1)",
+        "#endif",
+        "",
+    ]
+
+
 def generate_view_struct_header(
     type_info: DerivedTypeInfo,
     field_mappings: list,
@@ -628,6 +672,7 @@ def generate_view_struct_header(
     lines.append(f"typedef struct {{ float  re, im; }} vit_complex_float;")
     lines.append(f"#endif")
     lines.append(f"")
+    lines.extend(_deferred_char_contract_lines())
 
     # --- Scalars and fixed-size arrays (non-ALLOCATABLE, non-POINTER) ---
     scalar_fields = [
@@ -1164,7 +1209,7 @@ def generate_consolidated_types_header(
         "typedef struct { float  re, im; } vit_complex_float;",
         "#endif",
         "",
-    ]
+    ] + _deferred_char_contract_lines()
     lines.append("\n\n".join(new_blocks))
     lines.append("")
     lines.append(f"#endif // {guard}")

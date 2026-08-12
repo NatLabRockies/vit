@@ -1,7 +1,7 @@
 /* Round-trip test for VIT's deferred-length CHARACTER view field.
  *
  * The C side is the C++ translation's position: it sees only the view struct.
- * Four cases, each a different wrong answer the design has to rule out.
+ * Each case rules out a different wrong answer the design has to exclude.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -55,9 +55,31 @@ void c_overrun(errlike_view_t* v)
     v->n_ErrMsg = v->n_ErrMsg_cap + 1;
 }
 
-/* 5. UNALLOCATED: the view must say so with a null pointer, which is the only
- *    value distinguishable from an allocated empty string. */
+/* 5. UNALLOCATED: absence is carried by the LENGTH -- n == -1, published as
+ *    VIT_CHAR_UNALLOCATED in the generated header -- and NOT by the pointer.
+ *
+ *    This file hardcodes -1 rather than including that header on purpose. A
+ *    test that imports the constant it is checking agrees with the generator by
+ *    construction and would pass just as green if the value silently became -2,
+ *    which is the one thing it exists to notice. The wire format is re-derived
+ *    here, independently, the same way the C struct above is. */
 int c_is_null(errlike_view_t* v)
 {
     return v->ErrMsg == NULL ? 1 : 0;
+}
+
+/* 6. ASSIGN INTO AN UNALLOCATED FIELD -- the case that forced the encoding.
+ *
+ *    Fortran permits `X%ErrMsg = '...'` on an UNALLOCATED allocatable, so the
+ *    C++ translation of any routine that does it must be able to as well. Under
+ *    the old encoding the pointer was NULL and there was nowhere to put the
+ *    bytes: the translation could not perform an assignment the original
+ *    performs. Supplying a buffer is what made this possible, and supplying a
+ *    buffer is what forfeited null-as-absence. That is the whole trade, and
+ *    this is the case that fails if it is ever traded back. */
+void c_assign(errlike_view_t* v, const char* s, int32_t n)
+{
+    if (n > v->n_ErrMsg_cap) { v->ErrStat = -99; return; }
+    memcpy(v->ErrMsg, s, (size_t)n);
+    v->n_ErrMsg = n;
 }
