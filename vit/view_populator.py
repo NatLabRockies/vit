@@ -392,11 +392,31 @@ def generate_view_populator(
             lines.append(f"            view%n_{f.name}_cap = INT(LEN({buf}), C_INT32_T)")
             lines.append(f"        ELSE")
             # NOT ALLOCATED is a distinct input from length 0, and it must not
-            # render as one (P6): a null pointer is the only value the C++ can
-            # tell apart from an allocated empty string.
-            lines.append(f"            view%{f.name} = C_NULL_PTR")
-            lines.append(f"            view%n_{f.name} = 0")
-            lines.append(f"            view%n_{f.name}_cap = 0")
+            # render as one (P6).
+            #
+            # It was rendered as a NULL POINTER with cap 0 until 2026-08-12,
+            # which carried the distinction correctly and left the C++ with NO
+            # BUFFER AT ALL -- so a reference whose own statement is
+            # `ErrVar%ErrMsg = <expr>` (a REALLOCATING assignment, which
+            # ALLOCATES an unallocated field) had no representation on the C
+            # side at all. Measured at rosco-r2 unit #17 `Read_OL_Input`, whose
+            # only reachable path is exactly that assignment: the translation
+            # could not write the field, and the KGen comparator -- guarded on
+            # `IF (ALLOCATED(var%errmsg))`, the KERNEL's own value -- dropped
+            # the comparison and reported 200 of 200 IDENTICAL.
+            #
+            # The staging buffer is therefore supplied EITHER WAY, and the
+            # not-allocated signal moves onto the LENGTH, using the convention
+            # this codebase already uses for an ALLOCATABLE array extent:
+            # n < 0 unallocated, n == 0 allocated-empty, n > 0 allocated.
+            # `vit_copy_scalars_to_*` already guards `view%n_<f> >= 0`, so a
+            # field the C++ does not touch stays unallocated exactly as before.
+            lines.append(f"            IF (.NOT. ALLOCATED({buf})) &")
+            lines.append(f"                ALLOCATE(CHARACTER(LEN=VIT_DEFERRED_CHAR_HEADROOM) :: {buf})")
+            lines.append(f"            {buf}(1:LEN({buf})) = ''   ! blank-fill; substring so it does not reallocate")
+            lines.append(f"            view%{f.name} = C_LOC({buf}(1:1))")
+            lines.append(f"            view%n_{f.name} = -1_C_INT32_T   ! NOT ALLOCATED, distinct from length 0")
+            lines.append(f"            view%n_{f.name}_cap = INT(LEN({buf}), C_INT32_T)")
             lines.append(f"        END IF")
             continue
 
