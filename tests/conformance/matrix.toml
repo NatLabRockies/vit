@@ -28,10 +28,10 @@ why = "CROSSES AS A FORTRAN 2018 C DESCRIPTOR since rosco-r2 unit #1's second di
 parse = "yes"
 c_params = "yes"
 bridge = "yes"
-compiles = "no"
+compiles = "yes"
 integrates = "yes"
 semantics = "ok"
-why = "UNSUPPORTED: an ALLOCATABLE dummy requires an ALLOCATABLE actual, and the bridge passes a plain local. The allocate-on-return convention (d4ba20b) covers the C++ direction; the Fortran reference side of test-validate does not."
+why = "A CAPABILITY GAIN, measured 2026-08-12. This read compiles='no' while the allocate-on-return convention (d4ba20b) covered the C++ direction only and the Fortran reference side of test-validate still passed a plain local to an ALLOCATABLE dummy. It compiles now. SEPARATELY, and unchanged: translation-loop's FEATURE_CELLS maps an ALLOCATABLE INTENT(OUT) dummy to c_alloc_inout, NOT to this cell, so no declaration is ever judged against it. That imprecision is pre-existing and is pinned deliberately in translation-loop tests/test_plan.py so a correction fails loudly; it is recorded here because this cell's value cannot be read as governing anything until it is fixed."
 
 [c_assumed_shape_1d]
 parse = "yes"
@@ -232,10 +232,11 @@ semantics = "ok"
 [c_optional_array]
 parse = "yes"
 c_params = "yes"
-bridge = "yes"
-compiles = "yes"
+bridge = "no"
+compiles = "n/a"
 integrates = "yes"
 semantics = "ok"
+why = "UNSUPPORTED: the bridge stages only SCALAR intrinsic INTENT(IN) OPTIONALs, and 'w' is an array. This cell read bridge='yes' until 2026-08-12, and that 'yes' certified a bridge that crossed the array while DROPPING the PRESENT() flag -- the callee could not tell a supplied argument from an absent one. Refusing to generate (300da9c) is the correct behaviour and this 'no' is worth more than the earlier 'yes': an absent OPTIONAL rendering as a present one is the P6 shape exactly. compiles is n/a because a bridge that was never generated was never compiled -- not because no compiler was present, which is the other thing n/a means in this column."
 
 [c_plain_type]
 parse = "yes"
