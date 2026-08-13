@@ -2431,6 +2431,18 @@ def _build_bridge_call_args(sig: FortranSignature,
             call_args.append(f"local_{arg.name}")
             continue
 
+        # An ALLOCATABLE INTENT(INOUT) dummy crosses as a C descriptor, so this
+        # bridge's own dummy is declared `DIMENSION(:), ALLOCATABLE` and
+        # `_build_interface_args` deliberately emits NO extent parameter for it.
+        # Sectioning it is wrong twice over: `n_<name>` does not exist, and a
+        # section is not ALLOCATABLE, so `list(1:n)` could not be passed to an
+        # ALLOCATABLE dummy even if the extent were in scope. Pass it whole --
+        # which is the entire point of the descriptor. The integration wrapper
+        # has done this since unit #1; only the kernel bridge was left behind.
+        if is_cfi_inout_array(arg):
+            call_args.append(arg.name)
+            continue
+
         if arg.is_array:
             if arg.is_assumed_shape:
                 # The bridge receives assumed-size (*) arrays from C, but the
@@ -2495,6 +2507,21 @@ def generate_callee_declarations_header(
     lines.append("#ifndef VIT_KERNEL_CALLEES_H")
     lines.append("#define VIT_KERNEL_CALLEES_H")
     lines.append("")
+
+    # The declarations below can name two types this header does not otherwise
+    # define, and the header is injected ABOVE the translation's own includes --
+    # so a translation cannot supply them. `vit_translated.h`, the integrated
+    # build's equivalent, has always carried both; this one carried neither,
+    # which is why `addtolist_c` was callable after integration and not from a
+    # kernel.
+    #
+    #   int32_t      -- every bridged LOGICAL result
+    #   CFI_cdesc_t  -- every ALLOCATABLE dummy, i.e. exactly `cfi_args(sig)`
+    lines.append("#include <stdint.h>")
+    if any(cfi_args(sig) for sig in callee_sigs):
+        lines.append("#include <ISO_Fortran_binding.h>")
+    lines.append("")
+
     lines.append('#ifdef __cplusplus')
     lines.append('extern "C" {')
     lines.append('#endif')
