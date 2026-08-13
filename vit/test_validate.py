@@ -19,7 +19,7 @@ actual test code with semantic understanding of the validation conditions.
 import glob as globmod
 import re
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from .fortran_parser import FortranSignature, parse_signature_from_source
 from .interface_gen import (build_c_params, dropped_derived_args,
@@ -1019,6 +1019,35 @@ def _iso_c_for(fortran_type: str, kind_aliases: Optional[dict]) -> str:
             "LOGICAL(C_BOOL)" if "LOGICAL" in up else f"! TODO: {fortran_type}")
 
 
+_SIZE_OF_ARG = re.compile(r"^\s*SIZE\s*\(\s*([A-Za-z_]\w*)\s*\)\s*$", re.IGNORECASE)
+
+
+def _bridge_result_dims(result_dims: str, param_names: List[str]) -> str:
+    """A FUNCTION RESULT's DIMENSION text, spelled in the BRIDGE's own dummies.
+
+    Every dimension is passed through UNCHANGED except one shape:
+    `SIZE(<arg>)`, where `n_<arg>` is a dummy of this bridge. The original
+    declares such an argument assumed-shape and `SIZE()` of it is its extent;
+    the bridge declares it assumed-size, where gfortran rejects `SIZE()`
+    outright. Both spellings name the same number and only one of them
+    compiles here.
+
+    Deliberately not an expression evaluator. `SIZE(x) + 1` and `SIZE(y)` for a
+    `y` that did not cross fall through untouched, so they fail loudly at the
+    compiler rather than being sized by a guess -- and every dimension shape
+    that already worked (`n`, `n, n`, `3`) takes a path this function does not
+    change.
+    """
+    parts = []
+    for part in str(result_dims).split(","):
+        m = _SIZE_OF_ARG.match(part)
+        if m and f"n_{m.group(1)}" in param_names:
+            parts.append(f"n_{m.group(1)}")
+        else:
+            parts.append(part.strip())
+    return ", ".join(parts)
+
+
 def generate_fortran_bridge(
     sig: FortranSignature,
     kind_aliases: Optional[dict] = None,
@@ -1490,11 +1519,31 @@ def generate_fortran_bridge(
     # SIZE(), not a product of the declared extents: a DIMENSION(n, n) with
     # n < 0 is a zero-sized array, not an array of n*n elements, and writing
     # n*n of them would run off the caller's buffer.
+    #
+    # "THE DUMMIES ALREADY IN SCOPE" IS TRUE OF `DIMENSION(n, n)` AND FALSE OF
+    # `DIMENSION(SIZE(x))`, and the difference is this bridge's own ABI rather
+    # than the reference's. The original declares `x` assumed-shape (`x(:)`),
+    # where `SIZE(x)` is exactly the extent; the BRIDGE declares it
+    # assumed-size (`x(*)`), where gfortran refuses it outright --
+    #
+    #   Error: The upper bound in the last dimension must appear in the
+    #          reference to the assumed size array 'x'
+    #
+    # -- so the text that is right in one is a bridge that does not compile in
+    # the other. The extent it means is already a dummy here: `build_c_params`
+    # emits `n_x` beside `x`, and the call below is `unwrap(x(1:n_x), ...)`.
+    # So `SIZE(<arg>)` is rewritten to that parameter, and ONLY when the
+    # parameter exists -- any other dimension text, and any `SIZE()` of
+    # something that did not cross, is left exactly as it was. rosco-r2 unit
+    # #26, `unwrap`; the fourth disagreement between VIT's two generators, and
+    # the second on a RESULT.
     array_result = (sig.is_function and sig.result_is_array
                     and "CHARACTER" not in (sig.result_type or "").upper())
     if array_result and sig.result_dims:
         arr_type = _resolve_fortran_type(sig.result_type, kind_aliases)
-        lines.append(f"        {arr_type}, DIMENSION({sig.result_dims}) :: vit_array_result")
+        lines.append(f"        {arr_type}, "
+                     f"DIMENSION({_bridge_result_dims(sig.result_dims, param_names)})"
+                     f" :: vit_array_result")
 
     # Pre-call conversions
     for conv in pre_call:
