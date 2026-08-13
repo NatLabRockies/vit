@@ -1640,13 +1640,18 @@ def cmd_test_validate(args, config):
     # most of a campaign.
     callee_src = None
     if args.cpp_file and Path(args.cpp_file).is_file():
-        callee_src, callee_notes = generate_callee_bridges(
+        callee_src, callee_notes, callee_decls = generate_callee_bridges(
             Path(args.cpp_file).read_text(), sig.name, config.abs_source_dir,
             config.kind_aliases, derived_types)
         for n in callee_notes:
             print(f"  callee: {n}")
         if callee_src:
             (out_dir / f"{sig.name.lower()}_callees.f90").write_text(callee_src)
+        if callee_decls:
+            # The C++ side of the same bridges. A harness generator includes the
+            # translation and cannot know what it calls; this is where that is
+            # written down.
+            (out_dir / f"{sig.name.lower()}_callees.h").write_text(callee_decls)
 
     # Generate and write Makefile
     cpp_file_abs = str(Path(args.cpp_file).resolve()) if args.cpp_file else None

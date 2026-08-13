@@ -1620,10 +1620,18 @@ def generate_callee_bridges(
     source_dir: str,
     kind_aliases: Optional[dict] = None,
     derived_types: Optional[dict] = None,
-) -> tuple[Optional[str], list[str]]:
+) -> tuple[Optional[str], list[str], Optional[str]]:
     """Fortran BIND(C) bridges for every `<callee>_c` the translation calls.
 
-    Returns (module source or None, notes).
+    Returns (module source or None, notes, C declaration header or None).
+
+    THE HEADER IS NOT OPTIONAL DECORATION. A `<callee>_c` symbol the bridges
+    define still has to be DECLARED on the C++ side, and the harness's test
+    source includes the translation before anything the translation could
+    include itself. Without it the build dies in the translation's own body --
+    `'addtolist_c' was not declared in this scope` -- which reads like a defect
+    in the translation and is not one. Measured at rosco-r2 unit #29, the first
+    unit whose differential harness has a callee at all.
 
     WHY THIS EXISTS. `test-validate` produced a bridge for the unit under test
     and nothing else, so a translation that called another translated function
@@ -1642,7 +1650,8 @@ def generate_callee_bridges(
     generated, is REPORTED and skipped -- the link then fails with a name, which
     is a better outcome than a harness that silently tests something else.
     """
-    from vit.interface_gen import generate_kernel_callee_bridge
+    from vit.interface_gen import (generate_kernel_callee_bridge,
+                                   generate_kernel_callees_header)
 
     names = []
     for m in _CALLEE_CALL.finditer(cpp_text):
@@ -1650,10 +1659,11 @@ def generate_callee_bridges(
         if n.lower() != unit_name.lower() and n not in names:
             names.append(n)
     if not names:
-        return None, []
+        return None, [], None
 
     notes: list[str] = []
     bodies: list[str] = []
+    bridged: list = []
     src_dir = Path(source_dir)
     sources = sorted(src_dir.glob("*.f90")) + sorted(src_dir.glob("*.F90"))
     for name in names:
@@ -1696,11 +1706,14 @@ def generate_callee_bridges(
             notes.append(f"{name}_c: no module recorded for the callee; the bridge "
                          f"will not resolve it")
         bodies.append(body)
+        bridged.append(sig)
         notes.append(f"{name}_c: bridged to Fortran {name}"
                      + (f" (USE {mod})" if mod else ""))
 
     if not bodies:
-        return None, notes
+        return None, notes, None
+
+    decls = generate_kernel_callees_header(bridged, kind_aliases, derived_types)
 
     header = [
         f"! VIT: callee bridges for the {unit_name} test-validate harness.",
@@ -1709,7 +1722,7 @@ def generate_callee_bridges(
         "! attributable to the unit under test.",
         "",
     ]
-    return "\n".join(header + bodies) + "\n", notes
+    return "\n".join(header + bodies) + "\n", notes, decls
 
 
 def generate_test_makefile(
