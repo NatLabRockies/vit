@@ -1651,7 +1651,7 @@ def generate_callee_bridges(
     is a better outcome than a harness that silently tests something else.
     """
     from vit.interface_gen import (generate_kernel_callee_bridge,
-                                   generate_kernel_callees_header)
+                                   generate_callee_declarations_header)
 
     names = []
     for m in _CALLEE_CALL.finditer(cpp_text):
@@ -1713,7 +1713,7 @@ def generate_callee_bridges(
     if not bodies:
         return None, notes, None
 
-    decls = generate_kernel_callees_header(bridged, kind_aliases, derived_types)
+    decls = generate_callee_declarations_header(bridged, kind_aliases, derived_types)
 
     header = [
         f"! VIT: callee bridges for the {unit_name} test-validate harness.",
