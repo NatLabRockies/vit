@@ -834,6 +834,48 @@ TOOL_GAPS: dict = {
 
 # ---------------------------------------------------------------------- API
 
+def procedure_slice(fortran: str, name: str) -> Optional[str]:
+    """The text of ONE procedure, its declaration line included, or None.
+
+    THE FORTRAN-READING CHECKS COMPARE A TRANSLATION AGAINST A PROCEDURE, AND
+    THEY WERE BEING HANDED A FILE. Ten of the fifteen entries in REGISTRY set
+    `needs_fortran`, and every one of them asks a question of the form "the
+    reference does X, does the translation?" -- so a sibling procedure in the
+    same file answers a question nobody asked. Measured on rosco-r2 `FindLine`,
+    whose body contains no SCAN, INDEX or VERIFY at all: `delimiter-set` fired
+    on `INDEX( GivenFil, '\\', BACK=.TRUE. )` from `GetPath`, 900 lines away in
+    ROSCO_Helpers.f90, and reported the backslash as missing from a translation
+    that has no reason to contain one.
+
+    It is a FALSE POSITIVE THAT LOOKS LIKE A TRUE ONE, which is the expensive
+    kind: the finding names a real Fortran literal and a real absence, and only
+    reading the reference tells you they belong to different procedures. Every
+    ROSCO_Helpers unit before this one happened to be clean because it happened
+    to use the same separators -- `GetPath` and `GetRoot` both carry `'\\/'` --
+    so the defect had been latent for eight units in that file.
+
+    Returns None when no such procedure is in the text, and the caller then
+    falls back to the whole file AND SAYS SO: a slice that silently missed would
+    turn ten checks off without a word, which is worse than the noise it fixes.
+    """
+    lines = fortran.split("\n")
+    start = None
+    for i, line in enumerate(lines):
+        code = line.split("!", 1)[0].upper()
+        # A definition, not `END SUBROUTINE <name>` and not `CALL <name>`.
+        if re.search(rf"(?<!END )\b(?:SUBROUTINE|FUNCTION)\s+{re.escape(name.upper())}\s*\(",
+                     code):
+            start = i
+            break
+    if start is None:
+        return None
+    for j in range(start + 1, len(lines)):
+        code = lines[j].split("!", 1)[0].upper()
+        if re.match(r"\s*END\s+(?:SUBROUTINE|FUNCTION)\b", code):
+            return "\n".join(lines[start:j + 1])
+    return "\n".join(lines[start:])
+
+
 def is_unimplemented_scaffold(cpp: str) -> bool:
     """True for a `vit translate` scaffold nobody has written yet.
 

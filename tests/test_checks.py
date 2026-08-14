@@ -289,3 +289,41 @@ def test_the_translate_prompt_carries_the_generated_section():
         sig=parse_signature_from_source(src, "Sq"), fortran_source_text=src)
     for check in REGISTRY:
         assert check.prompt_line in prompt, f"{check.id} absent from translate prompt"
+
+
+def test_a_fortran_reading_check_is_scoped_to_one_procedure():
+    """A sibling procedure in the same file must not supply the Fortran half of
+    a finding.
+
+    Measured on rosco-r2 FindLine: it has no SCAN/INDEX/VERIFY at all and
+    `delimiter-set` fired on GetPath's `INDEX( GivenFil, '\\', BACK=.TRUE. )`,
+    900 lines away in ROSCO_Helpers.f90. The finding named a real Fortran
+    literal and a real absence, and both belonged to different procedures.
+    """
+    two = ("SUBROUTINE Clean(S)\n"
+           "    CHARACTER(*) :: S\n"
+           "    S = S\n"
+           "END SUBROUTINE Clean\n"
+           "SUBROUTINE Split(Line)\n"
+           "    N = SCAN( Line, ' ,' )\n"
+           "END SUBROUTINE Split\n")
+    innocent = "void Clean(char* S, int n) { for (int i = 0; i < n; ++i) S[i] = S[i]; }\n"
+
+    # Whole file: the SCAN in Split is read against Clean's translation.
+    assert any(f.check_id == "delimiter-set" for f in run(fortran=two, cpp=innocent))
+
+    # Scoped to Clean: nothing to compare, so nothing to report.
+    scoped = checks.procedure_slice(two, "Clean")
+    assert scoped is not None and "SCAN" not in scoped
+    assert run(fortran=scoped, cpp=innocent) == []
+
+    # AND THE CHECK IS STILL ALIVE under scoping -- a slice that merely turned
+    # it off would pass the assertion above and be worse than the noise.
+    assert checks.procedure_slice(two, "Split") is not None
+    assert any(f.check_id == "delimiter-set"
+               for f in run(fortran=checks.procedure_slice(two, "Split"),
+                            cpp="void Split(char* l) { scan_set(l, \" \"); }\n"))
+
+    # A name that is not there returns None rather than an empty slice, so the
+    # caller can fall back to the whole file and say that it did.
+    assert checks.procedure_slice(two, "Absent") is None

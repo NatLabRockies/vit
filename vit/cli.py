@@ -805,6 +805,20 @@ def cmd_check(args):
               f"translation yet")
         return 0
 
+    # The checks compare a translation against a PROCEDURE. Handing them the
+    # whole file lets a sibling procedure supply the Fortran half of a finding
+    # -- see checks.procedure_slice. Narrow to the one being translated, and say
+    # which text was read either way, because a slice that silently missed would
+    # turn ten checks off without a word.
+    scoped = checks.procedure_slice(fortran_text, name) if fortran_text else None
+    if fortran_text:
+        if scoped is None:
+            print(f"  ~ Fortran scope: WHOLE FILE — no SUBROUTINE/FUNCTION "
+                  f"{name} found in {args.file}; a finding may belong to a "
+                  f"sibling procedure")
+        else:
+            fortran_text = scoped
+
     rep = checks.report(fortran=fortran_text, cpp=cpp_text)
 
     for f in rep.findings:
