@@ -2069,16 +2069,37 @@ def generate_kernel_callee_bridge(
         Complete Fortran source for the bridge function
     """
 
-    # CHARACTER-valued results are supported in the forward direction (the
-    # translated function returns through an output buffer) but NOT here. A
-    # bridge would have to stage the Fortran CHARACTER result into a C_CHAR
-    # array and blank-pad it, and none of the code below does that. Fail loudly
-    # rather than emit a bridge that compiles and truncates.
-    if result_char_len(sig, kind_aliases, derived_types):
+    # A SCALAR CHARACTER-VALUED RESULT IS NOW STAGED, which is the extension
+    # the refusal that used to stand here named as its own way out.
+    #
+    # `_build_interface_args` already emits the result buffer dummy
+    # (`CHARACTER(KIND=C_CHAR), INTENT(OUT) :: <Func>_result(*)`) and
+    # `build_c_params` already emits `char* <Func>_result`, so the C signature
+    # was never the missing piece -- what was missing was three lines of
+    # Fortran between the call and that buffer: a local of the RESULT's own
+    # declared width, the assignment into it, and a byte copy out. The full
+    # declared width is copied, not LEN_TRIM, for the reason the argument
+    # writeback below states.
+    #
+    # Refused still, and narrowly: an ARRAY-valued CHARACTER result, whose
+    # extent is a second number nothing here reads. That keeps the loud failure
+    # for the shape that has not been measured.
+    #
+    # Found at rosco-r2 unit #30. `ChkParseData` calls `Int2LStr`, a
+    # `CHARACTER(11)` FUNCTION, so the refusal removed the callee from the
+    # generated declarations header and the harness failed to COMPILE on
+    # `int2lstr_c was not declared in this scope` -- an error about the
+    # translation's own body, three layers away from its cause. The advice the
+    # message gave ("translate the callee first") was already satisfied: unit
+    # #10 translated it. Linking that translation instead is what the bridge
+    # exists to prevent -- it would put C++ `Int2LStr` on one side and Fortran
+    # `Int2LStr` on the other, where a compensating pair of errors cancels.
+    result_char_width = result_char_len(sig, kind_aliases, derived_types)
+    if result_char_width and getattr(sig, "result_is_array", False):
         raise NotImplementedError(
-            f"Callee bridge for '{sig.name}' returns CHARACTER, which is not yet "
-            f"supported. Translate the callee first, or extend "
-            f"generate_kernel_callee_bridge() to stage the result buffer."
+            f"Callee bridge for '{sig.name}' returns an ARRAY of CHARACTER, "
+            f"which is not yet supported. Its element count is a second extent "
+            f"nothing here reads; extend generate_kernel_callee_bridge()."
         )
     lines = []
     c_func_name = sig.c_func_name
@@ -2124,6 +2145,15 @@ def generate_kernel_callee_bridge(
 
     # For array-returning functions, identify the result buffer and size params.
     # The result buffer parameter is already added by _build_interface_args (line 848+).
+    # The CHARACTER result's staging local and the C buffer it is copied into.
+    # Named here, beside the array-result block, because it is the same idea:
+    # a result that crosses as an OUT parameter rather than as a return value.
+    result_char_buffer = (f"{sig.name}_result"
+                          if (sig.is_function and result_char_width
+                              and not sig.result_is_array) else None)
+    result_char_local = f"vit_result_{sig.name.lower()}"
+    result_char_index = f"vit_ri_{sig.name.lower()}"
+
     result_buffer_name = None
     result_size_param = None
     if sig.is_function and sig.result_is_array:
@@ -2203,6 +2233,12 @@ def generate_kernel_callee_bridge(
         else:
             lines.append(f"        INTEGER :: vit_i_{arg.name}")
 
+    # The CHARACTER RESULT's staging local, of the FUNCTION's own declared
+    # width -- not the buffer's, which is assumed-size `(*)` and states nothing.
+    if result_char_buffer:
+        lines.append(f"        CHARACTER({result_char_width}) :: {result_char_local}")
+        lines.append(f"        INTEGER :: {result_char_index}")
+
     # Convert C struct pointers to Fortran pointers (regular structs only)
     if struct_args:
         lines.append(f"        ! Convert C pointers to Fortran pointers")
@@ -2265,6 +2301,15 @@ def generate_kernel_callee_bridge(
     def _make_call(func_name, args_str, is_function, result_name=None,
                    ret_mapping=None):
         """Generate a single CALL or assignment line."""
+        if result_char_buffer:
+            # A CHARACTER-valued FUNCTION. `result_is_out_param` is true for it,
+            # so every one of the three dispatch sites below reaches this
+            # helper with `is_function=False` and would otherwise emit
+            # `CALL Int2LStr(...)` -- a hard compile error on a FUNCTION, which
+            # is the safe direction but not the right one. Tested first, and on
+            # the buffer's name rather than on the flag, so the three sites need
+            # no edit.
+            return f"        {result_char_local} = {func_name}({args_str})"
         if is_function and sig.result_is_array:
             # Array-returning function: assign result to output buffer
             size_expr = result_size_param or "SIZE(alpha)"
@@ -2354,6 +2399,18 @@ def generate_kernel_callee_bridge(
             lines.append(f"        DO vit_i_{arg.name} = 1, {len_expr}")
             lines.append(f"            {arg.name}(vit_i_{arg.name}) = local_{arg.name}(vit_i_{arg.name}:vit_i_{arg.name})")
             lines.append(f"        END DO")
+
+    # Copy the staged CHARACTER RESULT into the caller's buffer. All
+    # `result_char_width` bytes, for the reason the argument writeback gives:
+    # a Fortran CHARACTER result is blank-padded to its declared width, and
+    # stopping at the last non-blank would leave the caller's old bytes visible
+    # past the end of a shorter result.
+    if result_char_buffer:
+        lines.append(f"        ! Copy the CHARACTER function result back to the C buffer")
+        lines.append(f"        DO {result_char_index} = 1, {result_char_width}")
+        lines.append(f"            {result_char_buffer}({result_char_index}) = &")
+        lines.append(f"                {result_char_local}({result_char_index}:{result_char_index})")
+        lines.append(f"        END DO")
 
     if sig.is_function and not result_is_out_param(sig, kind_aliases, derived_types):
         lines.append(f"    END FUNCTION {bridge_name}")
