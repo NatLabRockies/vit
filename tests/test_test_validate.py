@@ -889,3 +889,40 @@ class TestFortranLineWrapping:
         assert len(out) == 2
         assert all(len(l) <= 132 for l in out)
         assert out[0].endswith("&")
+
+
+def test_bridge_and_abi_agree_about_extent_order():
+    """An assumed-shape CHARACTER array crosses as `char* X, int n_X, int len_X`,
+    and the test-validate bridge must declare the two extents in THAT order.
+
+    It did not. `build_c_params` -- the ABI `vit interface` compiles into the
+    shipped wrapper and the translation's own prototype follows -- emits the
+    COUNT then the WIDTH; the bridge emitted the width then the count. C linkage
+    checks nothing, so the transposition arrived as a wrong ANSWER rather than a
+    link error: rosco-r2 unit #32 `FindLine`, 47 of 2358 differential cases
+    disagreeing on `LineNum` and `Line`, with the reference's `LineNum` equal to
+    `len_FileLines` on every one -- `DO I = 1, SIZE(FileLines)` running over the
+    element WIDTH because it had been handed the width as its count.
+    """
+    from vit.fortran_parser import parse_signature_from_source
+    from vit.interface_gen import build_c_params
+    from vit.test_validate import generate_fortran_bridge
+
+    src = ("SUBROUTINE Pick(Lines, Name, Num)\n"
+           "    CHARACTER(*), INTENT(IN), DIMENSION(:) :: Lines\n"
+           "    CHARACTER(*), INTENT(IN) :: Name\n"
+           "    INTEGER, INTENT(OUT) :: Num\n"
+           "END SUBROUTINE Pick\n")
+    sig = parse_signature_from_source(src, "Pick")
+
+    abi = [n for _, n in build_c_params(sig)]
+    assert abi.index("n_Lines") < abi.index("len_Lines"), abi
+
+    bridge = generate_fortran_bridge(sig)
+    decl = bridge.split("BIND(C")[0]
+    assert decl.index("n_Lines") < decl.index("len_Lines"), decl
+
+    # And the guard inside the generator fires rather than shipping a
+    # disagreement, so the next shape is not found the way this one was.
+    assert "disagree about extent ORDER" in \
+        __import__("inspect").getsource(generate_fortran_bridge)

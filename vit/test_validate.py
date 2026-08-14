@@ -1273,14 +1273,30 @@ def generate_fortran_bridge(
             c_params.append(
                 (f"        CHARACTER(KIND=C_CHAR), INTENT({intent}) :: {arg.name}_c(*)",
                  f"{arg.name}_c"))
-            if _len_is_param:
-                c_params.append(
-                    (f"        INTEGER(C_INT), VALUE, INTENT(IN) :: len_{arg.name}",
-                     f"len_{arg.name}"))
             # A CHARACTER ARRAY dummy has a second, independent size. Dropping
             # it produced a bridge declaring a CHARACTER SCALAR where the
             # function takes an array -- which does not even match the
             # function's interface, so the whole class was unbridgeable.
+            #
+            # THE COUNT COMES BEFORE THE LENGTH, and the order is not a choice:
+            # `build_c_params` emits `T* <x>`, then `n_<x>` for an assumed-shape
+            # array, then `len_<x>` for a `CHARACTER(*)`. This branch emitted
+            # the length first, so for an ASSUMED-SHAPE CHARACTER ARRAY the
+            # bridge's two extents were TRANSPOSED against the ABI the shipped
+            # wrapper uses -- on a C linkage no linker checks.
+            #
+            # It fails silently and it does not look like a marshalling bug.
+            # rosco-r2 unit #32 `FindLine`, whose `FileLines(:)` is the first
+            # dummy of this shape in the campaign: 47 of 2358 differential cases
+            # disagreed, all on `LineNum` and `Line`, and the reference's
+            # `LineNum` was exactly `len_FileLines` on every one of them --
+            # `DO I = 1, SIZE(FileLines)` running over the WIDTH. A case with
+            # width 4 and count 3 was read by the reference as four elements of
+            # three characters, which is a well-formed array of the wrong shape,
+            # so nothing crashed and 2311 cases still agreed.
+            #
+            # `_c_param_names` below now asserts this agreement for every unit
+            # rather than leaving the next shape to be found the same way.
             count_expr = None
             if getattr(arg, "is_array", False):
                 if getattr(arg, "is_assumed_shape", False) or not arg.array_dims:
@@ -1293,6 +1309,10 @@ def generate_fortran_bridge(
                     # (Words(NumWords)); that dummy is already a bridge
                     # parameter and is declared before the locals.
                     count_expr = arg.array_dims
+            if _len_is_param:
+                c_params.append(
+                    (f"        INTEGER(C_INT), VALUE, INTENT(IN) :: len_{arg.name}",
+                     f"len_{arg.name}"))
             if count_expr:
                 local_decls.append(
                     f"        CHARACTER({len_expr}) :: {arg.name}({count_expr})")
@@ -1452,6 +1472,44 @@ def generate_fortran_bridge(
 
     # Build the bridge parameter names (for the SUBROUTINE declaration)
     param_names = [name for _, name in c_params]
+
+    # THE TWO GENERATORS MUST AGREE ABOUT EXTENT ORDER, AND NOW THEY ARE ASKED.
+    #
+    # `build_c_params` defines the ABI: it is what `vit interface` compiles into
+    # the shipped wrapper and what the translation's own prototype follows. This
+    # bridge is a SECOND spelling of the same call, restated by hand, and the
+    # two disagreed for an assumed-shape CHARACTER array -- `n_<x>` before
+    # `len_<x>` there, `len_<x>` before `n_<x>` here. C linkage checks nothing,
+    # so the transposition arrived as a wrong ANSWER: rosco-r2 unit #32
+    # `FindLine`, 47 of 2358 differential cases, the reference iterating over
+    # the element WIDTH because it had been handed the width as its count.
+    #
+    # Only the extents are compared, and only those BOTH lists carry: a
+    # decomposed derived type puts names in this list that the ABI has no
+    # counterpart for (it passes one `TYPE(C_PTR)`), and that difference is
+    # deliberate rather than drift. What remains is exactly the quantity that
+    # went wrong, and the error NAMES it (rosco-r2 unit #29's rule: an error
+    # that names its parameter costs one pass, one that does not costs three).
+    try:
+        abi_names = [n for _, n in build_c_params(sig, kind_aliases, derived_types)]
+    except Exception:                                    # pragma: no cover
+        abi_names = None
+    if abi_names:
+        def _extents(names, keep):
+            return [n for n in names
+                    if (n.startswith("n_") or n.startswith("len_")) and n in keep]
+        bridge_ext = set(n for n in param_names
+                         if n.startswith("n_") or n.startswith("len_"))
+        abi_ext = set(n for n in abi_names
+                      if n.startswith("n_") or n.startswith("len_"))
+        both = bridge_ext & abi_ext
+        mine, theirs = _extents(param_names, both), _extents(abi_names, both)
+        if mine != theirs:
+            raise ValueError(
+                f"{sig.name}: the test-validate bridge and build_c_params "
+                f"disagree about extent ORDER -- bridge {mine}, ABI {theirs}. "
+                f"The ABI is what ships; this bridge must follow it, or every "
+                f"case is compared against a differently-shaped argument.")
 
     lines.extend(_wrapped_dummy_list(
         f"    SUBROUTINE {bridge_name}(", param_names, ") &"))
