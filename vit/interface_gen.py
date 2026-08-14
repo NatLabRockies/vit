@@ -2574,9 +2574,37 @@ def generate_callee_declarations_header(
     #
     #   int32_t      -- every bridged LOGICAL result
     #   CFI_cdesc_t  -- every ALLOCATABLE dummy, i.e. exactly `cfi_args(sig)`
+    #
+    # THERE IS A THIRD, and the comment above enumerated two because no callee
+    # had yet taken the shape. `build_c_params` renders a DERIVED-TYPE dummy as
+    # `<typename>_t*` whenever `derived_types` is supplied, and those structs
+    # live in `vit_types.h` -- which every consumer of this header already has
+    # beside it (kernel_verify.py writes it into the kernel dir, cli.py into
+    # the test-validate dir). Found on rosco-r2 unit #34, `PIDController`,
+    # whose callee `LPFilter` takes a `TYPE(FilterParameters)`:
+    #
+    #   pidcontroller_callees.h:14: error: 'filterparameters_t' has not been
+    #   declared ... note: initializing argument 4 of 'double lpfilter_c(
+    #   double, double, double, int*, ...)'
+    #
+    # g++ recovers by reading the unknown type as `int`, so the DIAGNOSTIC a
+    # C++ consumer gets is about the argument and not about the header; a C
+    # consumer would take the implicit int and link.
+    #
+    # The include is the guarded form `vit integrate` has always written into
+    # `vit_translated.h` (integrate.py), copied rather than restated: the
+    # header can legitimately not exist yet for a pure-scalar leaf.
     lines.append("#include <stdint.h>")
     if any(cfi_args(sig) for sig in callee_sigs):
         lines.append("#include <ISO_Fortran_binding.h>")
+    lines.append("")
+    lines.append("#if defined(__has_include)")
+    lines.append('#  if __has_include("vit_types.h")')
+    lines.append('#    include "vit_types.h"')
+    lines.append("#  endif")
+    lines.append("#else")
+    lines.append('#  include "vit_types.h"')
+    lines.append("#endif")
     lines.append("")
 
     lines.append('#ifdef __cplusplus')
