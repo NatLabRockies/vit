@@ -316,13 +316,36 @@ def _nested_type_use_statements(copied_uses: set, local_decls: list[str]) -> lis
         return []
 
     # Which copied statements restrict what they import, and which module does
-    # each name come from. A bare `USE M` is unrestricted: nothing to add.
+    # each name come from.
+    #
+    # AN UNRESTRICTED `USE M` PUTS *M's* NAMES IN SCOPE, NOT EVERY NAME. This
+    # used to `return []` the moment any unrestricted USE appeared, on the
+    # reasoning that it made every name accessible -- and that is false for the
+    # ordinary shape, measured on ROSCO's `PreFilterMeasuredSignals`: the bridge
+    # copies `USE Constants` and `USE Functions` (both unrestricted, neither
+    # re-exporting a type) beside `USE ROSCO_Types, ONLY : ControlParameters,
+    # LocalVariables, DebugVariables, ObjectInstances, ErrorVariables`, then
+    # declares POINTERs to the five NESTED types that ONLY list does not name:
+    #
+    #   Error: Derived type 'filterparameters' at (1) is being used before it
+    #          is defined
+    #
+    # An unrestricted USE of the TYPES module itself still suppresses the
+    # addition, which is the case the original reasoning was right about, so no
+    # bridge that compiled before gains a line.
     restricted: list[tuple[str, set]] = []
+    unrestricted: set[str] = set()
     for stmt in copied_uses:
         m = re.match(r'\s*USE\s*(?:,\s*[^:]+::)?\s*(\w+)\s*,\s*ONLY\s*:(.*)$',
                      stmt, re.IGNORECASE)
         if not m:
-            return []          # an unrestricted USE is present; every name is in scope
+            bare = re.match(r'\s*USE\s*(?:,\s*[^:]+::)?\s*(\w+)\s*$',
+                            stmt.rstrip().rstrip(","), re.IGNORECASE)
+            if bare:
+                unrestricted.add(bare.group(1).upper())
+            else:
+                return []      # a shape this rule cannot read; add nothing
+            continue
         names = {n.strip().split("=>")[-1].strip().upper()
                  for n in m.group(2).split(",") if n.strip()}
         restricted.append((m.group(1), names))
@@ -337,6 +360,8 @@ def _nested_type_use_statements(copied_uses: set, local_decls: list[str]) -> lis
     # statement that imported the argument types, and a nested field's type is
     # declared beside them by construction.
     module = max(restricted, key=lambda r: len(r[1]))[0]
+    if module.upper() in unrestricted:
+        return []              # already in scope through `USE <module>`
     return [f"        USE {module}, ONLY : {', '.join(missing)}"]
 
 
