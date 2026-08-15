@@ -635,9 +635,7 @@ def generate_view_populator(
         lines.append(f"        INTEGER :: i")
     lines.append(f"")
     if unhandled:
-        lines.append(f"        ERROR STOP 'VIT: {direct_in}: {', '.join(unhandled)} "
-                     f"is an ALLOCATABLE, POINTER or derived-type field, and the "
-                     f"direct-caller conversion has not been measured on one'")
+        lines.extend(_unmeasured_field_stop(direct_in, unhandled))
     for f in type_info.fields:
         if f.is_allocatable or f.is_pointer:
             continue
@@ -670,9 +668,7 @@ def generate_view_populator(
         lines.append(f"        INTEGER :: vit_k")
     lines.append(f"")
     if unhandled:
-        lines.append(f"        ERROR STOP 'VIT: {direct_out}: {', '.join(unhandled)} "
-                     f"is an ALLOCATABLE, POINTER or derived-type field, and the "
-                     f"direct-caller conversion has not been measured on one'")
+        lines.extend(_unmeasured_field_stop(direct_out, unhandled))
     for f in type_info.fields:
         if f.is_allocatable or f.is_pointer:
             continue
@@ -708,6 +704,36 @@ def generate_view_populator(
     lines.append(f"")
 
     return "\n".join(lines)
+
+
+def _unmeasured_field_stop(sub_name: str, fields: list) -> list:
+    """`ERROR STOP` for a field kind the direct-caller pair does not convert.
+
+    THE FIELD NAMES GO IN A COMMENT AND NOT IN THE LITERAL. Free-form Fortran
+    truncates a source line at 132 characters, and gfortran is invoked here with
+    `-Werror=line-truncation`, so a message carrying the field list DOES NOT
+    COMPILE for any type with more than two or three of them. Measured on VIT's
+    own conformance fixture, which is the only reason it was caught at all:
+    `AllocType`, `CharFieldType` and `NestedType` each flipped from
+    `integrates = yes` to `integrates = no` on `Cannot open module file
+    vit_<t>_view.mod` -- a missing .mod, three cells away from the line that
+    caused it. Unit #5's 132-column bridge-generator finding, one generator over.
+
+    So the literal names only the SUBROUTINE, which is bounded by the type name,
+    and the fields are listed in wrapped comments above it where a long list
+    costs nothing.
+    """
+    out = ["        ! The direct-caller conversion is not measured on these field(s):"]
+    line = "        !  "
+    for f in fields:
+        if len(line) + len(f) + 2 > 100:
+            out.append(line)
+            line = "        !  "
+        line += f + ", "
+    out.append(line.rstrip(", "))
+    out.append(f"        ERROR STOP 'VIT: {sub_name}: an unmeasured field kind; "
+               f"see the comment above'")
+    return out
 
 
 def _field_to_iso_c_decl(f: DerivedTypeField, kind_aliases: Optional[dict]) -> Optional[str]:
