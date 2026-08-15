@@ -1391,9 +1391,47 @@ def generate_fortran_bridge(
             # hardcoded REAL(C_DOUBLE), so every REAL(ReKi) or REAL(SiKi)
             # argument -- REAL(4) in ROSCO -- got a REAL(8) dummy.
             c_type = _iso_c_for(fortran_type, kind_aliases)
-            c_params.append((f"        {c_type}, INTENT({intent}) :: {arg.name}(*)", arg.name))
-            c_params.append((f"        INTEGER(C_INT), VALUE, INTENT(IN) :: n_{arg.name}", f"n_{arg.name}"))
-            call_args.append(f"{arg.name}(1:n_{arg.name})")
+            rank = getattr(arg, "array_rank", 1) or 1
+            if rank == 1:
+                c_params.append((f"        {c_type}, INTENT({intent}) :: {arg.name}(*)", arg.name))
+                c_params.append((f"        INTEGER(C_INT), VALUE, INTENT(IN) :: n_{arg.name}", f"n_{arg.name}"))
+                call_args.append(f"{arg.name}(1:n_{arg.name})")
+            elif rank == 2:
+                # A RANK-2 assumed-shape dummy took the rank-1 spelling above
+                # until rosco-r2 unit #45: `zData(1:n_zData)` against
+                # `zData(:,:)` is "Rank mismatch in argument 'zdata' (rank-2 and
+                # rank-1)", and the two generators disagreed about the parameter
+                # list as well -- `build_c_params` has always emitted
+                # `n_<x>_rows` and `n_<x>_cols` for this argument, so the C++
+                # side passed two extents into a bridge declaring one.
+                #
+                # The spelling is COPIED from `interface_gen._build_bridge_call_args`,
+                # which has emitted exactly this RESHAPE for the kernel bridge
+                # since before this cell was measured, rather than invented here:
+                # two generators that disagree about a calling convention is the
+                # defect this branch closes, and a second spelling would be a
+                # second chance at it.
+                if intent != "IN":
+                    raise ValueError(
+                        f"{arg.name}: a rank-2 assumed-shape dummy with "
+                        f"INTENT({intent}) is REFUSED. The call below passes a "
+                        f"RESHAPE, which is an expression and therefore a COPY, "
+                        f"so anything the callee writes into it would be "
+                        f"discarded silently. Only INTENT(IN) is measured.")
+                c_params.append((f"        {c_type}, INTENT({intent}) :: {arg.name}(*)", arg.name))
+                c_params.append((f"        INTEGER(C_INT), VALUE, INTENT(IN) :: n_{arg.name}_rows",
+                                 f"n_{arg.name}_rows"))
+                c_params.append((f"        INTEGER(C_INT), VALUE, INTENT(IN) :: n_{arg.name}_cols",
+                                 f"n_{arg.name}_cols"))
+                call_args.append(
+                    f"RESHAPE({arg.name}(1:n_{arg.name}_rows*n_{arg.name}_cols), "
+                    f"(/ n_{arg.name}_rows, n_{arg.name}_cols /))")
+            else:
+                raise ValueError(
+                    f"{arg.name}: a rank-{rank} assumed-shape dummy is REFUSED. "
+                    f"Rank 1 and rank 2 are the shapes this bridge has been "
+                    f"measured on; a rank-{rank} dummy needs {rank} extents and "
+                    f"no generator in this tool emits them.")
         elif arg.is_array:
             # Assumed-SIZE `avrSWAP(*)` and explicit-shape arrays. Neither is
             # assumed-shape, so both fell through to the SCALAR branches below
