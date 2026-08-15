@@ -2195,7 +2195,8 @@ def generate_kernel_callee_bridge(
             view_type = f"{type_lower}_view_t"
             populator = f"vit_populate_{type_lower}"
             reverse_copy = f"vit_copy_scalars_to_{type_lower}"
-            lines.append(f"        USE {module_name}, ONLY: {stash_name}, {view_type}, {populator}, {reverse_copy}")
+            lines.append(f"        USE {module_name}, ONLY: {stash_name}, {view_type}, {populator}, {reverse_copy}, &")
+            lines.append(f"            vit_direct_{type_lower}, vit_view_in_{type_lower}, vit_view_out_{type_lower}")
         else:
             lines.append(f"        USE {module_name}, ONLY: {stash_name}")
     lines.append(f"        IMPLICIT NONE")
@@ -2219,6 +2220,9 @@ def generate_kernel_callee_bridge(
         if arg.intent and arg.intent.value.upper() in ("INOUT", "OUT"):
             type_lower = mapping.c_type.lower()
             lines.append(f"        TYPE({type_lower}_view_t), POINTER :: {arg.name}_view")
+            # Whether THIS call arrived without a wrapper. See the block that
+            # sets it, below.
+            lines.append(f"        LOGICAL :: vit_direct_{arg.name}")
 
     # Stage every CHARACTER argument through a local of the callee's own shape.
     # These are automatic objects: their length and extent come from this
@@ -2268,7 +2272,28 @@ def generate_kernel_callee_bridge(
             stash_name = f"vit_original_{type_lower}"
             reverse_copy = f"vit_copy_scalars_to_{type_lower}"
             lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_view)")
-            lines.append(f"        CALL {reverse_copy}({arg.name}_view, {stash_name})")
+            # THE STASH IS SET BY A WRAPPER, AND A DIRECT C++ CALLER HAS NONE.
+            # `vit_original_<t>` is assigned by the integration wrapper and by
+            # the kernel wrapper before either calls the C++. The differential
+            # harness calls the translation DIRECTLY, so on that path the stash
+            # is NULL and the line below dereferences it. Measured on rosco-r2
+            # unit #45 `interp2d`: segfault on case 0, the first unit in that
+            # campaign whose harness kept a callee bridge taking a view type.
+            #
+            # In the direct case the conversions must also read and write the
+            # CALLER'S OWN buffers rather than the module staging buffer, which
+            # only a wrapper's `vit_populate_<t>` fills -- with the stash alone
+            # repaired, 123 of 1117 cases disagreed on the deferred-length
+            # CHARACTER field and its length. `vit_view_in_<t>` /
+            # `vit_view_out_<t>` are that pair, and they are additive: when a
+            # wrapper HAS set the stash nothing here changes.
+            lines.append(f"        vit_direct_{arg.name} = .NOT. ASSOCIATED({stash_name})")
+            lines.append(f"        IF (vit_direct_{arg.name}) THEN")
+            lines.append(f"            {stash_name} => vit_direct_{type_lower}")
+            lines.append(f"            CALL vit_view_in_{type_lower}({arg.name}_view, {stash_name})")
+            lines.append(f"        ELSE")
+            lines.append(f"            CALL {reverse_copy}({arg.name}_view, {stash_name})")
+            lines.append(f"        END IF")
 
     # Seed the CHARACTER locals from the C buffers. Done for EVERY intent,
     # including OUT: a Fortran callee is not required to assign every byte of
@@ -2378,7 +2403,15 @@ def generate_kernel_callee_bridge(
             stash_name = f"vit_original_{type_lower}"
             populator = f"vit_populate_{type_lower}"
             lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_view)")
-            lines.append(f"        CALL {populator}({stash_name}, {arg.name}_view)")
+            lines.append(f"        IF (vit_direct_{arg.name}) THEN")
+            # NULLIFY so the next call re-detects rather than inheriting this
+            # one's answer: a bridge that ran once without a wrapper would
+            # otherwise look wrapper-driven for the rest of the process.
+            lines.append(f"            CALL vit_view_out_{type_lower}({stash_name}, {arg.name}_view)")
+            lines.append(f"            NULLIFY({stash_name})")
+            lines.append(f"        ELSE")
+            lines.append(f"            CALL {populator}({stash_name}, {arg.name}_view)")
+            lines.append(f"        END IF")
 
     # Copy the staged CHARACTER locals back to the C buffers. The full declared
     # width, not LEN_TRIM: Fortran CHARACTER is blank-padded and fixed width,

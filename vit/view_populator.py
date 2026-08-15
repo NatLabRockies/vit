@@ -190,11 +190,22 @@ def generate_view_populator(
     lines.append(f"    PRIVATE")
     stash_name = f"vit_original_{name_lower}"
     reverse_name = f"vit_copy_scalars_to_{name_lower}"
+    direct_stash = f"vit_direct_{name_lower}"
+    direct_in = f"vit_view_in_{name_lower}"
+    direct_out = f"vit_view_out_{name_lower}"
     lines.append(f"    PUBLIC :: {view_type_name}, {sub_name}, {reverse_name}, {stash_name}")
+    lines.append(f"    PUBLIC :: {direct_stash}, {direct_in}, {direct_out}")
     lines.append(f"")
     lines.append(f"    ! Kernel stash: pointer to original Fortran type, set by wrapper before calling C++.")
     lines.append(f"    ! Callee bridges USE this to pass the original type to Fortran callees.")
     lines.append(f"    TYPE({name}), POINTER, SAVE :: {stash_name} => NULL()")
+    lines.append(f"")
+    lines.append(f"    ! DIRECT-CALLER ORIGINAL. The stash above is set by an integration or")
+    lines.append(f"    ! kernel WRAPPER before it calls the C++. A C++ caller with NO wrapper --")
+    lines.append(f"    ! the differential harness calls the translation directly -- leaves it")
+    lines.append(f"    ! NULL, and a callee bridge that passes it dereferences a null pointer.")
+    lines.append(f"    ! This is the object the bridge points it at in that case.")
+    lines.append(f"    TYPE({name}), TARGET, SAVE :: {direct_stash}")
     # Module-level SAVE arrays for ALLOCATABLE TYPE() view fields
     for field_name, child_info in view_type_alloc_fields.items():
         child_lower = child_info.name.lower()
@@ -581,6 +592,118 @@ def generate_view_populator(
     lines.append(f"")
     lines.append(f"    END SUBROUTINE {reverse_name}")
     lines.append(f"")
+
+    # --- The DIRECT-CALLER pair -------------------------------------------
+    #
+    # Everything above moves a deferred-length CHARACTER field through the
+    # module staging buffer, because in the wrapper path the wrapper's own
+    # `vit_populate_<t>` fills that buffer first and hands the C++ a pointer
+    # INTO it. A callee bridge reached from a DIRECT C++ caller has no such
+    # call in front of it: the staging buffer is unallocated, so the reverse
+    # copy silently leaves the field alone, and the populator on the way out
+    # REPOINTS `view%<f>` away from the buffer the caller owns.
+    #
+    # These two do the same conversions against the CALLER'S OWN buffer, and
+    # leave its pointer and capacity untouched. They are additive -- nothing
+    # above changes -- so no already-generated wrapper or kernel bridge moves.
+    #
+    # Measured on rosco-r2 unit #45 `interp2d`, the campaign's first
+    # differential harness whose callee takes a view type: the bridge
+    # segfaulted on case 0 dereferencing the null stash, and with the stash
+    # alone repaired 123 of 1117 cases disagreed on `ErrMsg` and `n_ErrMsg`.
+    #
+    # A FIELD KIND NEITHER OF THESE HANDLES IS AN `ERROR STOP`, not a silent
+    # skip. They are unreachable except from a direct caller, so an unhandled
+    # kind costs nothing until something actually needs it -- and then it says
+    # so instead of comparing a field nobody filled.
+    _deferred_names = {f.name for f in deferred_char_fields}
+    unhandled = [
+        f.name for f in type_info.fields
+        if f.name not in _deferred_names
+        and (f.is_allocatable or f.is_pointer
+             or f.fortran_type.upper().startswith("TYPE("))
+    ]
+
+    lines.append(f"    SUBROUTINE {direct_in}(view, dest)")
+    lines.append(f"        ! view -> Fortran TYPE, reading the CALLER'S buffers.")
+    lines.append(f"        TYPE({view_type_name}), INTENT(IN) :: view")
+    lines.append(f"        TYPE({name}), INTENT(INOUT) :: dest")
+    if deferred_char_fields:
+        lines.append(f"        CHARACTER(KIND=C_CHAR), POINTER :: vit_buf(:)")
+        lines.append(f"        INTEGER :: vit_k")
+    if has_chars:
+        lines.append(f"        INTEGER :: i")
+    lines.append(f"")
+    if unhandled:
+        lines.append(f"        ERROR STOP 'VIT: {direct_in}: {', '.join(unhandled)} "
+                     f"is an ALLOCATABLE, POINTER or derived-type field, and the "
+                     f"direct-caller conversion has not been measured on one'")
+    for f in type_info.fields:
+        if f.is_allocatable or f.is_pointer:
+            continue
+        if f.fortran_type.upper().startswith("TYPE("):
+            continue
+        reverse = _reverse_scalar_assignment(f, kind_aliases)
+        if reverse:
+            for line in reverse:
+                lines.append(f"        {line}")
+    for f in deferred_char_fields:
+        lines.append(f"        IF (ALLOCATED(dest%{f.name})) DEALLOCATE(dest%{f.name})")
+        lines.append(f"        IF (C_ASSOCIATED(view%{f.name}) .AND. view%n_{f.name} >= 0) THEN")
+        lines.append(f"            CALL C_F_POINTER(view%{f.name}, vit_buf, [INT(view%n_{f.name}_cap)])")
+        lines.append(f"            ALLOCATE(CHARACTER(LEN=view%n_{f.name}) :: dest%{f.name})")
+        lines.append(f"            DO vit_k = 1, view%n_{f.name}")
+        lines.append(f"                dest%{f.name}(vit_k:vit_k) = vit_buf(vit_k)")
+        lines.append(f"            END DO")
+        lines.append(f"        END IF")
+    lines.append(f"")
+    lines.append(f"    END SUBROUTINE {direct_in}")
+    lines.append(f"")
+
+    lines.append(f"    SUBROUTINE {direct_out}(src, view)")
+    lines.append(f"        ! Fortran TYPE -> view, writing INTO the caller's buffer and")
+    lines.append(f"        ! leaving its pointer and capacity exactly as it supplied them.")
+    lines.append(f"        TYPE({name}), INTENT(IN) :: src")
+    lines.append(f"        TYPE({view_type_name}), INTENT(INOUT) :: view")
+    if deferred_char_fields:
+        lines.append(f"        CHARACTER(KIND=C_CHAR), POINTER :: vit_buf(:)")
+        lines.append(f"        INTEGER :: vit_k")
+    lines.append(f"")
+    if unhandled:
+        lines.append(f"        ERROR STOP 'VIT: {direct_out}: {', '.join(unhandled)} "
+                     f"is an ALLOCATABLE, POINTER or derived-type field, and the "
+                     f"direct-caller conversion has not been measured on one'")
+    for f in type_info.fields:
+        if f.is_allocatable or f.is_pointer:
+            continue
+        if f.fortran_type.upper().startswith("TYPE("):
+            continue
+        assignment = _scalar_assignment(f, kind_aliases)
+        if assignment:
+            lines.append(f"        {assignment}")
+    for f in deferred_char_fields:
+        lines.append(f"        IF (C_ASSOCIATED(view%{f.name})) THEN")
+        lines.append(f"            IF (ALLOCATED(src%{f.name})) THEN")
+        lines.append(f"                IF (LEN(src%{f.name}) <= view%n_{f.name}_cap) THEN")
+        lines.append(f"                    CALL C_F_POINTER(view%{f.name}, vit_buf, [INT(view%n_{f.name}_cap)])")
+        lines.append(f"                    DO vit_k = 1, LEN(src%{f.name})")
+        lines.append(f"                        vit_buf(vit_k) = src%{f.name}(vit_k:vit_k)")
+        lines.append(f"                    END DO")
+        lines.append(f"                    view%n_{f.name} = INT(LEN(src%{f.name}), C_INT32_T)")
+        lines.append(f"                ELSE")
+        lines.append(f"                    WRITE(ERROR_UNIT,'(A,I0,A,I0,A)') &")
+        lines.append(f"                        'VIT: {name}%{f.name} of ', LEN(src%{f.name}), &")
+        lines.append(f"                        ' bytes exceeds the ', view%n_{f.name}_cap, &")
+        lines.append(f"                        '-byte buffer the caller supplied; left unchanged'")
+        lines.append(f"                END IF")
+        lines.append(f"            ELSE")
+        lines.append(f"                view%n_{f.name} = -1_C_INT32_T   ! NOT ALLOCATED")
+        lines.append(f"            END IF")
+        lines.append(f"        END IF")
+    lines.append(f"")
+    lines.append(f"    END SUBROUTINE {direct_out}")
+    lines.append(f"")
+
     lines.append(f"END MODULE {module_name}")
     lines.append(f"")
 
