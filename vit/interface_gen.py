@@ -2030,6 +2030,58 @@ def _bridge_char_args(sig, kind_aliases, derived_types):
     return out
 
 
+def bridge_logical_ref_args(sig, kind_aliases, derived_types):
+    """BY-REFERENCE LOGICAL dummies of a CALLEE, seen from inside its bridge.
+
+    The mirror of `_logical_ref_args`, which is about the WRAPPER direction
+    (Fortran caller -> C). Here C is the caller and Fortran the callee, and the
+    same non-compatibility bites from the other side: the bridge's dummy is
+    `INTEGER(C_INT), INTENT(OUT) :: FoundLine`, the callee's is
+    `LOGICAL, INTENT(OUT) :: FoundLine`, and passing one to the other is a hard
+    compile error --
+
+        Error: Type mismatch in argument 'foundline' at (1);
+               passed INTEGER(4) to LOGICAL(4)
+
+    `_build_kernel_callee_call_args` already converts a LOGICAL passed BY VALUE
+    (`(x /= 0)`), and its own comment says the reverse conversion "is the same
+    conversion coming back IN, which the bridge never did" -- but an
+    INTENT(OUT)/INTENT(INOUT) scalar cannot be converted in the call, so it
+    took the "pass directly" branch and went through unconverted. Found on
+    rosco-r2 unit #54 `ParseDbAry_Opt`, whose `FindLine` callee is the first
+    bridged procedure in either campaign with a by-reference LOGICAL.
+
+    The repair is a staging LOGICAL local: seeded from the C integer for IN and
+    INOUT, passed to the callee, and written back as 1/0 for OUT and INOUT.
+    """
+    out = []
+    for arg in sig.args:
+        if arg.is_array or arg.is_derived_type:
+            continue
+        mapping = get_type_mapping(arg.fortran_type, kind_aliases, derived_types)
+        if (mapping.fortran_type.upper().lstrip().startswith("LOGICAL")
+                and mapping.iso_c_type.startswith("INTEGER")
+                and arg.intent in (IntentKind.OUT, IntentKind.INOUT)):
+            out.append((arg, mapping))
+    return out
+
+
+def bridge_char_len_constants(sig, kind_aliases, derived_types):
+    """The public form: the bridge's own dummy names, from the naming convention.
+
+    `test_validate.py` writes the `USE <module>, ONLY :` line for a standalone
+    harness bridge itself -- `parse_signature_from_source` cannot know the
+    enclosing module, so `sig.module_name` is None there and the emitter below
+    never runs. Both sites need the same list, so it is computed in one place.
+    """
+    dummies = set()
+    for a in sig.args:
+        low = a.name.lower()
+        dummies |= {low, f"len_{low}", f"n_{low}", f"n_{low}_rows",
+                    f"n_{low}_cols", f"has_{low}"}
+    return _bridge_char_len_constants(sig, kind_aliases, derived_types, dummies)
+
+
 def _bridge_char_len_constants(sig, kind_aliases, derived_types, bridge_dummies):
     """NAMED CONSTANTS a callee bridge's CHARACTER staging locals need in scope.
 
@@ -2224,11 +2276,9 @@ def generate_kernel_callee_bridge(
     # with, which `ONLY` would otherwise leave out of scope. See
     # `_bridge_char_len_constants`.
     if sig.module_name:
-        _bridge_dummies = {a["iface_name"].lower() for a in iface_args}
         _only = ", ".join(
             [sig.name]
-            + _bridge_char_len_constants(sig, kind_aliases, derived_types,
-                                         _bridge_dummies))
+            + bridge_char_len_constants(sig, kind_aliases, derived_types))
         lines.append(f"        USE {sig.module_name}, ONLY: {_only}")
     for use_stmt in dict.fromkeys(use_stmts):
         lines.append(f"        {use_stmt}")
@@ -2278,6 +2328,12 @@ def generate_kernel_callee_bridge(
     # These are automatic objects: their length and extent come from this
     # bridge's own dummies, which is legal and is what makes an arbitrary
     # caller-supplied length work.
+    # A by-reference LOGICAL dummy of the callee needs a staging LOGICAL local;
+    # see `bridge_logical_ref_args`.
+    logical_ref_args = bridge_logical_ref_args(sig, kind_aliases, derived_types)
+    for arg, _m in logical_ref_args:
+        lines.append(f"        LOGICAL :: local_{arg.name}")
+
     char_stage_args = _bridge_char_args(sig, kind_aliases, derived_types)
     for arg, len_expr, count in char_stage_args:
         dims = f"({count})" if count else ""
@@ -2344,6 +2400,15 @@ def generate_kernel_callee_bridge(
             lines.append(f"        ELSE")
             lines.append(f"            CALL {reverse_copy}({arg.name}_view, {stash_name})")
             lines.append(f"        END IF")
+
+    # Seed the LOGICAL staging locals. Done for EVERY intent for the same
+    # reason the CHARACTER ones are: an INTENT(OUT) dummy the callee happens
+    # not to assign would otherwise be read undefined here, where a direct
+    # Fortran call would have left the caller's value in place.
+    if logical_ref_args:
+        lines.append(f"        ! Stage by-reference LOGICAL args into Fortran LOGICALs")
+    for arg, _m in logical_ref_args:
+        lines.append(f"        local_{arg.name} = ({arg.name} /= 0)")
 
     # Seed the CHARACTER locals from the C buffers. Done for EVERY intent,
     # including OUT: a Fortran callee is not required to assign every byte of
@@ -2462,6 +2527,15 @@ def generate_kernel_callee_bridge(
             lines.append(f"        ELSE")
             lines.append(f"            CALL {populator}({stash_name}, {arg.name}_view)")
             lines.append(f"        END IF")
+
+    # Copy the staged LOGICAL locals back to the C integers. `.TRUE.` crosses as
+    # 1 and `.FALSE.` as 0 -- the same spelling `_generate_logical_ref_prologue`
+    # uses in the wrapper direction, so the two agree by construction.
+    if logical_ref_args:
+        lines.append(f"        ! Copy LOGICAL results back to the C integers")
+    for arg, mapping in logical_ref_args:
+        lines.append(f"        {arg.name} = MERGE(1_{mapping.c_kind}, "
+                     f"0_{mapping.c_kind}, local_{arg.name})")
 
     # Copy the staged CHARACTER locals back to the C buffers. The full declared
     # width, not LEN_TRIM: Fortran CHARACTER is blank-padded and fixed width,
@@ -2605,9 +2679,16 @@ def _build_bridge_call_args(sig: FortranSignature,
         # Scalar args — INOUT args must be passed directly (no conversion wrapping).
         # VALUE args may need kind conversion for LOGICAL.
         if arg.intent in (IntentKind.OUT, IntentKind.INOUT):
-            # INOUT/OUT: pass directly — can't wrap in conversion function.
-            # (CHARACTER is handled above, for every intent.)
-            call_args.append(arg.name)
+            # A by-reference LOGICAL goes through its staging LOGICAL local for
+            # the reason `bridge_logical_ref_args` gives: the conversion cannot
+            # be written in the call, because the callee writes THROUGH the
+            # argument. Everything else passes directly. (CHARACTER is handled
+            # above, for every intent.)
+            if (mapping.fortran_type.upper().lstrip().startswith("LOGICAL")
+                    and mapping.iso_c_type.startswith("INTEGER")):
+                call_args.append(f"local_{arg.name}")
+            else:
+                call_args.append(arg.name)
         elif mapping.iso_c_type.startswith("LOGICAL("):
             # LOGICAL(C_BOOL) → LOGICAL: explicit conversion needed
             call_args.append(f"LOGICAL({arg.name})")

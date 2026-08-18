@@ -1772,7 +1772,8 @@ def generate_callee_bridges(
     is a better outcome than a harness that silently tests something else.
     """
     from vit.interface_gen import (generate_kernel_callee_bridge,
-                                   generate_callee_declarations_header)
+                                   generate_callee_declarations_header,
+                                   bridge_char_len_constants)
 
     names = []
     for m in _CALLEE_CALL.finditer(cpp_text):
@@ -1821,8 +1822,18 @@ def generate_callee_bridges(
             if m and m.group(1).upper() != "PROCEDURE":
                 mod = m.group(1)
         if mod:
+            # AND WITH THE CALLEE, ANY NAMED CONSTANT ITS OWN CHARACTER DUMMIES
+            # ARE DECLARED WITH. `CHARACTER(MaxLineLength) :: Line` in ROSCO's
+            # `FindLine` makes the bridge's staging local `CHARACTER(MaxLineLength)`
+            # too, and `ONLY` is exactly the clause that would leave that name
+            # out of scope -- "Symbol 'maxlinelength' has no IMPLICIT type",
+            # which reads as a bridge bug rather than a missing import. rosco-r2
+            # unit #54. See `interface_gen.bridge_char_len_constants`.
+            only = ", ".join(
+                [sig.name]
+                + bridge_char_len_constants(sig, kind_aliases, derived_types))
             body = body.replace("USE ISO_C_BINDING",
-                                f"USE ISO_C_BINDING\n        USE {mod}, ONLY : {sig.name}", 1)
+                                f"USE ISO_C_BINDING\n        USE {mod}, ONLY : {only}", 1)
         else:
             notes.append(f"{name}_c: no module recorded for the callee; the bridge "
                          f"will not resolve it")
