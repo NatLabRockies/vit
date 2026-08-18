@@ -2030,6 +2030,48 @@ def _bridge_char_args(sig, kind_aliases, derived_types):
     return out
 
 
+def _bridge_char_len_constants(sig, kind_aliases, derived_types, bridge_dummies):
+    """NAMED CONSTANTS a callee bridge's CHARACTER staging locals need in scope.
+
+    A CHARACTER dummy whose length is a named constant rather than `*` --
+    `CHARACTER(MaxLineLength), INTENT(OUT) :: Line` in ROSCO's `FindLine` -- makes
+    the bridge's staging local `CHARACTER(MaxLineLength) :: local_Line` too. That
+    name is NOT in scope in the bridge: the `USE <module>, ONLY:` list names the
+    callee alone, and `ONLY` is exactly the clause that stops everything else
+    coming with it. The bridge then fails to compile:
+
+        CHARACTER(maxlinelength) :: local_Line
+        Error: Symbol 'maxlinelength' at (1) has no IMPLICIT type
+
+    Found on rosco-r2 unit #54 `ParseDbAry_Opt`, the first unit in either
+    campaign to call a procedure with such a dummy. The three earlier CHARACTER
+    callees -- `Conv2UC`, `GetWords`, `Int2LStr` -- are all `CHARACTER(*)` or a
+    literal width, so `_get_char_len_expr` returned a bridge dummy or a number
+    and the ONLY list was sufficient.
+
+    IMPORTING THE NAME RATHER THAN SUBSTITUTING ITS VALUE is deliberate: the
+    length the bridge stages through must be the length the CALLEE declares, and
+    a module that changes its own constant should change both together. A
+    generator that had baked in 2048 would go silently wrong there.
+
+    Returns the names to add to the ONLY list, in first-seen order. Anything
+    that is not a bare identifier (`LEN(x)`, a literal width) is skipped, and so
+    is any identifier that is already a dummy of the bridge itself -- which is
+    what `len_<name>` and `n_<name>` are.
+    """
+    out = []
+    for arg, len_expr, _count in _bridge_char_args(sig, kind_aliases, derived_types):
+        name = len_expr.strip()
+        if not re.fullmatch(r"[A-Za-z_]\w*", name):
+            continue
+        if name.lower() in bridge_dummies:
+            continue
+        if name.lower() in {o.lower() for o in out}:
+            continue
+        out.append(name)
+    return out
+
+
 def _bridge_char_copies_back(arg):
     """Copy a staged CHARACTER local back to C? Yes unless it is INTENT(IN).
 
@@ -2177,9 +2219,17 @@ def generate_kernel_callee_bridge(
         lines.append(f"        BIND(C, NAME='{c_func_name}')")
 
     lines.append(f"        USE ISO_C_BINDING")
-    # USE the module that defines the callee so we can call it
+    # USE the module that defines the callee so we can call it -- and with it
+    # any named constant the bridge's own CHARACTER staging locals are declared
+    # with, which `ONLY` would otherwise leave out of scope. See
+    # `_bridge_char_len_constants`.
     if sig.module_name:
-        lines.append(f"        USE {sig.module_name}, ONLY: {sig.name}")
+        _bridge_dummies = {a["iface_name"].lower() for a in iface_args}
+        _only = ", ".join(
+            [sig.name]
+            + _bridge_char_len_constants(sig, kind_aliases, derived_types,
+                                         _bridge_dummies))
+        lines.append(f"        USE {sig.module_name}, ONLY: {_only}")
     for use_stmt in dict.fromkeys(use_stmts):
         lines.append(f"        {use_stmt}")
     # USE view stash modules for view-type args (bridges use the stash instead of C_F_POINTER).
