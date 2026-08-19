@@ -1653,8 +1653,9 @@ def cmd_test_validate(args, config):
     # ORIGINAL Fortran. Without these only leaf functions link, which excludes
     # most of a campaign.
     callee_src = None
+    bridged_callees: list[str] = []
     if args.cpp_file and Path(args.cpp_file).is_file():
-        callee_src, callee_notes, callee_decls = generate_callee_bridges(
+        callee_src, callee_notes, callee_decls, bridged_callees = generate_callee_bridges(
             Path(args.cpp_file).read_text(), sig.name, config.abs_source_dir,
             config.kind_aliases, derived_types)
         for n in callee_notes:
@@ -1681,6 +1682,7 @@ def cmd_test_validate(args, config):
         cpp_file=cpp_file_abs,
         patched_source=patched_source_name,
         callee_bridge=bool(callee_src),
+        bridged_callees=bridged_callees,
         fortran_compiler=config.fortran_compiler,
         cxx_compiler=config.cxx_compiler,
         fortran_runtime_libs=config.fortran_runtime_libs,

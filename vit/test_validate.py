@@ -29,7 +29,8 @@ from .interface_gen import (build_c_params, dropped_derived_args,
 from .type_map import get_type_mapping, is_deferred_character
 
 
-def _parse_link_libraries(build_dir: str, target_name: str) -> Optional[list[str]]:
+def _parse_link_libraries(build_dir: str, target_name: str,
+                          exclude_stems: tuple[str, ...] = ()) -> Optional[list[str]]:
     """Parse CMake link.txt to extract library dependencies for a target.
 
     Searches for the target's link.txt in the build directory, parses the
@@ -38,6 +39,10 @@ def _parse_link_libraries(build_dir: str, target_name: str) -> Optional[list[str
     Args:
         build_dir: Absolute path to the build directory
         target_name: CMake target name (e.g., "aerodyn_driver")
+        exclude_stems: object basenames, without the `.o`, that must NOT be
+            linked because the harness supplies those symbols itself. See the
+            filter below for why an unfiltered glob is wrong on an integrated
+            tree.
 
     Returns:
         List of library strings for Makefile LIBS, or None if link.txt not found.
@@ -102,6 +107,30 @@ def _parse_link_libraries(build_dir: str, target_name: str) -> Optional[list[str
     if not any(lib.endswith((".a", ".so")) for lib in libs):
         obj_dir = link_txt.parent
         objs = sorted(str(o) for o in obj_dir.rglob("*.o"))
+        # AN UNFILTERED GLOB LINKS THE VERY SYMBOLS THE HARNESS DEFINES, and on
+        # an integrated tree that is not a warning, it is a link failure:
+        #
+        #   multiple definition of `findline_c';
+        #     parseinary_opt_callees.o: first defined here
+        #   multiple definition of `ParseInAry_Opt(...)';
+        #     parseinary_opt_test.o: first defined here
+        #
+        # Two sources, one rule. The UNIT UNDER TEST is defined by the header
+        # the harness includes -- that is the whole point, and under a mutation
+        # sweep it is the MUTATED text, so linking the production object would
+        # score the unmutated translation. And every BRIDGED CALLEE already has
+        # a `<callee>_c` from `<unit>_callees.o`, backed by the original
+        # Fortran; `generate_callee_bridges` explains at length why it must be
+        # the Fortran one. Linking the translated object offers a second
+        # definition of the same symbol and, if the linker took it, would make
+        # the harness compare a pair of translations that can cancel.
+        #
+        # Measured on rosco-r2 ParseInAry_Opt: FindLine, GetWords and Int2LStr
+        # were integrated after the harness was generated, and the next
+        # regeneration globbed all three in.
+        if exclude_stems:
+            drop = {f"{st.lower()}.cpp.o" for st in exclude_stems}
+            objs = [o for o in objs if Path(o).name.lower() not in drop]
         if objs:
             libs = objs + libs
 
@@ -1741,10 +1770,12 @@ def generate_callee_bridges(
     source_dir: str,
     kind_aliases: Optional[dict] = None,
     derived_types: Optional[dict] = None,
-) -> tuple[Optional[str], list[str], Optional[str]]:
+) -> tuple[Optional[str], list[str], Optional[str], list[str]]:
     """Fortran BIND(C) bridges for every `<callee>_c` the translation calls.
 
-    Returns (module source or None, notes, C declaration header or None).
+    Returns (module source or None, notes, C declaration header or None,
+    the names actually bridged). The last is what the Makefile must keep OUT
+    of LIBS -- see `_parse_link_libraries`.
 
     THE HEADER IS NOT OPTIONAL DECORATION. A `<callee>_c` symbol the bridges
     define still has to be DECLARED on the C++ side, and the harness's test
@@ -1774,6 +1805,7 @@ def generate_callee_bridges(
     from vit.interface_gen import (generate_kernel_callee_bridge,
                                    generate_callee_declarations_header,
                                    bridge_char_len_constants)
+    from vit.translate import _extract_function_text
 
     names = []
     for m in _CALLEE_CALL.finditer(cpp_text):
@@ -1781,7 +1813,7 @@ def generate_callee_bridges(
         if n.lower() != unit_name.lower() and n not in names:
             names.append(n)
     if not names:
-        return None, [], None
+        return None, [], None, []
 
     notes: list[str] = []
     bodies: list[str] = []
@@ -1802,6 +1834,30 @@ def generate_callee_bridges(
         if sig is None:
             notes.append(f"{name}_c: no Fortran definition found under {source_dir}; "
                          f"the link will fail on this symbol by name")
+            continue
+        # A CALLEE THAT IS ITSELF INTEGRATED MUST NOT BE BRIDGED -- THE BRIDGE
+        # WOULD CALL ITSELF. Once `FindLine` is integrated its Fortran body is a
+        # wrapper reading `CALL findline_c(...)`, so a Fortran-backed bridge
+        # named `findline_c` closes a loop:
+        #
+        #     findline_c (this bridge) -> Fortran FindLine -> findline_c -> ...
+        #
+        # which is not a wrong answer but an immediate SIGSEGV on a blown stack,
+        # with an empty stdout that reads as "the harness produced nothing".
+        # Measured on rosco-r2 ParseInAry_Opt after FindLine, GetWords and
+        # Int2LStr were integrated.
+        #
+        # The detector is the cycle itself rather than vit.yaml's `status:`,
+        # because the wrapper is the thing that actually closes the loop and a
+        # config field can disagree with the tree. Such a callee is left to the
+        # production object -- `<callee>.cpp.o` defines `<callee>_c` and
+        # terminates -- so it is deliberately NOT reported as bridged, and
+        # `_parse_link_libraries` therefore keeps its object in LIBS.
+        own = _extract_function_text(found_in, name) or ""
+        if re.search(rf"\b{re.escape(name)}_c\s*\(", own, re.IGNORECASE):
+            notes.append(f"{name}_c: already integrated -- its Fortran body calls "
+                         f"{name}_c, so bridging it would recurse; linking "
+                         f"{name.lower()}.cpp.o instead")
             continue
         try:
             body = generate_kernel_callee_bridge(sig, kind_aliases, derived_types)
@@ -1843,7 +1899,7 @@ def generate_callee_bridges(
                      + (f" (USE {mod})" if mod else ""))
 
     if not bodies:
-        return None, notes, None
+        return None, notes, None, []
 
     decls = generate_callee_declarations_header(bridged, kind_aliases, derived_types)
 
@@ -1854,7 +1910,8 @@ def generate_callee_bridges(
         "! attributable to the unit under test.",
         "",
     ]
-    return "\n".join(header + bodies) + "\n", notes, decls
+    return ("\n".join(header + bodies) + "\n", notes, decls,
+            [s.name for s in bridged])
 
 
 def generate_test_makefile(
@@ -1872,6 +1929,7 @@ def generate_test_makefile(
     cpp_file: Optional[str] = None,
     patched_source: Optional[str] = None,
     callee_bridge: bool = False,
+    bridged_callees: Optional[list[str]] = None,
 ) -> str:
     """Generate a Makefile for building the test-validate harness.
 
@@ -1889,6 +1947,8 @@ def generate_test_makefile(
         preprocessor_defines: List of preprocessor defines (e.g., ["OPENFAST_DOUBLE_PRECISION"])
         shared_files: Shared header/source paths (for -I includes)
         cpp_file: Path to the C++ translation file
+        bridged_callees: callee names given a Fortran bridge; their production
+            objects are kept out of LIBS, as is the unit's own
     """
     func_lower = sig.name.lower()
     defines = " ".join(f"-D{d}" for d in (preprocessor_defines or []))
@@ -1920,7 +1980,11 @@ def generate_test_makefile(
     lines.append(f"CXX_FLAGS = -O2 -fPIC -ffp-contract=off {cxx_includes}")
     lines.append("")
     # Derive library dependencies from CMake target's link.txt
-    link_libs = _parse_link_libraries(build_dir, target_name) if target_name else None
+    # The unit's own object is excluded unconditionally: the definition under
+    # test comes from the included header, mutated or not.
+    _exclude = tuple([sig.name] + list(bridged_callees or []))
+    link_libs = (_parse_link_libraries(build_dir, target_name, _exclude)
+                 if target_name else None)
     if link_libs:
         lines.append("# Libraries derived from CMake target (link order preserved)")
         lines.append(f"LIBS = {link_libs[0]} \\")
