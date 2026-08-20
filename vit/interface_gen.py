@@ -2511,6 +2511,70 @@ def generate_kernel_callee_bridge(
         (arg, mapping) for arg, mapping in view_struct_args
         if arg.intent and arg.intent.value.upper() in ("INOUT", "OUT")
     ]
+    # RESTORE THE REFERENCE'S OWN ALIASING BEFORE THE RE-SYNC.
+    #
+    # A callee can take BOTH a view type and one of its own members:
+    #
+    #     PIDController(..., LocalVar%piP, ..., objInst, LocalVar)
+    #
+    # In Fortran those two dummies are one piece of storage, so a write through
+    # `piP` is visible in `LocalVar%piP`. Across this bridge they are not: `piP`
+    # arrives as a C_PTR into the CALLER'S view struct and `LocalVar` is copied
+    # into a Fortran object, so the callee writes the member in the view and the
+    # re-sync below then writes the Fortran object's STALE copy back over it.
+    #
+    # MEASURED at rosco-r2 unit #60, and the differential harness is the first
+    # instrument that could reach it -- `VariableSpeedControl`'s open-loop
+    # azimuth block is dead in all 27 simulation scenarios. 6 of 20,704 cases,
+    # every one of them `LocalVar.piP`, at exactly the slot `objInst%instPI`
+    # names:
+    #
+    #     piP[199]  (ITerm)      got 0  ref 1200
+    #     piP[1223] (ITermLast)  got 0  ref 1200
+    #     piP[4295] (ELast)      got 0  ref nan
+    #
+    # `got` is the value the member held BEFORE the call, which is the copy-back
+    # writing over the callee's answer. The same clobber is in the SHIPPED
+    # integration path, one branch over (`vit_populate_<t>` instead of
+    # `vit_view_out_<t>`), so this is a defect in the generated bridge and not in
+    # any translation.
+    #
+    # One assignment per aliased member, after the call and before the re-sync:
+    # the member the callee actually wrote goes back into the Fortran object, so
+    # the copy-back carries it rather than overwriting it. Emitted only when a
+    # struct argument's derived type IS a non-allocatable, non-array field of the
+    # view argument's type, so a bridge with no such pair does not move.
+    if inout_view_args and struct_args:
+        _alias_lines = []
+        for _varg, _vmapping in inout_view_args:
+            _vtype = None
+            for _k, _v in (derived_types or {}).items():
+                if _k.upper() == _vmapping.c_type.upper():
+                    _vtype = _v
+                    break
+            if _vtype is None:
+                continue
+            _tl = _vmapping.c_type.lower()
+            for _sarg, _sm in struct_args:
+                if _sarg.is_array or not _sarg.derived_type_name:
+                    continue
+                for _fld in _vtype.fields:
+                    if _fld.is_allocatable or _fld.is_pointer or _fld.is_array:
+                        continue
+                    if not _fld.fortran_type.upper().startswith("TYPE("):
+                        continue
+                    if _fld.fortran_type[5:-1].strip().upper() != \
+                            _sarg.derived_type_name.upper():
+                        continue
+                    _alias_lines.append(
+                        f"        vit_original_{_tl}%{_fld.name} = {_sarg.name}_f")
+                    break
+        if _alias_lines:
+            lines.append(f"        ! The reference passes this member AND the whole type; the callee")
+            lines.append(f"        ! wrote the member through the caller's own storage, so put it back")
+            lines.append(f"        ! into the Fortran object before the copy-back overwrites it.")
+            lines.extend(_alias_lines)
+
     if inout_view_args:
         lines.append(f"        ! Re-sync view struct from Fortran type after callee modified it")
         for arg, mapping in inout_view_args:
