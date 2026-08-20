@@ -208,6 +208,7 @@ def generate_fortran_wrapper(sig: FortranSignature,
                              derived_types: Optional[dict] = None,
                              is_kernel: bool = False,
                              reverse_copy: bool = False,
+                             copy_arrays: Optional[list] = None,
                              allocations: Optional[list] = None) -> str:
     """
     Generate the Fortran wrapper function that replaces the original.
@@ -241,12 +242,12 @@ def generate_fortran_wrapper(sig: FortranSignature,
     if sig.is_function:
         lines.extend(_generate_wrapper_function(
             sig, c_func_name, kind_aliases, derived_types, optional_forwarded,
-            view_args, is_kernel, reverse_copy
+            view_args, is_kernel, reverse_copy, copy_arrays
         ))
     else:
         lines.extend(_generate_wrapper_subroutine(
             sig, c_func_name, kind_aliases, derived_types, optional_forwarded,
-            view_args, is_kernel, reverse_copy, allocations
+            view_args, is_kernel, reverse_copy, allocations, copy_arrays
         ))
 
     return "\n".join(lines)
@@ -254,7 +255,8 @@ def generate_fortran_wrapper(sig: FortranSignature,
 
 def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
                                 optional_forwarded, view_args=None,
-                                is_kernel=False, reverse_copy=False):
+                                is_kernel=False, reverse_copy=False,
+                                copy_arrays=None):
     """Generate wrapper body for a FUNCTION."""
     view_args = view_args or []
     lines = []
@@ -270,7 +272,8 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
         lines.append(f"        {use_stmt}")
 
     # Add USE for view type modules (include reverse-copy if requested)
-    lines.extend(_get_view_use_statements(view_args, is_kernel, reverse_copy))
+    lines.extend(_get_view_use_statements(view_args, is_kernel, reverse_copy,
+                                          copy_arrays))
 
     lines.append(f"        IMPLICIT NONE")
 
@@ -397,6 +400,39 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
                 else:
                     lines.append(f"        CALL vit_copy_scalars_to_{type_lower}({arg.name}_view, {arg.name})")
 
+    # ALLOCATABLE fields: the view carries (pointer, extent) pairs the C side
+    # may have REPLACED, and no amount of scalar copying moves those. The
+    # generated `vit_view_in_<type>` ALLOCATEs the destination component to the
+    # view's extent and copies through the pointer; it has always been emitted
+    # into the view module and, until this flag, was called by nothing.
+    #
+    # Opt-in rather than folded into --reverse-copy, because every unit already
+    # integrated was verified against a wrapper WITHOUT it (X3: a verification
+    # default does not move mid-run).
+    #
+    # AND IT NAMES THE ARGUMENTS, rather than taking every view-typed INOUT
+    # one, because `vit_view_in_<type>` starts each component with
+    # `IF (ALLOCATED(dest%X)) DEALLOCATE(dest%X)`. For a component the C side
+    # REPLACED that is right -- the view points at C-owned storage. For one it
+    # never touched, the view still holds `C_LOC(dest%X)` from the populate
+    # step, so the DEALLOCATE frees exactly the memory the following
+    # `C_F_POINTER` then reads. Applying this to an argument whose arrays the
+    # unit does not produce is a use-after-free, which is why the caller has to
+    # say which argument that is.
+    named = [(a, m) for a, m in (view_args or [])
+             if copy_arrays and a.name in copy_arrays]
+    if named:
+        lines.append(f"        ! Copy ALLOCATABLE fields back from view to Fortran type")
+        for arg, mapping in named:
+            if arg.intent and arg.intent.value.upper() in ("INOUT", "OUT"):
+                type_lower = mapping.c_type.lower()
+                if arg.is_array and not arg.is_assumed_shape and arg.array_dims:
+                    lines.append(f"        DO vit_view_i = 1, {arg.array_dims}")
+                    lines.append(f"            CALL vit_view_in_{type_lower}({arg.name}_view(vit_view_i), {arg.name}(vit_view_i))")
+                    lines.append(f"        END DO")
+                else:
+                    lines.append(f"        CALL vit_view_in_{type_lower}({arg.name}_view, {arg.name})")
+
     # Copy the C_CHAR result buffer back into the CHARACTER result. The C side
     # is required to have filled all res_char_len bytes -- Fortran CHARACTER is
     # blank-padded and fixed width, not NUL-terminated.
@@ -412,7 +448,7 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
 def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
                                   optional_forwarded, view_args=None,
                                   is_kernel=False, reverse_copy=False,
-                                  allocations=None):
+                                  allocations=None, copy_arrays=None):
     """Generate wrapper body for a SUBROUTINE."""
     view_args = view_args or []
     lines = []
@@ -426,7 +462,8 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
         lines.append(f"        {use_stmt}")
 
     # Add USE for view type modules (include reverse-copy if requested)
-    lines.extend(_get_view_use_statements(view_args, is_kernel, reverse_copy))
+    lines.extend(_get_view_use_statements(view_args, is_kernel, reverse_copy,
+                                          copy_arrays))
 
     lines.append(f"        IMPLICIT NONE")
 
@@ -582,6 +619,39 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
                     lines.append(f"        END DO")
                 else:
                     lines.append(f"        CALL vit_copy_scalars_to_{type_lower}({arg.name}_view, {arg.name})")
+
+    # ALLOCATABLE fields: the view carries (pointer, extent) pairs the C side
+    # may have REPLACED, and no amount of scalar copying moves those. The
+    # generated `vit_view_in_<type>` ALLOCATEs the destination component to the
+    # view's extent and copies through the pointer; it has always been emitted
+    # into the view module and, until this flag, was called by nothing.
+    #
+    # Opt-in rather than folded into --reverse-copy, because every unit already
+    # integrated was verified against a wrapper WITHOUT it (X3: a verification
+    # default does not move mid-run).
+    #
+    # AND IT NAMES THE ARGUMENTS, rather than taking every view-typed INOUT
+    # one, because `vit_view_in_<type>` starts each component with
+    # `IF (ALLOCATED(dest%X)) DEALLOCATE(dest%X)`. For a component the C side
+    # REPLACED that is right -- the view points at C-owned storage. For one it
+    # never touched, the view still holds `C_LOC(dest%X)` from the populate
+    # step, so the DEALLOCATE frees exactly the memory the following
+    # `C_F_POINTER` then reads. Applying this to an argument whose arrays the
+    # unit does not produce is a use-after-free, which is why the caller has to
+    # say which argument that is.
+    named = [(a, m) for a, m in (view_args or [])
+             if copy_arrays and a.name in copy_arrays]
+    if named:
+        lines.append(f"        ! Copy ALLOCATABLE fields back from view to Fortran type")
+        for arg, mapping in named:
+            if arg.intent and arg.intent.value.upper() in ("INOUT", "OUT"):
+                type_lower = mapping.c_type.lower()
+                if arg.is_array and not arg.is_assumed_shape and arg.array_dims:
+                    lines.append(f"        DO vit_view_i = 1, {arg.array_dims}")
+                    lines.append(f"            CALL vit_view_in_{type_lower}({arg.name}_view(vit_view_i), {arg.name}(vit_view_i))")
+                    lines.append(f"        END DO")
+                else:
+                    lines.append(f"        CALL vit_view_in_{type_lower}({arg.name}_view, {arg.name})")
 
     lines.append(f"    END SUBROUTINE {sig.name}")
     return lines
@@ -1201,7 +1271,8 @@ def _generate_view_executables(view_args: list[tuple], is_kernel: bool = False) 
 
 
 def _get_view_use_statements(view_args: list[tuple], is_kernel: bool = False,
-                             reverse_copy: bool = False) -> list[str]:
+                             reverse_copy: bool = False,
+                             copy_arrays: Optional[list] = None) -> list[str]:
     """Generate USE statements for view type modules."""
     lines = []
     seen = set()
@@ -1215,6 +1286,8 @@ def _get_view_use_statements(view_args: list[tuple], is_kernel: bool = False,
                 only_list += f", {stash_name}"
             if reverse_copy:
                 only_list += f", vit_copy_scalars_to_{type_lower}"
+            if copy_arrays and arg.name in copy_arrays:
+                only_list += f", vit_view_in_{type_lower}"
             lines.append(
                 f"        USE {module_name}, ONLY: {only_list}"
             )

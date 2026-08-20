@@ -93,6 +93,7 @@ def generate_integration_plan(
     kind_aliases: Optional[dict] = None,
     derived_types: Optional[dict] = None,
     reverse_copy: bool = False,
+    copy_arrays: Optional[list] = None,
     auto_allocate: bool = False,
     allocatable_helpers: Optional[list] = None,
 ) -> IntegrationPlan:
@@ -223,6 +224,7 @@ def generate_integration_plan(
     fortran_patches = _generate_fortran_patches(
         sig, source_file, kind_aliases, derived_types,
         reverse_copy=reverse_copy,
+        copy_arrays=copy_arrays,
         allocations=allocations,
     )
     patches.extend(fortran_patches)
@@ -538,6 +540,7 @@ def _generate_fortran_patches(sig: FortranSignature, source_file: str,
                                kind_aliases: Optional[dict] = None,
                                derived_types: Optional[dict] = None,
                                reverse_copy: bool = False,
+                               copy_arrays: Optional[list] = None,
                                allocations: Optional[list] = None,
                                ) -> list[IntegrationPatch]:
     """Generate patches for the Fortran source file."""
@@ -583,6 +586,7 @@ def _generate_fortran_patches(sig: FortranSignature, source_file: str,
     # Patch 3: Replace function body with wrapper
     wrapper = generate_fortran_wrapper(sig, kind_aliases, derived_types,
                                        reverse_copy=reverse_copy,
+        copy_arrays=copy_arrays,
                                        allocations=allocations)
     end_keyword = "FUNCTION" if sig.is_function else "SUBROUTINE"
 

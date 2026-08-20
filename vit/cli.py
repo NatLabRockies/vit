@@ -134,6 +134,14 @@ def main():
     p_integrate.add_argument("--file", "-f", help="Fortran source file")
     p_integrate.add_argument("--apply", action="store_true", help="Apply changes")
     p_integrate.add_argument("--dry-run", action="store_true")
+    p_integrate.add_argument("--copy-arrays", metavar="ARG[,ARG...]",
+                             help="Add a vit_view_in_<type> call after the C++ call "
+                                  "for each NAMED view-typed argument, so ALLOCATABLE "
+                                  "fields the C side replaced reach the Fortran type. "
+                                  "The arguments are named rather than inferred: the "
+                                  "copy-back deallocates each component first, which "
+                                  "for an argument whose arrays the unit did NOT "
+                                  "produce frees the storage the view still points at")
     p_integrate.add_argument("--reverse-copy", action="store_true",
                              help="Add reverse-copy calls after C++ call (for functions that modify view-type scalars)")
     p_integrate.add_argument("--auto-allocate", action="store_true",
@@ -1098,6 +1106,7 @@ def cmd_integrate(args, config):
     cmake_file = config.abs_cmake_file if config.build_type == "cmake" else None
     reverse_copy = getattr(args, 'reverse_copy', False)
     auto_allocate = getattr(args, 'auto_allocate', False)
+    copy_arrays = [x.strip() for x in (getattr(args, 'copy_arrays', None) or '').split(',') if x.strip()]
 
     plan = generate_integration_plan(
         sig=sig,
@@ -1108,6 +1117,7 @@ def cmd_integrate(args, config):
         kind_aliases=config.kind_aliases,
         derived_types=derived_types,
         reverse_copy=reverse_copy,
+        copy_arrays=copy_arrays,
         auto_allocate=auto_allocate,
         allocatable_helpers=config.allocatable_helpers,
     )
