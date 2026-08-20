@@ -13,6 +13,7 @@ The populator lives in a Fortran MODULE that also contains a BIND(C)
 mirror type matching the C view struct layout exactly.
 """
 
+import re
 from typing import Optional
 
 from .derived_type_parser import DerivedTypeInfo, DerivedTypeField, _extract_fixed_sizes
@@ -64,6 +65,39 @@ def _is_nested_embeddable(f: DerivedTypeField, registry: Optional[dict]) -> bool
     if nested_info is None:
         return False
     return nested_info.is_c_compatible_recursive(registry)
+
+
+# Kinds that resolve through the header's own UNQUALIFIED `USE ISO_C_BINDING`
+# and `USE ISO_FORTRAN_ENV`. Importing these from the source module would be
+# wrong, and they usually are not there to import.
+_INTRINSIC_KINDS = {
+    "C_CHAR", "C_INT", "C_SHORT", "C_LONG", "C_LONG_LONG", "C_SIGNED_CHAR",
+    "C_FLOAT", "C_DOUBLE", "C_LONG_DOUBLE", "C_BOOL", "C_SIZE_T",
+    "C_PTR", "C_FUNPTR", "C_INT8_T", "C_INT16_T", "C_INT32_T", "C_INT64_T",
+    "REAL32", "REAL64", "REAL128", "INT8", "INT16", "INT32", "INT64",
+}
+
+
+def _kind_symbol(fortran_type: str) -> Optional[str]:
+    """The KIND parameter a declaration NAMES, or None if it names no symbol.
+
+    `_direct_alloc_decls` writes a field's declared type verbatim into
+    `<type>, POINTER :: vit_ap_<f>(:)`, so whatever kind that type carries has
+    to be in scope in the GENERATED module -- and the header imports only the
+    derived type. `REAL(8)` and `CHARACTER(LEN=:)` name nothing; `REAL(R8)` and
+    `INTEGER(IntKi)` name a parameter of the source module.
+    """
+    m = re.match(r"^\s*[A-Za-z_]+\s*\(([^)]*)\)\s*$", fortran_type.strip())
+    if not m:
+        return None
+    inner = m.group(1).strip()
+    if inner.upper().startswith("KIND"):
+        inner = inner.split("=", 1)[-1].strip()
+    if not re.fullmatch(r"[A-Za-z_]\w*", inner):
+        return None                       # a literal, `:`, or an expression
+    if inner.upper() in _INTRINSIC_KINDS:
+        return None
+    return inner
 
 
 def generate_view_populator(
@@ -185,7 +219,23 @@ def generate_view_populator(
         # extent for the same reason, so it needs the same unit.
         lines.append(f"    USE ISO_FORTRAN_ENV, ONLY: ERROR_UNIT")
     if source_module:
-        lines.append(f"    USE {source_module}, ONLY: {name}")
+        # THE KINDS THE POPULATOR'S OWN DECLARATIONS NAME, not just the type.
+        # `_direct_alloc_decls` emits `REAL(R8), POINTER :: vit_ap_v(:)`, and
+        # `ONLY: <type>` left R8 unresolvable -- gfortran reports
+        # `Symbol 'r8' has no IMPLICIT type` and the pointer is then untyped
+        # too, which reads like a missing declaration and is not one. Masked
+        # for weeks because the only field to take this path in rosco-r2 was a
+        # CHARACTER, rewritten below to CHARACTER(KIND=C_CHAR), whose kind
+        # comes from ISO_C_BINDING.
+        _kinds = []
+        for f in _direct_alloc:
+            if f.fortran_type.strip().upper().startswith("CHARACTER"):
+                continue                  # rewritten to KIND=C_CHAR
+            k = _kind_symbol(f.fortran_type)
+            if k and k not in _kinds and k.lower() != name.lower():
+                _kinds.append(k)
+        _imports = ", ".join([name] + _kinds)
+        lines.append(f"    USE {source_module}, ONLY: {_imports}")
     # USE child populator modules for ALLOCATABLE TYPE() view fields
     for field_name, child_info in view_type_alloc_fields.items():
         child_lower = child_info.name.lower()
