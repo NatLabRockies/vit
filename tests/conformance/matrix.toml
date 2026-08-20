@@ -45,10 +45,9 @@ semantics = "ok"
 parse = "yes"
 c_params = "yes"
 bridge = "yes"
-compiles = "no"
+compiles = "yes"
 integrates = "yes"
 semantics = "ok"
-why = "UNSUPPORTED: a rank-2 assumed-shape dummy is passed as m(1:n_m), a rank-1 section. The C side already emits n_<x>_rows and n_<x>_cols; the bridge must declare the local with both extents."
 
 [c_assumed_size]
 parse = "yes"
