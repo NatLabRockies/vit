@@ -2298,7 +2298,29 @@ def generate_kernel_callee_bridge(
             lines.append(f"        USE {module_name}, ONLY: {stash_name}, {view_type}, {populator}, {reverse_copy}, &")
             lines.append(f"            vit_direct_{type_lower}, vit_view_in_{type_lower}, vit_view_out_{type_lower}")
         else:
-            lines.append(f"        USE {module_name}, ONLY: {stash_name}")
+            # AN INTENT(IN) VIEW ARGUMENT STILL NEEDS THE DIRECT-CALLER PATH.
+            # It needs no re-sync -- the callee does not write it -- but it does
+            # need to BE THERE. Before this branch existed the bridge imported
+            # only the stash and passed it straight to the callee, so a
+            # translation called DIRECTLY (which is what the differential
+            # harness does; there is no wrapper to set the stash) dereferenced
+            # NULL. Measured on rosco-r2 unit #62, whose callee
+            # `RefSpeedExclusion` is the campaign's first translated callee with
+            # a view type declared `INTENT(IN)`:
+            #
+            #   PROBE refspeedexclusion_c:
+            #       ASSOCIATED(vit_original_controlparameters) = F
+            #   Segmentation fault (core dumped)
+            #
+            # and the C_PTR for that argument was in the bridge's own dummy list
+            # the whole time, declared and never converted -- the callee-bridge
+            # form of the wrapper defect rosco-r2 unit #5 recorded.
+            #
+            # Strictly additive: when a wrapper HAS set the stash, this emits
+            # the same call it emitted before.
+            view_type = f"{type_lower}_view_t"
+            lines.append(f"        USE {module_name}, ONLY: {stash_name}, {view_type}, &")
+            lines.append(f"            vit_direct_{type_lower}, vit_view_in_{type_lower}")
     lines.append(f"        IMPLICIT NONE")
 
     # Declare BIND(C) arguments (same as interface block)
@@ -2315,14 +2337,15 @@ def generate_kernel_callee_bridge(
             lines.append(f"        TYPE({arg.derived_type_name}), POINTER :: {arg.name}_f(:)")
         else:
             lines.append(f"        TYPE({arg.derived_type_name}), POINTER :: {arg.name}_f")
-    # Declare local view pointers for post-call re-sync (INOUT/OUT only)
+    # Declare local view pointers. EVERY view arg needs them now, not only the
+    # INOUT/OUT ones: an INTENT(IN) view arg has no re-sync but still has to be
+    # converted from its own C_PTR on the direct-caller path.
     for arg, mapping in view_struct_args:
-        if arg.intent and arg.intent.value.upper() in ("INOUT", "OUT"):
-            type_lower = mapping.c_type.lower()
-            lines.append(f"        TYPE({type_lower}_view_t), POINTER :: {arg.name}_view")
-            # Whether THIS call arrived without a wrapper. See the block that
-            # sets it, below.
-            lines.append(f"        LOGICAL :: vit_direct_{arg.name}")
+        type_lower = mapping.c_type.lower()
+        lines.append(f"        TYPE({type_lower}_view_t), POINTER :: {arg.name}_view")
+        # Whether THIS call arrived without a wrapper. See the block that
+        # sets it, below.
+        lines.append(f"        LOGICAL :: vit_direct_{arg.name}")
 
     # Stage every CHARACTER argument through a local of the callee's own shape.
     # These are automatic objects: their length and extent come from this
@@ -2399,6 +2422,29 @@ def generate_kernel_callee_bridge(
             lines.append(f"            CALL vit_view_in_{type_lower}({arg.name}_view, {stash_name})")
             lines.append(f"        ELSE")
             lines.append(f"            CALL {reverse_copy}({arg.name}_view, {stash_name})")
+            lines.append(f"        END IF")
+
+    # THE SAME PROLOGUE FOR AN INTENT(IN) VIEW ARG, MINUS THE FLUSH.
+    #
+    # There is nothing to flush: the callee does not write this argument, so a
+    # wrapper-driven call's stash is already the object the caller's own view
+    # was populated from and the ELSE branch above has no work to do here. What
+    # is NOT optional is the direct branch -- without it the bridge passes a
+    # NULL stash. See the comment on the USE emission above for the measurement.
+    in_view_args = [
+        (arg, mapping) for arg, mapping in view_struct_args
+        if not (arg.intent and arg.intent.value.upper() in ("INOUT", "OUT"))
+    ]
+    if in_view_args:
+        lines.append(f"        ! Convert INTENT(IN) view args for a caller with no wrapper")
+        for arg, mapping in in_view_args:
+            type_lower = mapping.c_type.lower()
+            stash_name = f"vit_original_{type_lower}"
+            lines.append(f"        CALL C_F_POINTER({arg.name}, {arg.name}_view)")
+            lines.append(f"        vit_direct_{arg.name} = .NOT. ASSOCIATED({stash_name})")
+            lines.append(f"        IF (vit_direct_{arg.name}) THEN")
+            lines.append(f"            {stash_name} => vit_direct_{type_lower}")
+            lines.append(f"            CALL vit_view_in_{type_lower}({arg.name}_view, {stash_name})")
             lines.append(f"        END IF")
 
     # Seed the LOGICAL staging locals. Done for EVERY intent for the same
@@ -2591,6 +2637,18 @@ def generate_kernel_callee_bridge(
             lines.append(f"        ELSE")
             lines.append(f"            CALL {populator}({stash_name}, {arg.name}_view)")
             lines.append(f"        END IF")
+
+    # AND RELEASE AN INTENT(IN) VIEW ARG'S STASH, for the reason the INOUT
+    # branch above NULLIFYs its own: the stash is a `SAVE` module pointer, so a
+    # bridge that ran once without a wrapper would look wrapper-driven for the
+    # rest of the process -- and every later case would then be computed
+    # against the FIRST case's copy of this argument. There is nothing to sync
+    # out first; the callee did not write it.
+    if in_view_args:
+        lines.append(f"        ! Release the INTENT(IN) stash so the next call re-detects")
+        for arg, mapping in in_view_args:
+            stash_name = f"vit_original_{mapping.c_type.lower()}"
+            lines.append(f"        IF (vit_direct_{arg.name}) NULLIFY({stash_name})")
 
     # Copy the staged LOGICAL locals back to the C integers. `.TRUE.` crosses as
     # 1 and `.FALSE.` as 0 -- the same spelling `_generate_logical_ref_prologue`
