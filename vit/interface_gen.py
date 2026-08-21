@@ -2569,10 +2569,39 @@ def generate_kernel_callee_bridge(
             # the buffer's name rather than on the flag, so the three sites need
             # no edit.
             return f"        {result_char_local} = {func_name}({args_str})"
-        if is_function and sig.result_is_array:
+        if is_function and sig.result_is_array and result_size_param:
             # Array-returning function: assign result to output buffer
-            size_expr = result_size_param or "SIZE(alpha)"
-            return f"        {result_buffer_name}(1:{size_expr}) = {func_name}({args_str})"
+            return f"        {result_buffer_name}(1:{result_size_param}) = {func_name}({args_str})"
+        elif is_function and sig.result_is_array:
+            # AN ARRAY-VALUED FUNCTION WITH NO ARRAY DUMMY TO TAKE THE SIZE
+            # FROM. The branch above uses the first assumed-shape array
+            # argument's extent as the result's -- VIT's stated convention, and
+            # right for `unwrap(alpha)`. `identity(n)` has no array argument at
+            # all, so `result_size_param` is None, and this path used to emit
+            # the literal placeholder `SIZE(alpha)`: a symbol that does not
+            # exist in the generated bridge, so the Fortran failed to compile
+            # with `Symbol 'alpha' at (1) has no IMPLICIT type`. Found by
+            # rosco-r2 unit #65, the first unit to reach `identity` through a
+            # callee bridge rather than through an integration wrapper.
+            #
+            # ASSOCIATE takes the rank and the shape from the function
+            # reference itself, so the bridge does not have to parse the
+            # result's dimension expression -- `identity`'s is `(n, n)`, a
+            # rank-2 automatic array whose extents are a dummy. RESHAPE then
+            # flattens it column-major into the assumed-size C buffer, which is
+            # the layout every other VIT array crossing already uses. Same
+            # shape as the array-result assignment in `test_validate.py`.
+            #
+            # STRICTLY ADDITIVE (P5): the code this replaces could not compile,
+            # so no bridge that built before builds differently now. The
+            # positive control is that a sibling unit whose callee IS
+            # size-carrying regenerates its bridge byte-identically.
+            return (
+                f"        ASSOCIATE (vit_array_result => {func_name}({args_str}))\n"
+                f"            {result_buffer_name}(1:SIZE(vit_array_result)) = "
+                f"RESHAPE(vit_array_result, (/ SIZE(vit_array_result) /))\n"
+                f"        END ASSOCIATE"
+            )
         elif is_function and not sig.result_is_array:
             ret_type = sig.result_type or sig.args[0].fortran_type if sig.args else "REAL(8)"
             if ret_mapping and ret_mapping.c_kind != ret_mapping.fortran_kind and ret_mapping.fortran_kind:
