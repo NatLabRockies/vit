@@ -929,6 +929,95 @@ def _rewrite_logical_field(content: str, type_name: str,
     return "\n".join(lines), changed
 
 
+# Complex intrinsics named in the EXIT_MANUAL reason when present on a line
+# that matches no known pattern (they do not drive classification).
+_COMPLEX_INTRINSICS_RE = re.compile(
+    r'\b(EXP|CMPLX|CONJG|ABS|SQRT|LOG)\s*\(',
+    re.IGNORECASE,
+)
+
+# A real numeric literal: optional sign, mantissa, optional E/D exponent,
+# optional _kind suffix.
+_REAL_LITERAL = (
+    r'[+-]?(?:\d+\.?\d*|\.\d+)'
+    r'(?:([EeDd])[+-]?\d+)?'
+    r'(?:_(\w+))?'
+)
+
+
+def _zero_like(exponent_letter: Optional[str], kind: Optional[str]) -> str:
+    """Zero literal with the same precision marker as the source literal."""
+    if kind:
+        return f"0.0_{kind}"
+    if exponent_letter and exponent_letter.upper() == "D":
+        return "0.0D0"
+    return "0.0"
+
+
+def _classify_complex_reference(
+    line: str, field_name: str,
+) -> Optional[tuple[str, list[str]]]:
+    """
+    Rewrite one source line referencing COMPLEX %field for the _re/_im split.
+
+    Returns (change_label, replacement_lines), or None when the line matches
+    no pattern whose meaning is fully known — the caller then requires a
+    --rewrite for it (EXIT_MANUAL). There is deliberately no fallback: a
+    reference VIT does not understand is never rewritten.
+
+    Known patterns:
+      - Whole statement `WRITE/READ(...) var%field(i)` → one statement per part
+      - Whole statement `var%field[(...)] = <real literal>` →
+        `_re = <literal>`, `_im = 0` (a real literal has no imaginary part)
+      - `REAL(var%field[(...)])` / `AIMAG(var%field[(...)])` anywhere in the
+        line → `_re` / `_im`, provided no other reference to the field
+        remains on the line
+    """
+    f = re.escape(field_name)
+    ref = r'\w+%' + f + r'(?:\([^()]*\))?'
+
+    def _part(text: str, suffix: str) -> str:
+        return re.sub(r'%' + f + r'\b', '%' + field_name + suffix,
+                      text, count=1, flags=re.IGNORECASE)
+
+    m = re.match(
+        r'^(\s*(?:WRITE|READ)\s*\([^()]*\))\s*(\w+%' + f + r'\(\w+\))\s*$',
+        line, re.IGNORECASE,
+    )
+    if m:
+        io_prefix, var_expr = m.group(1), m.group(2)
+        return ("I/O split → _re + _im", [
+            f"{io_prefix} {_part(var_expr, '_re')}",
+            f"{io_prefix} {_part(var_expr, '_im')}",
+        ])
+
+    m = re.match(
+        r'^(\s*)(' + ref + r')\s*=\s*(' + _REAL_LITERAL + r')\s*$',
+        line, re.IGNORECASE,
+    )
+    if m:
+        indent, target, literal = m.group(1), m.group(2), m.group(3)
+        zero = _zero_like(m.group(4), m.group(5))
+        return ("Real constant → _re = constant, _im = 0", [
+            f"{indent}{_part(target, '_re')} = {literal}",
+            f"{indent}{_part(target, '_im')} = {zero}",
+        ])
+
+    new_line = re.sub(
+        r'\bREAL\s*\((' + ref + r')\s*\)',
+        lambda mm: _part(mm.group(1), '_re'), line, flags=re.IGNORECASE,
+    )
+    new_line = re.sub(
+        r'\bAIMAG\s*\((' + ref + r')\s*\)',
+        lambda mm: _part(mm.group(1), '_im'), new_line, flags=re.IGNORECASE,
+    )
+    if new_line != line and not re.search(r'%' + f + r'\b', new_line,
+                                          re.IGNORECASE):
+        return ("REAL()/AIMAG() → _re/_im", [new_line])
+
+    return None
+
+
 def fix_complex_field(source_dir: str, type_name: str,
                       field_name: str, dry_run: bool = True,
                       rewrites: Optional[dict[str, str]] = None) -> FixResult:
@@ -936,20 +1025,19 @@ def fix_complex_field(source_dir: str, type_name: str,
     Fix COMPLEX fields by splitting into REAL re/im pairs.
 
     Scan-first approach:
-      1. Scan all %field references and classify as auto or manual
-      2. If manual lines exist and no --rewrite covers them → populate
-         result.manual_edits and return (caller exits 11)
-      3. If all manual lines are covered by rewrites (or none exist) →
-         apply everything (type def + auto-rewrites + provided rewrites)
+      1. Classify every %field reference: covered by --rewrite, matched by a
+         known pattern (_classify_complex_reference), or manual
+      2. If any line is manual → populate result.manual_edits and return
+         before writing anything (caller exits 11)
+      3. Otherwise apply the plan (reference edits + provided rewrites), then
+         the TYPE definition
 
-    Auto-rewrite patterns:
-        - REAL(field) → field_re
-        - AIMAG(field) → field_im
-        - Zero/constant init → set both _re and _im
-        - Binary I/O → split into _re and _im per element
-        - Simple reference → _re
+    Auto-rewrite patterns (see _classify_complex_reference):
+        - Binary I/O per element → one statement per part
+        - Real constant assignment → _re = constant, _im = 0
+        - REAL(field) → field_re, AIMAG(field) → field_im
     Manual (needs --rewrite):
-        - Lines with complex intrinsics (EXP, CMPLX, CONJG, etc.)
+        - Every other line referencing the field. There is no fallback.
 
     Args:
         rewrites: Dict mapping "filename:line" → replacement line(s).
@@ -973,15 +1061,15 @@ def fix_complex_field(source_dir: str, type_name: str,
         )
         return result
 
-    # Intrinsics that signal expressions VIT can't auto-rewrite
-    _complex_intrinsics_re = re.compile(
-        r'\b(EXP|CMPLX|CONJG|ABS|SQRT|LOG)\s*\(',
-        re.IGNORECASE,
-    )
-
-    # --- Phase 1: Scan all references and classify ---
+    # --- Phase 1: Classify every reference and build the edit plan ---
+    # Each non-comment line referencing %field must be either covered by a
+    # --rewrite or matched by a known pattern (_classify_complex_reference).
+    # Anything else is manual. Phase 2 only applies this plan, so the two
+    # phases cannot disagree about a line.
     field_re = re.compile(r'%' + re.escape(field_name) + r'\b', re.IGNORECASE)
     unresolved_manual: list[ManualEdit] = []
+    # file → [(line_index, replacement_lines, change_label)]
+    plan: dict[Path, list[tuple[int, list[str], str]]] = {}
 
     for pattern in ("**/*.f90", "**/*.F90"):
         for f90_file in sorted(source_path.glob(pattern)):
@@ -994,190 +1082,59 @@ def fix_complex_field(source_dir: str, type_name: str,
                 stripped = line.lstrip()
                 if stripped.startswith("!"):
                     continue
-                if _complex_intrinsics_re.search(line):
-                    key = f"{f90_file.name}:{i+1}"
-                    if key not in rewrites:
-                        unresolved_manual.append(ManualEdit(
-                            file=str(f90_file),
-                            line=i + 1,
-                            reason=f"complex intrinsic: {_complex_intrinsics_re.search(line).group(1)}",
-                            source_text=line.strip(),
-                            cli_override=f"--rewrite '{key}=<replacement>'",
-                        ))
+                key = f"{f90_file.name}:{i+1}"
+                if key in rewrites:
+                    plan.setdefault(f90_file, []).append(
+                        (i, rewrites[key].split("\\n"), "Manual rewrite applied")
+                    )
+                    continue
+                classified = _classify_complex_reference(line, field_name)
+                if classified is None:
+                    intrinsic = _COMPLEX_INTRINSICS_RE.search(line)
+                    reason = (f"complex intrinsic: {intrinsic.group(1)}"
+                              if intrinsic else "no known rewrite pattern")
+                    unresolved_manual.append(ManualEdit(
+                        file=str(f90_file),
+                        line=i + 1,
+                        reason=reason,
+                        source_text=stripped,
+                        cli_override=f"--rewrite '{key}=<replacement>'",
+                    ))
+                    continue
+                label, new_lines = classified
+                plan.setdefault(f90_file, []).append((i, new_lines, label))
 
     # If unresolved manual lines exist, return them — caller exits 11
     if unresolved_manual:
         result.manual_edits = unresolved_manual
         return result
 
-    # --- Phase 2: All references resolved — apply changes ---
+    # --- Phase 2: All references resolved — apply the plan ---
+    # Reference edits go first: plan line indices were taken before the TYPE
+    # rewrite, which turns one declaration line into two.
+    for f90_file, edits in plan.items():
+        file_lines = f90_file.read_text().split("\n")
+        for i, _, label in edits:
+            result.changes.append(f"{f90_file}: {label}: {file_lines[i].strip()}")
+        # Apply bottom-up so earlier line indices stay valid after insertions
+        for i, new_lines, _ in sorted(edits, key=lambda e: e[0], reverse=True):
+            file_lines[i:i + 1] = new_lines
+        if not dry_run:
+            f90_file.write_text("\n".join(file_lines))
+            if str(f90_file) not in result.files_modified:
+                result.files_modified.append(str(f90_file))
 
-    # Rewrite the TYPE definition
-    new_content, _ = _rewrite_complex_field(content, type_name, field_name)
+    # Rewrite the TYPE definition (from current text, in case the plan edited it)
+    new_content, _ = _rewrite_complex_field(
+        type_file.read_text(), type_name, field_name
+    )
     result.changes.append(
         f"{type_file}: COMPLEX :: {field_name} → REAL :: {field_name}_re + {field_name}_im"
     )
     if not dry_run:
         type_file.write_text(new_content)
-        result.files_modified.append(str(type_file))
-
-    # Rewrite all %field_name references
-    for pattern in ("**/*.f90", "**/*.F90"):
-        for f90_file in sorted(source_path.glob(pattern)):
-            file_content = f90_file.read_text()
-            if not field_re.search(file_content):
-                continue
-
-            file_lines = file_content.split("\n")
-            modified = False
-            insertions = []
-
-            for i, line in enumerate(file_lines):
-                if not field_re.search(line):
-                    continue
-
-                stripped = line.lstrip()
-                if stripped.startswith("!"):
-                    continue
-
-                original_line = line
-
-                # Check if this line has a user-provided rewrite
-                key = f"{f90_file.name}:{i+1}"
-                if key in rewrites:
-                    rewrite_lines = rewrites[key].split("\\n")
-                    file_lines[i] = rewrite_lines[0]
-                    for extra in rewrite_lines[1:]:
-                        insertions.append((i, extra))
-                    result.changes.append(
-                        f"{f90_file}: Manual rewrite applied: {original_line.strip()}"
-                    )
-                    modified = True
-                    continue
-
-                # --- Safe auto-rewrites ---
-
-                # REAL() extraction: REAL(var%field...) → var%field_re...
-                real_extract_re = re.compile(
-                    r'REAL\s*\((\w+%' + re.escape(field_name)
-                    + r'(?:\([^)]*\))?)\)',
-                    re.IGNORECASE,
-                )
-                if real_extract_re.search(line):
-                    def _real_to_re(m):
-                        inner = m.group(1)
-                        return re.sub(
-                            re.escape(field_name), field_name + '_re',
-                            inner, count=1, flags=re.IGNORECASE,
-                        )
-                    line = real_extract_re.sub(_real_to_re, line)
-                    file_lines[i] = line
-                    result.changes.append(
-                        f"{f90_file}: REAL() → _re: {original_line.strip()}"
-                    )
-                    modified = True
-                    continue
-
-                # AIMAG() extraction: AIMAG(var%field...) → var%field_im...
-                aimag_re = re.compile(
-                    r'AIMAG\s*\((\w+%' + re.escape(field_name)
-                    + r'(?:\([^)]*\))?)\)',
-                    re.IGNORECASE,
-                )
-                if aimag_re.search(line):
-                    def _aimag_to_im(m):
-                        inner = m.group(1)
-                        return re.sub(
-                            re.escape(field_name), field_name + '_im',
-                            inner, count=1, flags=re.IGNORECASE,
-                        )
-                    line = aimag_re.sub(_aimag_to_im, line)
-                    file_lines[i] = line
-                    result.changes.append(
-                        f"{f90_file}: AIMAG() → _im: {original_line.strip()}"
-                    )
-                    modified = True
-                    continue
-
-                # Binary I/O per element: WRITE/READ ... var%field(N)
-                io_re = re.compile(
-                    r'^(\s*(?:WRITE|READ)\s*\([^)]*\))\s*'
-                    r'(\w+%' + re.escape(field_name) + r'\((\w+)\))',
-                    re.IGNORECASE,
-                )
-                m_io = io_re.match(line)
-                if m_io:
-                    io_prefix = m_io.group(1)
-                    var_expr = m_io.group(2)
-                    re_line = (
-                        f"{io_prefix} "
-                        f"{var_expr.replace(field_name, field_name + '_re')}"
-                    )
-                    im_line = (
-                        f"{io_prefix} "
-                        f"{var_expr.replace(field_name, field_name + '_im')}"
-                    )
-                    file_lines[i] = re_line
-                    insertions.append((i, im_line))
-                    result.changes.append(
-                        f"{f90_file}: I/O split → _re + _im: "
-                        f"{original_line.strip()}"
-                    )
-                    modified = True
-                    continue
-
-                # Zero/constant initialization: var%field = 0.0D0
-                zero_init_re = re.compile(
-                    r'(\w+%' + re.escape(field_name) + r'(?:\([^)]*\))?)'
-                    r'\s*=\s*([0-9]+\.?[0-9]*\w*)',
-                    re.IGNORECASE,
-                )
-                m_zero = zero_init_re.search(line)
-                if m_zero and not _complex_intrinsics_re.search(line):
-                    re_line = re.sub(
-                        re.escape(field_name), field_name + '_re',
-                        line, count=1, flags=re.IGNORECASE,
-                    )
-                    im_line = re.sub(
-                        re.escape(field_name), field_name + '_im',
-                        line, count=1, flags=re.IGNORECASE,
-                    )
-                    file_lines[i] = re_line
-                    insertions.append((i, im_line))
-                    result.changes.append(
-                        f"{f90_file}: Constant init → _re + _im: "
-                        f"{original_line.strip()}"
-                    )
-                    modified = True
-                    continue
-
-                # Fallback: simple substitution → _re
-                ref_re = re.compile(
-                    r'(\w+%' + re.escape(field_name) + r'(?:\([^)]*\))?)',
-                    re.IGNORECASE,
-                )
-                new_line = ref_re.sub(
-                    lambda m: re.sub(
-                        re.escape(field_name), field_name + '_re',
-                        m.group(0), count=1, flags=re.IGNORECASE,
-                    ),
-                    line,
-                )
-                if new_line != line:
-                    file_lines[i] = new_line
-                    result.changes.append(
-                        f"{f90_file}: → _re: {original_line.strip()}"
-                    )
-                    modified = True
-
-            # Apply insertions in reverse order
-            for insert_after, new_line_text in reversed(insertions):
-                file_lines.insert(insert_after + 1, new_line_text)
-
-            if modified and not dry_run:
-                f90_file.write_text("\n".join(file_lines))
-                if str(f90_file) not in result.files_modified:
-                    result.files_modified.append(str(f90_file))
+        if str(type_file) not in result.files_modified:
+            result.files_modified.append(str(type_file))
 
     # Remove complexI declaration if no longer needed
     _remove_complexi_decl(source_path, field_name, result, dry_run)

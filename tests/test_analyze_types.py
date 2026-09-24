@@ -822,6 +822,96 @@ class TestFixComplex:
             if "complexI" in line and "::" in line and "COMPLEX" in line.upper():
                 assert line.strip().startswith("!")
 
+    def _run_on(self, tmp_path, body, rewrites=None):
+        (tmp_path / "types.f90").write_text(COMPLEX_TYPE_SOURCE)
+        (tmp_path / "use.f90").write_text(body)
+        return fix_complex_field(
+            str(tmp_path), "LocalVariables", "AWC_complexangle",
+            dry_run=False, rewrites=rewrites,
+        )
+
+    def test_fix_complex_arithmetic_without_intrinsic_is_manual(self, tmp_path):
+        """Complex arithmetic with no intrinsic must not be truncated to _re."""
+        body = "    LocalVar%AWC_complexangle(K) = LocalVar%AWC_complexangle(K) * c\n"
+        result = self._run_on(tmp_path, body)
+        assert result.files_modified == []
+        assert len(result.manual_edits) == 1
+        assert result.manual_edits[0].reason == "no known rewrite pattern"
+        assert (tmp_path / "use.f90").read_text() == body
+
+    def test_fix_complex_assignment_to_other_variable_is_manual(self, tmp_path):
+        """VIT cannot tell whether the target is REAL, so it does not guess."""
+        body = "    LocalVarOutData(150) = LocalVar%AWC_complexangle(1)\n"
+        result = self._run_on(tmp_path, body)
+        assert len(result.manual_edits) == 1
+        assert result.files_modified == []
+
+    def test_fix_complex_nonzero_constant_sets_imag_to_zero(self, tmp_path):
+        body = textwrap.dedent("""\
+            LocalVar%AWC_complexangle = 1.5D0
+            LocalVar%AWC_complexangle(2) = 2.0_DbKi
+            LocalVar%AWC_complexangle(3) = -3
+        """)
+        result = self._run_on(tmp_path, body)
+        assert result.success and result.manual_edits == []
+        lines = (tmp_path / "use.f90").read_text().split("\n")
+        assert lines[:6] == [
+            "LocalVar%AWC_complexangle_re = 1.5D0",
+            "LocalVar%AWC_complexangle_im = 0.0D0",
+            "LocalVar%AWC_complexangle_re(2) = 2.0_DbKi",
+            "LocalVar%AWC_complexangle_im(2) = 0.0_DbKi",
+            "LocalVar%AWC_complexangle_re(3) = -3",
+            "LocalVar%AWC_complexangle_im(3) = 0.0",
+        ]
+
+    def test_fix_complex_constant_followed_by_expression_is_manual(self, tmp_path):
+        body = "    LocalVar%AWC_complexangle = 0.0 + y\n"
+        result = self._run_on(tmp_path, body)
+        assert len(result.manual_edits) == 1
+        assert result.files_modified == []
+
+    def test_fix_complex_real_with_bare_reference_is_manual(self, tmp_path):
+        """REAL() is only rewritten when no other reference remains on the line."""
+        body = "    x = REAL(LocalVar%AWC_complexangle(1)) + LocalVar%AWC_complexangle(2)\n"
+        result = self._run_on(tmp_path, body)
+        assert len(result.manual_edits) == 1
+
+    def test_fix_complex_real_and_aimag_on_one_line(self, tmp_path):
+        body = "    x = REAL(LocalVar%AWC_complexangle(1)) * AIMAG(LocalVar%AWC_complexangle(2))\n"
+        result = self._run_on(tmp_path, body)
+        assert result.success and result.manual_edits == []
+        assert (tmp_path / "use.f90").read_text() == (
+            "    x = LocalVar%AWC_complexangle_re(1) * LocalVar%AWC_complexangle_im(2)\n"
+        )
+
+    def test_fix_complex_continuation_line_is_manual(self, tmp_path):
+        body = textwrap.dedent("""\
+            LocalVar%AWC_complexangle(K) = LocalVar%AWC_complexangle(K) &
+                + y
+        """)
+        result = self._run_on(tmp_path, body)
+        assert len(result.manual_edits) == 1
+
+    def test_fix_complex_references_in_type_file_keep_line_numbers(self, tmp_path):
+        """Reference edits in the TYPE file land on the right lines."""
+        source = COMPLEX_TYPE_SOURCE.replace(
+            "END MODULE ROSCO_Types",
+            "SUBROUTINE Z(LocalVar)\n"
+            "    LocalVar%AWC_complexangle = 0.0D0\n"
+            "END SUBROUTINE Z\n"
+            "END MODULE ROSCO_Types",
+        )
+        (tmp_path / "types.f90").write_text(source)
+        result = fix_complex_field(
+            str(tmp_path), "LocalVariables", "AWC_complexangle", dry_run=False
+        )
+        assert result.success
+        content = (tmp_path / "types.f90").read_text()
+        assert "    LocalVar%AWC_complexangle_re = 0.0D0\n" in content
+        assert "    LocalVar%AWC_complexangle_im = 0.0D0\n" in content
+        assert "AWC_complexangle_re(3)" in content
+        assert "SUBROUTINE Z(LocalVar)\n    LocalVar%AWC_complexangle_re" in content
+
 
 # --- CHARACTER array fix test fixtures ---
 
