@@ -64,7 +64,7 @@ Added `_find_target_for_source()` helper that parses all `add_library()` blocks,
 ## Commits
 
 - **OpenFAST** `b5422a8c6`: Fixes 1-3 (cmake option, baselines, Registry double precision)
-- **VIT** `3f46763`: Fix 4 (multi-target cmake auto-patching)
+- **VIT** `97c279f`: Fix 4 (multi-target cmake auto-patching)
 
 ## Related
 

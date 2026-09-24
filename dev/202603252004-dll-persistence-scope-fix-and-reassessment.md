@@ -116,7 +116,7 @@ Could we remove the KGen DEALLOCATE entirely and rely solely on the `AlreadyInit
 
 | Repo | Commit | Description |
 |------|--------|-------------|
-| VIT | `93bcffa` | Fix dll_persistence DEALLOCATE scope: only insert where init_condition is valid |
+| VIT | `13dc975` | Fix dll_persistence DEALLOCATE scope: only insert where init_condition is valid |
 
 ## What's Next
 

@@ -65,4 +65,4 @@ The extraction campaign required fixing five distinct issues across KGen, VIT, a
 
 ## Commit
 
-**VIT repo:** `f186d23` — Generalize KGen DEALLOCATE patch to work for all instrumented files
+**VIT repo:** `7efabd1` — Generalize KGen DEALLOCATE patch to work for all instrumented files

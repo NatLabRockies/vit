@@ -29,7 +29,7 @@ The default of 20 invocations was chosen empirically: for ROSCO's `saturate` fun
 
 3 files changed, 13 insertions.
 
-### Commit d983a2b (2026-02-26): Fix invocation format to match KGen
+### Commit 3e04602 (2026-02-26): Fix invocation format to match KGen
 
 The initial implementation used a colon-only format: `0:0:1:20`. This was wrong. KGen's `--invocation` flag expects the invocation range portion to use a dash separator: `0:0:1-20`. The colon-only format caused KGen to misinterpret the range, silently capturing only a single invocation instead of 20.
 

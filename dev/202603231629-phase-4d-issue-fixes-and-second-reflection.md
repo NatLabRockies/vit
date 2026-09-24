@@ -130,9 +130,9 @@ View type changes only activate when `view_strategy == "view"` is set in the reg
 
 ### Commits (this session, VIT repo)
 
-1. `5b51c21` — Fixes 1, 4, 5: dimension split bug, CLI apply_type_strategies, 35 unit tests
-2. `f06eee9` — Fixes 2, 3: integrate.py populator generation, kernel_verify.py view support
-3. `5689777` — Build ordering fix: populator and wrapper Make dependencies
+1. `d671f98` — Fixes 1, 4, 5: dimension split bug, CLI apply_type_strategies, 35 unit tests
+2. `59013e5` — Fixes 2, 3: integrate.py populator generation, kernel_verify.py view support
+3. `8fedd2b` — Build ordering fix: populator and wrapper Make dependencies
 
 ### Test Results
 

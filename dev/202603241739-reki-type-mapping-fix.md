@@ -95,7 +95,7 @@ CableControl only has 2 total cases (not 40) — this suggests most cases are Na
 ### VIT repo
 | Commit | Description |
 |--------|-------------|
-| `1b7345c` | Fix ReKi type mapping: REAL(4) not REAL(8). Remove BLOCK conversion and assumed_size_arrays threading. |
+| `f99d36d` | Fix ReKi type mapping: REAL(4) not REAL(8). Remove BLOCK conversion and assumed_size_arrays threading. |
 
 ### ROSCO repo
 | Commit | Description |

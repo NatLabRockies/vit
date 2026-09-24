@@ -1,7 +1,7 @@
 # The Kernel Gate Verifies a Wrapper Integration Does Not Generate
 
 **Date:** 2026-08-07
-**Status:** in-progress — fixed in VIT `127a593`; two functions knowingly left unrepaired
+**Status:** in-progress — fixed in VIT `ce7f660`; two functions knowingly left unrepaired
 **Scope:** `vit/kernel_verify.py`, `vit/interface_gen.py`
 
 ## Placement
@@ -21,7 +21,7 @@ it for `_generate_wrapper_function`, which did not accept the parameter at all.
 reported success, and emitted a wrapper with no copy-back.
 
 Found on `interp1d`, which writes `ErrVar%aviFAIL` and `ErrVar%ErrMsg`. Not by a failure — by
-reading the emitted wrapper. Fixed in `127a593`, 699 tests pass, copy-back confirmed by reading
+reading the emitted wrapper. Fixed in `ce7f660`, 699 tests pass, copy-back confirmed by reading
 the wrapper again.
 
 ## Why nothing could have caught it
@@ -65,7 +65,7 @@ Dev note `202608072043` sorts the fixes into two categories. This one needs a th
 
 | Category | Example | Detectable by |
 |---|---|---|
-| Lost in transit to AeroDyn | `LOGICAL` mapping (`1deb7e3`), `Char_Selector`, `CHARACTER(*)` | re-running the first codebase |
+| Lost in transit to AeroDyn | `LOGICAL` mapping (`aafe272`), `Char_Selector`, `CHARACTER(*)` | re-running the first codebase |
 | Always broken, documented as design | inverted scaffold guard | reading the code behind the workaround |
 | **Always broken, never reached** | `--reverse-copy` on FUNCTIONs | pointing the tool at a differently-shaped codebase |
 

@@ -72,7 +72,7 @@ Post-mortem audit of the FindBoundingTables/Compute_iLoweriUpper session identif
 
 ## Commits
 
-- **VIT** `a98add8`: Fixes 1-3 + Fix 5 (config, integrate, project plan)
+- **VIT** `2ff0107`: Fixes 1-3 + Fix 5 (config, integrate, project plan)
 - **OpenFAST** `f110fa19d`: Fix 4 (reset_to_clean.sh) + regenerated integration files
 
 ## Related

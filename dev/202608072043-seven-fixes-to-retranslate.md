@@ -17,17 +17,17 @@ Through roughly fourteen functions of a codebase VIT had already migrated end to
 
 | Commit | Component | Defect | Path |
 |---|---|---|---|
-| `a8ac134` | VIT | `fortran_inventory` dropped a file on cpp line-splices | analysis |
-| `7ad4e9c` | VIT | `integrate` hardcoded a `vit_types.h` include | measured |
-| `e72235f` | VIT | `interface_gen` omitted LOGICAL→INTEGER conversion | measured |
-| `badd9f8` | VIT | `CHARACTER(*)` length never passed to C++ | measured |
-| `badd9f8` | VIT | scaffold guard inverted: clobbered implementations | measured |
+| `7f4c267` | VIT | `fortran_inventory` dropped a file on cpp line-splices | analysis |
+| `2a10048` | VIT | `integrate` hardcoded a `vit_types.h` include | measured |
+| `a6fe65c` | VIT | `interface_gen` omitted LOGICAL→INTEGER conversion | measured |
+| `ab78884` | VIT | `CHARACTER(*)` length never passed to C++ | measured |
+| `ab78884` | VIT | scaffold guard inverted: clobbered implementations | measured |
 | `c3c8f91` | KGen | `kgsearch` missing `search_Char_Selector` | measured |
 | (in flight) | KGen | `gen_kernel_callsite_file.py` | measured |
 
 **Six of the seven are in the path that produces translations.**
 
-Not counted here: two fixes to `join_telemetry.py` (`06811f0`, `90a496d`), which are measurement
+Not counted here: two fixes to `join_telemetry.py` (`7cafd79`, `108c54c`), which are measurement
 tooling written for this run and not part of VIT's translation path.
 
 ## This falsifies a premise of the replication plan
@@ -49,7 +49,7 @@ this cost seven fixes, which is a result rather than a caveat.
 
 ### Capabilities lost in transit to AeroDyn
 
-`e72235f` is the clearest: commit `1deb7e3` (2026-04-25, AeroDyn work) remapped `LOGICAL(4)` from
+`a6fe65c` is the clearest: commit `aafe272` (2026-04-25, AeroDyn work) remapped `LOGICAL(4)` from
 `C_BOOL` to `C_INT`, and the call generator keys its conversion on the *C* type, so the change
 silently disabled it. The original campaign's `LPFilter` wrapper emitted `LOGICAL(reset, C_BOOL)`
 correctly. Full analysis in dev note `202608071945`.
@@ -85,7 +85,7 @@ instructions.** `CLAUDE.md` in the OpenFAST workspace says:
 
 That is a rule instructing every future session to work around an inverted condition. A guard
 existed whose entire purpose was to prevent the described behavior; nobody read it. The fix in
-`badd9f8` makes the rule obsolete in both directions — re-running after implementing is now safe,
+`ab78884` makes the rule obsolete in both directions — re-running after implementing is now safe,
 and it correctly refreshes a stale placeholder, which is the case that matters when a signature
 changes mid-cycle.
 

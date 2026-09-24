@@ -142,7 +142,7 @@ Fresh baseline captured from clean Fortran (all scenarios). Integrated build wit
 ## Commits
 
 **VIT repo:**
-- `84971d4` — Recursive nested type registry + kernel callee bridges
+- `1b2b980` — Recursive nested type registry + kernel callee bridges
 
 **ROSCO repo:**
 - `0e9313d` — ForeAftDamping verified 40/40, integrated, byte-identical (19 functions)

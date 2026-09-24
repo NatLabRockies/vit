@@ -13,7 +13,7 @@ the run has ended.**
 ## What the replication reported
 
 #28 `GetWords` integrated. Kernel 21/21, differential harness 10/10, gate 27/27.
-`ROSCO-replication d3c1928`, `vit 846fb1e`. Two claims: a new extraction-empty cause, and the
+`ROSCO-replication d3c1928`, `vit bcc436e`. Two claims: a new extraction-empty cause, and the
 sixteenth tool fix (`CHARACTER(*)` array dummies had no VIT representation).
 
 Everything checkable below was checked. **All of it holds.** What follows is what the replication

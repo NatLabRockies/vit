@@ -33,7 +33,7 @@ The Phase 7B controller subroutines are the first functions extracted from DISCO
 
 **Fix:** In `_build_bridge_call_args()` (interface_gen.py), use explicit array sections for assumed-shape callee args: `xData(1:n_xData)` instead of `xData`. This creates a temporary that's compatible with `(:)`. Only applies to assumed-shape arrays — fixed-size arrays (like `rootMOOP(3)`) pass through directly.
 
-**Commit:** `5c9e28d` (VIT)
+**Commit:** `e49d515` (VIT)
 
 ### Issue 2: DISCON.F90 kernel compilation failures (3 sub-issues)
 
@@ -47,7 +47,7 @@ Functions extracted from DISCON.F90 (VariableSpeedControl, PitchControl, YawRate
 
 **Fix:** Three regex patches in `_patch_kernel_fortran()` (kernel_verify.py): remove PUBLIC statements, remove `USE discon`, comment out avrSWAP verification calls. Also changed the glob from `*.f90` to `*.[fF]90` to match `DISCON.F90`.
 
-**Commit:** `5c9e28d` (VIT)
+**Commit:** `e49d515` (VIT)
 
 ### Issue 3: avrSWAP kind mismatch (REAL(ReKi) vs REAL(C_DOUBLE))
 
@@ -61,7 +61,7 @@ Functions extracted from DISCON.F90 (VariableSpeedControl, PitchControl, YawRate
 
 The regex targets the `CALL func_c(...)` line specifically (not the INTERFACE declaration) by requiring a `CALL` or assignment prefix.
 
-**Commit:** `5c9e28d` (VIT)
+**Commit:** `e49d515` (VIT)
 
 ### Issue 4: Bridge OPTIONAL argument handling
 
@@ -71,7 +71,7 @@ The regex targets the `CALL func_c(...)` line specifically (not the INTERFACE de
 
 **Fix:** Restructured `generate_kernel_callee_bridge()` in interface_gen.py. For functions with OPTIONAL args, the bridge generates an `IF (has_X /= 0) THEN / CALL f(..., X) / ELSE / CALL f(...) / END IF` branch. Added `skip_optional` parameter to `_build_bridge_call_args()` to build the required-only arg list for the ELSE branch.
 
-**Commit:** `5c9e28d` (VIT)
+**Commit:** `e49d515` (VIT)
 
 ### Issue 5: Fixed-size arrays in bridge call args
 
@@ -81,7 +81,7 @@ The regex targets the `CALL func_c(...)` line specifically (not the INTERFACE de
 
 **Fix:** Check `arg.is_assumed_shape` before applying the explicit section. Fixed-size arrays pass through directly.
 
-**Commit:** `3623f68` (VIT)
+**Commit:** `0103431` (VIT)
 
 ### Issue 6: Comment-based false callee detection
 
@@ -91,7 +91,7 @@ The regex targets the `CALL func_c(...)` line specifically (not the INTERFACE de
 
 **Fix:** Strip Fortran comments (`!` to end of line) from body lines before scanning for callee function names.
 
-**Commit:** `3623f68` (VIT)
+**Commit:** `0103431` (VIT)
 
 ### Issue 7: Array-returning function bridges
 
@@ -101,7 +101,7 @@ The regex targets the `CALL func_c(...)` line specifically (not the INTERFACE de
 
 **Fix:** Skip bridge generation for callees with `sig.result_is_array`. If the C++ actually calls them, it gets a linker error — which is the right behavior (the developer needs to implement the callee first).
 
-**Commit:** `78f49d2` (VIT)
+**Commit:** `efa38cd` (VIT)
 
 ### Issue 8: Missing kernel Makefiles (IPC, ActiveWakeControl)
 
@@ -121,7 +121,7 @@ The regex targets the `CALL func_c(...)` line specifically (not the INTERFACE de
 
 **Fix:** Changed the check to look for `BIND(C, NAME='ipc_c')` instead of just `ipc_c`. The BIND clause is unique to the INTERFACE declaration.
 
-**Commit:** `b51934b` (VIT)
+**Commit:** `58ec5cc` (VIT)
 
 ### Issue 10: View-type callee bridge segfault (PitchControl blocker)
 
@@ -178,11 +178,11 @@ Several translation patterns are now well-established for Phase 7B controller fu
 ### VIT repo
 | Commit | Description |
 |--------|-------------|
-| `5c9e28d` | Bridge assumed-size fix, DISCON kernel patches, avrSWAP kind mismatch, OPTIONAL bridges |
-| `3623f68` | Fixed-size array bridge fix, comment stripping in callee detection |
-| `78f49d2` | Skip array-returning function bridges |
-| `b51934b` | INTERFACE block detection fix for short names |
-| `300adda` | Revert view-type bridge attempt (PitchControl blocker) |
+| `e49d515` | Bridge assumed-size fix, DISCON kernel patches, avrSWAP kind mismatch, OPTIONAL bridges |
+| `0103431` | Fixed-size array bridge fix, comment stripping in callee detection |
+| `efa38cd` | Skip array-returning function bridges |
+| `58ec5cc` | INTERFACE block detection fix for short names |
+| `6d18358` | Revert view-type bridge attempt (PitchControl blocker) |
 
 ### ROSCO repo
 | Commit | Description |

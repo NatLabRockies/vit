@@ -19,11 +19,11 @@ Does least-squares fitting via LAPACK `dgels` to compute Cn_alpha (slope of Cn v
 
 ### 1. Cross-module instrumentation (solved in this session)
 
-KGen instruments `NWTC_Base_reduced.f90` (icefloe module) because of the transitive dependency chain Calculate_C_alpha → LAPACK_gels → NWTC_Base. VIT only builds the aerodyn target. Solution: `fix_cross_module_instrumentation()` in extract.py transplants `kw_*` subroutines from cross-module files into the in-target module file that defines the same Fortran MODULE. General solution, not OpenFAST-specific. Committed at VIT `4d47b55`.
+KGen instruments `NWTC_Base_reduced.f90` (icefloe module) because of the transitive dependency chain Calculate_C_alpha → LAPACK_gels → NWTC_Base. VIT only builds the aerodyn target. Solution: `fix_cross_module_instrumentation()` in extract.py transplants `kw_*` subroutines from cross-module files into the in-target module file that defines the same Fortran MODULE. General solution, not OpenFAST-specific. Committed at VIT `5ed3c52`.
 
 ### 2. Silent build failure (solved earlier in this session)
 
-KGen swallows all build/run errors from the state capture `make` command. Solution: KGen now prints stdout/stderr on non-zero return, VIT scans for error lines. Committed at KGen `0705f2d`, VIT `045eb3c`.
+KGen swallows all build/run errors from the state capture `make` command. Solution: KGen now prints stdout/stderr on non-zero return, VIT scans for error lines. Committed at KGen `0705f2d`, VIT `073e363`.
 
 Extraction now succeeds: 20 state files from `ad_MHK_RM1_Fixed` test case.
 
@@ -48,7 +48,7 @@ The full `NWTC_LAPACK.f90` calls functions that don't exist in the reduced copie
 | `SetErrStat` | NWTC_LAPACK (error handling) | NWTC_Base.f90 | No | **Blocking** |
 | `AllocAry` | NWTC_LAPACK (workspace allocation) | NWTC_IO.f90 | No | **Blocking** |
 
-### Issues Solved (committed at VIT `0284ced`)
+### Issues Solved (committed at VIT `423e8ff`)
 
 1. **`CHARACTER(*)` type mapping** — `type_map.py` now maps `CHARACTER(*)` to `char*` with `character_len_param="*"` instead of rejecting it.
 
@@ -89,9 +89,9 @@ This is a general KGen limitation that will affect any function calling NWTC Lib
 | Repo | Commit | What |
 |------|--------|------|
 | KGen | `0705f2d` | Surface build/run errors from state capture |
-| VIT | `045eb3c` | Surface errors in CLI when 0 state files |
-| VIT | `4d47b55` | Cross-module instrumentation fix (subroutine transplant) |
-| VIT | `189c8cd` | EXTRACTION_INTERNALS.md (446-line pipeline reference) |
-| VIT | `0284ced` | CHARACTER(*) support + kernel incompleteness patches |
-| VIT | `7e13b76` | Dev note: cross-module instrumentation fix |
+| VIT | `073e363` | Surface errors in CLI when 0 state files |
+| VIT | `5ed3c52` | Cross-module instrumentation fix (subroutine transplant) |
+| VIT | `d39e146` | EXTRACTION_INTERNALS.md (446-line pipeline reference) |
+| VIT | `423e8ff` | CHARACTER(*) support + kernel incompleteness patches |
+| VIT | `afb9c35` | Dev note: cross-module instrumentation fix |
 | OpenFAST | `6a655a64f` | Calculate_C_alpha golden kernel (20 cases) |

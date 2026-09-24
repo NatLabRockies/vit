@@ -204,13 +204,13 @@ ALL IDENTICAL — 24 scenarios
 | ROSCO | `bbccf1a` | Scenarios 24-25 + partial OL_CableControl fix |
 | ROSCO | `241b18d` | Fix CC_Mode=2 segfault (allocation timing + avr_size) |
 | ROSCO | `68306df` | Revert avr_size — allocation timing fix was sufficient |
-| VIT | `4584796` | Dev note: clean Fortran reset |
-| VIT | `f15fbc2` | Dev note: upstream verification |
-| VIT | `b7b8ead` | Dev note: Scenario 11 AWC_Mode=1 |
-| VIT | `cd8beaa` | Dev note: mode coverage audit |
-| VIT | `b6a3f44` | Dev note: verification push status |
-| VIT | `a8653c1` | Dev note: FloatingFeedback NaN diagnosis |
-| VIT | `fa24422` | Dev note: final mode gaps |
+| VIT | `a10f133` | Dev note: clean Fortran reset |
+| VIT | `751bd10` | Dev note: upstream verification |
+| VIT | `fd29a7c` | Dev note: Scenario 11 AWC_Mode=1 |
+| VIT | `9568c59` | Dev note: mode coverage audit |
+| VIT | `f58d129` | Dev note: verification push status |
+| VIT | `9210d7c` | Dev note: FloatingFeedback NaN diagnosis |
+| VIT | `b0c1c25` | Dev note: final mode gaps |
 
 ## Conclusion
 

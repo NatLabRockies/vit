@@ -159,12 +159,12 @@ This has not been implemented yet. It is the next item to address.
 
 | Commit | Repo | Description |
 |--------|------|-------------|
-| `e3a89cc` | VIT | Fix FMA contraction in kernel CXXFLAGS |
+| `fe613bf` | VIT | Fix FMA contraction in kernel CXXFLAGS |
 | `c326bc5` | ROSCO | Add `-ffp-contract=off` to CMakeLists.txt |
-| `83bd6f6` | VIT | Document FMA fix and KGen limitations |
-| `862ce64` | VIT | Revise FMA as verification-phase tool, add FMA sanity check |
+| `9698358` | VIT | Document FMA fix and KGen limitations |
+| `1191461` | VIT | Revise FMA as verification-phase tool, add FMA sanity check |
 | `b3cec2c` | ROSCO | Re-extract LPFilter kernel with no-FMA baseline |
-| `0c8085a` | VIT | Extend field logging to bare variable comparisons |
+| `ee807ef` | VIT | Extend field logging to bare variable comparisons |
 
 ## Test Results
 

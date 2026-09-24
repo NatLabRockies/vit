@@ -9,7 +9,7 @@ Complete re-extraction and verification of all 28 golden kernel fixtures with th
 
 1. **Per-function scenario mapping**: Each function now extracts with the specific scenario that exercises its call site with non-zero inputs (see dev note `202603271853`)
 2. **Statefile deduplication**: `kgen_statefile.lst` entries are deduplicated after extraction, eliminating the ElapsedTime append bug's doubling effect (see dev note `202603271740`)
-3. **CMake cache cleanup**: `cleanup_kgen_utils_injection()` now reconfigures CMake after extraction to clear stale `DependInfo.cmake` references (see commit `54e7337`)
+3. **CMake cache cleanup**: `cleanup_kgen_utils_injection()` now reconfigures CMake after extraction to clear stale `DependInfo.cmake` references (see commit `ab47db6`)
 
 ## Extraction Results
 
@@ -101,11 +101,11 @@ This session started with a Q&A discourse about the verification pipeline and ev
 **VIT commits:**
 | Hash | Description |
 |------|-------------|
-| `82bdc07` | Dev note: kgen_statefile.lst duplication root cause |
-| `711991b` | Update dev note: confirmed with instrumented extraction |
-| `54e7337` | Fix ElapsedTime build: reconfigure CMake, clean model/ |
-| `b4ab707` | Deduplicate kgen_statefile.lst after extraction |
-| `7779a50` | Per-function scenario mapping, extract/verify scripts |
+| `19e3dbd` | Dev note: kgen_statefile.lst duplication root cause |
+| `f49a789` | Update dev note: confirmed with instrumented extraction |
+| `ab47db6` | Fix ElapsedTime build: reconfigure CMake, clean model/ |
+| `3d196f8` | Deduplicate kgen_statefile.lst after extraction |
+| `614ad7b` | Per-function scenario mapping, extract/verify scripts |
 
 **ROSCO commits:**
 | Hash | Description |

@@ -108,7 +108,7 @@ and `insert_kgen_pragma` handled continuation lines but knew nothing about **blo
 wrapped the header alone, leaving an unterminated `IF` inside the callsite region. KGen did exactly
 what it was told.
 
-Fixed in `2e57357`: a construct-terminator scan covering `IF`/`DO`/`SELECT`/`WHERE`/`FORALL`/
+Fixed in `2f1a78e`: a construct-terminator scan covering `IF`/`DO`/`SELECT`/`WHERE`/`FORALL`/
 `ASSOCIATE`/`BLOCK`, nesting counted, quote-aware comment stripping, six tests.
 
 **This generalizes.** A call inside a construct header is a common shape, and until now every such

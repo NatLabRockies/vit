@@ -163,7 +163,7 @@ and deliberately rejected:
 
 Updates to test_integrate.py for interp1d integration plan generation.
 
-## Follow-Up Commit: API Rename (53023f3)
+## Follow-Up Commit: API Rename (12287a5)
 
 Six minutes after the main commit, `_build_c_params` was renamed to
 `build_c_params` (removing the leading underscore). The function was being
@@ -203,6 +203,6 @@ This commit also established the "Known Limitations" section in CLAUDE.md:
 
 ## Commits
 
-- 2f50911 — Derived type and assumed-shape array support (1,022 insertions,
+- f85e4fa — Derived type and assumed-shape array support (1,022 insertions,
   95 deletions)
-- 53023f3 — Rename _build_c_params to build_c_params (11 lines)
+- 12287a5 — Rename _build_c_params to build_c_params (11 lines)

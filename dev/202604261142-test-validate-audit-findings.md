@@ -7,7 +7,7 @@
 
 `vit test-validate` was implemented and proven end-to-end on `AFI_ValidateInitInput` (7/7 tests, C++ ≡ Fortran). However, a rigorous audit found 8 issues — several are OpenFAST/AeroDyn-specific code that should be general, and one is an architectural problem (dual `vit_types.h` files).
 
-The tool is in `vit/vit/test_validate.py` (~300 lines) with CLI registration in `vit/vit/cli.py`. Commits: `f2c8632` through `810eb1a`.
+The tool is in `vit/vit/test_validate.py` (~300 lines) with CLI registration in `vit/vit/cli.py`. Commits: `f77f8ac` through `ca82ca0`.
 
 ## Issue 1: Hardcoded Library Paths (CRITICAL)
 

@@ -89,7 +89,7 @@ a local bridge buffer and are never compared*. **It is false for the checkout th
 
 The two VIT checkouts have diverged: **30 commits exist only in `vit_translation/vit`,
 57 only in the OpenFAST workspace's.** I measured against the OpenFAST one. The campaign's own VIT
-fixed this on **2026-08-07 — the day before I wrote the claim** — in `25bcc1e`, *found translating
+fixed this on **2026-08-07 — the day before I wrote the claim** — in `8e5973b`, *found translating
 `PathIsRelative`, function 23 of the replication I am auditing*. Measured:
 
 ```
@@ -100,7 +100,7 @@ What is actually blind, and correctly classified this time:
 
 - **CHARACTER *fields* of derived types** are dropped. `ErrVar` reaches C++ as 3 of its 4 fields;
   the missing one is `ErrMsg`, where ROSCO puts every error string. `CheckInputs` — one of the five
-  documented escapes — is largely that message. **A VIT gap of the same shape as the one `25bcc1e`
+  documented escapes — is largely that message. **A VIT gap of the same shape as the one `8e5973b`
   closed**, not a law.
 - **Passthrough derived types** are omitted. This one is structural.
 - **The generator has no string kind.** Work, on this side of the seam.

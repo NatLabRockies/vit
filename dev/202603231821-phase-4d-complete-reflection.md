@@ -77,16 +77,16 @@ Phase 4D was the last type system phase. The remaining work (Phases 7B through 1
 
 ## Session Commits (Phase 4D, all in VIT repo)
 
-1. `3ee6830` — Steps 1-3: scanner, view struct header, populator generation
-2. `0e28d71` — Steps 4-7: type registry, interface gen, integration, translation
-3. `5b51c21` — Fixes 1, 4, 5: dimension split bug, CLI apply_type_strategies, 35 tests
-4. `f06eee9` — Fixes 2, 3: integrate populator generation, kernel_verify view support
-5. `5689777` — Kernel Makefile build ordering fix
-6. `c53dc5f` — Configurable allocation helpers (ParseAry → vit.yaml)
-7. `a95e96c` — Pre-compute field mappings, eliminate parameter threading
-8. `dcec749` — Remove ROSCO-specific fallbacks (source_module, Makefile dependency)
-9. `b3afadc` — Include all ALLOCATABLE fields (scanner informational, not gating)
-10. `b7e9950` — 15 more tests (50 total, 501 overall)
+1. `2026c93` — Steps 1-3: scanner, view struct header, populator generation
+2. `77391a0` — Steps 4-7: type registry, interface gen, integration, translation
+3. `d671f98` — Fixes 1, 4, 5: dimension split bug, CLI apply_type_strategies, 35 tests
+4. `59013e5` — Fixes 2, 3: integrate populator generation, kernel_verify view support
+5. `8fedd2b` — Kernel Makefile build ordering fix
+6. `a203a94` — Configurable allocation helpers (ParseAry → vit.yaml)
+7. `aa02b0c` — Pre-compute field mappings, eliminate parameter threading
+8. `11d86af` — Remove ROSCO-specific fallbacks (source_module, Makefile dependency)
+9. `fc96ba0` — Include all ALLOCATABLE fields (scanner informational, not gating)
+10. `2f10f11` — 15 more tests (50 total, 501 overall)
 
 Plus 4 dev notes documenting the implementation, fixes, reflections, and design decisions.
 

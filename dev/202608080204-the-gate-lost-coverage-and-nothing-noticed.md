@@ -125,12 +125,12 @@ it is a better question than the one the plan asks.
 and never again; the `ELSE` branch updates `ITerm2` but not `ITermLast2`. Mirroring rather than fixing
 is correct, and pinning it explicitly in the harness is better than leaving it implied.
 
-**The third `LOGICAL` generator.** `ece0c3d` (`test_validate`) joins `e72235f` (wrapper direction) and
-`05b70bc` (kernel callee bridge). The agent's framing — *when a type mapping is wrong it is wrong in
+**The third `LOGICAL` generator.** `1160576` (`test_validate`) joins `a6fe65c` (wrapper direction) and
+`4f568b7` (kernel callee bridge). The agent's framing — *when a type mapping is wrong it is wrong in
 every generator that crosses the boundary, and fixing the one in front of you leaves the rest to be
 found one function at a time* — is correct and understated. The VIT history shows the same mapping
-being fixed further back, in the AeroDyn era: `1deb7e3` ("6 infrastructure fixes for
-CalculateUACoeffs: LOGICAL mapping, …") and `fa3f38d` ("Fix 8 stale tests: LOGICAL int32_t, …").
+being fixed further back, in the AeroDyn era: `aafe272` ("6 infrastructure fixes for
+CalculateUACoeffs: LOGICAL mapping, …") and `90ca28c` ("Fix 8 stale tests: LOGICAL int32_t, …").
 
 **`LOGICAL` has now been fixed at least five times, in four generators, across two codebases.** That
 is not a bug; it is a missing abstraction. There is no single place where "how does a Fortran

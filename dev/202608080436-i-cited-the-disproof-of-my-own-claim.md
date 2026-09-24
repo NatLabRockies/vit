@@ -89,7 +89,7 @@ LocalVar%GenTqAz = PIDController(..., LocalVar%piP, LocalVar%restart, objInst, L
 `piP` — into the view, handed the C++ a direct pointer to the real `LocalVar%piP`, and then copied
 the stale view back over it, discarding every write.
 
-**Fixed in VIT (`892ded7`), not worked around.** The design point is right and non-obvious: *whether
+**Fixed in VIT (`7886b80`), not worked around.** The design point is right and non-obvious: *whether
 two arguments alias is a property of the call site, which the wrapper cannot see*, so the fix finds
 candidates statically and resolves at runtime with `C_ASSOCIATED`. A purely static fix would be
 either unsound or over-broad.

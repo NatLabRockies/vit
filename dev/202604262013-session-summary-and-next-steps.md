@@ -81,19 +81,19 @@ Recommendation: do AFI_ComputeUACoefs, then assess. The remaining AirfoilInfo fu
 
 | Repo | Commit | What |
 |------|--------|------|
-| VIT | `24405c0` | Eliminate dual vit_types.h |
-| VIT | `c9561ee` | Fix 7 test-validate audit issues |
-| VIT | `0963a24` | Documentation: 12 functions, test-validate workflow, CLI table |
-| VIT | `c70c378` | View populator: ALLOCATABLE TYPE() array marshalling |
-| VIT | `58c53ad` | LBOUND fix, same-file/shared callee skip, helper callee detection |
-| VIT | `ac4a6c0` | Dev note: AFI_ComputeAirfoilCoefs completed |
-| VIT | `e484b3f` | Auto-detect C++ implemented callees from source |
-| VIT | `59d376d` | Dev note: auto-detect C++ callees |
-| VIT | `19f25db` | Fix duplicate nested type definitions |
-| VIT | `fa3f38d` | Fix 8 stale tests (636 pass, 0 fail) |
-| VIT | `bc58db0` | Add 32 unit tests (test_validate, callees, dedup) |
-| VIT | `bd8e448` | Add 6 more tests (callee bridge, find_call_sites) |
-| VIT | `0993804` | Documentation: 13 functions, all infrastructure |
+| VIT | `75f8632` | Eliminate dual vit_types.h |
+| VIT | `1ce632c` | Fix 7 test-validate audit issues |
+| VIT | `cee84cc` | Documentation: 12 functions, test-validate workflow, CLI table |
+| VIT | `f2c1d8f` | View populator: ALLOCATABLE TYPE() array marshalling |
+| VIT | `5be7761` | LBOUND fix, same-file/shared callee skip, helper callee detection |
+| VIT | `9166757` | Dev note: AFI_ComputeAirfoilCoefs completed |
+| VIT | `98db567` | Auto-detect C++ implemented callees from source |
+| VIT | `516ebe5` | Dev note: auto-detect C++ callees |
+| VIT | `1d11c7f` | Fix duplicate nested type definitions |
+| VIT | `90ca28c` | Fix 8 stale tests (636 pass, 0 fail) |
+| VIT | `acc2ca1` | Add 32 unit tests (test_validate, callees, dedup) |
+| VIT | `2a0ef38` | Add 6 more tests (callee bridge, find_call_sites) |
+| VIT | `f3657c6` | Documentation: 13 functions, all infrastructure |
 | OpenFAST | `6801a5ef1` | Eliminate translations/vit_types.h |
 | OpenFAST | `524427c77` | Integrate AFI_ValidateInitInput (12th function) |
 | OpenFAST | `dba3ba849` | AFI_ComputeAirfoilCoefs translation + kernel (1/20 initial) |

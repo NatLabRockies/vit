@@ -265,4 +265,4 @@ The flow for a Stage B function is now:
 
 ## Commit
 
-VIT `ca11ca8`: Add --auto-allocate flag: extract ALLOCATE from Fortran into wrappers
+VIT `b702b0f`: Add --auto-allocate flag: extract ALLOCATE from Fortran into wrappers

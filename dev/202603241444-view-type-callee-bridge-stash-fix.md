@@ -154,4 +154,4 @@ The module variable stash approach has several desirable properties:
 
 ## Commit
 
-**VIT repo:** `d5ad191` — Fix view-type callee bridge segfault with module variable stash
+**VIT repo:** `cfd1fad` — Fix view-type callee bridge segfault with module variable stash

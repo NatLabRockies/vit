@@ -269,8 +269,8 @@ The manual work is reduced to: writing the C++ implementation and adding any ALL
 
 | Commit | Description |
 |--------|-------------|
-| `314a1fd` | `vit sim-compare` command (new file + CLI + 8 tests) |
-| `b9134e8` | Auto-generate reverse-copy in view populator modules |
-| `df54f68` | `--reverse-copy` flag threaded through cli → integrate → interface_gen |
-| `ebdee5d` | vit.yaml `verification: simulation` tracking |
-| `73a2911` | ALLOCATABLE field hints in `vit translate` prompt |
+| `699e494` | `vit sim-compare` command (new file + CLI + 8 tests) |
+| `5f15a91` | Auto-generate reverse-copy in view populator modules |
+| `07b0e0c` | `--reverse-copy` flag threaded through cli → integrate → interface_gen |
+| `d40f582` | vit.yaml `verification: simulation` tracking |
+| `841b35b` | ALLOCATABLE field hints in `vit translate` prompt |

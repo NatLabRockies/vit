@@ -163,8 +163,8 @@ Deleted `_patch_assumed_size_double_promotion()` and `_patch_cpp_assumed_size_do
 **VIT repo:**
 | Commit | Description |
 |--------|-------------|
-| `e976ada` | BLOCK promotion workaround (now superseded) |
-| `3011a34` | Two-run Fortran-vs-C++ verification, removes BLOCK workaround |
+| `6e43219` | BLOCK promotion workaround (now superseded) |
+| `6ab9c6b` | Two-run Fortran-vs-C++ verification, removes BLOCK workaround |
 
 **ROSCO repo:**
 | Commit | Description |

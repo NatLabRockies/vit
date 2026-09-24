@@ -5,7 +5,7 @@
 
 ## The Breaking Change
 
-The ReKi type mapping fix (`ReKi: REAL(8)` → `ReKi: REAL(4)`, commit `1b7345c` in VIT, `4d33a67` in ROSCO) corrected a fundamental type error: ROSCO defines `ReKi = C_FLOAT = REAL(4)`, not `REAL(8)`. The `-fdefault-real-8` compiler flag does NOT promote explicitly-kinded types like `REAL(ReKi)`.
+The ReKi type mapping fix (`ReKi: REAL(8)` → `ReKi: REAL(4)`, commit `f99d36d` in VIT, `4d33a67` in ROSCO) corrected a fundamental type error: ROSCO defines `ReKi = C_FLOAT = REAL(4)`, not `REAL(8)`. The `-fdefault-real-8` compiler flag does NOT promote explicitly-kinded types like `REAL(ReKi)`.
 
 The fix removed 178 lines of BLOCK conversion workaround code from `interface_gen.py` and `kernel_verify.py`, updated the C++ translations from `double* avrSWAP` to `float* avrSWAP`, and eliminated the `assumed_size_arrays` parameter threading from the wrapper/integration pipeline. The type chain became correct end-to-end: `REAL(ReKi)` = `REAL(4)` → `REAL(C_FLOAT)` → `float*`.
 

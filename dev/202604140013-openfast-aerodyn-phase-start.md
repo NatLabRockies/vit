@@ -5,7 +5,7 @@
 
 ## Context
 
-The ROSCO translation project is complete. Phases 0 through 11.5 shipped: 52 translatable functions + C++ DISCON entry point = 53 C++ files, all verified and integrated; pure C++ `libdiscon.so` on the `integrated` branch with no libgfortran dependency; three-build verification chain (upstream Fortran ≡ modified Fortran ≡ pure C++) across 27 scenarios × 13 output arrays ≈ 5.25M values (2.56M non-trivial) with one fully-explained tolerated compiler artifact; ~25% C++ speedup measured; adversarial audit completed. See dev note `202604031714-project-retrospective.md` for the full arc, and CLAUDE.md commit `ae63be2` / PROJECT_PLAN.md commit `6a43c2e` for the current documented state.
+The ROSCO translation project is complete. Phases 0 through 11.5 shipped: 52 translatable functions + C++ DISCON entry point = 53 C++ files, all verified and integrated; pure C++ `libdiscon.so` on the `integrated` branch with no libgfortran dependency; three-build verification chain (upstream Fortran ≡ modified Fortran ≡ pure C++) across 27 scenarios × 13 output arrays ≈ 5.25M values (2.56M non-trivial) with one fully-explained tolerated compiler artifact; ~25% C++ speedup measured; adversarial audit completed. See dev note `202604031714-project-retrospective.md` for the full arc, and CLAUDE.md commit `df5b1f2` / PROJECT_PLAN.md commit `17b863c` for the current documented state.
 
 With ROSCO wrapping up, the user identified the next target: **AeroDyn, the aerodynamics module of OpenFAST** (NREL's wind turbine simulation framework). This dev note marks the formal start of that effort and records the setup decisions, workspace layout, and initial reconnaissance so a future reader can pick up the thread.
 
@@ -54,7 +54,7 @@ Created `vit_translation_openfast/` with three independent git clones:
 
 | Repo | Source | Branch | Tip commit | Size |
 |------|--------|--------|-----------|------|
-| `vit/` | `git@github.com:NatLabRockies/vit.git` | `main` | `6a43c2e` (today's PROJECT_PLAN.md update) | 3.9M |
+| `vit/` | `git@github.com:NatLabRockies/vit.git` | `main` | `17b863c` (today's PROJECT_PLAN.md update) | 3.9M |
 | `KGen/` | `git@github.com:kevinmenear/KGen.git` | `master` | `4676161` (backslash-escape fix) | 30M |
 | `openfast/` | `https://github.com/OpenFAST/openfast.git` | `main` | `2895884d2` (v5.0.1 release merge from `dev`) | 496M |
 
@@ -140,8 +140,8 @@ This mirrors how ROSCO started — `saturate` on February 25 was a three-line mi
 
 ## Related documentation
 
-- `CLAUDE.md` (VIT repo root) — updated today to reflect ROSCO completion + Phase 11 integrated branch + post-completion verification push. Commit `ae63be2` on `main`.
-- `PROJECT_PLAN.md` (VIT repo) — updated today with new Phase 11.5 subsection (post-completion verification push) and Phase 12 status lede. Commit `6a43c2e` on `main`. Phase 12 header now reads: "ROSCO-specific work is complete. Phase 12 is generalization work — validating VIT on a second codebase and production-grade packaging." The AeroDyn effort arguably pulls forward the "test on another codebase" Phase 12 item into a much larger scope than Phase 12 originally contemplated.
+- `CLAUDE.md` (VIT repo root) — updated today to reflect ROSCO completion + Phase 11 integrated branch + post-completion verification push. Commit `df5b1f2` on `main`.
+- `PROJECT_PLAN.md` (VIT repo) — updated today with new Phase 11.5 subsection (post-completion verification push) and Phase 12 status lede. Commit `17b863c` on `main`. Phase 12 header now reads: "ROSCO-specific work is complete. Phase 12 is generalization work — validating VIT on a second codebase and production-grade packaging." The AeroDyn effort arguably pulls forward the "test on another codebase" Phase 12 item into a much larger scope than Phase 12 originally contemplated.
 - Dev note `202604031714-project-retrospective.md` — the full 38-day arc from `saturate` (February 25) to the 11-mode Scenario 27 stress test (April 3). Essential reading for anyone picking up the project mid-stream because it captures the recurring lesson that the hardest problems are infrastructure, not translations.
 - Dev note `202604031900-integrated-branch-cleanup.md` — how the `integrated` branch was produced (three cleanup commits). Useful context for the "what does 'done' look like" question that will come up repeatedly during AeroDyn work.
 - Dev note `202604031638-adversarial-verification-audit.md` — the adversarial audit methodology. When AeroDyn verification stabilizes, we should run the same audit on the new pipeline to find the OpenFAST-specific blind spots.

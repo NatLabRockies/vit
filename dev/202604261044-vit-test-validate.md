@@ -81,6 +81,6 @@ The error-reporting pattern (`SetErrStat`, exceptions, return codes) doesn't mat
 
 | Repo | Commit | What |
 |------|--------|------|
-| VIT | `f2c8632` | Initial vit test-validate (prompt + skeleton) |
-| VIT | `aab454a` | Add Fortran-side comparison (bridge generation) |
-| VIT | `286f161` | Fix: pass derived_types to build_c_params |
+| VIT | `f77f8ac` | Initial vit test-validate (prompt + skeleton) |
+| VIT | `0fdc47c` | Add Fortran-side comparison (bridge generation) |
+| VIT | `12e2c42` | Fix: pass derived_types to build_c_params |

@@ -148,8 +148,8 @@ The fact that CC_Mode=0 for ALL invocations (not just non-Scenario-3 ones) sugge
 ## Commits
 
 **VIT repo:**
-- `10b4ab7` — Add assumed-size array patching for DISCON.F90 extraction
-- `54fd7bb` — Fix stale artifact contamination in extraction pipeline (from previous session)
+- `dfe6bc4` — Add assumed-size array patching for DISCON.F90 extraction
+- `50cb9f6` — Fix stale artifact contamination in extraction pipeline (from previous session)
 
 **ROSCO repo:**
 - `0153ecd` — Add assumed_size_arrays config, Flp_Mode=1, fix scenario order

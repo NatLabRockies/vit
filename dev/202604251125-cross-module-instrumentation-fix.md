@@ -65,8 +65,8 @@ Implemented as `fix_cross_module_instrumentation()` in `extract.py` with four he
 | Repo | Commit | What |
 |------|--------|------|
 | KGen | `0705f2d` | Surface build/run errors from state capture (print stdout/stderr on non-zero return) |
-| VIT | `045eb3c` | Surface errors in CLI output when 0 state files (scan KGen output for error lines) |
-| VIT | `4d47b55` | Cross-module instrumentation fix (`fix_cross_module_instrumentation` + 4 helpers) |
+| VIT | `073e363` | Surface errors in CLI output when 0 state files (scan KGen output for error lines) |
+| VIT | `5ed3c52` | Cross-module instrumentation fix (`fix_cross_module_instrumentation` + 4 helpers) |
 | OpenFAST | `6a655a64f` | Calculate_C_alpha golden kernel (20 cases) |
 
 Also created `vit/docs/EXTRACTION_INTERNALS.md` (446 lines) documenting the entire extraction pipeline, all 9 known failure modes, and a step-by-step debugging checklist.

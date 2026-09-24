@@ -78,7 +78,7 @@ This needs its own rigorous design phase. The interaction protocol between VIT a
 ## Commits
 
 **VIT repo:**
-- `8f769bd`: Phase 4A followup — all 5 fixes (LOGICAL removal, gfortran guard, record_translation non-downgrade, CLAUDE.md cleanup note, compiler passthrough)
+- `6072d5f`: Phase 4A followup — all 5 fixes (LOGICAL removal, gfortran guard, record_translation non-downgrade, CLAUDE.md cleanup note, compiler passthrough)
 
 **ROSCO repo:**
 - `555ea68`: Restore integrated status in vit.yaml

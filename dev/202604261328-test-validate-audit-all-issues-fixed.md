@@ -11,7 +11,7 @@ This note documents the resolution of all 8 issues across two commits.
 
 ## Issue 5: Dual `vit_types.h` (Fixed First — Separate Commit)
 
-**Commit:** VIT `24405c0`, OpenFAST `6801a5ef1`
+**Commit:** VIT `75f8632`, OpenFAST `6801a5ef1`
 
 Two copies of `vit_types.h` existed with the same filename but different content — `translations/vit_types.h` (written by `vit translate`) and `modules/aerodyn/src/vit_types.h` (written by `vit integrate`). They had drifted: different types present, different field representations for the same type (`int8_t` vs `int32_t` for `AFI_UA_BL_Default_Type` LOGICAL fields), and a broken `[1:3]` array syntax in the translations copy.
 

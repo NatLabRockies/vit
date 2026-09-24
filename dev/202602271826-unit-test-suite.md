@@ -11,7 +11,7 @@ This was a deliberate "stop and test everything" effort before adding more featu
 
 ## What Changed
 
-### Commit 8cf8882 (2026-02-27)
+### Commit e2ce596 (2026-02-27)
 
 4 files changed, 1,284 insertions. Added 96 new tests across 4 test files, bringing the total from 35 to 131.
 

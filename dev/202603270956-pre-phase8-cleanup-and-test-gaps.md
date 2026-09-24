@@ -82,10 +82,10 @@ The codebase is now clean, documented, and tested:
 **VIT repo:**
 | Hash | Description |
 |------|-------------|
-| `f8022aa` | Update CLAUDE.md and PROJECT_PLAN.md for 8 scenarios and fixes |
-| `7da4b6f` | Move PIDController from Phase 7A to Phase 10 |
-| `b2aa70b` | Remove unused imports and dead function |
-| `6ed6fb5` | Add test_interface_gen.py, test_fortran_parser.py, enhance extract/kernel_verify tests |
+| `f6031ef` | Update CLAUDE.md and PROJECT_PLAN.md for 8 scenarios and fixes |
+| `4655438` | Move PIDController from Phase 7A to Phase 10 |
+| `0e3e05b` | Remove unused imports and dead function |
+| `99aaf92` | Add test_interface_gen.py, test_fortran_parser.py, enhance extract/kernel_verify tests |
 
 **ROSCO repo:**
 | Hash | Description |

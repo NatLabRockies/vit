@@ -119,9 +119,9 @@ This follows VIT's existing principle (documented in CLAUDE.md): "No evidence, a
 
 | Hash | Description |
 |------|-------------|
-| `57259fd` | Unify assumed-size array handling: auto-detect and infer from source |
-| `9859d96` | Update CLAUDE.md: assumed_size_arrays is now optional |
-| `1b5e27a` | Hard error when assumed-size array has no source evidence |
+| `9c36b0f` | Unify assumed-size array handling: auto-detect and infer from source |
+| `13ed376` | Update CLAUDE.md: assumed_size_arrays is now optional |
+| `9cc0faf` | Hard error when assumed-size array has no source evidence |
 
 ## Lesson
 

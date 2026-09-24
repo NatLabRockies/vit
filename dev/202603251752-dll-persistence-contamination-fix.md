@@ -115,7 +115,7 @@ Functions that extract successfully with 20 state files: saturate, ratelimit, in
 ## Corrections to Previous Dev Notes
 
 ### 202603250848 (CableControl Heap Crash)
-**Status update: superseded.** The heap crash (`malloc(): unaligned tcache chunk detected`) was attributed to VIT's field logging causing excessive heap churn. The actual root cause was the **avrSWAP heap overflow** — writing to avrSWAP(2601) with a 2000-element allocation corrupted the heap. With avrSWAP=3000, CableControl passes 40/40 with field logging enabled and no crash. The SAVE/reuse patches (commit `48c43d9`, reverted at `74932ef`) were unnecessary — the fix was the correct avrSWAP size.
+**Status update: superseded.** The heap crash (`malloc(): unaligned tcache chunk detected`) was attributed to VIT's field logging causing excessive heap churn. The actual root cause was the **avrSWAP heap overflow** — writing to avrSWAP(2601) with a 2000-element allocation corrupted the heap. With avrSWAP=3000, CableControl passes 40/40 with field logging enabled and no crash. The SAVE/reuse patches (commit `6366400`, reverted at `1ee6c06`) were unnecessary — the fix was the correct avrSWAP size.
 
 ### 202603251133 (WE_FOPoles State File Data Error)
 **Status update: resolved.** The WE_FOPoles entry=0.0 was not a KGen state file bug, DLL persistence issue, or binary format misalignment. It was the **avrSWAP heap overflow** — CableControl writing to avrSWAP(2601) overwrote WE_FOPoles(3) with 0.0 in the kernel's heap memory. The state file itself was correct (confirmed by binary parse). Similarly, StructuralControl's VS_KP (float32 truncation) and PC_GS_KI (small diff) were caused by avrSWAP(2801+) overflow corrupting different heap locations.

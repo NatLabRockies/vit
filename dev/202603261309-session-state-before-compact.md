@@ -8,7 +8,7 @@
 ### 1. Phase 7B Integration Test (27 functions)
 - All 27 functions integrate, compile, and don't crash across 6 scenarios
 - PitchControl excluded (depends on untranslated PitchSaturation in ControllerBlocks.f90)
-- Committed: VIT `8b02689`, ROSCO kernel state at `8154ea8`
+- Committed: VIT `3f75fd2`, ROSCO kernel state at `8154ea8`
 
 ### 2. Integration Test Numerical Validation Gap Discovery
 - Previous tests only diffed stdout text (scenario headers + "PASSED" messages)
@@ -50,7 +50,7 @@
 - **Stale test dirs**: proof_baseline/, proof_integrated/, baseline_iso/, integrated_iso/, baseline_arrays/, integrated_arrays/, test_full_a/, test_full_b/, test_s1_a/, test_s1_b/, integ_run_a/, integ_run_b/ — can be cleaned up
 
 ### VIT repo
-- Latest commit: `b37bc66` (dev note on Scenario 3 confirmation)
+- Latest commit: `50d3925` (dev note on Scenario 3 confirmation)
 - All dev notes committed through the session
 
 ### Docker container

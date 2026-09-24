@@ -111,7 +111,7 @@ For future clean build tests, the baseline must be captured before the Stage A C
 ## Commits
 
 - ROSCO `7aeac66`: Phase 11B: Remove all Fortran from build — pure C++ libdiscon.so
-- VIT `05054f9`: Mark Phase 11 Stage B complete — pure C++ libdiscon.so
+- VIT `67793a2`: Mark Phase 11 Stage B complete — pure C++ libdiscon.so
 
 ## Milestone
 

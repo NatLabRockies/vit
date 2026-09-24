@@ -61,5 +61,5 @@ Callee detection requires clean (pre-integration) Fortran source. Integrated sou
 
 | Repo | Commit | What |
 |------|--------|------|
-| VIT | `e484b3f` | Auto-detect C++ implemented callees from source |
+| VIT | `98db567` | Auto-detect C++ implemented callees from source |
 | OpenFAST | `9be6581bd` | Remove helper function entries from vit.yaml |

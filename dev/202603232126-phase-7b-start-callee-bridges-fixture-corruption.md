@@ -128,8 +128,8 @@ The failure mode was: re-running `vit verify` on a golden fixture corrupts it. T
 ## Commits
 
 **VIT repo:**
-- `26f93ca` — Generalize callee bridges to ALL callees (with artifact filtering + per-callee error handling)
-- `f235cce` — Make vit verify idempotent via backup/restore of original KGen files
+- `4ffc448` — Generalize callee bridges to ALL callees (with artifact filtering + per-callee error handling)
+- `95005cc` — Make vit verify idempotent via backup/restore of original KGen files
 
 **ROSCO repo:**
 - `2912a65` — Re-extract ForeAftDamping golden fixture from clean source with .kgen backups

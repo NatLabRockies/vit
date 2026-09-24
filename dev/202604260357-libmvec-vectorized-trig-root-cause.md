@@ -92,5 +92,5 @@ The `-fvect-cost-model=unlimited` flag is aggressive — it forces vectorization
 ## Commits
 | Repo | Commit | What |
 |------|--------|------|
-| VIT | `544e8e8` | Fix kernel vectorization flags + libmvec |
+| VIT | `a046bae` | Fix kernel vectorization flags + libmvec |
 | OpenFAST | `3074e38d2` | Re-extracted clean kernel + shared_files config |

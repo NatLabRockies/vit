@@ -68,7 +68,7 @@ bash scripts/verify_aerodyn_baselines.sh all  # 16/16 pass
 
 ## Other Fix: vit_translated.h Self-Contained Include
 
-The existing `vit_translated.h` was created before the auto-include fix and was missing `#include "vit_types.h"`. Added manually. New files created by `vit integrate` will have it automatically (from the `_apply_header_patch` fix in `ea5f7b3`).
+The existing `vit_translated.h` was created before the auto-include fix and was missing `#include "vit_types.h"`. Added manually. New files created by `vit integrate` will have it automatically (from the `_apply_header_patch` fix in `1483b72`).
 
 ## Other Fix: Translation Files Should NOT Include vit_translated.h
 
@@ -78,7 +78,7 @@ Earlier in the session, I added `#include "vit_translated.h"` to the translation
 
 | Repo | Commit | What |
 |------|--------|------|
-| VIT | `c3f8dad` | Callee bridge INOUT view re-sync + stale bridge cleanup |
+| VIT | `de06d2f` | Callee bridge INOUT view re-sync + stale bridge cleanup |
 | OpenFAST | `7ff6dd72d` | 9th function integrated, all production .cpp files fixed |
 | OpenFAST | `b3afeb111` | integrate_all.sh script |
 

@@ -37,7 +37,7 @@ Updated CLAUDE.md Step 1 and INTEGRATION_TEST.md Step 1 to reference `bash scrip
 1. `extract.py`: New `_create_kgen_backups()` function called immediately after successful KGen extraction, when source files are guaranteed clean. Creates `.f90.kgen` and `Makefile.kgen` backups at the only safe point in the pipeline.
 2. `kernel_verify.py`: `_backup_or_restore_kgen_originals()` now ONLY restores from existing `.kgen` backups — it never creates new ones. If backups don't exist, it raises `FileNotFoundError` with a clear message: "Re-run 'vit extract' to create them."
 
-**Commit:** VIT `0debfc1`
+**Commit:** VIT `5dc5a57`
 
 ### Item 4: DLL Persistence DEALLOCATE Question (ALREADY RESOLVED)
 
@@ -57,7 +57,7 @@ Updated CLAUDE.md Step 1 and INTEGRATION_TEST.md Step 1 to reference `bash scrip
 
 ## Documentation Updates
 
-- **CLAUDE.md** (VIT `fdca7e1`): Updated `fde0498` → `46e8d4f`, replaced manual reset commands with `bash scripts/reset_to_clean.sh`, removed manual K init patch instructions
+- **CLAUDE.md** (VIT `929a366`): Updated `fde0498` → `46e8d4f`, replaced manual reset commands with `bash scripts/reset_to_clean.sh`, removed manual K init patch instructions
 - **INTEGRATION_TEST.md** (ROSCO `fe97ea3`): Replaced 44-line manual Step 1 with 4-line script call
 
 ## End-to-End Verification
@@ -107,8 +107,8 @@ PitchControl: 40/40 passed
 **VIT repo:**
 | Hash | Description |
 |------|-------------|
-| `fdca7e1` | Update CLAUDE.md: use reset_to_clean.sh, update fde0498 to 46e8d4f |
-| `0debfc1` | Fix .kgen backup fragility: create during extraction, not verification |
+| `929a366` | Update CLAUDE.md: use reset_to_clean.sh, update fde0498 to 46e8d4f |
+| `5dc5a57` | Fix .kgen backup fragility: create during extraction, not verification |
 
 **ROSCO repo:**
 | Hash | Description |
