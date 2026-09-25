@@ -346,7 +346,8 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
 
     # View type preamble: local view structs + populator calls
     if view_args:
-        lines.extend(_generate_view_preamble(view_args, is_kernel))
+        lines.extend(_generate_view_preamble(
+            view_args, is_kernel, _adopt_arg_names(view_args, copy_arrays)))
 
     # CHARACTER copy loops (executable, before the C call)
     lines.extend(_generate_character_copy_loops(sig, kind_aliases, derived_types))
@@ -400,38 +401,29 @@ def _generate_wrapper_function(sig, c_func_name, kind_aliases, derived_types,
                 else:
                     lines.append(f"        CALL vit_copy_scalars_to_{type_lower}({arg.name}_view, {arg.name})")
 
-    # ALLOCATABLE fields: the view carries (pointer, extent) pairs the C side
-    # may have REPLACED, and no amount of scalar copying moves those. The
-    # generated `vit_view_in_<type>` ALLOCATEs the destination component to the
-    # view's extent and copies through the pointer; it has always been emitted
-    # into the view module and, until this flag, was called by nothing.
-    #
-    # Opt-in rather than folded into --reverse-copy, because every unit already
-    # integrated was verified against a wrapper WITHOUT it (X3: a verification
-    # default does not move mid-run).
-    #
-    # AND IT NAMES THE ARGUMENTS, rather than taking every view-typed INOUT
-    # one, because `vit_view_in_<type>` starts each component with
-    # `IF (ALLOCATED(dest%X)) DEALLOCATE(dest%X)`. For a component the C side
-    # REPLACED that is right -- the view points at C-owned storage. For one it
-    # never touched, the view still holds `C_LOC(dest%X)` from the populate
-    # step, so the DEALLOCATE frees exactly the memory the following
-    # `C_F_POINTER` then reads. Applying this to an argument whose arrays the
-    # unit does not produce is a use-after-free, which is why the caller has to
-    # say which argument that is.
+    # ALLOCATABLE components the C++ may have ALLOCATED or replaced: adopted
+    # per field against a pre-call snapshot (view_populator._adopt_routines).
+    # Automatic for INTENT(OUT) view arguments -- every component arrives
+    # deallocated, so there is nothing a wrong guess could free -- and for the
+    # arguments --copy-arrays names. The snapshot is what makes the latter safe
+    # too: a component the C++ did not replace is left exactly as it is.
+    # (--copy-arrays used to call `vit_view_in_<type>`, which DEALLOCATEs every
+    # component before copying and so read freed memory for any component the
+    # C++ did not replace -- hence it had to name its arguments exactly.)
+    lines.extend(_generate_adopt_epilogue(view_args, copy_arrays, reverse_copy))
+    # Arrays of view-typed arguments named by --copy-arrays keep the old
+    # copy-back (the adopt path covers scalar arguments).
     named = [(a, m) for a, m in (view_args or [])
-             if copy_arrays and a.name in copy_arrays]
+             if copy_arrays and a.name in copy_arrays
+             and a.is_array and not a.is_assumed_shape and a.array_dims]
     if named:
         lines.append(f"        ! Copy ALLOCATABLE fields back from view to Fortran type")
         for arg, mapping in named:
             if arg.intent and arg.intent.value.upper() in ("INOUT", "OUT"):
                 type_lower = mapping.c_type.lower()
-                if arg.is_array and not arg.is_assumed_shape and arg.array_dims:
-                    lines.append(f"        DO vit_view_i = 1, {arg.array_dims}")
-                    lines.append(f"            CALL vit_view_in_{type_lower}({arg.name}_view(vit_view_i), {arg.name}(vit_view_i))")
-                    lines.append(f"        END DO")
-                else:
-                    lines.append(f"        CALL vit_view_in_{type_lower}({arg.name}_view, {arg.name})")
+                lines.append(f"        DO vit_view_i = 1, {arg.array_dims}")
+                lines.append(f"            CALL vit_view_in_{type_lower}({arg.name}_view(vit_view_i), {arg.name}(vit_view_i))")
+                lines.append(f"        END DO")
 
     # Copy the C_CHAR result buffer back into the CHARACTER result. The C side
     # is required to have filled all res_char_len bytes -- Fortran CHARACTER is
@@ -509,7 +501,8 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
 
     # View type declarations (must be before any executable statements)
     if view_args:
-        lines.extend(_generate_view_declarations(view_args))
+        lines.extend(_generate_view_declarations(
+            view_args, _adopt_arg_names(view_args, copy_arrays)))
 
     # OPTIONAL preamble (declarations + executable IF-PRESENT checks)
     if optional_forwarded:
@@ -576,7 +569,8 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
 
     # View type executables: populator calls + stash assignments
     if view_args:
-        lines.extend(_generate_view_executables(view_args, is_kernel))
+        lines.extend(_generate_view_executables(
+            view_args, is_kernel, _adopt_arg_names(view_args, copy_arrays)))
 
     # CHARACTER copy loops (executable, before the C call)
     lines.extend(_generate_character_copy_loops(sig, kind_aliases, derived_types))
@@ -620,38 +614,29 @@ def _generate_wrapper_subroutine(sig, c_func_name, kind_aliases, derived_types,
                 else:
                     lines.append(f"        CALL vit_copy_scalars_to_{type_lower}({arg.name}_view, {arg.name})")
 
-    # ALLOCATABLE fields: the view carries (pointer, extent) pairs the C side
-    # may have REPLACED, and no amount of scalar copying moves those. The
-    # generated `vit_view_in_<type>` ALLOCATEs the destination component to the
-    # view's extent and copies through the pointer; it has always been emitted
-    # into the view module and, until this flag, was called by nothing.
-    #
-    # Opt-in rather than folded into --reverse-copy, because every unit already
-    # integrated was verified against a wrapper WITHOUT it (X3: a verification
-    # default does not move mid-run).
-    #
-    # AND IT NAMES THE ARGUMENTS, rather than taking every view-typed INOUT
-    # one, because `vit_view_in_<type>` starts each component with
-    # `IF (ALLOCATED(dest%X)) DEALLOCATE(dest%X)`. For a component the C side
-    # REPLACED that is right -- the view points at C-owned storage. For one it
-    # never touched, the view still holds `C_LOC(dest%X)` from the populate
-    # step, so the DEALLOCATE frees exactly the memory the following
-    # `C_F_POINTER` then reads. Applying this to an argument whose arrays the
-    # unit does not produce is a use-after-free, which is why the caller has to
-    # say which argument that is.
+    # ALLOCATABLE components the C++ may have ALLOCATED or replaced: adopted
+    # per field against a pre-call snapshot (view_populator._adopt_routines).
+    # Automatic for INTENT(OUT) view arguments -- every component arrives
+    # deallocated, so there is nothing a wrong guess could free -- and for the
+    # arguments --copy-arrays names. The snapshot is what makes the latter safe
+    # too: a component the C++ did not replace is left exactly as it is.
+    # (--copy-arrays used to call `vit_view_in_<type>`, which DEALLOCATEs every
+    # component before copying and so read freed memory for any component the
+    # C++ did not replace -- hence it had to name its arguments exactly.)
+    lines.extend(_generate_adopt_epilogue(view_args, copy_arrays, reverse_copy))
+    # Arrays of view-typed arguments named by --copy-arrays keep the old
+    # copy-back (the adopt path covers scalar arguments).
     named = [(a, m) for a, m in (view_args or [])
-             if copy_arrays and a.name in copy_arrays]
+             if copy_arrays and a.name in copy_arrays
+             and a.is_array and not a.is_assumed_shape and a.array_dims]
     if named:
         lines.append(f"        ! Copy ALLOCATABLE fields back from view to Fortran type")
         for arg, mapping in named:
             if arg.intent and arg.intent.value.upper() in ("INOUT", "OUT"):
                 type_lower = mapping.c_type.lower()
-                if arg.is_array and not arg.is_assumed_shape and arg.array_dims:
-                    lines.append(f"        DO vit_view_i = 1, {arg.array_dims}")
-                    lines.append(f"            CALL vit_view_in_{type_lower}({arg.name}_view(vit_view_i), {arg.name}(vit_view_i))")
-                    lines.append(f"        END DO")
-                else:
-                    lines.append(f"        CALL vit_view_in_{type_lower}({arg.name}_view, {arg.name})")
+                lines.append(f"        DO vit_view_i = 1, {arg.array_dims}")
+                lines.append(f"            CALL vit_view_in_{type_lower}({arg.name}_view(vit_view_i), {arg.name}(vit_view_i))")
+                lines.append(f"        END DO")
 
     lines.append(f"    END SUBROUTINE {sig.name}")
     return lines
@@ -1191,6 +1176,39 @@ def _generate_alloc_return_epilogue(sig):
     return lines
 
 
+def _adopt_arg_names(view_args: list[tuple], copy_arrays: Optional[list]) -> list[str]:
+    """View-typed SCALAR arguments whose ALLOCATABLE components are adopted.
+
+    Every INTENT(OUT) one -- its components arrive deallocated, so the C++ is
+    the only thing that can allocate them -- plus any --copy-arrays names.
+    """
+    out = []
+    for arg, _m in view_args or []:
+        if arg.is_array:
+            continue
+        intent = arg.intent.value.upper() if arg.intent else ""
+        if intent == "OUT" or (copy_arrays and arg.name in copy_arrays
+                               and intent in ("INOUT", "OUT")):
+            out.append(arg.name)
+    return out
+
+
+def _generate_adopt_epilogue(view_args, copy_arrays, reverse_copy) -> list[str]:
+    """After the C call: scalars back (INTENT(OUT) implies it), then adopt."""
+    names = _adopt_arg_names(view_args, copy_arrays)
+    if not names:
+        return []
+    lines = ["        ! Adopt ALLOCATABLE components the C++ allocated (vit_adopt_<type>)"]
+    for arg, mapping in view_args:
+        if arg.name not in names:
+            continue
+        t = mapping.c_type.lower()
+        if not reverse_copy:
+            lines.append(f"        CALL vit_copy_scalars_to_{t}({arg.name}_view, {arg.name})")
+        lines.append(f"        CALL vit_adopt_{t}({arg.name}_view, {arg.name}_snap, {arg.name})")
+    return lines
+
+
 def _get_view_type_args(sig: FortranSignature, kind_aliases, derived_types) -> list[tuple]:
     """
     Identify args that use the view type pattern.
@@ -1207,7 +1225,8 @@ def _get_view_type_args(sig: FortranSignature, kind_aliases, derived_types) -> l
     return result
 
 
-def _generate_view_preamble(view_args: list[tuple], is_kernel: bool = False) -> list[str]:
+def _generate_view_preamble(view_args: list[tuple], is_kernel: bool = False,
+                            adopt: Optional[list] = None) -> list[str]:
     """
     Generate USE statements, local declarations, and populator calls
     for view-type arguments.
@@ -1218,12 +1237,13 @@ def _generate_view_preamble(view_args: list[tuple], is_kernel: bool = False) -> 
     """
     if not view_args:
         return []
-    decls = _generate_view_declarations(view_args)
-    execs = _generate_view_executables(view_args, is_kernel)
+    decls = _generate_view_declarations(view_args, adopt)
+    execs = _generate_view_executables(view_args, is_kernel, adopt)
     return decls + execs
 
 
-def _generate_view_declarations(view_args: list[tuple]) -> list[str]:
+def _generate_view_declarations(view_args: list[tuple],
+                                adopt: Optional[list] = None) -> list[str]:
     """Generate local TYPE declarations for view-type arguments."""
     if not view_args:
         return []
@@ -1237,12 +1257,15 @@ def _generate_view_declarations(view_args: list[tuple]) -> list[str]:
             need_loop_var = True
         else:
             lines.append(f"        TYPE({view_type}), TARGET :: {arg.name}_view")
+            if adopt and arg.name in adopt:
+                lines.append(f"        TYPE({view_type}) :: {arg.name}_snap   ! pre-call copy, for vit_adopt")
     if need_loop_var:
         lines.append(f"        INTEGER :: vit_view_i")
     return lines
 
 
-def _generate_view_executables(view_args: list[tuple], is_kernel: bool = False) -> list[str]:
+def _generate_view_executables(view_args: list[tuple], is_kernel: bool = False,
+                               adopt: Optional[list] = None) -> list[str]:
     """Generate populator calls and stash assignments for view-type arguments."""
     if not view_args:
         return []
@@ -1256,6 +1279,8 @@ def _generate_view_executables(view_args: list[tuple], is_kernel: bool = False) 
             lines.append(f"        END DO")
         else:
             lines.append(f"        CALL vit_populate_{type_lower}({arg.name}, {arg.name}_view)")
+            if adopt and arg.name in adopt:
+                lines.append(f"        CALL vit_snapshot_{type_lower}({arg.name}_view, {arg.name}_snap)")
 
     if is_kernel:
         lines.append(f"        ! Stash original Fortran pointers for callee bridges")
@@ -1286,11 +1311,24 @@ def _get_view_use_statements(view_args: list[tuple], is_kernel: bool = False,
                 only_list += f", {stash_name}"
             if reverse_copy:
                 only_list += f", vit_copy_scalars_to_{type_lower}"
-            if copy_arrays and arg.name in copy_arrays:
+            adopting = [a for a, m in view_args
+                        if m.c_type.lower() == type_lower
+                        and a.name in _adopt_arg_names(view_args, copy_arrays)]
+            if adopting:
+                only_list += f", vit_snapshot_{type_lower}, vit_adopt_{type_lower}"
+                if not reverse_copy:
+                    only_list += f", vit_copy_scalars_to_{type_lower}"
+            if any(a.name in (copy_arrays or []) and a.is_array
+                   and not a.is_assumed_shape and a.array_dims
+                   for a, m in view_args if m.c_type.lower() == type_lower):
                 only_list += f", vit_view_in_{type_lower}"
-            lines.append(
-                f"        USE {module_name}, ONLY: {only_list}"
-            )
+            # One name per continuation line: with a long type name the
+            # ONLY list passes free-form's 132-column limit.
+            names = [n.strip() for n in only_list.split(",")]
+            lines.append(f"        USE {module_name}, ONLY: {names[0]}"
+                         + (", &" if len(names) > 1 else ""))
+            for i, n in enumerate(names[1:], 1):
+                lines.append(f"            {n}" + (", &" if i < len(names) - 1 else ""))
             seen.add(module_name)
     return lines
 

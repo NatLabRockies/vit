@@ -556,6 +556,51 @@ def _lookup_type(registry: dict, type_name: str) -> Optional[DerivedTypeInfo]:
     return None
 
 
+def _adopt_alloc_lines() -> list:
+    """`vit_adopt_alloc[_lb]`: how a C++ translation allocates a view component.
+
+    The view-populator adopt path (`vit_adopt_<type>`) takes a component whose
+    pointer the C++ REPLACED, ALLOCATEs the Fortran component, copies, and
+    frees the buffer. A Fortran ALLOCATE states lower bounds as well as
+    extents -- `ALLOCATE(x(n, m, 0:3))` -- and the view struct carries only
+    extents, so the lower bounds travel in a 32-byte header in front of the
+    buffer, written here and read by the adopt path. The C++ states them
+    exactly as the ALLOCATE it translates does; `vit_adopt_alloc` is the
+    all-ones case. A buffer without the header is refused by the adopt path,
+    which is also what stops a pointer into Fortran-owned storage from being
+    freed.
+
+    Never NULL for a zero-byte request: NULL in the view means "not
+    allocated", and allocated-empty is a different state.
+
+    Header-only (static inline): nothing to link, no build-system change.
+    """
+    return [
+        "#ifndef VIT_ADOPT_ALLOC_DEFINED",
+        "#define VIT_ADOPT_ALLOC_DEFINED",
+        "#include <stdint.h>",
+        "#include <stdlib.h>",
+        "/* A view component the C++ ALLOCATES: set its pointer to the result and its",
+        "   extents in the view; the generated Fortran wrapper ADOPTS it (vit_adopt_<type>):",
+        "   ALLOCATEs the Fortran component with these lower bounds, copies, frees.",
+        "   rank 0 = every lower bound 1. Never NULL for 0 bytes. */",
+        "#define VIT_ADOPT_MAGIC 0x5649544144505431ULL  /* \"VITADPT1\" */",
+        "typedef struct { uint64_t magic; void* base; int32_t rank; int32_t lb[3]; } vit_adopt_header;",
+        "typedef char vit_adopt_header_is_32_bytes[(sizeof(vit_adopt_header) == 32) ? 1 : -1];",
+        "static inline void* vit_adopt_alloc_lb(size_t nbytes, int rank, int lb1, int lb2, int lb3) {",
+        "    char* base = (char*)malloc(sizeof(vit_adopt_header) + (nbytes ? nbytes : 1));",
+        "    if (!base) return NULL;",
+        "    vit_adopt_header* h = (vit_adopt_header*)base;",
+        "    h->magic = VIT_ADOPT_MAGIC; h->base = base; h->rank = rank;",
+        "    h->lb[0] = lb1; h->lb[1] = lb2; h->lb[2] = lb3;",
+        "    return base + sizeof(vit_adopt_header);",
+        "}",
+        "static inline void* vit_adopt_alloc(size_t nbytes) { return vit_adopt_alloc_lb(nbytes, 0, 1, 1, 1); }",
+        "#endif",
+        "",
+    ]
+
+
 def _deferred_char_contract_lines() -> list:
     """The wire contract for a deferred-length CHARACTER, as C the compiler sees.
 
@@ -673,6 +718,7 @@ def generate_view_struct_header(
     lines.append(f"#endif")
     lines.append(f"")
     lines.extend(_deferred_char_contract_lines())
+    lines.extend(_adopt_alloc_lines())
 
     # --- Scalars and fixed-size arrays (non-ALLOCATABLE, non-POINTER) ---
     scalar_fields = [
@@ -1172,6 +1218,15 @@ def generate_consolidated_types_header(
             )
         new_blocks.append(block.rstrip())
 
+    # A header written before the adopt path existed lacks vit_adopt_alloc.
+    # Insert it (guarded, so a repeat is harmless) rather than leave a
+    # translation that needs it with an undeclared identifier.
+    if existing_content and "VIT_ADOPT_ALLOC_DEFINED" not in existing_content:
+        marker = "#include <stdint.h>\n"
+        block = "\n" + "\n".join(_adopt_alloc_lines())
+        if marker in existing_content:
+            existing_content = existing_content.replace(marker, marker + block, 1)
+
     if not new_blocks and existing_content:
         # Nothing new to add
         return existing_content
@@ -1209,7 +1264,7 @@ def generate_consolidated_types_header(
         "typedef struct { float  re, im; } vit_complex_float;",
         "#endif",
         "",
-    ] + _deferred_char_contract_lines()
+    ] + _deferred_char_contract_lines() + _adopt_alloc_lines()
     lines.append("\n\n".join(new_blocks))
     lines.append("")
     lines.append(f"#endif // {guard}")
