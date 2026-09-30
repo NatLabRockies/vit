@@ -1,83 +1,83 @@
-# vit/docker/
+# VIT Docker image
 
-Dockerfiles for VIT development containers, one per translation target.
+VIT's extraction and verification steps run KGen, which needs Python 2.7 and a Linux Fortran
+toolchain. This image provides both, with VIT installed, so every step of the workflow runs in one
+place. It is not tied to any one translation target: a target's own build dependencies are added
+when the image is built.
 
-VIT itself is project-agnostic, but each translation target has different build dependencies that warrant a dedicated container. This directory holds the Dockerfile for each project's container so the setup is reproducible and version-controlled.
+## What's in the image
 
-## Current Dockerfiles
+| Component | Where |
+|---|---|
+| Ubuntu 24.04, with gfortran, gcc, g++, make, cmake, git and strace | system packages |
+| Python 3.12 with VIT, numpy, pyyaml, pytest and fparser | virtual environment at `/opt/venv`, on `PATH` |
+| VIT, installed in editable mode | `/opt/vit` |
+| Python 2.7.18, built from source and checksum-verified | `/opt/python27`, with `python2.7` on `PATH` |
+| KGen (the fork VIT depends on), at a pinned commit | `/opt/KGen`, with `kgen` on `PATH` |
 
-| File | Container | Project | Status |
-|------|-----------|---------|--------|
-| `Dockerfile.openfast` | `vit-dev-openfast` | OpenFAST / AeroDyn translation | **Built and verified 2026-04-14.** End-to-end smoke test passed: cmake 3.28.3, gfortran 13.3.0, Python 3.12.3, Python 2.7.18, VIT 0.1.0 editable install, fparser 0.2.2, KGen executable, LAPACK/BLAS/yaml-cpp present. See dev note `202604140204-vit-dev-openfast-docker-plan.md` for the full build + smoke test record. |
+Because `kgen` is on `PATH`, `kgen.path` in `vit.yaml` can stay at its default, `kgen`.
 
-## Historical note on `vit-dev` (ROSCO container)
+## Build
 
-The `vit-dev` container used for the ROSCO project is **not** represented by a Dockerfile in this directory. It was built interactively on `ubuntu:24.04`, with Python 2.7 compiled from source inside the container and VIT/KGen installed as editable packages after mounting the workspace. The decision was documented in dev note `202603231054-collaborator-onboarding.md`: a Dockerfile approach was rejected at the time because corporate TLS inspection blocks network access during `docker build` in some environments, and the manual setup was too fragile to codify without network-dependent steps that may or may not work.
-
-The committed vit-dev image is shared as a tarball at `vit-dev-image.tar.gz` (689 MB compressed) — that is the authoritative "how vit-dev is assembled" artifact. Build-from-scratch instructions (apt packages, Python 2.7 source build, pip installs) are documented in `GETTING_STARTED.md` under "Building from scratch" as a fallback.
-
-## Why `Dockerfile.openfast` uses `vit-dev-image` as its base
-
-Rather than rebuilding from `ubuntu:24.04`, the OpenFAST Dockerfile starts from the committed `vit-dev-image` and adds OpenFAST-specific dependencies on top. This minimizes the network footprint during `docker build` (fewer packages to install) and reuses everything that already works for ROSCO (gfortran, g++, Python 2.7, KGen, VIT's Python deps).
-
-The tradeoff is that `vit-dev-image` must be loaded as a Docker image before the build works:
-
-```bash
-docker load < vit-dev-image.tar.gz
-# verify:
-docker images | grep vit-dev-image
-```
-
-If `vit-dev-image` is not available as a local Docker image, `docker build -f Dockerfile.openfast` will fail with "pull access denied" or similar.
-
-## Building
+From the repository root:
 
 ```bash
-cd vit_translation_openfast/vit/docker
-docker build -f Dockerfile.openfast -t vit-dev-openfast ..
+docker build -f docker/Dockerfile -t vit .
 ```
 
-The `..` at the end sets the build context to the parent `vit/` directory, not the `docker/` subdirectory itself.
+The first build compiles Python 2.7, which takes several minutes. Docker builds the image for the
+host's architecture; it is tested on ARM64.
 
-## Running
+| Build argument | Default | Purpose |
+|---|---|---|
+| `EXTRA_APT_PACKAGES` | none | System packages the translation target needs to build |
+| `EXTRA_PIP_PACKAGES` | none | Python packages the target's build or test scripts need |
+| `KGEN_REF` | a pinned commit | The KGen fork commit to install |
+
+For example, OpenFAST needs LAPACK, BLAS and yaml-cpp to build, and its regression-test scripts
+need a few Python packages:
 
 ```bash
-docker run -d --name vit-dev-openfast \
-    -v ~/vit_translation_openfast:/workspace \
-    vit-dev-openfast
-
-# Attach with:
-docker exec -it vit-dev-openfast bash
-
-# Once attached, re-install VIT as an editable package pointing at the new workspace:
-pip3 install -e /workspace/vit --break-system-packages
+docker build -f docker/Dockerfile -t vit-openfast \
+    --build-arg EXTRA_APT_PACKAGES="liblapack-dev libopenblas-dev libyaml-cpp-dev" \
+    --build-arg EXTRA_PIP_PACKAGES="vtk bokeh nptdms pandas" .
 ```
 
-The mount maps `vit_translation_openfast/` on the Mac to `/workspace/` inside the container. From inside the container:
+## Run
 
-- `/workspace/vit/` — VIT tool (independent clone, same `main` branch as ROSCO workspace)
-- `/workspace/KGen/` — KGen (independent clone, same `master` branch)
-- `/workspace/openfast/` — OpenFAST source tree (upstream NREL clone)
+Mount the directory that holds the translation target, and anything its `vit.yaml` refers to, at
+`/workspace`:
 
-## When network access breaks during build
+```bash
+docker run -it --rm -v "$PWD":/workspace vit
+```
 
-The Dockerfile has `apt-get update && apt-get install` and `pip3 install` steps that require network access. If `docker build` fails on any of these, the fallback is the same interactive-build pattern used for the original `vit-dev`:
+Paths in `vit.yaml` (`build_cmd`, `run_cmd` and the rest) are then container paths under
+`/workspace`.
 
-1. Start an interactive container from the base image:
-   ```bash
-   docker run --name vit-dev-openfast-setup -it vit-dev-image bash
-   ```
-2. Inside the container, run each `RUN` step from `Dockerfile.openfast` manually (possibly from a different network — home, VPN, or a network without TLS inspection)
-3. Commit the resulting container state to a new image:
-   ```bash
-   docker commit vit-dev-openfast-setup vit-dev-openfast
-   docker rm vit-dev-openfast-setup
-   ```
-4. Start the real container from the committed image as shown in "Running" above.
+To keep a container running and send commands to it, for example from a coding agent:
 
-This is not ideal (it breaks the reproducibility promise of a Dockerfile), but it matches the documented pattern for this environment and produces the same result.
+```bash
+docker run -d --name vit -v "$PWD":/workspace vit sleep infinity
+docker exec vit vit --help
+```
 
-## Future additions
+Floating-point results can differ between x86_64 and ARM64. Compare a translation against
+baselines produced on the same architecture.
 
-- `Dockerfile.rosco` — retroactive Dockerfile for the ROSCO container, if we ever want to make that environment reproducible from source instead of from the committed tarball. Not a priority while the tarball works.
-- Dockerfiles for any subsequent translation targets beyond OpenFAST.
+## Test the image
+
+```bash
+docker run --rm vit bash -c "cd /opt/vit && python -m pytest tests -q"
+```
+
+## Develop VIT in the container
+
+VIT is installed in editable mode from `/opt/vit`. To use a local checkout instead, mount it over
+that path:
+
+```bash
+docker run -it --rm -v "$PWD":/opt/vit vit bash -c "cd /opt/vit && python -m pytest tests -q"
+```
+
+Python's and pytest's caches stay inside the container, so the mounted checkout is not written to.
