@@ -15,7 +15,7 @@ defined in Functions.f90:462-474). This immediately exposed two architectural
 problems: kernel directory collisions during extraction, and broken CMake
 patching during integration.
 
-## Part 1: Per-Function Kernel Directories (5cbf9b1)
+## Part 1: Per-Function Kernel Directories (a605bcc)
 
 ### The Problem
 
@@ -67,7 +67,7 @@ END FUNCTION
 The C++ translation uses `std::fmod` with an adjustment for Fortran's MODULO
 semantics (always non-negative result, unlike C's fmod which preserves sign).
 
-## Part 2: Fix Multi-Function Integration (1946a7a)
+## Part 2: Fix Multi-Function Integration (745a16e)
 
 ### The Problem
 
@@ -148,5 +148,5 @@ Added 10 new tests covering sequential multi-function integration:
 
 ## Commits
 
-- 5cbf9b1 — Per-function kernel directories and wrap_180 translation
-- 1946a7a — Fix multi-function integration (~18 minutes later)
+- a605bcc — Per-function kernel directories and wrap_180 translation
+- 745a16e — Fix multi-function integration (~18 minutes later)

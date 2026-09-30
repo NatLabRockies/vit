@@ -25,7 +25,7 @@ This worked for ROSCO because translators manually wrote the declarations (guide
 
 Also made `vit_translated.h` self-contained by adding `#include "vit_types.h"` to the generated header guard block, so struct types used in callee declarations (like `afi_table_type_view_t*`) are always resolved.
 
-**Commit:** `1483b72`
+**Commit:** `688104c`
 
 ### 2. `vit translate` shows callee `_c` signatures in the prompt (cli.py, translate.py)
 
@@ -55,7 +55,7 @@ The explicit instruction not to add manual declarations is important — it prev
 
 **Requirement:** Must be run on clean (pre-integration) source. The callee detection parses the original Fortran function body; if the function is already integrated, the wrapper body has no CALL statements to detect.
 
-**Commit:** `e82213e`
+**Commit:** `caaef85`
 
 ### 3. Kernel verification already handled (existing)
 

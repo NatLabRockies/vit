@@ -35,7 +35,7 @@ The pattern of "implement fast, audit rigorously, fix systematically" worked wel
 
 | Repo | Commit | What |
 |------|--------|------|
-| VIT | `75f8632` | Eliminate dual vit_types.h — single canonical location |
+| VIT | `28c791e` | Eliminate dual vit_types.h — single canonical location |
 | OpenFAST | `6801a5ef1` | Eliminate translations/vit_types.h — generate locally in test dirs |
 | VIT | (pending) | Fix remaining 7 audit issues + dev notes |
 | OpenFAST | (pending) | Updated test file, bridge, Makefile for audit fixes |

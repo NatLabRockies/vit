@@ -99,7 +99,7 @@ This is a general pattern in scientific computing: the interesting data is often
 | Repo | Commit | Description |
 |------|--------|-------------|
 | ROSCO | `7294c23` | Add --output-dir to vit_sim.py |
-| VIT | `fd43bfd` | Update clean build test with array comparison |
+| VIT | `014384a` | Update clean build test with array comparison |
 
 ## Related Dev Notes
 

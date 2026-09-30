@@ -18,7 +18,7 @@ LOGICAL crossing as `INTEGER(C_INT)` both ways, `COMPLEX` kind-alias resolution,
 for `INTENT(OUT) ALLOCATABLE`, dummy/view-component aliasing, case-insensitive name uniqueness
 (because *Fortran* is case-insensitive), `INTERFACE`-block nesting, block-construct call sites.
 
-`85867b3` is the model: `COMPLEX(DbKi)` with `DbKi → REAL(8)` was rewritten to `REAL(8)`, dropping
+`56020f9` is the model: `COMPLEX(DbKi)` with `DbKi → REAL(8)` was rewritten to `REAL(8)`, dropping
 the imaginary part silently. The fix takes the *width* from the alias and keeps the *declared base* —
 a general truth about kind aliases, found through one function.
 
@@ -63,7 +63,7 @@ Not in the Fortran. In the environment. Ranked as found:
 
 ## 4. Unification
 
-The two checkouts had diverged from `4754dc5`. Measured: **all `vit/` source evolution happened on
+The two checkouts had diverged from `03296de`. Measured: **all `vit/` source evolution happened on
 the replication side**; this workspace's 57 commits touched only dev notes, analysis and
 `CLAUDE.md`. The merge was disjoint and AeroDyn's VIT work, which predates the base, is untouched.
 
@@ -90,7 +90,7 @@ An unknown compiler falls back **and says it guessed**.
 **4 — I was wrong.** I recommended *"have KGen emit structured results; stop regexing its output"* on
 the strength of seeing regexes. Tracing what the verdict depends on: it comes from KGen's own printed
 summary and output-variable count, guarded at three points — `rc != 0`; an explicit
-`Number of output variables: 0` (`aa788c6`); and the field-log override, which requires a non-empty
+`Number of output variables: 0` (`eca3e99`); and the field-log override, which requires a non-empty
 C++ log and already counts any Fortran-only field as a difference. **If the patterns stop matching, the
 result is fewer diagnostics, not a wrong verdict.** Rewriting KGen's emitter would have been work
 against a hazard already closed. What was left: the log can silently *under-report* coverage, so
@@ -118,7 +118,7 @@ Two real defects fell out, both general:
   implicit interface, and only a FUNCTION fails with *"has no IMPLICIT type"*, which reads like a
   problem in the function. ROSCO puts one module per file. Now tracks module scope.
 - **`COMPLEX` had no branch in the bridge.** The argument was named in the parameter list and never
-  declared. `type_map` learned `COMPLEX` at `85867b3`; the bridge did not, because no test-validate
+  declared. `type_map` learned `COMPLEX` at `56020f9`; the bridge did not, because no test-validate
   had ever run on a COMPLEX argument. **Half a fix, and the missing half was invisible until the
   fixture asked directly.**
 

@@ -214,7 +214,7 @@ Running all 5 scenarios during extraction introduces multi-scenario DLL reload i
 ## Commits
 
 **VIT repo:**
-- `6d86620` — Fix DLL SAVE persistence for DISCON.F90 extraction, add --run-args
+- `58cd5ea` — Fix DLL SAVE persistence for DISCON.F90 extraction, add --run-args
 
 **ROSCO repo:**
 - `5827f49` — Fix Scenario 3 validation errors for DISCON.F90 extraction

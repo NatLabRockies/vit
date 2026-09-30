@@ -5,7 +5,7 @@
 
 ## Summary
 
-Two quick-succession fixes (175535f and 72c8264, roughly 45 minutes apart) addressed issues discovered during the first real attempt to run VIT against ROSCO. These are classic "works in unit tests, breaks in production" bugs — the initial implementation made assumptions about Fortran type representation and KGen pragma format that didn't hold against the real codebase.
+Two quick-succession fixes (197759f and dc048ee, roughly 45 minutes apart) addressed issues discovered during the first real attempt to run VIT against ROSCO. These are classic "works in unit tests, breaks in production" bugs — the initial implementation made assumptions about Fortran type representation and KGen pragma format that didn't hold against the real codebase.
 
 ## Background
 
@@ -16,7 +16,7 @@ After the initial commit landed the full architecture, the next step was to actu
 
 Both bugs lived at the boundary between VIT's internal representation and external tools (the Fortran compiler and KGen), which is why unit tests with synthetic snippets didn't catch them.
 
-## Fix 1: Preserve Type Case in Fortran Parser (175535f)
+## Fix 1: Preserve Type Case in Fortran Parser (197759f)
 
 ### The Problem
 
@@ -43,7 +43,7 @@ This preserves the user's original casing for kind parameters while still allowi
 
 Fortran is case-insensitive for keywords but module-defined kind constants retain their declared casing in the symbol table. When VIT generates interface code with `REAL(DBKI)`, the Fortran compiler can't resolve the kind because the module exported `DbKi`. The generated code must use the exact same casing as the original source.
 
-## Fix 2: Add Function Name to KGen Pragmas (72c8264)
+## Fix 2: Add Function Name to KGen Pragmas (dc048ee)
 
 ### The Problem
 

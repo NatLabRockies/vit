@@ -5,7 +5,7 @@
 
 ## Summary
 
-Two commits (1d56cca and c97504c, roughly 20 minutes apart) addressed the gap between "extraction produces output" and "verification produces correct results." The first commit (476 insertions, 165 deletions — the largest single commit to date) fixed a cascade of issues in kernel compilation, Fortran USE statement ordering, Makefile variable definitions, and output parsing. The second commit fixed a subtle KGen codegen bug involving ONLY clauses on USE statements.
+Two commits (2ba9eca and b28b0a9, roughly 20 minutes apart) addressed the gap between "extraction produces output" and "verification produces correct results." The first commit (476 insertions, 165 deletions — the largest single commit to date) fixed a cascade of issues in kernel compilation, Fortran USE statement ordering, Makefile variable definitions, and output parsing. The second commit fixed a subtle KGen codegen bug involving ONLY clauses on USE statements.
 
 Together, these commits represent the "make verification actually compile and run" phase of development.
 
@@ -20,7 +20,7 @@ KGen generates a self-contained kernel directory with:
 
 VIT's job is to patch this generated code to additionally call the C++ function and compare its outputs against the captured Fortran outputs. This sounds simple but requires understanding — and working around — several KGen codegen quirks.
 
-## Commit 1: Kernel Compilation and Verification Fixes (1d56cca)
+## Commit 1: Kernel Compilation and Verification Fixes (2ba9eca)
 
 ### Makefile Variables: FC_0 and FC_FLAGS_SET_0
 
@@ -79,7 +79,7 @@ If VIT itself is not installed as an editable package (`pip install -e .`), the 
 
 Refinements to the pre-build logic from the extraction overhaul. The include.ini generation now runs after the pre-build to ensure all `.mod` files are current. Also added error handling for cases where the build directory doesn't contain any `.mod` files (indicating a build failure).
 
-## Commit 2: Fix USE kgen_utils_mod ONLY Clause Stripping (c97504c)
+## Commit 2: Fix USE kgen_utils_mod ONLY Clause Stripping (b28b0a9)
 
 ### The Problem
 

@@ -102,11 +102,11 @@ No KGen extraction needed. The test-validate tests replace KGen for functions wh
 
 | Repo | Commit | What |
 |------|--------|------|
-| VIT | `f77f8ac` | Initial test-validate (prompt + skeleton) |
-| VIT | `0fdc47c` | Fortran bridge generation |
-| VIT | `12e2c42` | Fix build_c_params derived_types |
-| VIT | `e75ac16` | Makefile generation + --run flag |
-| VIT | `191ee8f` | Fix include paths + save_config |
-| VIT | `ca82ca0` | PRIVATE support + proper C/Fortran bridge |
+| VIT | `af252df` | Initial test-validate (prompt + skeleton) |
+| VIT | `8c65cb3` | Fortran bridge generation |
+| VIT | `badf3ac` | Fix build_c_params derived_types |
+| VIT | `13191ea` | Makefile generation + --run flag |
+| VIT | `412392a` | Fix include paths + save_config |
+| VIT | `f9f309a` | PRIVATE support + proper C/Fortran bridge |
 | OpenFAST | `54660be58` | Translation + C++-only tests |
 | OpenFAST | `d3c04036f` | Dual-call tests (C++ ≡ Fortran, 7/7) |

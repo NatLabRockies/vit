@@ -115,5 +115,5 @@ The Filters.f90 notch fix was applied dozens of times across sessions without be
 
 ## Commits
 
-**VIT repo:** `9675f4a` — Move DLL persistence workaround from hardcoded to vit.yaml config
+**VIT repo:** `f0775a2` — Move DLL persistence workaround from hardcoded to vit.yaml config
 **ROSCO repo:** `0efd609` — Add dll_persistence config for DLL SAVE variable workaround

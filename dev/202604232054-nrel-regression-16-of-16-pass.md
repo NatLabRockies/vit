@@ -157,5 +157,5 @@ The verification infrastructure is complete and proven. When we begin translatin
 - OpenFAST fork `f32edeb21` — `run_nrel_regression.sh` wrapper script
 - OpenFAST fork `1c57bd2ba` — verifier 5MW path fix + definitive test documentation
 - OpenFAST fork `a61447f10` — Phase 3 conclusion (ARM64 baselines confirmed correct)
-- VIT repo `ee61a65` — dev note update with definitive test results
-- VIT repo `d12a466` — rtest-matching Dockerfile + Rosetta conclusion
+- VIT repo `ac7d8e8` — dev note update with definitive test results
+- VIT repo `c6aef75` — rtest-matching Dockerfile + Rosetta conclusion

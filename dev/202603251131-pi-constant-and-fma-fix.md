@@ -69,7 +69,7 @@ flags: -fdefault-real-8 -fdefault-double-8 -ffp-contract=off
 | Repo | Commit | Description |
 |------|--------|-------------|
 | ROSCO | `1e0eb2a` | Fix PI in 2 translations, add -ffp-contract=off to vit.yaml, TRANSLATION_TIPS |
-| VIT | `86e18c6` | Document -ffp-contract=off requirement in CLAUDE.md |
+| VIT | `ee1cf19` | Document -ffp-contract=off requirement in CLAUDE.md |
 
 ## Lesson
 

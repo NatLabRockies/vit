@@ -82,7 +82,7 @@ All 28 functions now have golden fixtures with 20 state files each. All 27 trans
 
 | Repo | Commit | Description |
 |------|--------|-------------|
-| VIT | `e75e86b` | Update CLAUDE.md extraction table with --scenario 4/6 |
+| VIT | `ded87bb` | Update CLAUDE.md extraction table with --scenario 4/6 |
 | ROSCO | `813d0fe` | Add Scenario 6 (IPC), extract NotchFilterSlopes + PIIController |
 
 ## Key Insight: KGen Invocation Model

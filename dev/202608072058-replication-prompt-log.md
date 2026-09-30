@@ -52,7 +52,7 @@ the agent.** Specifically not sent:
 - that scenario 13 was a fourth dead scenario with a different cause, predating both campaigns
 - the `GetRoot` aliasing analysis, and that the real hazard was Fortran's blank-padding semantics
 - the seven-fixes tally and its two categories
-- the `LOGICAL` mapping regression traced to commit `aafe272`
+- the `LOGICAL` mapping regression traced to commit `bde2259`
 - the observation that `unwrap`'s tokens were recoverable under innermost-wins attribution
 
 A boundary-bracketing prompt was drafted and **never sent** — the author questioned it instead
@@ -99,7 +99,7 @@ had. Work at whatever pace the verification allows; I will tell you when to stop
 
 ```
 Resume with wrap_180. Before you start it, git pull in /workspace/vit — I fixed two joiner bugs at
-the boundary (7cafd79): phase spans read phase instead of failed, and verify_runs/integrate_runs
+the boundary (85629ec): phase spans read phase instead of failed, and verify_runs/integrate_runs
 now record raw invocations alongside attempts-to-first-pass, so a rerun-after-success is
 distinguishable from a retry. Your reading of integrate_attempts: 1 was right; the table just
 couldn't show it. 696 tests pass.
@@ -129,7 +129,7 @@ Check and fix as needed:
    than translation, the extract-scenario change point, and any deviation still unresolved.
 
 3. The runbook reflects reality after the seven tool fixes. In particular the vit translate
-   overwrite warning is now wrong — ab78884 fixed the inverted guard, so re-running after
+   overwrite warning is now wrong — fdd98f8 fixed the inverted guard, so re-running after
    implementing is safe and refreshing a stale scaffold works. If the runbook still says
    otherwise, correct it.
 
@@ -175,7 +175,7 @@ Prompt 2 is the sole instruction in the run carrying anything technical. It had 
 
 **"git pull in /workspace/vit"** — wrong, and corrected:
 
-> `7cafd79` is already at HEAD locally — `/workspace/vit` is the same checkout via bind mount, so
+> `85629ec` is already at HEAD locally — `/workspace/vit` is the same checkout via bind mount, so
 > your fix is already here. No pull needed; `origin` is behind, not ahead. Verifying the change is
 > live.
 

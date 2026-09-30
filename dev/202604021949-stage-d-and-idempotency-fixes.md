@@ -153,8 +153,8 @@ The initial Stage D commit included Python regex workarounds in `integrate_all.s
 - `93af7b1`: Remove VIT bug workarounds from integrate_all.sh (bugs now fixed in VIT)
 
 **VIT:**
-- `3b0a68f`: Mark Stage D complete in PROJECT_PLAN
-- `9d6efdc`: Fix integration idempotency bugs: duplicate INTERFACE, stale vit_types.h, duplicate USE
+- `3fc6e28`: Mark Stage D complete in PROJECT_PLAN
+- `7cfb742`: Fix integration idempotency bugs: duplicate INTERFACE, stale vit_types.h, duplicate USE
 
 ## Updated Counts
 

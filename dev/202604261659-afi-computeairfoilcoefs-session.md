@@ -142,8 +142,8 @@ Both issues are procedural — the extraction workflow modifies the source tree 
 
 | Repo | Commit | What |
 |------|--------|------|
-| VIT | `f2c1d8f` | View populator: ALLOCATABLE TYPE() array marshalling |
-| VIT | `5be7761` | LBOUND fix, same-file/shared callee skip, helper callee detection |
+| VIT | `bf92f1c` | View populator: ALLOCATABLE TYPE() array marshalling |
+| VIT | `4930998` | LBOUND fix, same-file/shared callee skip, helper callee detection |
 | VIT | `9166757` | Dev note update |
 | OpenFAST | `dba3ba849` | Translation + NWTC utilities + kernel (1/20 initial) |
 | OpenFAST | `baf50e071` | Integration: 20/20 + 16/16, SplineCoefs fix, vit_types.h fix |

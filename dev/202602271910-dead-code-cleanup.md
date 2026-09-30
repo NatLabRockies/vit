@@ -11,7 +11,7 @@ This cleanup was also motivated by confusion during development: several functio
 
 ## What Changed
 
-### Commit 018bf37 (2026-02-27)
+### Commit 0a2cb2b (2026-02-27)
 
 5 files changed, 1 insertion, 110 deletions.
 

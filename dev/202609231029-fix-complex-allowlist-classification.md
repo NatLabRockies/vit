@@ -10,7 +10,7 @@ rewrites every Fortran line that references it. VIT writes these rewrites itself
 declines go to the agent + human through EXIT_MANUAL (11) and `--rewrite` (dev note
 `202603191921`).
 
-Since `3b45dd4` the manual/auto decision was a **denylist**. A line went to manual only when it
+Since `0ddd028` the manual/auto decision was a **denylist**. A line went to manual only when it
 contained `EXP|CMPLX|CONJG|ABS|SQRT|LOG`. Every other line was auto-rewritten, and anything that
 matched no pattern hit a catch-all "rename every reference to `_re`". This had two silent-wrong-code
 defects:
@@ -19,7 +19,7 @@ defects:
    `x%f_re(K) = x%f_re(K) * c`, and `_im` was never updated. It compiled with no warning.
 2. **Constant init copies the constant into `_im`.** The pattern (`[0-9]+\.?[0-9]*\w*`, unanchored)
    turned `x%f = 1.5D0` into `f_re = 1.5D0; f_im = 1.5D0`. It also matched
-   `x%f = 0.0 + y`. `2a1787f` had matched only `0\.0\w*`. `3b45dd4` broadened it.
+   `x%f = 0.0 + y`. `481eb6e` had matched only `0\.0\w*`. `0ddd028` broadened it.
 
 Why this matters: the rewritten Fortran becomes the reference. Extraction runs on the post-fix
 source (e.g. ROSCO `Controllers.f90` @ `fde0498`), so a wrong rewrite would be captured by KGen

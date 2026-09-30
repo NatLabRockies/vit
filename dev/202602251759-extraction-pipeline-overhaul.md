@@ -5,7 +5,7 @@
 
 ## Summary
 
-Commit de26743 was a major revamp of the extraction pipeline (324 insertions, 58 deletions) after the first several attempts to run KGen against ROSCO failed in various ways. This was the commit that transformed extraction from "theoretically correct" to "actually works." The changes addressed four distinct failure modes: pragma format incompatibility, missing include paths, stale artifact interference, and unrecoverable source file corruption on failure.
+Commit f7fddfc was a major revamp of the extraction pipeline (324 insertions, 58 deletions) after the first several attempts to run KGen against ROSCO failed in various ways. This was the commit that transformed extraction from "theoretically correct" to "actually works." The changes addressed four distinct failure modes: pragma format incompatibility, missing include paths, stale artifact interference, and unrecoverable source file corruption on failure.
 
 ## Background
 

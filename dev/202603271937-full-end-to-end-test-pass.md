@@ -62,13 +62,13 @@ This session began with a Q&A about what the verification pipeline actually test
 **VIT repo:**
 | Hash | Description |
 |------|-------------|
-| `19e3dbd` | Dev note: kgen_statefile.lst duplication root cause |
-| `f49a789` | Update dev note: confirmed with instrumented extraction |
-| `ab47db6` | Fix ElapsedTime build: reconfigure CMake, clean model/ |
-| `3d196f8` | Deduplicate kgen_statefile.lst after extraction |
-| `614ad7b` | Per-function scenario mapping, extract/verify scripts |
-| `115e50e` | Dev note: 28/28 re-extraction and verification pass |
-| `6d792d2` | Update docs: variable case counts, per-function scenarios |
+| `7bdf32e` | Dev note: kgen_statefile.lst duplication root cause |
+| `82faa1a` | Update dev note: confirmed with instrumented extraction |
+| `0d46567` | Fix ElapsedTime build: reconfigure CMake, clean model/ |
+| `a87f6c7` | Deduplicate kgen_statefile.lst after extraction |
+| `5d5dd9d` | Per-function scenario mapping, extract/verify scripts |
+| `60429ca` | Dev note: 28/28 re-extraction and verification pass |
+| `af2c1a7` | Update docs: variable case counts, per-function scenarios |
 
 **ROSCO repo:**
 | Hash | Description |

@@ -8,7 +8,7 @@
 
 Stage C translated WriteRestartFile, ReadRestartFile, and Debug (ROSCO_IO.f90). All three have `CHARACTER(size_avcOUTNAME)` arguments where the length comes from another parameter. This type was unsupported by VIT, so Stage C initially used manual integration in `integrate_all.sh`.
 
-After fixing the type mapper to accept `CHARACTER(variable)` (committed `ef0e363`), we attempted to switch WriteRestartFile and Debug from manual integration to standard `vit integrate --apply`. This exposed that the type mapper fix only unblocked the **parser** — the **code generator** (`interface_gen.py`) had never handled CHARACTER function arguments before, and four separate issues surfaced.
+After fixing the type mapper to accept `CHARACTER(variable)` (committed `8920b05`), we attempted to switch WriteRestartFile and Debug from manual integration to standard `vit integrate --apply`. This exposed that the type mapper fix only unblocked the **parser** — the **code generator** (`interface_gen.py`) had never handled CHARACTER function arguments before, and four separate issues surfaced.
 
 ## The Four Problems
 
@@ -57,9 +57,9 @@ The first attempt fixed problems one at a time, each build revealing the next er
 ### VIT repo
 | File | Change |
 |------|--------|
-| `vit/type_map.py` | Added `character_len_param` field, handle `CHARACTER(variable)` (committed earlier in `ef0e363`) |
+| `vit/type_map.py` | Added `character_len_param` field, handle `CHARACTER(variable)` (committed earlier in `8920b05`) |
 | `vit/interface_gen.py` | Reorder arg declarations (3a), split CHARACTER preamble into declarations + copy loops (3b), pass `{name}_c` in call args (3c) |
-| `tests/test_analyze_types.py` | 4 new parameterized CHARACTER test cases (committed earlier in `ef0e363`) |
+| `tests/test_analyze_types.py` | 4 new parameterized CHARACTER test cases (committed earlier in `8920b05`) |
 
 ### ROSCO repo
 | File | Change |

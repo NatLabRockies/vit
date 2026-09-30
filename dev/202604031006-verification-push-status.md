@@ -103,7 +103,7 @@ The FloatingFeedback function computes velocity by integrating acceleration via 
 | ROSCO | `04c0fd6` | Scenarios 12-14: VS_ControlMode=1, VS_FBP=1, OL_Mode=1 |
 | ROSCO | `173fd5d` | Scenarios 15-18: AWC_Mode=2, Flp_Mode=3, WE_Mode=1, IPC 2P |
 | ROSCO | `b9332de` | Scenarios 19-23: PA/PF/ConstPower/Fl_Mode=2/PRC/AWC 3+5/PS/SS |
-| VIT | `a10f133` | Dev note: clean Fortran reset |
-| VIT | `751bd10` | Dev note: upstream verification |
-| VIT | `fd29a7c` | Dev note: Scenario 11 AWC_Mode=1 |
-| VIT | `9568c59` | Dev note: mode coverage audit |
+| VIT | `d6cb52e` | Dev note: clean Fortran reset |
+| VIT | `fe1481f` | Dev note: upstream verification |
+| VIT | `dcade91` | Dev note: Scenario 11 AWC_Mode=1 |
+| VIT | `4795c42` | Dev note: mode coverage audit |

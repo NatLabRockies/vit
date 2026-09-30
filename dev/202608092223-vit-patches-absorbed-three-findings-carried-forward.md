@@ -1,7 +1,7 @@
 # `vit-patches/` is absorbed — and three VIT defects it was carrying
 
 **Date:** 2026-08-09
-**Status:** completed — all three fixed 2026-08-09, VIT `7ab0ac9`
+**Status:** completed — all three fixed 2026-08-09, VIT `13d8d0d`
 **Scope:** VIT `test_validate` / `interface_gen` / `type_map`; retiring `translation-loop/vit-patches/`
 
 ## Why the directory existed, and why it is gone
@@ -31,7 +31,7 @@ not restated here.
 
 ## The three findings that were NOT patched — now fixed
 
-**All three are fixed in `7ab0ac9`**, verified on `CableControl` against the real tree, not only
+**All three are fixed in `13d8d0d`**, verified on `CableControl` against the real tree, not only
 on fixtures. Each section below keeps the diagnosis and records what the fix was.
 
 These were appended to the directory's README as they were found and would have gone with it. Each

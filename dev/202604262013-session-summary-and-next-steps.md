@@ -81,19 +81,19 @@ Recommendation: do AFI_ComputeUACoefs, then assess. The remaining AirfoilInfo fu
 
 | Repo | Commit | What |
 |------|--------|------|
-| VIT | `75f8632` | Eliminate dual vit_types.h |
-| VIT | `1ce632c` | Fix 7 test-validate audit issues |
-| VIT | `cee84cc` | Documentation: 12 functions, test-validate workflow, CLI table |
-| VIT | `f2c1d8f` | View populator: ALLOCATABLE TYPE() array marshalling |
-| VIT | `5be7761` | LBOUND fix, same-file/shared callee skip, helper callee detection |
+| VIT | `28c791e` | Eliminate dual vit_types.h |
+| VIT | `cebd0bc` | Fix 7 test-validate audit issues |
+| VIT | `c932d5b` | Documentation: 12 functions, test-validate workflow, CLI table |
+| VIT | `bf92f1c` | View populator: ALLOCATABLE TYPE() array marshalling |
+| VIT | `4930998` | LBOUND fix, same-file/shared callee skip, helper callee detection |
 | VIT | `9166757` | Dev note: AFI_ComputeAirfoilCoefs completed |
-| VIT | `98db567` | Auto-detect C++ implemented callees from source |
-| VIT | `516ebe5` | Dev note: auto-detect C++ callees |
-| VIT | `1d11c7f` | Fix duplicate nested type definitions |
-| VIT | `90ca28c` | Fix 8 stale tests (636 pass, 0 fail) |
-| VIT | `acc2ca1` | Add 32 unit tests (test_validate, callees, dedup) |
-| VIT | `2a0ef38` | Add 6 more tests (callee bridge, find_call_sites) |
-| VIT | `f3657c6` | Documentation: 13 functions, all infrastructure |
+| VIT | `c346aa8` | Auto-detect C++ implemented callees from source |
+| VIT | `e343578` | Dev note: auto-detect C++ callees |
+| VIT | `ffffc25` | Fix duplicate nested type definitions |
+| VIT | `3ab839e` | Fix 8 stale tests (636 pass, 0 fail) |
+| VIT | `08d3ab7` | Add 32 unit tests (test_validate, callees, dedup) |
+| VIT | `602c2ff` | Add 6 more tests (callee bridge, find_call_sites) |
+| VIT | `0517933` | Documentation: 13 functions, all infrastructure |
 | OpenFAST | `6801a5ef1` | Eliminate translations/vit_types.h |
 | OpenFAST | `524427c77` | Integrate AFI_ValidateInitInput (12th function) |
 | OpenFAST | `dba3ba849` | AFI_ComputeAirfoilCoefs translation + kernel (1/20 initial) |

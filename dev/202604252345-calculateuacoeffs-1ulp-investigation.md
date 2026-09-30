@@ -149,7 +149,7 @@ The 1-ULP diff in `alphabreakupper` originates in ComputeUA360_AttachedFlow (For
 
 | Repo | Commit | What |
 |------|--------|------|
-| VIT | `aafe272` | 6 infrastructure fixes |
+| VIT | `bde2259` | 6 infrastructure fixes |
 | VIT | `9201969` | Nested-type field tag reset + dev note |
 | OpenFAST | `d6bab33e9` | CalculateUACoeffs translation + kernel fixture |
 | OpenFAST | `a8fd0efbc` | Buffer overflow fix + clean up + 16/16 baselines |

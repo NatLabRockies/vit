@@ -109,7 +109,7 @@ The Fortran wrapper applied `IF (CntrPar%Fl_n == 0) CntrPar%Fl_n = 1` between pa
 ## Commits
 
 - ROSCO `57fd56f`: Phase 11A: Replace DISCON.F90 with C++ entry point
-- VIT `bccdc91`: Mark Phase 11 Stage A complete in PROJECT_PLAN.md
+- VIT `f267713`: Mark Phase 11 Stage A complete in PROJECT_PLAN.md
 
 ## What's Next
 

@@ -35,7 +35,7 @@ LPFilter_result = REAL(lpfilter_c(..., INT(iStatus, C_INT), LOGICAL(reset, C_BOO
 The conversion was there. `LOGICAL(4)` mapped to `C_BOOL` / `int8_t`, so the "C side is LOGICAL"
 branch fired and did the right thing.
 
-On **2026-04-25**, commit `aafe272` — *"6 infrastructure fixes for CalculateUACoeffs: LOGICAL
+On **2026-04-25**, commit `bde2259` — *"6 infrastructure fixes for CalculateUACoeffs: LOGICAL
 mapping, array-return bridges, callee flush-reload, CHARACTER bridges, field comparison"*, AeroDyn
 work — changed it:
 
@@ -90,7 +90,7 @@ observation with a concrete instance and a date attached.
 
 ## References
 
-- `aafe272` (2026-04-25) — the mapping change that caused it
+- `bde2259` (2026-04-25) — the mapping change that caused it
 - `e0c31ec` — the original campaign's correct `LOGICAL(reset, C_BOOL)` wrapper
 - Dev note `202608071913` — telemetry accounting; same placement rationale
 - Dev note `202608071634` — the replication plan

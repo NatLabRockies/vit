@@ -37,7 +37,7 @@ rule is to pick the call site with the most hits.
 **The conclusion still holds, by a different mechanism.** Extracting at `ROSCO_IO.f90:1103` would
 also have produced no usable kernel, because `CurDate()` is consumed directly by `WRITE` and so
 never lands in a variable KGen captures. That is `CurTime`'s shape exactly, and it is now caught by
-`aa788c6`. Same outcome, different cause.
+`eca3e99`. Same outcome, different cause.
 
 And the gate genuinely gives no coverage — but because **`regress.sh` compares `.npz` channel
 arrays and never reads the text files**, not because the function is unreached. A wrong month name
@@ -84,7 +84,7 @@ coverage argument will still overestimate what 27/27 certifies.
 never runs; the counted file was `AddToList.0.0.1`, left by the previous extraction.
 `count_kernel_cases` matched `.+\.\d+\.\d+\.\d+$` — any function's state — while its own docstring
 said `<function>.0.0.1`. Had the cycle continued, the kernel would have replayed `AddToList`'s
-captured state against `CurDate`. Fixed in `9fa9e61`, name-scoped and case-insensitive, five tests.
+captured state against `CurDate`. Fixed in `6e66366`, name-scoped and case-insensitive, five tests.
 
 Audited across every kernel directory: **isolated to `CurDate`**, `own=0 total=1`, no earlier count
 inflated (dev note `202608072320`).

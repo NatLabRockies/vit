@@ -43,7 +43,7 @@ Restored the original Fortran from `.kgen` backup (no C++ wrapper, no VIT patche
 
 Added `SAVE` attribute to all state variables in DISCON.F90 (prevents auto-deallocation of ALLOCATABLE components when `discon()` returns) and modified `kr_` read routines to reuse existing allocations when bounds match.
 
-**Result: 40/40 completed, no crash.** These patches were committed at `6366400` then reverted at `1ee6c06` after further investigation revealed they were addressing a symptom, not the root cause.
+**Result: 40/40 completed, no crash.** These patches were committed at `6366400` then reverted at `071b03d` after further investigation revealed they were addressing a symptom, not the root cause.
 
 ### Test 6: Allocation churn analysis
 
@@ -103,18 +103,18 @@ StructuralControl processes all 40 entries with field logging without crashing. 
 
 ## What the SAVE/Reuse Patches Did
 
-The SAVE patches (`6366400`, reverted at `1ee6c06`) eliminated auto-deallocation by making state variables persist between `discon()` calls. The allocation reuse patches skipped DEALLOCATE+ALLOCATE when array bounds matched. Together, these reduced heap operations from ~1,600+ to ~136, keeping the fragmentation well below the threshold where field logging's I/O overhead triggers the tcache bug.
+The SAVE patches (`6366400`, reverted at `071b03d`) eliminated auto-deallocation by making state variables persist between `discon()` calls. The allocation reuse patches skipped DEALLOCATE+ALLOCATE when array bounds matched. Together, these reduced heap operations from ~1,600+ to ~136, keeping the fragmentation well below the threshold where field logging's I/O overhead triggers the tcache bug.
 
 These patches were effective but addressed a symptom (allocation churn) rather than the root cause (the interaction between field logging I/O and allocation churn).
 
 ## Current State
 
-- **Commit `6ab9c6b`**: Two-run Fortran-vs-C++ comparison (the correct verification architecture)
+- **Commit `f89bf03`**: Two-run Fortran-vs-C++ comparison (the correct verification architecture)
 - **Commit `6366400`**: SAVE/reuse patches (effective workaround, addresses allocation churn)
-- **Commit `1ee6c06`**: Revert of SAVE/reuse (to investigate root cause)
+- **Commit `071b03d`**: Revert of SAVE/reuse (to investigate root cause)
 - **Uncommitted changes reverted**: All experimental patches to `_run_fortran_reference` and `_parse_kgen_field_status` were reverted
 
-The codebase is clean at `1ee6c06`. The two-run comparison works for all functions. CableControl shows 2/2 (crash limits to 2 cases) or 1/2 (one state file artifact in those 2 cases).
+The codebase is clean at `071b03d`. The two-run comparison works for all functions. CableControl shows 2/2 (crash limits to 2 cases) or 1/2 (one state file artifact in those 2 cases).
 
 ## Open Design Decision
 

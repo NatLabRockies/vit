@@ -65,7 +65,7 @@ This one is different in kind:
 |---|---|---|
 | Fields compared | **0** | **197** |
 | Kernel validity | vacuous | technically valid |
-| Tool-detectable | yes — fixed in `aa788c6` | **no** |
+| Tool-detectable | yes — fixed in `eca3e99` | **no** |
 | What the input establishes | nothing | nothing |
 
 The existing risk argument holds that residual risk concentrates in **unexercised inputs**, and quantifies how
@@ -110,7 +110,7 @@ gap, found during `Conv2UC` (#22).
 The session **deleted the generated files rather than fixing it there**, because `Conv2UC` had a
 genuine kernel (21 real cases, 21 compared fields) and fixing project infrastructure inside that
 span would have contaminated the clean measurement #21–23 existed to produce. It then built
-CHARACTER-argument support at `PathIsRelative` (`8e5973b`), where it was actually needed, and wrote
+CHARACTER-argument support at `PathIsRelative` (`60d80a2`), where it was actually needed, and wrote
 cases separating the two readings — **expected values derived by reading the Fortran, not by
 running it**, which is the only way that test has any independence from the thing it checks.
 

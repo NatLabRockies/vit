@@ -28,7 +28,7 @@ turns out to be a defect the campaign shipped in seventeen of its forty-three ke
 ## 1. The campaign verified across 30 type-mismatched kernel bridges
 
 The replication reported a real VIT gap: `type_map` sends Fortran `LOGICAL` across as
-`INTEGER(C_INT)`; the wrapper direction was fixed at `a6fe65c`, but the bridge direction — C++
+`INTEGER(C_INT)`; the wrapper direction was fixed at `aae305f`, but the bridge direction — C++
 calling back into Fortran — never converted, and the existing guard only fired for the `C_BOOL`
 mapping this project does not use.
 
@@ -82,7 +82,7 @@ This is the second campaign defect surfaced by re-derivation rather than by insp
 `ExtController` stamp (`202608080058`). Both were invisible from inside the campaign and visible
 immediately from outside it. That is the argument for replication as a method, made twice.
 
-The replication's fix (`4f568b7`, "convert `INTEGER(C_INT)` back to `LOGICAL` in kernel callee
+The replication's fix (`e06f0e7`, "convert `INTEGER(C_INT)` back to `LOGICAL` in kernel callee
 bridges") makes both sides `INTEGER(C_INT)` and converts explicitly. It is correct where the
 campaign's was not.
 
@@ -92,8 +92,8 @@ The `LOGICAL` bug has two directions:
 
 | Direction | What exercises it | Fixed |
 |---|---|---|
-| Fortran wrapper → C++ | any function with a `LOGICAL` argument | `a6fe65c`, 2026-08-07 19:40 |
-| C++ → Fortran callee bridge | **only a function with a translated callee** | `4f568b7`, ~5.5 h later |
+| Fortran wrapper → C++ | any function with a `LOGICAL` argument | `aae305f`, 2026-08-07 19:40 |
+| C++ → Fortran callee bridge | **only a function with a translated callee** | `e06f0e7`, ~5.5 h later |
 
 The second direction was **structurally unreachable until #32**. Thirty-one consecutive functions
 verified 20/20 or better and said nothing whatsoever about it, because none of them had a callee to

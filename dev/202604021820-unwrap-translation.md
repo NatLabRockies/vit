@@ -180,7 +180,7 @@ During testing, `git checkout HEAD -- translations/ReadSetParameters/readcpfile.
 ## Commits
 
 **ROSCO** `1e0be84`: Translate unwrap, revert inline implementations in callers
-**VIT** `b86c524`: Fix DIMENSION parser for nested parens, add pre-Stage C dev notes
+**VIT** `53ee402`: Fix DIMENSION parser for nested parens, add pre-Stage C dev notes
 
 ## Files Changed
 

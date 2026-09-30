@@ -5,7 +5,7 @@
 
 ## Summary
 
-The entire VIT (Verified Incremental Translator) codebase was laid down in a single initial commit (8411e91), followed immediately by a .gitignore addition (a4bc44c). This was not an incremental build-up — the complete architecture, all core modules, tests, and an example configuration shipped together as one cohesive unit. 14 files, 3,279 lines of code.
+The entire VIT (Verified Incremental Translator) codebase was laid down in a single initial commit (4f4e084), followed immediately by a .gitignore addition (1928a89). This was not an incremental build-up — the complete architecture, all core modules, tests, and an example configuration shipped together as one cohesive unit. 14 files, 3,279 lines of code.
 
 ## Background and Motivation
 

@@ -46,7 +46,7 @@ after your source).
 but **four genuine target-named literals in executable tool logic** — all ROSCO/DISCON, none
 AeroDyn. Those are what this note is about.
 
-## The four carryovers (exact locations, verified 2026-07-23 @ vit HEAD `19b6d5a`)
+## The four carryovers (exact locations, verified 2026-07-23 @ vit HEAD `30a9349`)
 
 ### C1 — `kernel_verify.py:168` — ROSCO literal in the shared-files fallback
 ```python

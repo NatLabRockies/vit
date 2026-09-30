@@ -18,7 +18,7 @@ After verifying all 9 Phase 7B translations (40/40 each) and completing the 10-f
 
 **Fix:** Added `is_kernel=False` parameter to `generate_fortran_wrapper()`, threaded through to `_generate_view_preamble()` and `_get_view_use_statements()`. Stash code (USE import and pointer assignment) is only emitted when `is_kernel=True`. `kernel_verify.py` passes `is_kernel=True`; `integrate.py` uses the default `False`.
 
-**Commit:** `15ae24e` (VIT)
+**Commit:** `de13d5a` (VIT)
 
 ## Blocker 2: save_config() Drops Config Sections (FIXED)
 
@@ -32,7 +32,7 @@ This also explained why the config was missing from vit.yaml in the first place 
 
 **Fix:** Added `assumed_size_arrays` and `dll_persistence` to the `kgen` section in `save_config()`, conditional on non-empty values.
 
-**Commit:** `15ae24e` (VIT), `7971730` (ROSCO — added config back to vit.yaml)
+**Commit:** `de13d5a` (VIT), `7971730` (ROSCO — added config back to vit.yaml)
 
 ## Blocker 2b: avrSWAP Kind Mismatch in Integration (FIXED)
 
@@ -53,7 +53,7 @@ END BLOCK
 
 This works in both kernel and integration contexts.
 
-**Commit:** `15ae24e`, `72e473d` (VIT)
+**Commit:** `de13d5a`, `e499d3e` (VIT)
 
 ## Blocker 3: Untranslated Callee in Integration (OPEN)
 
@@ -99,8 +99,8 @@ With blockers 1 and 2 fixed:
 ### VIT repo
 | Commit | Description |
 |--------|-------------|
-| `15ae24e` | Fix integration wrappers: is_kernel parameter, save_config preserves config, inline BLOCK conversion |
-| `72e473d` | Thread assumed_size_arrays through integration pipeline |
+| `de13d5a` | Fix integration wrappers: is_kernel parameter, save_config preserves config, inline BLOCK conversion |
+| `e499d3e` | Thread assumed_size_arrays through integration pipeline |
 
 ### ROSCO repo
 | Commit | Description |

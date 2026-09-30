@@ -33,5 +33,5 @@ With deduplication, verification correctly reports "20/20 passed" and runs in ha
 
 ## Related Changes (Same Session)
 
-- **ElapsedTime build fix** (commit `ab47db6`): `cleanup_kgen_utils_injection()` now reconfigures CMake after cleanup to clear stale `DependInfo.cmake` references. Also cleans `model/` directory between extractions so ElapsedTime profiles the correct function.
+- **ElapsedTime build fix** (commit `0d46567`): `cleanup_kgen_utils_injection()` now reconfigures CMake after cleanup to clear stale `DependInfo.cmake` references. Also cleans `model/` directory between extractions so ElapsedTime profiles the correct function.
 - **Root cause analysis** (dev note `202603271457`): Full investigation of why the list has duplicates — traced to `elapsedtime/main.py:471` appending instead of replacing.

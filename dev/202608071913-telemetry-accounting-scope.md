@@ -79,7 +79,7 @@ be computed retroactively.
 rejected as ceremony. A record in the gap between two spans is inter-function work by
 construction, and the joiner already knows both surrounding spans, so nothing needs to log it.
 Post-processing costs nothing per cycle, cannot be forgotten, and applies retroactively. Commit
-`108c54c`.
+`185ff12`.
 
 The rename mattered more than it sounds. `unattributed` asserts that attribution *failed*.
 Boundary work is real project cost that belongs to no single function, which is a different claim.
@@ -98,7 +98,7 @@ indicate real breakage — overlapping spans, unpaired events, more than one mod
 into any failure rate computed from the table. They are now `phase`, and an unclosed cycle is
 `in_progress`. Separately, the table carried only attempts-to-first-pass, so a command re-run
 *after* succeeding was indistinguishable from a retry; `verify_runs` and `integrate_runs` now
-report raw invocations alongside. Commit `7cafd79`.
+report raw invocations alongside. Commit `85629ec`.
 
 That second one arose from a disagreement about whether `integrate_attempts: 1` was wrong for
 `saturate`, which ran `vit integrate` twice. It was correct — the second run regenerated an
@@ -113,7 +113,7 @@ Per-function figures so far, uncached tokens: `saturate` highest, then `wrap_180
 substantially cheaper. Wall clock 935 s, 406 s, 226 s.
 
 **Function #1 is not a data point about function #1.** Its span contains a VIT bug fix
-(`2a10048`), two gate runs, and the first exercise of `vit verify` and `vit integrate` in a fresh
+(`a74b3e8`), two gate runs, and the first exercise of `vit verify` and `vit integrate` in a fresh
 tree.
 
 **The wall-clock series is not homogeneous. A configuration change moved it mid-run.** Between
@@ -186,7 +186,7 @@ HPFilter      failed    56s    0 tok   0 records
 ```
 
 `__typefix__` used `rebuild` and `regress` as its command names, so the "no cycle commands →
-phase" rule from `7cafd79` does not catch it: the same phantom-failure class, through a different
+phase" rule from `85629ec` does not catch it: the same phantom-failure class, through a different
 door. `HPFilter` is simply in flight — extract closed, next command not yet started, so no
 unclosed interval exists and it falls through to `failed`. The `in_progress` check only fires
 while a command is actively running.
@@ -233,7 +233,7 @@ So:
 
 Two residual risks remain either way, both operational rather than functional, and both charged to
 whichever function is open when they land: a concurrent `git commit` in the shared VIT repo
-colliding on `index.lock` (they commit there too — `7f4c267`, `2a10048` are theirs), and a changed
+colliding on `index.lock` (they commit there too — `fb98351`, `a74b3e8` are theirs), and a changed
 working tree observed mid-cycle prompting them to stop and investigate.
 
 **Therefore: apply at a function boundary, never during a cycle.** The fix is pure
@@ -257,4 +257,4 @@ the cycle they land in.
 ## References
 
 - Dev note `202608071634` — the replication plan; §3 specifies this telemetry
-- Commits `4754dc5` (Phase 0), `7cafd79`, `108c54c` (in the ROSCO-workspace checkout)
+- Commits `03296de` (Phase 0), `85629ec`, `185ff12` (in the ROSCO-workspace checkout)

@@ -43,5 +43,5 @@ The codebase is in good shape. The tooling is mature. Stage E is within reach, a
 ### VIT
 | Commit | Description |
 |--------|-------------|
-| `ef0e363` | Stage C complete + fix CHARACTER(variable) type mapping |
-| `1d014b8` | Fix interface_gen.py for CHARACTER(variable) wrapper generation |
+| `8920b05` | Stage C complete + fix CHARACTER(variable) type mapping |
+| `735e766` | Fix interface_gen.py for CHARACTER(variable) wrapper generation |

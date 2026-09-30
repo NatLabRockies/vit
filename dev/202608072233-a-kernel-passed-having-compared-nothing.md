@@ -1,7 +1,7 @@
 # A Kernel Passed Having Compared Nothing
 
 **Date:** 2026-08-07
-**Status:** in-progress — fixed in VIT `aa788c6`; campaign exposure characterised below
+**Status:** in-progress — fixed in VIT `eca3e99`; campaign exposure characterised below
 **Scope:** `vit/kernel_verify.py`
 
 ## Placement
@@ -25,7 +25,7 @@ a `WRITE`, so it never lands in a variable KGen captures. VIT's parser skipped t
 entirely, so a green pass on a function that *cannot be kernel-verified at all* was
 indistinguishable from a real one.
 
-Fixed in `aa788c6`: an explicit zero now fails and points at `test-validate`. A *missing* count
+Fixed in `eca3e99`: an explicit zero now fails and points at `test-validate`. A *missing* count
 line is deliberately **not** treated as zero, because other output shapes do not print it and
 absence is not evidence. `vit verify` on `CurTime` now correctly reports FAILED.
 
@@ -47,7 +47,7 @@ Sixth occurrence, and the first inside the gate rather than around it:
 
 This is not a limitation of the gate's *reach*. It is the gate having **no floor**.
 Every argument about what bit-identical replay certifies presumes replay compared
-something. `aa788c6` supplies the floor.
+something. `eca3e99` supplies the floor.
 
 ## What this means for the 43 kernel-verified ROSCO functions
 

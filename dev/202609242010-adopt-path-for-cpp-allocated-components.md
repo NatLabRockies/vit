@@ -13,7 +13,7 @@ These were the one place where the agent wrote boundary code.
 
 Two tool mechanisms existed, and neither covered these cases:
 - **`--auto-allocate`** regex-copied the original's ALLOCATE statements. It was rejected as coding-style-specific (`202605011207`).
-- **`--copy-arrays` / `vit_view_in_<type>`** (rosco-r2, `df9fe4f`) has three problems:
+- **`--copy-arrays` / `vit_view_in_<type>`** (rosco-r2, `9c77367`) has three problems:
   - It DEALLOCATEs every component before copying. It is a use-after-free for any component the C++ did not replace, so the caller had to name the argument exactly.
   - It turns unallocated components into allocated-empty ones.
   - It hits `ERROR STOP` on ALLOCATABLE TYPE() arrays and rank ≥ 3. That is exactly AFI's `Table(:)` and `SplineCoefs(:,:,0:3)`.

@@ -11,7 +11,7 @@ This was a single focused documentation pass to bring both files up to date with
 
 ## What Changed
 
-### Commit 220a5b7 (2026-02-27)
+### Commit e15e967 (2026-02-27)
 
 2 files changed, 195 insertions, 66 deletions.
 

@@ -83,7 +83,7 @@ The callee dependency: a function cannot be integrated until ALL its `_c` callee
 
 | Repo | Commit | Description |
 |------|--------|-------------|
-| VIT | `3f75fd2` | Phase 7B integration test: 27/27 passed |
+| VIT | `f97bcb4` | Phase 7B integration test: 27/27 passed |
 
 ## Related Dev Notes
 

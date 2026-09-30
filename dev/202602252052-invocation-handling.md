@@ -11,7 +11,7 @@ Before this change, the invocation range was hardcoded. There was no way for the
 
 ## What Changed
 
-### Commit cf393ce (2026-02-25): Add invocation count flag to CLI
+### Commit 680c9a4 (2026-02-25): Add invocation count flag to CLI
 
 Added an `invocation` field to `VitConfig` with a default value of `"0:0:1:20"`, meaning:
 
@@ -29,7 +29,7 @@ The default of 20 invocations was chosen empirically: for ROSCO's `saturate` fun
 
 3 files changed, 13 insertions.
 
-### Commit 3e04602 (2026-02-26): Fix invocation format to match KGen
+### Commit 57ce08d (2026-02-26): Fix invocation format to match KGen
 
 The initial implementation used a colon-only format: `0:0:1:20`. This was wrong. KGen's `--invocation` flag expects the invocation range portion to use a dash separator: `0:0:1-20`. The colon-only format caused KGen to misinterpret the range, silently capturing only a single invocation instead of 20.
 

@@ -9,13 +9,13 @@ This session started with attempting to extract Calculate_C_alpha and ended with
 
 ### Infrastructure Built (7 advances)
 
-1. **EXTRACTION_INTERNALS.md** (`d39e146`) — 446-line pipeline reference documenting every step of KGen+VIT extraction, 9 failure modes, debugging checklist
-2. **KGen error surfacing** (KGen `0705f2d`, VIT `073e363`) — prints build/run errors instead of swallowing them
-3. **Cross-module instrumentation fix** (`5ed3c52`) — transplants kw_* subroutines across cmake target boundaries
+1. **EXTRACTION_INTERNALS.md** (`f050502`) — 446-line pipeline reference documenting every step of KGen+VIT extraction, 9 failure modes, debugging checklist
+2. **KGen error surfacing** (KGen `0705f2d`, VIT `c34b1f8`) — prints build/run errors instead of swallowing them
+3. **Cross-module instrumentation fix** (`0bfaa28`) — transplants kw_* subroutines across cmake target boundaries
 4. **CHARACTER(*) type mapping** (`8036548`) — maps to char* with LEN(argname) loop bounds
-5. **CHARACTER(*) INTENT(OUT) reverse copy** (`08d471d`) — copies C_CHAR back to CHARACTER after C call
-6. **Compile-error-driven kernel repair** (`48adfca`) — build, parse gfortran errors, fix from project source, repeat
-7. **Audit cleanup** (`59d73ed`) — removed project-specific wording, dead code
+5. **CHARACTER(*) INTENT(OUT) reverse copy** (`39025fa`) — copies C_CHAR back to CHARACTER after C call
+6. **Compile-error-driven kernel repair** (`d0427ae`) — build, parse gfortran errors, fix from project source, repeat
+7. **Audit cleanup** (`2e4158b`) — removed project-specific wording, dead code
 
 ### Calculate_C_alpha (complete)
 
@@ -63,15 +63,15 @@ This affects ALL functions that modify view-type INOUT arguments (which is most 
 
 | Repo | Commit | What |
 |------|--------|------|
-| VIT | `d39e146` | EXTRACTION_INTERNALS.md |
+| VIT | `f050502` | EXTRACTION_INTERNALS.md |
 | KGen | `0705f2d` | Error surfacing |
-| VIT | `073e363` | CLI error display |
-| VIT | `5ed3c52` | Cross-module instrumentation fix |
+| VIT | `c34b1f8` | CLI error display |
+| VIT | `0bfaa28` | Cross-module instrumentation fix |
 | VIT | `8036548` | CHARACTER(*) support, reverted NWTC-specific patches |
-| VIT | `48adfca` | Compile-error-driven kernel repair |
-| VIT | `08d471d` | CHARACTER(*) INTENT(OUT) reverse copy |
-| VIT | `59d73ed` | Audit cleanup |
-| VIT | `afb9c35`, `9375357`, `c00b9c7`, `8bd322e` | Dev notes |
+| VIT | `d0427ae` | Compile-error-driven kernel repair |
+| VIT | `39025fa` | CHARACTER(*) INTENT(OUT) reverse copy |
+| VIT | `2e4158b` | Audit cleanup |
+| VIT | `6ee7170`, `9375357`, `adea36c`, `e318ac8` | Dev notes |
 | OpenFAST | `6a655a64f` | Calculate_C_alpha kernel |
 | OpenFAST | `abc0bcf7c` | Calculate_C_alpha integrated |
 
