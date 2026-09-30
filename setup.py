@@ -9,6 +9,7 @@ setup(
     packages=find_packages(),
     python_requires=">=3.10",
     install_requires=[
+        "numpy",
         "pyyaml>=6.0",
     ],
     entry_points={

@@ -1,0 +1,24 @@
+# Development environment for VIT itself: the CLI, its Python dependencies, and the test suite.
+#
+#   conda env create -f environment.yml
+#   conda activate vit
+#   python -m pytest tests/
+#
+# Not included, because conda cannot supply them portably:
+#   - gfortran, gcc and g++ on PATH. The tests that compile generated Fortran/C/C++ skip without them.
+#     On macOS with Homebrew GCC, linking also needs the SDK path, or eight round-trip tests fail
+#     with "ld: library not found for -lSystem":
+#       export SDKROOT=$(xcrun --show-sdk-path)
+#   - KGen and Python 2.7, which `vit extract` and `vit verify` need. Run those inside the container
+#     described in docker/.
+name: vit
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - pyyaml>=6.0
+  - pytest
+  - pip
+  - pip:
+      - -e .
