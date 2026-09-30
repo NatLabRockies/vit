@@ -92,3 +92,30 @@ def test_call_sites_pass_only_arguments_the_callee_accepts(fn_name):
         dupes = [k.arg for k in node.keywords if k.arg]
         assert len(dupes) == len(set(dupes)), f"{fn_name} called with a repeated keyword"
     assert found, f"no call to {fn_name} found in cli.py"
+
+
+def test_check_list_needs_no_translation(tmp_path):
+    """`vit check --list` is how the documentation says to see the registry.
+
+    It once required a translation path it never read, so the documented
+    command failed with a usage error. Checking a file still needs one.
+    """
+    import os
+
+    env = dict(os.environ, VIT_TELEMETRY="0")
+
+    def run(*argv):
+        return subprocess.run(
+            [sys.executable, "-c",
+             "import sys; sys.path.insert(0, %r); from vit.cli import main; "
+             "sys.argv=['vit']+sys.argv[1:]; sys.exit(main())" % str(ROOT), *argv],
+            capture_output=True, text=True, cwd=tmp_path, env=env)
+
+    listed = run("check", "--list")
+    assert listed.returncode == 0, listed.stderr[-800:]
+    assert "active check(s)" in listed.stdout
+    assert "exponent-grouping" in listed.stdout
+
+    missing = run("check")
+    assert missing.returncode == 2
+    assert "required" in missing.stdout

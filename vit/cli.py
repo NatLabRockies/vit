@@ -109,7 +109,8 @@ def main():
     # --- check ---
     p_check = subparsers.add_parser(
         "check", help="Run the known-shape defect checks against a translation")
-    p_check.add_argument("cpp_file", help="Path to C++ implementation")
+    p_check.add_argument("cpp_file", nargs="?", default=None,
+                         help="Path to C++ implementation (not needed with --list)")
     p_check.add_argument("--file", "-f",
                          help="Reference Fortran source (enables cross-source checks)")
     p_check.add_argument("--function", help="Function name, for the report header")
@@ -770,8 +771,6 @@ def cmd_check(args):
     """
     from . import checks
 
-    cpp_path = Path(args.cpp_file)
-
     if getattr(args, "list", False):
         print(f"{len(checks.REGISTRY)} active check(s):")
         for c in checks.REGISTRY:
@@ -788,6 +787,10 @@ def cmd_check(args):
                 print(f"  {cid}\n      {why}")
         return 0
 
+    if args.cpp_file is None:
+        print("✗ A translation to check is required (or pass --list)")
+        return 2
+    cpp_path = Path(args.cpp_file)
     if not cpp_path.is_file():
         print(f"✗ No such translation: {cpp_path}")
         return 2
