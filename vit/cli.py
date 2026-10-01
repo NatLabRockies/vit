@@ -1284,8 +1284,13 @@ def cmd_status(args, config):
             total = info.get("cases_total", "?")
             print(f"  ✓ {name}: verified ({cases}/{total} cases)")
         elif status == "integrated":
-            verified = info.get("verified", False)
-            v_str = " (verified)" if verified else " (unverified)"
+            if "cases_passed" in info:
+                v_str = (f" (verified {info['cases_passed']}/"
+                         f"{info.get('cases_total', '?')} cases)")
+            elif info.get("verified", False):
+                v_str = " (verified)"
+            else:
+                v_str = " (unverified)"
             print(f"  ✓ {name}: integrated{v_str}")
         else:
             print(f"  ? {name}: {status}")

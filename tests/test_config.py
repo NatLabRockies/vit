@@ -223,6 +223,24 @@ class TestRecordTranslation:
         # But details should still be updated
         assert loaded.translations["saturate"]["cases_passed"] == 40
 
+    def test_upgrade_keeps_the_verification_record(self, tmp_path):
+        """`vit integrate` follows `vit verify`. It used to replace the entry,
+        dropping the case counts and the red-test verdict, so `vit status`
+        then called a verified function unverified."""
+        config = VitConfig(config_dir=str(tmp_path))
+        save_config(config, str(tmp_path / CONFIG_FILENAME))
+
+        record_translation(config, "drag", "verified",
+                           {"cases_passed": 20, "cases_total": 20,
+                            "red_test": "demonstrated"})
+        record_translation(config, "drag", "integrated", {"cpp_file": "drag.cpp"})
+
+        entry = load_config(str(tmp_path / CONFIG_FILENAME)).translations["drag"]
+        assert entry["status"] == "integrated"
+        assert entry["cases_passed"] == 20
+        assert entry["red_test"] == "demonstrated"
+        assert entry["cpp_file"] == "drag.cpp"
+
     def test_upgrade_status_works(self, tmp_path):
         config = VitConfig(
             config_dir=str(tmp_path),

@@ -337,7 +337,11 @@ def record_translation(config: VitConfig, function_name: str,
         existing.update(details)
         config.translations[function_name] = existing
     else:
+        # Keep what earlier stages recorded. Integration follows verification,
+        # and replacing the entry wholesale discarded the verification result,
+        # so `vit status` reported a verified function as unverified.
         config.translations[function_name] = {
+            **existing,
             "status": status,
             **details,
         }

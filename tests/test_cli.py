@@ -181,3 +181,19 @@ def test_extract_fails_when_it_captured_nothing(tmp_path, monkeypatch, capsys,
     assert rc == expected_rc
     assert expected_mark in out
     assert source.read_text() == _EXTRACT_SOURCE, "the source must be restored"
+
+
+def test_status_reports_an_integrated_function_as_verified(capsys):
+    """What `vit status` prints for a function verified and then integrated."""
+    import vit.cli
+    from vit.config import VitConfig
+
+    config = VitConfig(project_name="p", translations={
+        "drag": {"status": "integrated", "cpp_file": "drag.cpp",
+                 "cases_passed": 20, "cases_total": 20},
+        "lift": {"status": "integrated", "cpp_file": "lift.cpp"},
+    })
+    assert vit.cli.cmd_status(None, config) == 0
+    out = capsys.readouterr().out
+    assert "drag: integrated (verified 20/20 cases)" in out
+    assert "lift: integrated (unverified)" in out
