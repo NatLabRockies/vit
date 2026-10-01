@@ -555,11 +555,63 @@ def insert_kgen_pragma(filepath: str, line_number: int,
     return out_path
 
 
-def remove_kgen_pragma(filepath: str) -> None:
-    """Remove KGen pragmas from a file."""
-    lines = Path(filepath).read_text().split("\n")
+def remove_kgen_pragma(filepath: str) -> bool:
+    """Remove KGen pragma lines from a file; return whether any were removed.
+
+    A file with no pragma is not rewritten, so its timestamp is unchanged and
+    the build does not recompile it. Bytes that are not UTF-8 pass through.
+    """
+    raw = Path(filepath).read_bytes()
+    if b"!$kgen" not in raw.lower():
+        return False
+    lines = raw.decode("utf-8", errors="surrogateescape").split("\n")
     filtered = [l for l in lines if not l.strip().lower().startswith("!$kgen")]
-    Path(filepath).write_text("\n".join(filtered))
+    if len(filtered) == len(lines):
+        return False
+    Path(filepath).write_bytes("\n".join(filtered).encode("utf-8", errors="surrogateescape"))
+    return True
+
+
+def _project_files(source_dir: str, patterns: tuple) -> list[Path]:
+    """Files under source_dir, at any depth, matching any of `patterns`.
+
+    The whole tree, because that is what KGen searches: include.ini lists
+    every directory under source_dir that holds Fortran. Extraction's own
+    output directories, kernel/ and state/ in the current directory, are
+    skipped; they hold KGen's copies, not the project's sources.
+    """
+    root = Path(source_dir)
+    if not root.is_dir():
+        return []
+    outputs = [(Path.cwd() / d).resolve() for d in ("kernel", "state")]
+    found = set()
+    for pattern in patterns:
+        for path in root.rglob(pattern):
+            resolved = path.resolve()
+            if any(resolved == o or o in resolved.parents for o in outputs):
+                continue
+            found.add(path)
+    return sorted(found)
+
+
+def sweep_stale_pragmas(source_dir: str) -> list[str]:
+    """Remove KGen pragmas left in any Fortran source under source_dir.
+
+    KGen acts on every pragma in the sources it reads, so one left by an
+    interrupted extraction redirects the next. This used to look only at the
+    top level of source_dir, while KGen searches all of it.
+    """
+    return [str(p) for p in _project_files(source_dir, ("*.f90", "*.F90"))
+            if remove_kgen_pragma(str(p))]
+
+
+def remove_stale_kgen_org(source_dir: str) -> list[str]:
+    """Delete KGen's `.kgen_org` source backups anywhere under source_dir."""
+    removed = []
+    for path in _project_files(source_dir, ("*.kgen_org",)):
+        path.unlink()
+        removed.append(str(path))
+    return removed
 
 
 def generate_include_ini(
@@ -1581,9 +1633,7 @@ def run_kgen_extract(
     # processes all pragmas it finds, including in .kgen_org files
     # that get restored to the source directory during state capture.
     if source_dir:
-        for kgen_org in sorted(Path(source_dir).glob("*.kgen_org")):
-            kgen_org.unlink()
-            result["cleaned"].append(str(kgen_org))
+        result["cleaned"].extend(remove_stale_kgen_org(source_dir))
 
     # Step 3: Run clean command to force full rebuild for strace
     if clean_cmd:

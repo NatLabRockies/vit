@@ -29,7 +29,8 @@ from .interface_gen import (
     generate_fortran_interface_block,
     generate_fortran_wrapper,
 )
-from .extract import find_call_sites, insert_kgen_pragma, remove_kgen_pragma, run_kgen_extract
+from .extract import (find_call_sites, insert_kgen_pragma, remove_kgen_pragma,
+                      run_kgen_extract, sweep_stale_pragmas)
 from .kernel_verify import setup_kernel_cpp, run_kernel_verify
 from .integrate import generate_integration_plan, apply_integration_plan
 from .sim_compare import compare_arrays, format_result
@@ -353,8 +354,7 @@ def cmd_extract(args, config):
     # capture paths, overwriting the intended extraction target.
     source_dir = config.abs_source_dir
     if source_dir:
-        for f90 in sorted(Path(source_dir).glob("*.f90")) + sorted(Path(source_dir).glob("*.F90")):
-            remove_kgen_pragma(str(f90))
+        sweep_stale_pragmas(source_dir)
     else:
         remove_kgen_pragma(file_path)
 

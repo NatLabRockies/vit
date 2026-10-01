@@ -818,3 +818,67 @@ def test_reconfigure_works_when_the_build_tree_is_not_a_child(tmp_path):
                          capture_output=True, text=True)
     assert new.returncode == 0, new.stderr[-800:]
     assert "reconfigured-from-cache" in new.stdout
+
+
+# --------------------------------------------------------------------------
+# The cleanup sweeps cover the tree KGen searches, and touch nothing else.
+
+def _nested_project(tmp_path):
+    src = tmp_path / "modules"
+    (src / "aero" / "src").mkdir(parents=True)
+    nested = src / "aero" / "src" / "caller.f90"
+    nested.write_text("subroutine s()\n!$kgen begin_callsite drag\n  call drag()\n"
+                      "!$kgen end_callsite\nend subroutine s\n")
+    clean = src / "aero" / "src" / "other.f90"
+    clean.write_text("subroutine t()\nend subroutine t\n")
+    return src, nested, clean
+
+
+def test_stale_pragmas_are_swept_at_any_depth(tmp_path, monkeypatch):
+    """KGen reads every Fortran file under source_dir (include.ini lists all
+    of its directories), and acts on any pragma it finds. The sweep looked
+    only at the top level, so with a nested source_dir a pragma left by an
+    interrupted extraction survived into the next one."""
+    from vit.extract import sweep_stale_pragmas
+
+    monkeypatch.chdir(tmp_path)
+    src, nested, clean = _nested_project(tmp_path)
+    os.utime(clean, (1_000_000_000, 1_000_000_000))
+
+    cleaned = sweep_stale_pragmas(str(src))
+
+    assert cleaned == [str(nested)]
+    assert "!$kgen" not in nested.read_text()
+    assert "call drag()" in nested.read_text()
+    # A file without a pragma is not rewritten, so the build does not
+    # recompile it.
+    assert os.stat(clean).st_mtime == 1_000_000_000
+
+
+def test_sweeps_skip_extraction_outputs(tmp_path, monkeypatch):
+    """kernel/ and state/ hold KGen's copies of the sources, including golden
+    kernels. With source_dir covering the project root, they must be left
+    alone."""
+    from vit.extract import remove_stale_kgen_org, sweep_stale_pragmas
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "kernel" / "drag").mkdir(parents=True)
+    golden = tmp_path / "kernel" / "drag" / "caller.f90"
+    golden.write_text("!$kgen begin_callsite drag\n  call drag()\n!$kgen end_callsite\n")
+    (tmp_path / "kernel" / "drag" / "caller.f90.kgen_org").write_text("x\n")
+
+    assert sweep_stale_pragmas(str(tmp_path)) == []
+    assert remove_stale_kgen_org(str(tmp_path)) == []
+    assert "!$kgen" in golden.read_text()
+
+
+def test_stale_kgen_org_backups_are_removed_at_any_depth(tmp_path, monkeypatch):
+    from vit.extract import remove_stale_kgen_org
+
+    monkeypatch.chdir(tmp_path)
+    src, nested, _ = _nested_project(tmp_path)
+    backup = nested.parent / "caller.f90.kgen_org"
+    backup.write_text("instrumented\n")
+
+    assert remove_stale_kgen_org(str(src)) == [str(backup)]
+    assert not backup.exists()

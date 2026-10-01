@@ -58,12 +58,10 @@ site the run never reaches.
 
 ### Remove stale pragmas
 
-VIT removes every `!$kgen` line from the `.f90` and `.F90` files at the **top level** of
-`project.source_dir`. KGen reads all reachable sources and acts on any pragma it finds, so a pragma
-left by an interrupted extraction redirects the next one.
-
-**Limitation:** files in subdirectories of `source_dir` are not swept. With a broad `source_dir`,
-clear stale pragmas yourself: `grep -rl '!$kgen' <source_dir>` should return nothing.
+VIT removes every `!$kgen` line from the `.f90` and `.F90` files anywhere under
+`project.source_dir`, the same tree KGen searches. KGen acts on any pragma it finds, so a pragma left
+by an interrupted extraction would redirect the next one. Files without a pragma are not rewritten,
+and extraction's own `kernel/` and `state/` directories are skipped.
 
 ### Insert the pragma
 
@@ -84,8 +82,7 @@ different checkout, which then loads an uninstrumented library. VIT warns when i
 
 VIT removes `kgen.log`, `model.ini`, `elapsedtime/` and `model/`, all of which KGen would otherwise
 reuse with data from an earlier extraction. It removes `.kgen_org` files (KGen's backups of
-instrumented sources) from the top level of `source_dir`, with the same limitation as the pragma
-sweep. And it writes a dummy `strace.log`, so that KGen skips its own build-tracing phase: VIT
+instrumented sources) anywhere under `source_dir`. And it writes a dummy `strace.log`, so that KGen skips its own build-tracing phase: VIT
 supplies the module paths in `include.ini` instead.
 
 ### Clean, then build
@@ -248,5 +245,4 @@ When extraction captures nothing, in this order:
 - **Restoring sources after the build** is safe for the same reason: the instrumented code is
   already compiled.
 - **`project.source_dir` breadth.** A broad `source_dir` lets KGen find the modules a function USEs
-  from other parts of the code base; the include path is built from all of it. The two cleanup
-  sweeps above cover only its top level.
+  from other parts of the code base; the include path and both cleanup sweeps cover all of it.
