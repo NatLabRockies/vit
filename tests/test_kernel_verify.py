@@ -1237,3 +1237,31 @@ def test_integrate_has_no_codebase_target_default():
     import inspect
     from vit.integrate import generate_integration_plan
     assert inspect.signature(generate_integration_plan).parameters["target_name"].default == ""
+
+
+def test_public_is_removed_only_where_fortran_forbids_it():
+    """A module's own PUBLIC statements stay. One after CONTAINS goes, and so
+    does any PUBLIC in a file that defines no module: KGen writes
+    `PUBLIC discon` into the standalone subroutine it generates for a call
+    site inside DISCON, which is not in a module, and the kernel then failed
+    to build."""
+    from vit.kernel_verify import _strip_invalid_public
+
+    module = ("MODULE controllers\n"
+              "    PUBLIC :: pitchcontrol\n"
+              "CONTAINS\n"
+              "    SUBROUTINE pitchcontrol()\n"
+              "    PUBLIC pitchcontrol\n"
+              "    END SUBROUTINE pitchcontrol\n"
+              "END MODULE controllers\n")
+    out = _strip_invalid_public(module)
+    assert "    PUBLIC :: pitchcontrol\n" in out
+    assert out.count("! VIT: removed invalid PUBLIC statement") == 1
+
+    standalone = ("SUBROUTINE discon(kgen_unit, avrswap)\n"
+                  "    INTEGER :: kgen_unit\n"
+                  "    PUBLIC discon\n"
+                  "END SUBROUTINE discon\n")
+    out = _strip_invalid_public(standalone)
+    assert "    PUBLIC discon" not in out
+    assert "(no module in this file)" in out

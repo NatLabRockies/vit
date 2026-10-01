@@ -1471,6 +1471,32 @@ def _strip_use_of_procedures(content: str, names: set) -> str:
     return content
 
 
+def _strip_invalid_public(content: str) -> str:
+    """Comment out PUBLIC statements outside a module's specification part.
+
+    KGen sometimes copies a module-level PUBLIC statement into the kernel
+    driver's procedures, after CONTAINS, where it is illegal. It also writes
+    `PUBLIC <name>` for the call site's enclosing procedure when that
+    procedure is not in a module at all, as it writes `USE <name>`. A file
+    that defines no module has no specification part where PUBLIC is legal.
+    Scoping the removal to after CONTAINS alone (2026-04-24) kept legitimate
+    module-level PUBLIC statements but stopped every kernel extracted at the
+    second kind of call site from building.
+    """
+    contains_pos = content.upper().find('\nCONTAINS\n')
+    if contains_pos >= 0:
+        content = content[:contains_pos] + re.sub(
+            r'^\s*PUBLIC\s+\w+\s*$', '! VIT: removed invalid PUBLIC statement',
+            content[contains_pos:], flags=re.MULTILINE | re.IGNORECASE,
+        )
+    if not _MODULE_DEF.search(content):
+        content = re.sub(
+            r'^\s*PUBLIC\b.*$', '! VIT: removed invalid PUBLIC statement (no module in this file)',
+            content, flags=re.MULTILINE | re.IGNORECASE,
+        )
+    return content
+
+
 def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
                           kind_aliases: Optional[dict] = None,
                           field_log: bool = True,
@@ -1520,21 +1546,8 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
                     content, count=1, flags=re.IGNORECASE,
                 )
 
-        # Remove PUBLIC statements inside subroutines (illegal Fortran).
-        # KGen sometimes copies PUBLIC statements from the original module-level
-        # code into the generated kernel driver subroutine. PUBLIC is only valid
-        # in module specification parts (before CONTAINS), not inside procedures.
-        # Only remove PUBLIC statements that appear after CONTAINS to avoid
-        # stripping legitimate module-level PUBLIC declarations.
-        contains_pos = content.upper().find('\nCONTAINS\n')
-        if contains_pos >= 0:
-            before_contains = content[:contains_pos]
-            after_contains = content[contains_pos:]
-            after_contains = re.sub(
-                r'^\s*PUBLIC\s+\w+\s*$', '! VIT: removed invalid PUBLIC statement',
-                after_contains, flags=re.MULTILINE | re.IGNORECASE,
-            )
-            content = before_contains + after_contains
+        # Remove PUBLIC statements where Fortran does not allow them.
+        content = _strip_invalid_public(content)
 
         # Remove USE statements that name a procedure. When the call site's
         # enclosing procedure is not in a module (an external entry point,
