@@ -1881,6 +1881,8 @@ def run_kgen_extract(
             lst = Path(result["kernel_dir"]) / "kgen_statefile.lst"
             if lst.exists():
                 lst.write_text('\n'.join(dict.fromkeys(lst.read_text().splitlines())) + '\n')
+            elif result["state_cases"]:
+                write_statefile_list(result["kernel_dir"], function_name)
 
             # Create .kgen backups of clean kernel files.
             # These are the ONLY safe point to create backups — source is
@@ -1930,6 +1932,21 @@ def run_kgen_extract(
             directory, build_dir=build_dir, state_dir=result["state_dir"] or "",
             invocation=invocation, reached=result.get("reached"))
     return result
+
+
+def write_statefile_list(kernel_dir: str, function_name: str) -> None:
+    """Write kgen_statefile.lst, the state files the kernel replays, in call order.
+
+    KGen writes it when it has captured the last call requested. When some
+    never come (a run that makes fewer calls than requested), there is none,
+    and the kernel lists the files with `ls`, in name order: call 10 before
+    call 2. A kernel replays its calls in order in one process, so for a
+    function that keeps state between calls the order is the result.
+    """
+    pattern = re.compile(r'^' + re.escape(function_name) + r'\.(\d+)\.(\d+)\.(\d+)$', re.IGNORECASE)
+    files = sorted((tuple(int(g) for g in m.groups()), p.name)
+                   for p in Path(kernel_dir).iterdir() for m in [pattern.match(p.name)] if m)
+    Path(kernel_dir, "kgen_statefile.lst").write_text("".join(f"{name}\n" for _, name in files))
 
 
 def count_kernel_cases(kernel_dir: str, function_name: Optional[str] = None) -> int:

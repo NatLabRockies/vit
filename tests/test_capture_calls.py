@@ -262,3 +262,14 @@ def test_extract_spreads_the_calls_and_records_them(tmp_path, monkeypatch, capsy
     assert "Captured 12 of the 20 calls requested" in out
     record = json.loads((tmp_path / "kernel" / "helper" / "extraction.json").read_text())
     assert record["invocation"] == seen["invocation"]
+
+
+def test_a_partial_capture_is_listed_in_call_order(tmp_path):
+    """Without KGen's list the kernel ran `ls`: drag.0.0.10 before drag.0.0.2."""
+    from vit.extract import write_statefile_list
+    for n in (1, 2, 10, 11):
+        (tmp_path / f"drag.0.0.{n}").write_text("")
+    (tmp_path / "drag.0.0.1.kgen").write_text("")
+    write_statefile_list(str(tmp_path), "drag")
+    assert (tmp_path / "kgen_statefile.lst").read_text().split() == \
+        ["drag.0.0.1", "drag.0.0.2", "drag.0.0.10", "drag.0.0.11"]

@@ -798,9 +798,15 @@ def cmd_extract(args, config):
             _record_extraction(result["kernel_dir"], case, run_cmd, file_path, actual_line,
                                invocation)
             if cases < len(requested):
-                print(f"  Captured {cases} of the {len(requested)} calls requested: the run "
-                      f"made fewer calls than its coverage counts. A call in a one-line IF is "
-                      f"counted each time the IF runs.")
+                known = case["calls"]
+                if known and max(requested) > known:
+                    why = f"some are past the {known:,} calls coverage counts in the run"
+                elif known:
+                    why = ("the run made fewer calls than its coverage counts; a call in a "
+                           "one-line IF is counted each time the IF runs")
+                else:
+                    why = "the run made fewer calls than requested"
+                print(f"  Captured {cases} of the {len(requested)} calls requested: {why}.")
             if requested != list(range(1, len(requested) + 1)):
                 state = kernel_state(result["kernel_dir"])
                 if state:
