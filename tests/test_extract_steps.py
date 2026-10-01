@@ -220,3 +220,97 @@ def test_every_recorded_step_has_a_description():
     named |= set(re.findall(r'run_step\(\w+, "(\w+)"', source))
     named |= {"remove_resets", "run", "kgen", "clean", "prebuild"}
     assert named <= set(extract_steps.STEPS), named - set(extract_steps.STEPS)
+
+
+# --------------------------------------------------------------------------
+# Every step succeeded and nothing was captured
+
+def _empty_capture(tmp_path, run_output="", build_files=(), state_source=None):
+    """A record directory whose build started at t=1000, a build directory
+    holding (name, mtime, content) files, and a state/ directory."""
+    directory = tmp_path / "steps"
+    directory.mkdir()
+    (directory / "steps.jsonl").write_text(
+        '{"step": "build", "status": "started", "rc": null, "log": "build.log", "time": 1000}\n'
+        '{"step": "build", "status": "ok", "rc": 0, "log": "build.log", "time": 1001}\n')
+    (directory / "run.log").write_text(run_output)
+    build = tmp_path / "build"
+    build.mkdir()
+    for name, mtime, content in build_files:
+        (build / name).write_bytes(content)
+        os.utime(build / name, (mtime, mtime))
+    state = tmp_path / "state"
+    state.mkdir()
+    if state_source:
+        (state / "physics.f90").write_text(state_source)
+    return str(directory), str(build), str(state)
+
+
+MARKER = extract_steps.CAPTURE_MESSAGE.encode()
+
+
+def test_calls_reported_but_not_found_name_the_path(tmp_path):
+    """The instrumented program prints a line for each call it writes; when the
+    run printed them and kernel/ has none, the files went somewhere else."""
+    d, build, state = _empty_capture(
+        tmp_path, run_output=f" {extract_steps.CAPTURE_MESSAGE} from: 0 0 1\n" * 3,
+        state_source='WRITE (kgen_filepath(kgen_mymid, 0), FMT="(A,I0,A,I0,A,I0)") '
+                     '"/w/kernel/drag." , kgen_mymid\n')
+    lines = extract_steps.explain_empty_capture(d, build_dir=build, state_dir=state)
+    assert lines[0] == "The run reported 3 captured call(s), and none is in kernel/."
+    assert "/w/kernel/drag.<process>.<thread>.<call>" in lines[1]
+
+
+def test_a_build_that_did_not_recompile_is_named(tmp_path):
+    """Only files the instrumented build wrote count: an object holding the
+    instrumentation from before the build started is not this build's."""
+    d, build, state = _empty_capture(tmp_path, build_files=[
+        ("old.o", 900, b"x" + MARKER), ("new.o", 1005, b"no instrumentation")])
+    assert extract_steps.instrumented_build_products(d, build) == []
+    lines = extract_steps.explain_empty_capture(d, build_dir=build, state_dir=state)
+    assert "did not recompile the instrumented source" in lines[1]
+
+
+@pytest.mark.parametrize("reached, expected", [
+    (None, "never reached the call site, or reached it only"),
+    (False, "The run never reached the call site."),
+    (True, "none of its calls fell in the capture range 0:0:600-620"),
+])
+def test_a_built_call_site_that_captured_nothing(tmp_path, reached, expected):
+    d, build, state = _empty_capture(tmp_path, build_files=[("prog", 1003, b"x" + MARKER)])
+    lines = extract_steps.explain_empty_capture(d, build_dir=build, state_dir=state,
+                                                invocation="0:0:600-620", reached=reached)
+    assert lines[0].startswith(f"The instrumented call site was built ({build}/prog)")
+    assert expected in " ".join(lines)
+
+
+def test_coverage_says_which_cases_run_the_call(tmp_path):
+    """The first check when nothing is captured is whether the run reaches the
+    call; with coverage per test case it is a lookup, so the report makes it."""
+    import gzip
+    import json
+    from vit import coverage as cov
+    from vit.cli import _coverage_of_call
+    from vit.config import VitConfig
+
+    source = ("module physics\ncontains\n  real(8) function drag(v)\n    real(8) :: v\n"
+              "    drag = v\n  end function drag\n  subroutine step(v)\n    real(8) :: v\n"
+              "    v = drag(v)\n  end subroutine step\nend module physics\n")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "physics.f90").write_text(source)
+    for case, count in (("long", 500), ("short", 3)):
+        (tmp_path / "gcov" / case).mkdir(parents=True)
+        with gzip.open(tmp_path / "gcov" / case / "p.gcov.json.gz", "wt") as fh:
+            json.dump({"format_version": "1", "files": [{
+                "file": str(tmp_path / "src" / "physics.f90"),
+                "lines": [{"line_number": 9, "count": count}], "functions": []}]}, fh)
+    data, _ = cov.import_gcov(tmp_path / "gcov", tmp_path)
+    cov.write(data, tmp_path / "coverage.json")
+    config = VitConfig(config_dir=str(tmp_path), source_dir="src")
+
+    lines = _coverage_of_call(config, str(tmp_path / "src" / "physics.f90"), "v = drag(v)", "drag")
+    assert lines[1:] == ["  long: 500", "  short: 3"]
+    assert _coverage_of_call(config, str(tmp_path / "src" / "physics.f90"),
+                             "v = other(v)", "drag")[0].startswith("Coverage (")
+    os.remove(tmp_path / "coverage.json")
+    assert _coverage_of_call(config, str(tmp_path / "src" / "physics.f90"), "v = drag(v)", "drag") == []

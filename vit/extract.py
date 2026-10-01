@@ -1646,8 +1646,10 @@ def run_kgen_extract(
         Dict with keys: 'success' (KGen generated a kernel), 'kernel_dir',
         'state_dir', 'cmd', 'output', 'include_ini', 'cleaned', 'restored',
         'state_cases', 'warnings', 'steps_dir', 'failure' (an
-        extract_steps.Failure, or None when every step succeeded), and
-        'restore_failure' (the same, for restoring the build afterwards)
+        extract_steps.Failure, or None when every step succeeded),
+        'restore_failure' (the same, for restoring the build afterwards), and
+        'empty_capture' (when every step succeeded and nothing was captured,
+        what the evidence says, as report lines)
     """
     directory = extract_steps.steps_dir()
     result = {
@@ -1824,6 +1826,10 @@ def run_kgen_extract(
     result["failure"] = extract_steps.diagnose(
         directory, kgen_rc=kgen_rc, generated=generated, timeout=timed_out)
     result["restore_failure"] = extract_steps.failed(directory, "restore")
+    if result["failure"] is None and result["state_cases"] == 0:
+        result["empty_capture"] = extract_steps.explain_empty_capture(
+            directory, build_dir=build_dir, state_dir=result["state_dir"] or "",
+            invocation=invocation)
     return result
 
 

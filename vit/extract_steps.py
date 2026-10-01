@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -68,7 +69,8 @@ def reset(directory: str) -> None:
 
 def record(directory: str, step: str, status: str, rc: Optional[int] = None,
            log: Optional[str] = None) -> None:
-    entry = {"step": step, "status": status, "rc": rc, "log": log or f"{step}.log"}
+    entry = {"step": step, "status": status, "rc": rc, "log": log or f"{step}.log",
+             "time": int(time.time())}
     with open(os.path.join(directory, RECORDS), "a") as f:
         f.write(json.dumps(entry) + "\n")
 
@@ -94,8 +96,8 @@ def shell_prelude(directory: str) -> list[str]:
     return [
         f'VIT_STEPS="{directory}"',
         "vit_record() {",
-        "    printf '{\"step\": \"%s\", \"status\": \"%s\", \"rc\": %s, \"log\": \"%s.log\"}\\n' \\",
-        '        "$1" "$2" "$3" "$1" >> "$VIT_STEPS/steps.jsonl"',
+        "    printf '{\"step\": \"%s\", \"status\": \"%s\", \"rc\": %s, \"log\": \"%s.log\", \"time\": %s}\\n' \\",
+        '        "$1" "$2" "$3" "$1" "$(date +%s)" >> "$VIT_STEPS/steps.jsonl"',
         "}",
         "vit_step() {",
         '    vit_record "$1" started null',
@@ -242,3 +244,104 @@ def failed(directory: str, step: str) -> Optional[Failure]:
                 return _failure(directory, rec, f"exit code {rec['rc']}")
             return None
     return None
+
+
+# --------------------------------------------------------------------------
+# Every step succeeded and nothing was captured
+# --------------------------------------------------------------------------
+
+# What KGen's instrumentation prints after writing each captured call (KGen's
+# spelling). It is a string constant in the instrumented call site, so it is
+# also how a build product that holds the instrumentation is recognised.
+CAPTURE_MESSAGE = "Collected Kernel Input/Ouput state"
+
+_STATE_PATH = re.compile(r'kgen_filepath\([^)]*\),\s*FMT="\(A,I0,A,I0,A,I0\)"\)\s*"([^"]+)"',
+                         re.IGNORECASE)
+
+
+def _started(directory: str, step: str) -> Optional[int]:
+    times = [r.get("time") for r in read_records(directory)
+             if r["step"] == step and r.get("status") == "started"]
+    return times[-1] if times and times[-1] is not None else None
+
+
+def captures_reported(directory: str) -> int:
+    """How many captured calls the instrumented program said it wrote."""
+    path = os.path.join(directory, "run.log")
+    if not os.path.exists(path):
+        return 0
+    return Path(path).read_text(errors="replace").count(CAPTURE_MESSAGE)
+
+
+def state_file_prefix(state_dir: str) -> Optional[str]:
+    """The path the instrumented code writes captured calls to, as compiled in."""
+    if not state_dir or not os.path.isdir(state_dir):
+        return None
+    for path in sorted(Path(state_dir).glob("*")):
+        if path.suffix.lower() not in (".f90", ".f", ".f03", ".f08"):
+            continue
+        m = _STATE_PATH.search(path.read_text(errors="replace"))
+        if m:
+            return m.group(1)
+    return None
+
+
+def instrumented_build_products(directory: str, build_dir: str) -> Optional[list[str]]:
+    """Files the instrumented build wrote under build_dir that hold the call site.
+
+    None when it cannot be told: no build directory, or no record of when the
+    build started. An empty list means the build wrote nothing that contains
+    the instrumentation: it did not recompile the instrumented source.
+    """
+    start = _started(directory, "build")
+    if not build_dir or start is None or not os.path.isdir(build_dir):
+        return None
+    marker = CAPTURE_MESSAGE.encode()
+    found = []
+    for root, _, files in os.walk(build_dir):
+        for name in files:
+            path = os.path.join(root, name)
+            try:
+                if os.stat(path).st_mtime < start:
+                    continue
+                with open(path, "rb") as f:
+                    if marker in f.read():
+                        found.append(path)
+            except OSError:
+                continue
+    return found
+
+
+def explain_empty_capture(directory: str, *, build_dir: str = "", state_dir: str = "",
+                          invocation: str = "", reached: Optional[bool] = None) -> list[str]:
+    """What the evidence says when every step succeeded and nothing was captured.
+
+    In order: the program said it wrote calls (they went somewhere else); no
+    file the build wrote holds the instrumented call site (it was not
+    recompiled); otherwise the call was not captured by this run, and
+    `reached`, when known, says whether the call site ran at all.
+    """
+    reported = captures_reported(directory)
+    if reported:
+        prefix = state_file_prefix(state_dir)
+        where = f"{prefix}<process>.<thread>.<call>" if prefix else "the path compiled into it"
+        return [f"The run reported {reported} captured call(s), and none is in kernel/.",
+                f"The instrumented code writes them to {where}.",
+                "Look where the program ran, or for a command in kgen.run_cmd that moved them."]
+
+    products = instrumented_build_products(directory, build_dir)
+    if products is not None and not products:
+        return [f"No file the build wrote under {build_dir} contains the instrumented call site:",
+                "the build did not recompile the instrumented source, or the target it builds",
+                "does not include it."]
+
+    capture_range = invocation or "the capture range"
+    lines = [f"The instrumented call site was built ({products[0]}), and the run finished."
+             if products else "The run finished."]
+    if reached is False:
+        return lines + ["The run never reached the call site. If the program loads its library from",
+                        "somewhere else, it may have run another build: see kgen.install_cmd."]
+    if reached is True:
+        return lines + [f"The run reached the call site, and none of its calls fell in the capture range {capture_range}."]
+    return lines + ["No call was captured: the run never reached the call site, or reached it only",
+                    f"outside the capture range {capture_range}."]

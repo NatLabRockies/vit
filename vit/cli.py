@@ -637,6 +637,7 @@ def cmd_extract(args, config):
                   f"KGen will extract the call on that line.")
             actual_line = line_num
 
+        call_text = lines[actual_line - 1].strip() if 0 < actual_line <= len(lines) else ""
         print(f"Inserting KGen pragma at {file_path}:{actual_line}")
         insert_kgen_pragma(file_path, actual_line, function_name=args.function_name)
 
@@ -772,11 +773,11 @@ def cmd_extract(args, config):
                 print(line)
         else:
             print(f"✗ Extraction captured no state data")
-            print(f"  Every step succeeded, including the run, and no call was captured.")
-            print(f"  Possible causes:")
-            print(f"    - Wrong test case (call site not reached)")
-            print(f"    - Source not clean (integration wrappers present)")
-            print(f"  See docs/EXTRACTION_INTERNALS.md Section 7 for debugging checklist.")
+            print(f"  Every step succeeded, including the run.")
+            for line in result.get("empty_capture") or []:
+                print(f"  {line}")
+            for line in _coverage_of_call(config, file_path, call_text, args.function_name):
+                print(f"  {line}")
         restore_failure = result.get("restore_failure")
         if restore_failure:
             print(f"⚠ Restoring the build failed: {restore_failure.summary} (output in "
@@ -794,6 +795,35 @@ def cmd_extract(args, config):
     if not result["success"] or result.get("state_cases", 0) == 0:
         return 1
     return 0
+
+
+def _coverage_of_call(config, file_path, call_text, function_name) -> list:
+    """Which test cases run one call site, from the project's coverage file.
+
+    The first check when nothing is captured is whether the run reaches the
+    call at all; with coverage per test case, that is a lookup.
+    """
+    coverage_file = config.abs_path(config.coverage_file)
+    if not os.path.exists(coverage_file) or not config.abs_source_dir:
+        return []
+    from . import coverage as cov
+    try:
+        data = cov.load(coverage_file)
+        root = cov.coverage_root(data, config.abs_source_dir)
+        sites = [s for s in cov.call_sites(data, config.abs_source_dir, function_name)
+                 if os.path.realpath(os.path.join(root, s["path"])) == os.path.realpath(file_path)
+                 and s["text"] == call_text]
+    except (OSError, ValueError, KeyError) as e:
+        return [f"Coverage ({os.path.relpath(coverage_file)}) could not be read: {e}"]
+    if len(sites) != 1:
+        return [f"Coverage ({os.path.relpath(coverage_file)}) has no single record of this call; "
+                f"`vit find {function_name} --coverage` lists the calls it has."]
+    hits = sites[0]["hits"]
+    if not hits:
+        return [f"Coverage ({os.path.relpath(coverage_file)}): no test case runs this call."]
+    ranked = sorted(hits.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [f"Coverage ({os.path.relpath(coverage_file)}): test cases that run this call:"] + \
+        [f"  {case}: {count}" for case, count in ranked]
 
 
 def cmd_translate(args, config):
