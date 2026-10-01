@@ -230,9 +230,19 @@ Have the conversation explicitly, and write the outcome into the plan:
 - the stakeholders and their success criteria
 - explicit out-of-scope items
 
-**Deliverable:** section 1 of the plan, "Vision and Done Criteria".
+Then record the scope where the tools read it, not only in prose, so the work order (Step 5)
+follows it:
+- the code to translate and the code that stays as it is: `vit inventory --src` and `--deps`
+- the wider tree its callers live in, such as the whole repository: `--search`
+- the entry points: procedures a host outside that tree calls, and procedures kept although
+  nothing calls them (`--entry-point`, `--entry-points-file`)
+- procedures left out or deferred by decision, each with its reason: an `--overrides` file
 
-**Sanity check:** can the plan answer "is X in scope?" without asking anyone?
+**Deliverable:** section 1 of the plan, "Vision and Done Criteria", and those inputs.
+
+**Sanity check:** can the plan answer "is X in scope?" without asking anyone? With the scope
+recorded as inputs, the work order answers it: X is in a step, or in the left-out list with a
+reason.
 
 ### Step 3: Key decisions
 
