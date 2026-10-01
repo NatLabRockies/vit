@@ -55,6 +55,11 @@ docker run -it --rm -v "$PWD":/workspace vit
 Paths in `vit.yaml` (`build_cmd`, `run_cmd` and the rest) are then container paths under
 `/workspace`.
 
+On macOS, keep CMake build directories inside the container, for example `/build/<project>`, not
+on the mount. With Colima's virtiofs mount, a CMake rebuild fails when gfortran rewrites a Fortran
+module file (`Error copying Fortran module`), and extraction always rewrites one. Sources, kernels
+and translations can stay on the mount.
+
 To keep a container running and send commands to it, for example from a coding agent:
 
 ```bash
