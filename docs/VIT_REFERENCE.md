@@ -107,6 +107,43 @@ block with each location.
 re-run with `--rewrite 'file:line=replacement'`. An agent must never approve a rewrite on the
 person's behalf.
 
+## Telemetry
+
+Every `vit` command appends two events to `.vit/cycle_log.jsonl` in the directory it runs from: at
+the start, the time, the function it works on, the command and its arguments; at the end, the
+duration and exit code. The file stays on the machine. Two steps of the cycle are not `vit`
+commands, rebuilding the program and running its regression, so a script that runs them can log
+them itself:
+
+```bash
+python3 -m vit.telemetry start --function drag --command regress
+python3 -m vit.telemetry end   --function drag --command regress --exit-code $rc
+```
+
+`python3 -m vit.telemetry join` reads the cycle log together with a coding agent's session
+transcripts (Claude Code's JSONL format) and writes one CSV row per function: its status, the time
+spent in each step, the attempts before the first passing verify and integrate, and the agent's
+token use while working on it. A dispositions file records, with a reason, a status exit codes
+cannot show, such as `out_of_scope` or `deferred`. The command runs from a VIT checkout without
+installing VIT.
+
+```bash
+python3 -m vit.telemetry join --cycle-log .vit/cycle_log.jsonl \
+    --transcripts <directory of session .jsonl files> --out per_function.csv \
+    [--dispositions FILE]
+```
+
+Read the module docstring of `vit/telemetry.py` before relying on the numbers: it says what each
+measures and how it can mislead.
+
+## Environment variables
+
+| Variable | Effect |
+|---|---|
+| `VIT_TELEMETRY` | `0` turns telemetry off. |
+| `VIT_TELEMETRY_LOG` | Writes the cycle log to this path instead of `.vit/cycle_log.jsonl`. |
+| `VIT_WRAPPER_LOG` | Makes extraction's build wrapper log what it did, to this path (`docs/EXTRACTION_INTERNALS.md`). |
+
 ## Known limitations
 
 ### Verification
@@ -182,3 +219,46 @@ person's behalf.
   and link errors in a loop before giving up.
 - **Fixes in the KGen fork.** Some KGen failures are fixed in the fork VIT depends on, for example
   PROCEDURE POINTER parsing (`31d653c`).
+
+### Coverage
+
+- **GCC only.** `vit coverage` reads gcov's JSON output (`gcov -j`), which needs GCC 9 or later,
+  from the same release as the compiler. VIT finds a matching gcov, or stops and says which it
+  tried; `coverage.gcov` overrides.
+- **CMake by default.** `vit coverage run` configures and builds with CMake unless
+  `coverage.configure_cmd` and `coverage.build_cmd` say otherwise.
+- **A case must exit to record anything.** gcov's counters are written when the program exits, so
+  a case that crashes leaves no data. `vit coverage run` reports such a case and fails.
+- **Line numbers belong to the measured source.** Import records each file's git blob id, and the
+  file's text when the checked-out commit does not hold it or there is no git repository, so
+  lookups read what was measured even after the tree has changed. A coverage file written before
+  this records only a commit, and is read at that commit.
+- **Procedures are matched by start line.** The procedure report takes each SUBROUTINE, FUNCTION
+  and PROGRAM statement in the measured source and matches it to gcov's record for that line. A
+  procedure closed by a bare `END` is not recognised. A coverage file without gcov's function
+  records gives procedure coverage from line counts, which cannot tell "not built" from "not
+  reached".
+
+### Planning (`vit inventory`)
+
+- **Static analysis.** The inventory parses the source with fparser's Fortran 2008 parser. It does
+  not run the C preprocessor: it rewrites line splices and reads the predefined macros, such as
+  `__DATE__`, as names. A file it cannot parse is listed in the summary and is missing from every
+  count.
+- **Calls it cannot see.** A call through a procedure pointer, or from code outside `--src` and
+  `--search`, is not in the call graph. A procedure passed as an argument is reported as a
+  callback, not as dead.
+- **Name resolution.** A call goes to the procedure of that name in the same file, then the same
+  module, then a module the caller's module USEs, and a call through a generic interface to each
+  of its specifics. An internal procedure is visible only from its host.
+- **Uncalled is not dead.** The work order leaves a procedure out as dead only when nothing in the
+  scanned source, `--search` included, refers to it outside comments, and it is not a declared
+  entry point, a `BIND(C)` procedure, a callback, or called from a main program. One referred to
+  only in commented-out code is left out too. Confirm with `vit reachability`. Entry points are
+  needed only for callers outside the scanned source, or to keep a procedure nothing calls.
+- **Test code is a naming rule.** A module with "test" in its name, or a procedure with Test as a
+  word of its name, is test code; so is a procedure whose every caller, main programs included, is
+  test code.
+- **Unit I/O.** READ and WRITE on a CHARACTER variable are internal files, not unit I/O. Units 0, 5
+  and 6 are taken as gfortran's standard error, input and output. A unit stored in a derived type
+  is matched to the procedure that opens it by the type that holds it.
