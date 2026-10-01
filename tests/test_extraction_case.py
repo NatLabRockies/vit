@@ -158,3 +158,20 @@ def test_without_coverage_nothing_changes(tmp_path, monkeypatch, capsys):
     rc, run_cmd = _extract(tmp_path, monkeypatch, config)
     assert (rc, run_cmd) == (0, "./run_cmd")
     assert "Test case" not in capsys.readouterr().out
+
+
+def test_the_work_order_names_the_case_extraction_chooses(tmp_path):
+    """The work order named the case that calls a procedure most; extraction
+    chooses the one that runs the most of its body. One rule, so the two
+    cannot disagree."""
+    from vit.work_order import _verification
+
+    config, data = _project(tmp_path)
+    drag = [p for p in cov.procedure_coverage(data, tmp_path) if p["name"] == "drag"][0]
+    assert drag["lines"] == {"long": 3, "short": 2}
+
+    item = {"status": "reached", "basis": "calls", "calls": {"busy": 900, "broad": 10},
+            "lines": {"busy": 2, "broad": 3}}
+    index = {("physics.f90", "drag", ""): item}
+    route = _verification({"file": "physics.f90", "name": "drag"}, index, True)
+    assert (route["case"], route["note"]) == ("broad", "extract with broad (10 calls)")

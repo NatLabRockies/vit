@@ -29,8 +29,9 @@ How the order is built:
             steps none does, then smaller before larger, then by name.
             `deferred` overrides go last, and so must their callers.
 
-  Verify    From coverage, per procedure: a kernel, with the test case that
-            calls it most as the case to extract with; or "not reached", which
+  Verify    From coverage, per procedure: a kernel, with the case to extract
+            with, the one `vit extract` chooses (coverage.choose_case: most
+            lines of its body run, then most calls); or "not reached", which
             needs another method (docs/VERIFICATION_METHODS.md); or "not built".
 """
 
@@ -38,6 +39,8 @@ import heapq
 import json
 import os
 from collections import defaultdict
+
+from .coverage import choose_case
 
 OVERRIDE_STATUSES = {
     "out_of_scope": "left out by override",
@@ -118,7 +121,9 @@ def _verification(p, index, has_coverage, line_basis=False):
                     "any test case, or not built"}
         return {"route": "not built", "note": "not in the coverage build"}
     if item["status"] == "reached":
-        case, n = max(item["calls"].items(), key=lambda kv: (kv[1], kv[0]))
+        # The case `vit extract` chooses: most lines of the body, then most calls.
+        case = choose_case(item["calls"], item.get("lines", {}), item["calls"])
+        n = item["calls"][case]
         unit = "calls" if item["basis"] == "calls" else "executions"
         return {"route": "kernel", "case": case, "count": n,
                 "note": f"extract with {case} ({n} {unit})"}

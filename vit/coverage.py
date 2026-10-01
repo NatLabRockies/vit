@@ -380,17 +380,30 @@ def function_lines_by_case(coverage, source_dir, function_name) -> tuple:
         text, _ = measured_text(coverage, root, rel)
         if not text or name not in text.lower():
             continue
-        for span in procedure_spans(text):
+        spans = procedure_spans(text)
+        for span in spans:
             if span["name"].lower() != name or not span["end"]:
                 continue
-            body = range(span["start"] + 1, span["end"])
-            by_case = {case: sum(1 for n in body if d["lines"].get(str(n), 0) > 0)
-                       for case, d in entry["test_cases"].items()}
-            any_case = sum(1 for n in body
-                           if any(d["lines"].get(str(n), 0) > 0
-                                  for d in entry["test_cases"].values()))
-            return by_case, any_case
+            return lines_by_case(span, spans, entry), len(_body_lines(span, spans) & {
+                n for d in entry["test_cases"].values() for n in map(int, d["lines"])})
     return {}, 0
+
+
+def _body_lines(span, spans) -> set:
+    """The lines of a procedure's body: its own lines (_own_lines) without its
+    SUBROUTINE or FUNCTION statement, which gcov counts on every entry."""
+    return _own_lines(span, spans) - {span["start"]}
+
+
+def lines_by_case(span, spans, entry) -> dict:
+    """{test case: lines of the procedure's body that ran}, for one covered file's entry.
+
+    What `vit extract` ranks test cases by and the work order names a case
+    by: lines tell a procedure's behaviours apart, calls do not.
+    """
+    body = _body_lines(span, spans)
+    return {case: sum(1 for n in body if d["lines"].get(str(n), 0) > 0)
+            for case, d in entry["test_cases"].items()}
 
 
 def choose_case(hits: dict, lines_by_case: dict, commands) -> Optional[str]:
@@ -486,7 +499,8 @@ def procedure_coverage(coverage, root) -> list:
     names are the Fortran names, and matched to gcov's records by start line.
     Each is a dict with `file`, `name`, `start`, `end`, `host` and `status`:
 
-      reached      a test case calls it; `calls` is {case: number of calls}
+      reached      a test case calls it; `calls` is {case: number of calls},
+                   and `lines` {case: lines of its body that ran}
       not reached  the build contains it and no test case calls it
       not built    defined in a file the build compiled, but not in the build,
                    as when it sits in a branch of #ifdef that is not taken
@@ -507,7 +521,8 @@ def procedure_coverage(coverage, root) -> list:
         functions = entry.get("functions")
         for span in spans:
             item = {"file": rel, "name": span["name"], "start": span["start"],
-                    "end": span["end"], "host": span["host"], "read": read}
+                    "end": span["end"], "host": span["host"], "read": read,
+                    "lines": lines_by_case(span, spans, entry)}
             if functions is not None:
                 rec = functions.get(str(span["start"]))
                 item["basis"] = "calls"
