@@ -750,6 +750,21 @@ def check_editable_installs(project_dir: str, package_name: str = "") -> list[st
     return warnings_list
 
 
+def cmake_reconfigure_command(build_dir: str) -> str:
+    """Shell command that re-runs CMake's configure step for `build_dir`.
+
+    Inside a configured build tree, `cmake .` regenerates it from the source
+    directory recorded in its cache, wherever that is. The command used to be
+    `cmake ..`, which assumed the build tree sat directly under the top-level
+    CMakeLists.txt. With any other layout it configured the wrong directory,
+    the failure was discarded, kgen_utils.f90 never entered the build, and the
+    capture came back empty. `cmake ..` remains the fallback for a tree that
+    has not been configured yet, the one case where it is the right guess.
+    """
+    return (f'cd "{build_dir}" && '
+            f'if [ -f CMakeCache.txt ]; then cmake .; else cmake ..; fi')
+
+
 def generate_state_capture_build_script(
     build_cmd: str,
     install_cmd: str = "",
@@ -827,12 +842,13 @@ def generate_state_capture_build_script(
       4.  Run the real build, then the install step if any.
       5.  Strip the tagged persistence lines, restoring the source tree.
 
-    Fragility worth knowing: the step-2 sed matches `^ *src/[A-Za-z_]*\\.f90$`.
-    It therefore assumes sources sit under src/, use a lowercase .f90
-    extension, and have names free of digits and hyphens. That holds for ROSCO
-    and AeroDyn. If it ever misses, the failure mode is the silent one above --
-    build succeeds, capture yields nothing -- so check this before assuming a
-    pragma or test-case problem.
+    What the step-2 patch assumes: the build file lists sources one per line,
+    and has a `src/` directory beside it. It inserts `src/kgen_utils.f90` after
+    the first line that is a single Fortran source path, and copies the file
+    into that `src/`. A build file with no such line stops the build with an
+    error naming `kgen.add_source_cmd`, the override. Without a `src/`
+    directory the inserted entry names a file that is not there, and the build
+    fails.
 
     The script is written to a temp file and returned as a command.
 
@@ -951,7 +967,7 @@ def generate_state_capture_build_script(
         if build_dir_abs:
             script_lines.extend([
                 f'            echo "VIT: Reconfiguring cmake to pick up kgen_utils.f90"',
-                f'            cd "{build_dir_abs}" && cmake .. > /dev/null 2>&1',
+                f'            {cmake_reconfigure_command(build_dir_abs)} > /dev/null 2>&1',
             ])
         script_lines.extend([
             '        fi',
@@ -1084,7 +1100,7 @@ def generate_state_capture_build_script(
             "# Step 3: Reconfigure cmake if CMakeLists was modified",
             f'if [ -f "{cmake_file_abs}.vit_backup" ]; then',
             f'    echo "VIT_WRAPPER: reconfiguring cmake" >> "$VIT_LOG"',
-            f'    cd "{build_dir_abs}" && cmake .. >> "$VIT_LOG" 2>&1',
+            f'    {cmake_reconfigure_command(build_dir_abs)} >> "$VIT_LOG" 2>&1',
             f'    echo "VIT_WRAPPER: cmake reconfigure exit code=$?" >> "$VIT_LOG"',
             f'fi',
             "",
@@ -1188,7 +1204,7 @@ def cleanup_kgen_utils_injection(
     # Reconfigure CMake to clear stale DependInfo.cmake references.
     if build_dir and os.path.isdir(build_dir):
         subprocess.run(
-            f"cd {build_dir} && cmake ..",
+            cmake_reconfigure_command(build_dir),
             shell=True, capture_output=True,
         )
         cleaned.append(f"Reconfigured CMake in {build_dir}")

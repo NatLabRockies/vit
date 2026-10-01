@@ -7,6 +7,7 @@ Docker, KGen, or a real Fortran project.
 
 import os
 import pytest
+import shutil
 import sys
 import textwrap
 
@@ -781,3 +782,39 @@ def test_add_source_cmd_replaces_the_heuristic(tmp_path):
     script = _wrapper(tmp_path, add_source_cmd="my-custom-adder")
     assert "( my-custom-adder )" in script
     assert "sed -i -E" not in script, "the override must REPLACE the guess, not run beside it"
+
+
+@pytest.mark.skipif(shutil.which("cmake") is None, reason="needs cmake")
+def test_reconfigure_works_when_the_build_tree_is_not_a_child(tmp_path):
+    """Reconfiguring must follow the build tree's own cache, not `..`.
+
+    The wrapper and the cleanup reconfigured with `cd <build_dir> && cmake ..`,
+    which only works when the build tree sits directly under the top-level
+    CMakeLists.txt. With the build tree anywhere else the reconfigure failed,
+    the failure was discarded, and kgen_utils.f90 never entered the build.
+    """
+    import subprocess
+    from vit.extract import cmake_reconfigure_command
+
+    source = tmp_path / "project"
+    source.mkdir()
+    (source / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.16)\nproject(t NONE)\n")
+    build = tmp_path / "elsewhere" / "build"
+    build.mkdir(parents=True)
+    subprocess.run(["cmake", "-S", str(source), "-B", str(build)],
+                   check=True, capture_output=True)
+
+    # A change the reconfigure must pick up.
+    (source / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.16)\nproject(t NONE)\n"
+        'message(STATUS "reconfigured-from-cache")\n')
+
+    old = subprocess.run(f'cd "{build}" && cmake ..', shell=True,
+                         capture_output=True, text=True)
+    assert old.returncode != 0, "the old command should fail in this layout"
+
+    new = subprocess.run(cmake_reconfigure_command(str(build)), shell=True,
+                         capture_output=True, text=True)
+    assert new.returncode == 0, new.stderr[-800:]
+    assert "reconfigured-from-cache" in new.stdout
