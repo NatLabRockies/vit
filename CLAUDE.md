@@ -63,7 +63,7 @@ Status as of 2026-09-30. The fork's `vit.yaml` lists 32 functions, all integrate
 
 ## AeroDyn Workflow
 
-VIT configuration: `openfast/vit.yaml`. Build flags: `FP_CONTRACT_OFF=ON` in `CMakeLists.txt` sets `-ffp-contract=off` on both compilers. Registry headers: `openfast_registry input.txt -cppcode-double -O output_dir`.
+VIT configuration: `openfast/vit.yaml`. Its `project.source_dir` is the broad `modules/`, so KGen finds the NWTC Library sources AeroDyn USEs; `fortran.flags` (`-cpp -fdefault-real-8 -fdefault-double-8 -ffp-contract=off`) match OpenFAST's build; and `fortran.preprocessor_defines` sets `OPENFAST_DOUBLE_PRECISION` and `HAS_FORTRAN2008_FEATURES`. Build flags: `FP_CONTRACT_OFF=ON` in `CMakeLists.txt` sets `-ffp-contract=off` on both compilers. Registry headers: `openfast_registry input.txt -cppcode-double -O output_dir`.
 
 **Translation workflow (per function):**
 
