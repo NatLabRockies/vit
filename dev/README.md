@@ -1,7 +1,7 @@
 # Development notes
 
 Dated records of the decisions, investigations and corrections behind VIT and its two case studies,
-ROSCO and AeroDyn: 341 notes, written from February to October 2026.
+ROSCO and AeroDyn: 342 notes, written from February to October 2026.
 
 ## Naming and citing
 
@@ -40,3 +40,4 @@ status line before relying on a note.
 | `SCENARIO16_RATE_LIMITER_ARTIFACT.md` | Removed; its explanation was superseded by dev note `202607240344` |
 | `docs/CONTAINER_SETUP.md`, `docker/Dockerfile.openfast*` | Removed; `docker/Dockerfile` is the one image, described in `docker/README.md` |
 | `examples/rosco/` | Removed; `examples/quickstart/` |
+| `.vit_build_wrapper.sh`, `VIT_WRAPPER_LOG` | `.vit/extract/build.sh`; every step's output is kept in `.vit/extract/` (dev note `202610011847`) |
