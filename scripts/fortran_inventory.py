@@ -2,23 +2,28 @@
 """
 fortran_inventory.py — Structural inventory of a Fortran codebase using fparser2.
 
-Produces 7 JSON data files + 1 markdown summary for use as input to PROJECT_PLAN
-documents. Follows the methodology in CREATING_PROJECT_PLANS.md (Step 1: Structural
-Inventory).
+Produces seven JSON data files and a markdown summary, as input to planning a
+translation (CREATING_PROJECT_PLANS.md, Step 1: Structural Inventory).
 
 Usage:
-    python3 fortran_inventory.py \
-        --src /workspace/openfast/modules/aerodyn/src \
-        --deps /workspace/openfast/modules/nwtc-library/src \
-        --output /workspace/vit/analysis/aerodyn
+    python3 fortran_inventory.py --src path/to/src --output inventory/
+        [--deps path/to/dependency/src] [--search path/to/whole/repo]
+        [--generated-marker TEXT] [--entry-point NAME] [--entry-points-file FILE]
+
+Nothing here is specific to one codebase. What a codebase must tell it:
+    --generated-marker   text that marks a machine-generated source file, so its
+                         procedures are counted apart from hand-written ones
+    --entry-point(s)     procedures called from outside the source tree, by name,
+                         which no reading of the source alone can establish
 
 Output files:
     function_inventory.json   — every procedure (name, module, file, args, visibility, ...)
     call_graph.json           — caller→callee edges with internal/external tags
     type_inventory.json       — derived TYPE definitions with fields
     module_dependencies.json  — USE graph, topologically sorted
-    uncalled_procedures.json  — procedures with zero call sites within scanned scope
-    framework_boundary.json   — public API procedures (external-facing)
+    uncalled_procedures.json  — procedures with no call site in the scanned source,
+                                each with the likely reason (not all are dead)
+    framework_boundary.json   — procedures that form the external interface
     loc_metrics.json          — lines of code per file/module/procedure
     inventory_summary.md      — human-readable digest
 """
@@ -43,9 +48,9 @@ from fparser.common.readfortran import FortranFileReader
 # ---------------------------------------------------------------------------
 
 # Matches a line whose final non-whitespace character is a backslash. Sources
-# built with `-cpp` (ROSCO sets it for every compiler branch) get C-preprocessor
-# line splicing, so a trailing backslash is a continuation. fparser does not
-# preprocess and rejects it as a syntax error, silently dropping the whole file.
+# built with `-cpp` get C-preprocessor line splicing, so a trailing backslash is
+# a continuation. fparser does not preprocess and rejects it as a syntax error,
+# silently dropping the whole file.
 _CPP_CONTINUATION = re.compile(r"\\(\s*)$")
 
 
@@ -107,12 +112,18 @@ def parse_file(parser, path):
                 pass
 
 
-def is_registry_generated(path):
-    """Check if a file is Registry-generated (contains the marker comment)."""
+def is_generated(path, markers):
+    """Whether a file is machine-generated: any of `markers` in its first lines.
+
+    No markers, no generated files. Code generators mark their output in
+    different ways, so the marker is the caller's to supply.
+    """
+    if not markers:
+        return False
     try:
         with open(path, "r", errors="replace") as f:
             for line in f:
-                if "STARTOFREGISTRYGENERATEDFILE" in line:
+                if any(m in line for m in markers):
                     return True
                 # Only check first 50 lines for efficiency
                 if f.tell() > 5000:
@@ -151,7 +162,7 @@ def first_name(node):
 # Pass 1: Parse all files, collect modules and procedures
 # ---------------------------------------------------------------------------
 
-def collect_modules_and_procedures(parser, src_files, file_registry_map):
+def collect_modules_and_procedures(parser, src_files, file_generated_map):
     """
     Parse all source files and collect:
     - modules: {name_lower: {name, file, uses, public_names, private_default, ...}}
@@ -167,7 +178,7 @@ def collect_modules_and_procedures(parser, src_files, file_registry_map):
         if tree is None:
             continue
         all_trees[path] = tree
-        is_gen = file_registry_map.get(path, False)
+        is_gen = file_generated_map.get(path, False)
 
         # Find modules in this file
         for mod_node in walk(tree, f2003.Module):
@@ -211,7 +222,7 @@ def collect_modules_and_procedures(parser, src_files, file_registry_map):
                 "public_names": sorted(public_names),
                 "private_names": sorted(private_names),
                 "private_default": private_default,
-                "is_registry_generated": is_gen,
+                "is_generated": is_gen,
             }
 
             # Collect procedures defined in this module.
@@ -317,6 +328,9 @@ def _extract_procedure(node, kind, module_name, filename, is_gen,
                 has_save = True
                 break
 
+    # BIND(C): callable from C, so a missing Fortran caller proves nothing
+    is_bind_c = "BIND(C" in str(stmt).upper().replace(" ", "")
+
     # PURE / ELEMENTAL
     prefix_str = str(stmt).upper().split(kind.upper())[0] if kind.upper() in str(stmt).upper() else ""
     is_pure = "PURE" in prefix_str
@@ -345,9 +359,10 @@ def _extract_procedure(node, kind, module_name, filename, is_gen,
         "line_count": lines,
         "visibility": visibility,
         "has_save": has_save,
-        "is_registry_generated": is_gen,
+        "is_generated": is_gen,
         "is_pure": is_pure,
         "is_elemental": is_elemental,
+        "is_bind_c": is_bind_c,
         "is_internal": is_internal,
     }
 
@@ -542,7 +557,7 @@ def build_module_dependencies(modules, procedures):
             "name": mod_info["name"],
             "file": mod_info["file"],
             "uses": mod_info["uses"],
-            "is_registry_generated": mod_info["is_registry_generated"],
+            "is_generated": mod_info["is_generated"],
             "provides_procedures": sorted(mod_procedures.get(mod_key, [])),
         })
 
@@ -634,13 +649,15 @@ def _name_found_in_tree(name, exclude_dir, search_dir):
     return False
 
 
-def find_uncalled_procedures(procedures, call_edges, src_dir, search_dir=None):
+def find_uncalled_procedures(procedures, call_edges, src_dir, search_dir=None,
+                             entry_points=frozenset()):
     """
     Find procedures with zero call sites WITHIN the scanned source tree,
     then classify each by WHY it appears uncalled.
 
     Categories:
-    - c_binding_entry_point: in a C-binding module, called from C/C++
+    - declared_entry_point: named with --entry-point, called from outside
+    - c_entry_point: declared BIND(C), so callable from C/C++
     - driver_entry_point: in a driver module, called from PROGRAM blocks
     - test_function: in a test module or has TEST in name
     - framework_interface: confirmed called from outside --src via --search
@@ -657,7 +674,7 @@ def find_uncalled_procedures(procedures, call_edges, src_dir, search_dir=None):
     # Pre-classify by module/name heuristics first
     uncalled_candidates = []
     for p in procedures:
-        if p["is_registry_generated"]:
+        if p["is_generated"]:
             continue
         if p.get("is_internal", False):
             continue
@@ -798,16 +815,18 @@ def find_uncalled_procedures(procedures, call_edges, src_dir, search_dir=None):
         # 2. Broader search via --search (confirms framework interface)
         # 3. Heuristic by module/name (when no evidence available)
         # 4. genuinely_dead (no evidence at all)
-        if callback_usage:
+        if name_lower in entry_points:
+            reason = "declared_entry_point"
+        elif p.get("is_bind_c"):
+            reason = "c_entry_point"
+        elif callback_usage:
             reason = "callback"
         elif program_block_call:
             reason = "program_block"
         elif commented_out and not any_live_reference:
             reason = "commented_out"
         elif any_live_reference:
-            if "c_binding" in mod.lower():
-                reason = "c_binding_entry_point"
-            elif "driver" in mod.lower() or "dvr" in mod.lower():
+            if "driver" in mod.lower():
                 reason = "driver_entry_point"
             elif "test" in mod.lower() or "TEST" in name:
                 reason = "test_function"
@@ -815,9 +834,7 @@ def find_uncalled_procedures(procedures, call_edges, src_dir, search_dir=None):
                 reason = "unknown"
         else:
             # No live reference in --src. Check --search tree if provided.
-            if "c_binding" in mod.lower():
-                reason = "c_binding_entry_point"
-            elif search_dir and _name_found_in_tree(name, src_dir, search_dir):
+            if search_dir and _name_found_in_tree(name, src_dir, search_dir):
                 reason = "framework_interface"
             else:
                 reason = "genuinely_dead"
@@ -838,55 +855,38 @@ def find_uncalled_procedures(procedures, call_edges, src_dir, search_dir=None):
 # Pass 6: Framework boundary
 # ---------------------------------------------------------------------------
 
-def find_framework_boundary(modules, procedures):
+def find_framework_boundary(modules, procedures, entry_points=frozenset()):
     """
     Identify procedures that form the external API:
-    - PUBLIC procedures in top-level modules (AeroDyn, BEMT, etc.)
-    - Procedures in Driver modules
-    - C-binding entry points
+    - PUBLIC procedures named explicitly in a PRIVATE-by-default module
+    - BIND(C) procedures, callable from C/C++
+    - Procedures in driver modules
+    - Procedures named with --entry-point
     """
     boundary = []
 
     for p in procedures:
-        if p["is_registry_generated"]:
+        if p["is_generated"]:
             continue
 
         reason = None
 
-        # PUBLIC procedures (not in a private-default module, or explicitly public)
+        # Explicitly PUBLIC in a PRIVATE-by-default module: a deliberate API
         if p["visibility"] == "public" and p["module"]:
             mod_info = modules.get(p["module"].lower(), {})
-            # Top-level modules (AeroDyn, BEMT, FVW, UnsteadyAero, etc.)
-            # are the ones that external code calls
             if mod_info.get("private_default", False):
-                # Explicitly public in a private-default module = deliberate API
                 if p["name"] in mod_info.get("public_names", []):
                     reason = "explicit_public"
 
-        # C-binding modules
-        if p["module"] and "c_binding" in p["module"].lower():
-            reason = "c_binding"
+        if p.get("is_bind_c"):
+            reason = "c_entry_point"
 
         # Driver modules
         if p["module"] and "driver" in p["module"].lower():
             reason = "driver"
 
-        # Standard OpenFAST module interface names
-        standard_prefixes = ["AD_Init", "AD_End", "AD_UpdateStates", "AD_CalcOutput",
-                             "AD_CalcConstrStateResidual", "AD_CalcContStateDeriv",
-                             "AD_UpdateDiscState", "AD_JacobianPInput",
-                             "AD_JacobianPContState", "AD_JacobianPDiscState",
-                             "AD_JacobianPConstrState", "AD_GetOP",
-                             "BEMT_Init", "BEMT_End", "BEMT_UpdateStates",
-                             "BEMT_CalcOutput", "BEMT_ReInit",
-                             "UA_Init", "UA_End", "UA_UpdateStates", "UA_CalcOutput",
-                             "FVW_Init", "FVW_End", "FVW_UpdateStates", "FVW_CalcOutput",
-                             "DBEMT_Init", "DBEMT_End", "DBEMT_UpdateStates", "DBEMT_CalcOutput",
-                             "AA_Init", "AA_End", "AA_UpdateStates", "AA_CalcOutput",
-                             "AFI_Init", "AFI_End",
-                             ]
-        if p["name"] in standard_prefixes:
-            reason = "standard_interface"
+        if p["name"].lower() in entry_points:
+            reason = "declared_entry_point"
 
         if reason:
             boundary.append({
@@ -904,7 +904,7 @@ def find_framework_boundary(modules, procedures):
 # Pass 7: LOC metrics
 # ---------------------------------------------------------------------------
 
-def compute_loc_metrics(src_files, procedures, modules, file_registry_map):
+def compute_loc_metrics(src_files, procedures, modules, file_generated_map):
     """Compute lines of code metrics."""
     per_file = []
     total_lines = 0
@@ -914,7 +914,7 @@ def compute_loc_metrics(src_files, procedures, modules, file_registry_map):
     for path in src_files:
         fname = os.path.basename(path)
         lines = count_file_lines(path)
-        is_gen = file_registry_map.get(path, False)
+        is_gen = file_generated_map.get(path, False)
         total_lines += lines
         if is_gen:
             total_generated += lines
@@ -923,7 +923,7 @@ def compute_loc_metrics(src_files, procedures, modules, file_registry_map):
         per_file.append({
             "file": fname,
             "lines": lines,
-            "is_registry_generated": is_gen,
+            "is_generated": is_gen,
         })
 
     per_file.sort(key=lambda x: -x["lines"])
@@ -939,7 +939,7 @@ def compute_loc_metrics(src_files, procedures, modules, file_registry_map):
     # Top 20 largest procedures
     sorted_procs = sorted(procedures, key=lambda p: -p["line_count"])
     top_procs = [{"name": p["name"], "module": p["module"], "file": p["file"],
-                  "line_count": p["line_count"], "is_registry_generated": p["is_registry_generated"]}
+                  "line_count": p["line_count"], "is_generated": p["is_generated"]}
                  for p in sorted_procs[:20]]
 
     return {
@@ -963,14 +963,14 @@ def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
                   uncalled, boundary):
     """Write inventory_summary.md."""
     lines = []
-    lines.append("# AeroDyn Structural Inventory Summary")
+    lines.append("# Structural Inventory Summary")
     lines.append("")
     lines.append(f"Generated by `fortran_inventory.py`")
     lines.append("")
 
     # Overview
-    hw_procs = [p for p in procedures if not p["is_registry_generated"]]
-    gen_procs = [p for p in procedures if p["is_registry_generated"]]
+    hw_procs = [p for p in procedures if not p["is_generated"]]
+    gen_procs = [p for p in procedures if p["is_generated"]]
     internal_procs = [p for p in procedures if p.get("is_internal", False)]
     top_level_hw = [p for p in hw_procs if not p.get("is_internal", False)]
     lines.append("## Overview")
@@ -980,18 +980,18 @@ def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
     lines.append(f"| Total files | {loc['file_count']} |")
     lines.append(f"| Total lines | {loc['total_lines']:,} |")
     lines.append(f"| Hand-written lines | {loc['total_handwritten']:,} |")
-    lines.append(f"| Registry-generated lines | {loc['total_generated']:,} |")
+    lines.append(f"| Generated lines | {loc['total_generated']:,} |")
     lines.append(f"| Modules | {loc['module_count']} |")
     lines.append(f"| Total procedures | {loc['procedure_count']} |")
     lines.append(f"| Hand-written procedures (top-level) | {len(top_level_hw)} |")
-    lines.append(f"| Hand-written procedures (CONTAINS internal) | {len([p for p in internal_procs if not p['is_registry_generated']])} |")
-    lines.append(f"| Registry-generated procedures | {len(gen_procs)} |")
+    lines.append(f"| Hand-written procedures (CONTAINS internal) | {len([p for p in internal_procs if not p['is_generated']])} |")
+    lines.append(f"| Generated procedures | {len(gen_procs)} |")
     lines.append(f"| Subroutines | {sum(1 for p in procedures if p['kind'] == 'subroutine')} |")
     lines.append(f"| Functions | {sum(1 for p in procedures if p['kind'] == 'function')} |")
     lines.append(f"| Procedures with SAVE state | {sum(1 for p in procedures if p['has_save'])} |")
     lines.append(f"| Derived types | {len(type_defs)} |")
     lines.append(f"| Call graph edges | {len(call_edges)} |")
-    lines.append(f"| Uncalled within AeroDyn | {len(uncalled)} |")
+    lines.append(f"| Uncalled within the scanned source | {len(uncalled)} |")
     lines.append(f"| Framework boundary procedures | {len(boundary)} |")
     lines.append("")
 
@@ -1019,7 +1019,7 @@ def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
     lines.append("| Name | Module | Lines | Generated? |")
     lines.append("|------|--------|-------|-----------|")
     for p in loc["top_20_procedures"]:
-        gen = "yes" if p["is_registry_generated"] else "no"
+        gen = "yes" if p["is_generated"] else "no"
         lines.append(f"| {p['name']} | {p['module'] or '-'} | {p['line_count']} | {gen} |")
     lines.append("")
 
@@ -1029,7 +1029,7 @@ def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
     lines.append("| File | Lines | Generated? |")
     lines.append("|------|-------|-----------|")
     for f in loc["per_file"]:
-        gen = "yes" if f["is_registry_generated"] else "no"
+        gen = "yes" if f["is_generated"] else "no"
         lines.append(f"| {f['file']} | {f['lines']:,} | {gen} |")
     lines.append("")
 
@@ -1042,7 +1042,7 @@ def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
         uses = ", ".join(m["uses"][:5])
         if len(m["uses"]) > 5:
             uses += f" (+{len(m['uses'])-5})"
-        gen = "yes" if m["is_registry_generated"] else "no"
+        gen = "yes" if m["is_generated"] else "no"
         lines.append(f"| {m['topo_order']} | {m['name']} | {m['file']} | {uses} | {len(m['provides_procedures'])} | {gen} |")
     lines.append("")
 
@@ -1068,20 +1068,21 @@ def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
     lines.append("")
 
     # Dead code
-    lines.append(f"## Uncalled Within AeroDyn: {len(uncalled)} procedures")
+    lines.append(f"## Uncalled Within the Scanned Source: {len(uncalled)} procedures")
     lines.append("")
 
     # Group by reason
     from collections import Counter as _Counter
     reason_counts = _Counter(d.get("likely_reason", "?") for d in uncalled)
-    reason_order = ["c_binding_entry_point", "driver_entry_point", "test_function",
+    reason_order = ["declared_entry_point", "c_entry_point", "driver_entry_point", "test_function",
                     "framework_interface", "commented_out", "callback",
                     "program_block", "genuinely_dead", "unknown"]
     reason_labels = {
-        "c_binding_entry_point": "C-binding entry points (called from C/C++)",
+        "declared_entry_point": "Declared entry points (--entry-point)",
+        "c_entry_point": "C entry points (BIND(C), callable from C/C++)",
         "driver_entry_point": "Driver entry points (called from PROGRAM blocks)",
         "test_function": "Test functions",
-        "framework_interface": "Framework interface (confirmed called from OpenFAST glue code)",
+        "framework_interface": "Framework interface (referenced outside --src, in --search)",
         "commented_out": "Commented-out calls (dormant debug code)",
         "callback": "Callbacks (passed as function arguments)",
         "program_block": "Called from PROGRAM block (not scanned as module)",
@@ -1124,9 +1125,9 @@ def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
     # Types summary
     src_types = [t for t in type_defs if not t["is_dependency"]]
     dep_types = [t for t in type_defs if t["is_dependency"]]
-    lines.append(f"## Derived Types: {len(src_types)} in AeroDyn, {len(dep_types)} in dependencies")
+    lines.append(f"## Derived Types: {len(src_types)} in the source, {len(dep_types)} in dependencies")
     lines.append("")
-    lines.append("### AeroDyn Types (top 20 by field count)")
+    lines.append("### Source Types (top 20 by field count)")
     lines.append("")
     lines.append("| Type | Module | Fields | Has Allocatable | Has Pointer |")
     lines.append("|------|--------|--------|----------------|-------------|")
@@ -1162,10 +1163,26 @@ def main():
     parser.add_argument("--deps", default=None, help="Dependency source directory (module/type only)")
     parser.add_argument("--output", required=True, help="Output directory for JSON/MD files")
     parser.add_argument("--search", default=None,
-                        help="Broader source tree to search for external callers "
-                             "(e.g., the full OpenFAST modules/ directory). Used to "
-                             "confirm or reject 'likely_framework_interface' entries.")
+                        help="Broader source tree to search for callers outside --src, "
+                             "such as the whole repository. A procedure referenced there "
+                             "is classified as a framework interface, not dead code.")
+    parser.add_argument("--generated-marker", action="append", default=[],
+                        metavar="TEXT",
+                        help="Text that marks a machine-generated file (repeatable). "
+                             "Without one, every file counts as hand-written.")
+    parser.add_argument("--entry-point", action="append", default=[], metavar="NAME",
+                        help="A procedure called from outside the source tree (repeatable)")
+    parser.add_argument("--entry-points-file", default=None, metavar="FILE",
+                        help="File of entry-point names, one per line; # starts a comment")
     args = parser.parse_args()
+
+    entry_points = {n.strip().lower() for n in args.entry_point if n.strip()}
+    if args.entry_points_file:
+        with open(args.entry_points_file) as f:
+            for line in f:
+                name = line.split("#", 1)[0].strip()
+                if name:
+                    entry_points.add(name.lower())
 
     os.makedirs(args.output, exist_ok=True)
 
@@ -1180,13 +1197,14 @@ def main():
                            glob.glob(os.path.join(args.deps, "*.F90")))
         print(f"Dependency files: {len(dep_files)} in {args.deps}")
 
-    # Check which files are registry-generated
-    file_registry_map = {}
+    # Check which files are machine-generated
+    file_generated_map = {}
     for f in src_files + dep_files:
-        file_registry_map[f] = is_registry_generated(f)
+        file_generated_map[f] = is_generated(f, args.generated_marker)
 
-    gen_count = sum(1 for v in file_registry_map.values() if v)
-    print(f"Registry-generated files: {gen_count}")
+    if args.generated_marker:
+        gen_count = sum(1 for v in file_generated_map.values() if v)
+        print(f"Generated files: {gen_count}")
 
     # Create parser
     fparser = ParserFactory().create(std="f2003")
@@ -1194,7 +1212,7 @@ def main():
     # Pass 1: Parse primary source
     print("\nPass 1: Parsing source files and collecting modules/procedures...")
     modules, procedures, all_trees = collect_modules_and_procedures(
-        fparser, src_files, file_registry_map)
+        fparser, src_files, file_generated_map)
     print(f"  Modules: {len(modules)}, Procedures: {len(procedures)}")
 
     # Parse dependency files for types only
@@ -1203,7 +1221,7 @@ def main():
     if dep_files:
         print("  Parsing dependency files...")
         dep_modules_raw, dep_procs, dep_trees = collect_modules_and_procedures(
-            fparser, dep_files, file_registry_map)
+            fparser, dep_files, file_generated_map)
         dep_modules = dep_modules_raw
 
     # Pass 2: Call graph
@@ -1226,17 +1244,18 @@ def main():
     # Pass 5: Dead code
     print("\nPass 5: Finding uncalled procedures...")
     uncalled = find_uncalled_procedures(procedures, call_edges, args.src,
-                                        search_dir=args.search)
+                                        search_dir=args.search,
+                                        entry_points=entry_points)
     print(f"  Uncalled within scope: {len(uncalled)}")
 
     # Pass 6: Framework boundary
     print("\nPass 6: Identifying framework boundary...")
-    boundary = find_framework_boundary(modules, procedures)
+    boundary = find_framework_boundary(modules, procedures, entry_points)
     print(f"  Boundary procedures: {len(boundary)}")
 
     # Pass 7: LOC metrics
     print("\nPass 7: Computing LOC metrics...")
-    loc = compute_loc_metrics(src_files, procedures, modules, file_registry_map)
+    loc = compute_loc_metrics(src_files, procedures, modules, file_generated_map)
 
     # Write JSON outputs
     def write_json(name, data):
