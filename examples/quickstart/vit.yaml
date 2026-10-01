@@ -1,0 +1,23 @@
+project:
+  name: quickstart
+  source_dir: src
+  build_dir: /build/quickstart
+kgen:
+  path: kgen
+  build_cmd: cd /build/quickstart && cmake --build .
+  run_cmd: cd /build/quickstart && ./simulate
+  clean_cmd: ''
+  install_cmd: ''
+  invocation: 0:0:1-20
+build_system:
+  type: cmake
+  cmake_file: CMakeLists.txt
+  target_name: ''
+fortran:
+  kind_aliases:
+    dp: REAL(8)
+  compiler: gfortran
+  flags: -ffp-contract=off
+verification:
+  tolerance: 1.0e-14
+translations: {}
