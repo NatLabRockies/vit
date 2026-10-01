@@ -1076,24 +1076,29 @@ def _run_red_test(args, config, sig, kernel_dir, derived_types, field_log,
         shutil.rmtree(tmp.parent, ignore_errors=True)
 
 
-def _sync_shared_files(config) -> list:
-    """Copy shared headers/sources into source_dir so the production build sees them.
+def _sync_shared_files(config, dest_dir) -> list:
+    """Copy shared headers/sources to where the integrated C++ is compiled.
 
     kernel verification copies shared_files into the kernel directory, so a new
-    shared header works there immediately. The production build compiles out of
-    source_dir and had no such step -- the header had to be copied by hand, and
-    nothing failed until a later integration included it. Same list, same files,
-    one less manual step to forget.
+    shared header works there immediately. The production build had no such
+    step -- the header had to be copied by hand, and nothing failed until a
+    later integration included it. Same list, same files, one less manual step
+    to forget.
+
+    `dest_dir` is the directory `vit integrate` writes the C++ into: the
+    integrated Fortran source's own directory. It used to be vit.yaml's
+    `source_dir`, which can be a broad tree (AeroDyn's is `modules/`), so the
+    files were copied where nothing compiles them, as stale duplicates.
     """
     messages = []
     shared = getattr(config, "shared_files", None) or []
     if not shared:
         return messages
-    src = Path(getattr(config, "source_dir", "") or "")
+    src = Path(dest_dir)
     if not src.is_dir():
         return messages
     for rel in shared:
-        origin = Path(rel)
+        origin = Path(config.abs_path(rel))
         if not origin.is_file():
             continue
         dest = src / origin.name
@@ -1139,7 +1144,7 @@ def cmd_integrate(args, config):
         print("\nApplying integration plan...")
         result = apply_integration_plan(plan, dry_run=args.dry_run)
         if not args.dry_run:
-            for line in _sync_shared_files(config):
+            for line in _sync_shared_files(config, Path(sig.source_file).parent):
                 print(f"  {line}")
         for action in result["applied"]:
             print(f"  {action}")

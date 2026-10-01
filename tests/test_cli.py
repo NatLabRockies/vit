@@ -197,3 +197,34 @@ def test_status_reports_an_integrated_function_as_verified(capsys):
     out = capsys.readouterr().out
     assert "drag: integrated (verified 20/20 cases)" in out
     assert "lift: integrated (unverified)" in out
+
+
+def test_shared_files_are_synced_beside_the_integrated_source(tmp_path):
+    """`vit integrate --apply` copies shared files to where the C++ it writes
+    is compiled: the integrated Fortran file's own directory. It used to copy
+    them into vit.yaml's `source_dir`, which for AeroDyn is the broad
+    `modules/`: five untracked duplicates appeared there, compiled by nothing,
+    while the real files sat in `modules/aerodyn/src/`."""
+    from vit.cli import _sync_shared_files
+    from vit.config import VitConfig
+
+    # AeroDyn's layout: the shared files already live beside the source.
+    src = tmp_path / "modules" / "aerodyn" / "src"
+    src.mkdir(parents=True)
+    (src / "vit_nwtc.h").write_text("// shared\n")
+    config = VitConfig(config_dir=str(tmp_path), source_dir="modules",
+                       shared_files=["modules/aerodyn/src/vit_nwtc.h"])
+    assert _sync_shared_files(config, src) == []
+    assert not (tmp_path / "modules" / "vit_nwtc.h").exists()
+
+    # ROSCO's layout: the shared header lives with the translations.
+    rosco = tmp_path / "rosco"
+    (rosco / "translations").mkdir(parents=True)
+    (rosco / "translations" / "rosco_constants.h").write_text("// constants\n")
+    rsrc = rosco / "rosco" / "controller" / "src"
+    rsrc.mkdir(parents=True)
+    config = VitConfig(config_dir=str(rosco), source_dir="rosco/controller/src",
+                       shared_files=["translations/rosco_constants.h"])
+    messages = _sync_shared_files(config, rsrc)
+    assert (rsrc / "rosco_constants.h").read_text() == "// constants\n"
+    assert len(messages) == 1
