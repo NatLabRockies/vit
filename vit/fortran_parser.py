@@ -594,3 +594,119 @@ def procedure_spans(source: str) -> list:
             spans.append(span)
             stack.append(span)
     return spans
+
+
+# --------------------------------------------------------------------------
+# State that persists between a procedure's calls
+# --------------------------------------------------------------------------
+
+_DECLARATION = re.compile(
+    r'^\s*(?:INTEGER|REAL|DOUBLE\s*PRECISION|COMPLEX|LOGICAL|CHARACTER'
+    r'|TYPE\s*\(|CLASS\s*\(|PROCEDURE\s*\()', re.IGNORECASE)
+_TYPE_DEFINITION = re.compile(r'^\s*TYPE\b(?!\s*\()(?!\s+IS\b)', re.IGNORECASE)
+_TYPE_END = re.compile(r'^\s*END\s*TYPE\b', re.IGNORECASE)
+
+
+def logical_statements(text: str) -> list:
+    """(first line number, statement) for each statement, comments removed and
+    `&` continuations joined. A `!` inside a quoted string is kept."""
+    out, pending, first = [], "", None
+    for i, raw in enumerate(text.split("\n"), 1):
+        code, quote = [], None
+        for ch in raw:
+            if quote:
+                quote = None if ch == quote else quote
+            elif ch in "'\"":
+                quote = ch
+            elif ch == "!":
+                break
+            code.append(ch)
+        line = "".join(code).rstrip()
+        if not line.strip():
+            continue
+        if pending:
+            line = line.lstrip()
+            if line.startswith("&"):
+                line = line[1:]
+        else:
+            first = i
+        if line.endswith("&"):
+            pending += line[:-1]
+            continue
+        out.append((first, pending + line))
+        pending = ""
+    return out
+
+
+def _without_parentheses(text: str) -> str:
+    while True:
+        reduced = re.sub(r'\([^()]*\)', '', text)
+        if reduced == text:
+            return text
+        text = reduced
+
+
+def _assigns(text: str) -> bool:
+    """Whether `text`, parentheses removed, holds `=` or `=>` (not `==`, `<=`...)."""
+    return bool(re.search(r'(?<![=<>/])=(?!=)', _without_parentheses(text)))
+
+
+def _initialised(entities: str) -> bool:
+    """Whether a declaration's entity list gives any entity an initial value."""
+    return _assigns(entities)
+
+
+def save_state(text: str, first_line: int = 1) -> list:
+    """What gives a procedure state that persists from one call to the next.
+
+    A local variable keeps its value between calls when a SAVE statement or
+    a SAVE attribute says so, when its declaration initialises it
+    (`integer :: n = 0`, `p => null()`), or when a DATA statement sets it.
+    The last two are easy to miss: Fortran makes such a variable SAVE
+    implicitly. KGen captures a call's arguments and the module variables it
+    uses, not this state, so a kernel replays a procedure that has it
+    correctly only when the captured calls are consecutive from the first
+    (dev note 202608080640). PARAMETERs are constants, not state, and
+    derived-type definitions and interface blocks are skipped.
+
+    `text` is one procedure's source, from its SUBROUTINE or FUNCTION
+    statement to its END, as written or as fparser prints it. Returns one
+    description per statement that creates such state, with its line number:
+    in `text`, or in the file when `first_line` gives the line `text` starts on.
+    """
+    offset = first_line - 1
+    found, in_interface, in_type = [], 0, 0
+    for line_no, stmt in logical_statements(text):
+        if _INTERFACE_END.match(stmt):
+            in_interface = max(0, in_interface - 1)
+            continue
+        if _INTERFACE_OPEN.match(stmt):
+            in_interface += 1
+            continue
+        if in_interface:
+            continue
+        if _TYPE_END.match(stmt):
+            in_type = max(0, in_type - 1)
+            continue
+        if _TYPE_DEFINITION.match(stmt):
+            in_type += 1
+            continue
+        if in_type:
+            continue
+        upper = stmt.strip().upper()
+        # A variable may be called Save or Data: `Data(LB(1):) => Data` is a
+        # pointer assignment. The statements assign nothing outside parentheses.
+        if re.match(r'^SAVE\b', upper) and not _assigns(upper):
+            found.append(f"line {line_no + offset}: SAVE statement")
+        elif re.match(r'^DATA\b', upper) and "/" in upper and not _assigns(upper):
+            found.append(f"line {line_no + offset}: DATA statement")
+        elif _DECLARATION.match(stmt) and "::" in stmt:
+            attributes, entities = stmt.split("::", 1)
+            if re.search(r'\bPARAMETER\b', attributes, re.IGNORECASE):
+                continue
+            if re.search(r'\bSAVE\b', attributes, re.IGNORECASE):
+                found.append(f"line {line_no + offset}: SAVE attribute")
+            elif _initialised(entities):
+                found.append(f"line {line_no + offset}: initialised in its declaration "
+                             f"({entities.strip()})")
+    return found

@@ -51,6 +51,8 @@ from fparser.two.utils import walk
 from fparser.two import Fortran2003 as f2003
 from fparser.common.readfortran import FortranFileReader
 
+from .fortran_parser import save_state
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -342,17 +344,10 @@ def _extract_procedure(node, kind, module_name, filename, is_gen,
     if dummy_lists:
         args = get_names(dummy_lists[0])
 
-    # SAVE detection
-    saves = walk(node, f2003.Save_Stmt)
-    # Also check for SAVE attribute on declarations
-    has_save = len(saves) > 0
-    if not has_save:
-        # Check for variables with SAVE attribute in their declaration
-        for decl in walk(node, f2003.Type_Declaration_Stmt):
-            decl_str = str(decl).upper()
-            if ", SAVE" in decl_str or "SAVE," in decl_str or "SAVE ::" in decl_str:
-                has_save = True
-                break
+    # State kept between calls, by the rule extraction uses: a SAVE statement
+    # or attribute, a local initialised in its declaration, a DATA statement.
+    # This used to look for SAVE only, and missed the implicit two.
+    has_save = bool(save_state(str(node)))
 
     # BIND(C): callable from C, so a missing Fortran caller proves nothing
     is_bind_c = "BIND(C" in str(stmt).upper().replace(" ", "")

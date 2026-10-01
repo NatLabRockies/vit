@@ -1605,6 +1605,97 @@ def infer_assumed_size_arrays(
     return assumptions
 
 
+CAPTURED_CALLS = 20
+_AUTO = re.compile(r"^auto(?::(\d+))?$")
+
+
+def capture_invocation(spec: str, calls: Optional[int], state: Optional[list] = None
+                       ) -> tuple[str, list[int], str]:
+    """Which calls to capture: (KGen --invocation, the call numbers, why).
+
+    `spec` is kgen.invocation or --invocation: `auto` (or `auto:K` for K
+    calls), or KGen's own `rank:thread:calls` list, used as given. `calls`
+    is how many times the run makes this call, from coverage, or None.
+    `state` is what keeps state between calls in the function's call tree
+    (coverage.state_in_call_tree); None means it was not looked for.
+
+    `auto` used to be no option at all: every kernel held the first twenty
+    calls, the warm-up window (dev note 202608080640). Now, with the count
+    known, it takes every call when there are no more than K; otherwise call
+    1 and K-1 more spread evenly to the last, so the kernel sees the start,
+    the end and what lies between. Consecutive calls from the first remain
+    the choice when the call tree keeps state between calls, which KGen does
+    not capture, and when the count is unknown.
+    """
+    m = _AUTO.match(spec.strip())
+    if not m:
+        ranges = [part.split(":")[-1] for part in spec.split(",")]
+        numbers = []
+        for r in ranges:
+            lo, _, hi = r.partition("-")
+            if lo.isdigit() and (hi.isdigit() or not hi):
+                numbers.extend(range(int(lo), int(hi or lo) + 1))
+        why = f"kgen.invocation {spec}"
+        if calls and numbers and max(numbers) < calls and numbers == list(range(1, len(numbers) + 1)):
+            why += (f": the first {len(numbers)} of the {calls:,} calls the run makes. "
+                    f"`auto` spreads them across the run")
+        return spec, numbers, why
+    k = int(m.group(1) or CAPTURED_CALLS)
+    if calls is None:
+        numbers = list(range(1, k + 1))
+        return (f"0:0:1-{k}", numbers,
+                f"calls 1-{k}: how many calls the run makes is unknown without coverage "
+                f"of the test case")
+    if calls <= k:
+        numbers = list(range(1, calls + 1))
+        return f"0:0:1-{calls}", numbers, f"all {calls} call(s) the run makes"
+    if state:
+        procedure, rel, description = state[0]
+        numbers = list(range(1, k + 1))
+        return (f"0:0:1-{k}", numbers,
+                f"calls 1-{k} of {calls:,}: {procedure} ({rel}, {description}) keeps state "
+                f"between calls, which KGen does not capture, so the calls must be "
+                f"consecutive from the first")
+    numbers = sorted({1 + round(i * (calls - 1) / (k - 1)) for i in range(k)})
+    shown = ", ".join(str(n) for n in numbers[:4]) + ", ..., " + str(numbers[-1])
+    return (",".join(f"0:0:{n}" for n in numbers), numbers,
+            f"{len(numbers)} calls spread over the {calls:,} the run makes: {shown}")
+
+
+def kernel_state(kernel_dir: str) -> list:
+    """Procedures in a generated kernel that keep state between calls.
+
+    The check after the capture: the kernel holds the function's call tree as
+    KGen reduced it, so state found here and not in the source's call tree
+    (a procedure pointer, say) is still found. KGen's own files and routines
+    are left out. Returns [(procedure, file, description)].
+    """
+    from vit.fortran_parser import procedure_spans, save_state
+
+    found = []
+    for path in sorted(Path(kernel_dir).glob("*.[fF]90")):
+        if path.name in ("kernel_driver.f90", "kgen_utils.f90", "tprof_mod.f90"):
+            continue
+        text = path.read_text(errors="replace")
+        lines = text.split("\n")
+        spans = procedure_spans(text)
+        for span in spans:
+            name = span["name"]
+            if not span["end"] or re.match(r"(?i)(kgen|kv|kr|kw)_", name):
+                continue
+            # Its own lines: KGen puts its verification routines inside the
+            # procedures it copies, and they are checked, or skipped, apart.
+            own = list(lines[span["start"] - 1:span["end"]])
+            for inner in spans:
+                if inner["host"] == name and inner["end"]:
+                    for n in range(inner["start"], inner["end"] + 1):
+                        own[n - span["start"]] = ""
+            found.extend((name, path.name, d)
+                         for d in save_state("\n".join(own), first_line=span["start"])
+                         if not re.search(r"(?i)\bkgen_", d))
+    return found
+
+
 KGEN_TIMEOUT = 1200  # seconds; extraction can be slow
 
 

@@ -37,7 +37,7 @@ DEFAULT_CONFIG = {
         "run_cmd": "python run_simulation.py",
         "clean_cmd": "cmake --build build --target clean",
         "install_cmd": "",  # e.g., "cp build/libdiscon.so lib/libdiscon.so"
-        "invocation": "0:0:1-20",  # rank:thread:start-end
+        "invocation": "auto",  # or KGen's rank:thread:calls (vit/extract.py capture_invocation)
     },
     "build_system": {
         "type": "cmake",  # or "make"
@@ -72,7 +72,7 @@ class VitConfig:
     run_cmd: str = "python run_simulation.py"
     clean_cmd: str = ""
     install_cmd: str = ""  # Post-build: copy library to where simulation loads it
-    invocation: str = "0:0:1-20"  # KGen invocation: rank:thread:start-end
+    invocation: str = "auto"  # or KGen's rank:thread:calls (vit/extract.py capture_invocation)
 
     build_type: str = "cmake"
     cmake_file: str = "CMakeLists.txt"
@@ -172,7 +172,7 @@ def load_config(config_path: Optional[str] = None) -> VitConfig:
         run_cmd=kgen.get("run_cmd", "python run_simulation.py"),
         clean_cmd=kgen.get("clean_cmd", ""),
         install_cmd=kgen.get("install_cmd", ""),
-        invocation=kgen.get("invocation", "0:0:1-20"),
+        invocation=str(kgen.get("invocation", "auto")),
         build_type=build.get("type", "cmake"),
         cmake_file=build.get("cmake_file", "CMakeLists.txt"),
         target_name=build.get("target_name", ""),

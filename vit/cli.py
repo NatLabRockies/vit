@@ -29,8 +29,9 @@ from .interface_gen import (
     generate_fortran_interface_block,
     generate_fortran_wrapper,
 )
-from .extract import (find_call_sites, insert_kgen_pragma, line_calls, line_defines,
-                      remove_kgen_pragma, run_kgen_extract, sweep_stale_pragmas)
+from .extract import (find_call_sites, insert_kgen_pragma, kernel_state, line_calls,
+                      line_defines, remove_kgen_pragma, run_kgen_extract,
+                      sweep_stale_pragmas)
 from .kernel_verify import setup_kernel_cpp, run_kernel_verify
 from .integrate import generate_integration_plan, apply_integration_plan
 from .sim_compare import compare_arrays, format_result
@@ -148,6 +149,9 @@ def main():
                                 "then print the KGen command and the build and run scripts "
                                 "without running KGen")
     p_extract.add_argument("--run-args", help="Extra arguments to append to the run command (e.g., '--scenario 3')")
+    p_extract.add_argument("--invocation", metavar="SPEC",
+                           help="Which calls to capture, overriding kgen.invocation: `auto`, "
+                                "`auto:K`, or KGen's rank:thread:calls list")
     p_extract.add_argument("--case", metavar="NAME",
                            help="Run this test case from coverage.cases. Without it, given a "
                                 "coverage file and cases, extraction runs the case that runs the "
@@ -654,6 +658,7 @@ def cmd_extract(args, config):
             print(line)
         if case["error"]:
             return 1
+        invocation, requested = _capture_calls(args, config, case)
 
         print(f"Inserting KGen pragma at {file_path}:{actual_line}")
         insert_kgen_pragma(file_path, actual_line, function_name=args.function_name)
@@ -716,7 +721,7 @@ def cmd_extract(args, config):
             build_dir=config.abs_build_dir,
             cmake_file=config.abs_cmake_file if config.build_type == "cmake" else "",
             package_name=config.project_name,
-            invocation=config.invocation,
+            invocation=invocation,
             assumed_size_arrays=assumed_size or None,
             preprocessor_defines=config.preprocessor_defines or None,
             dll_persistence=config.dll_persistence or None,
@@ -791,7 +796,19 @@ def cmd_extract(args, config):
             print(f"  Kernel: {result['kernel_dir']}")
             print(f"  Cases:  {cases}")
             _record_extraction(result["kernel_dir"], case, run_cmd, file_path, actual_line,
-                               config.invocation)
+                               invocation)
+            if cases < len(requested):
+                print(f"  Captured {cases} of the {len(requested)} calls requested: the run "
+                      f"made fewer calls than its coverage counts. A call in a one-line IF is "
+                      f"counted each time the IF runs.")
+            if requested != list(range(1, len(requested) + 1)):
+                state = kernel_state(result["kernel_dir"])
+                if state:
+                    procedure, where, description = state[0]
+                    print(f"⚠ The kernel's {procedure} ({where}, {description}) keeps state "
+                          f"between calls, which KGen does not capture, and the captured calls "
+                          f"are not consecutive: verification replays them without the state "
+                          f"in between. Extract again with --invocation 0:0:1-{len(requested)}.")
             if failure:
                 # The captured calls stand, as they did before steps were
                 # recorded, and `vit verify` reads every one of them; what
@@ -874,7 +891,8 @@ def _extraction_case(args, config, file_path, line_no, call_text) -> dict:
 
     from . import coverage as cov
 
-    out = {"case": None, "command": None, "calls": None, "report": [], "error": False}
+    out = {"case": None, "command": None, "calls": None, "report": [], "error": False,
+           "coverage": None}
     named = getattr(args, "case", None)
     cases = config.coverage_cases
     project_dir = Path(config.config_dir).resolve()
@@ -895,6 +913,7 @@ def _extraction_case(args, config, file_path, line_no, call_text) -> dict:
     if os.path.exists(coverage_file) and config.abs_source_dir:
         try:
             data = cov.load(coverage_file)
+            out["coverage"] = data
             hits = cov.call_site_hits(data, config.abs_source_dir, args.function_name,
                                       file_path, call_text, line_no)
             if hits is not None:
@@ -945,6 +964,27 @@ def _extraction_case(args, config, file_path, line_no, call_text) -> dict:
                              f"{args.function_name} among the cases that run this call; with its "
                              f"command in coverage.cases, extraction would run it.")
     return out
+
+
+def _capture_calls(args, config, case) -> tuple:
+    """Which calls to capture (extract.capture_invocation), printed with why.
+
+    The call tree is searched for state kept between calls only when the
+    calls would otherwise be spread: with `auto`, a known count, and more
+    calls than are captured.
+    """
+    from . import coverage as cov
+    from .extract import _AUTO, CAPTURED_CALLS, capture_invocation
+
+    spec = getattr(args, "invocation", None) or config.invocation
+    state = None
+    m = _AUTO.match(spec.strip())
+    if m and case["calls"] and case["calls"] > int(m.group(1) or CAPTURED_CALLS):
+        state = cov.state_in_call_tree(case["coverage"], config.abs_source_dir,
+                                       args.function_name, case["case"])
+    invocation, requested, why = capture_invocation(spec, case["calls"], state)
+    print(f"Calls to capture: {why}.")
+    return invocation, requested
 
 
 EXTRACTION_RECORD = "extraction.json"

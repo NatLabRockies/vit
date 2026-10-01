@@ -52,7 +52,8 @@ from pathlib import Path
 from typing import Optional
 
 from .extract import line_calls
-from .fortran_parser import enclosing_procedure, procedure_spans
+from .fortran_parser import (enclosing_procedure, logical_statements, procedure_spans,
+                             save_state)
 
 
 # --------------------------------------------------------------------------
@@ -403,6 +404,74 @@ def choose_case(hits: dict, lines_by_case: dict, commands) -> Optional[str]:
     if not candidates:
         return None
     return min(candidates, key=lambda c: (-lines_by_case.get(c, 0), -hits[c], c))
+
+
+_CALLED = re.compile(r'\bCALL\s+([A-Za-z_]\w*)|\b([A-Za-z_]\w*)\s*\(', re.IGNORECASE)
+_GENERIC_OPEN = re.compile(r'^\s*INTERFACE\s+([A-Za-z_]\w*)\s*$', re.IGNORECASE)
+_GENERIC_END = re.compile(r'^\s*END\s*INTERFACE\b', re.IGNORECASE)
+_SPECIFICS = re.compile(r'^\s*(?:MODULE\s+)?PROCEDURE\s*(?:::)?\s*(.+)$', re.IGNORECASE)
+
+
+def state_in_call_tree(coverage, source_dir, function_name, case) -> list:
+    """Procedures in `function_name`'s call tree, run in `case`, that keep state between calls.
+
+    State is what fortran_parser.save_state finds: SAVE, a local initialised
+    in its declaration, DATA. KGen does not capture it, so a kernel of a
+    function whose call tree has it replays correctly only when its calls are
+    consecutive from the first. Callees are found by name (CALL x, x(...)),
+    through generic interfaces to their specifics, in the files the coverage
+    covers, which are the files the build compiled: a code base with one
+    source per platform defines a procedure several times, and only one is
+    built. A callee no line of which runs in `case` is left out: its state
+    is the initial state in the run and in the kernel alike. A name that is
+    also an array's is followed all the same, which can only add procedures.
+
+    Returns [(procedure, file, description)], the description naming the line.
+    """
+    root = coverage_root(coverage, source_dir)
+    procedures, generics = {}, {}
+    for rel, entry in coverage["files"].items():
+        text, _ = measured_text(coverage, root, rel)
+        if not text:
+            continue
+        lines = text.split("\n")
+        ran = entry["test_cases"].get(case, {}).get("lines", {})
+        for span in procedure_spans(text):
+            if span["end"]:
+                procedures.setdefault(span["name"].lower(), []).append(
+                    (span["name"], rel, lines, span["start"], span["end"], ran))
+        generic = None
+        for _, stmt in logical_statements(text):
+            m = _GENERIC_OPEN.match(stmt)
+            if m:
+                generic = m.group(1).lower()
+            elif generic and _GENERIC_END.match(stmt):
+                generic = None
+            elif generic:
+                m = _SPECIFICS.match(stmt)
+                if m:
+                    generics.setdefault(generic, set()).update(
+                        n.strip().lower() for n in m.group(1).split(",") if n.strip())
+
+    found, seen, queue = [], set(), [function_name.lower()]
+    while queue:
+        name = queue.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        queue.extend(generics.get(name, ()))
+        for original, rel, lines, start, end, ran in procedures.get(name, []):
+            if name != function_name.lower() and not any(
+                    ran.get(str(n), 0) > 0 for n in range(start + 1, end)):
+                continue
+            text = "\n".join(lines[start - 1:end])
+            found.extend((original, rel, d) for d in save_state(text, first_line=start))
+            for _, stmt in logical_statements(text):
+                for m in _CALLED.finditer(stmt):
+                    callee = (m.group(1) or m.group(2)).lower()
+                    if callee in procedures or callee in generics:
+                        queue.append(callee)
+    return found
 
 
 # --------------------------------------------------------------------------

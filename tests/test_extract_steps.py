@@ -274,9 +274,9 @@ def test_a_build_that_did_not_recompile_is_named(tmp_path):
 
 
 @pytest.mark.parametrize("reached, expected", [
-    (None, "never reached the call site, or reached it only"),
+    (None, "never reached the call site, or none of its calls was in the capture range 0:0:600-620"),
     (False, "The run never reached the call site."),
-    (True, "none of its calls fell in the capture range 0:0:600-620"),
+    (True, "none of its calls was in the capture range 0:0:600-620"),
 ])
 def test_a_built_call_site_that_captured_nothing(tmp_path, reached, expected):
     d, build, state = _empty_capture(tmp_path, build_files=[("prog", 1003, b"x" + MARKER)])

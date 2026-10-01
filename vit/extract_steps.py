@@ -372,13 +372,16 @@ def explain_empty_capture(directory: str, *, build_dir: str = "", state_dir: str
                 "the build did not recompile the instrumented source, or the target it builds",
                 "does not include it."]
 
-    capture_range = invocation or "the capture range"
+    if invocation and "," in invocation:
+        requested = f"among the {invocation.count(',') + 1} calls requested"
+    else:
+        requested = f"in the capture range {invocation or 'requested'}"
     lines = [f"The instrumented call site was built ({products[0]}), and the run finished."
              if products else "The run finished."]
     if reached is False:
         return lines + ["The run never reached the call site. If the program loads its library from",
                         "somewhere else, it may have run another build: see kgen.install_cmd."]
     if reached is True:
-        return lines + [f"The run reached the call site, and none of its calls fell in the capture range {capture_range}."]
-    return lines + ["No call was captured: the run never reached the call site, or reached it only",
-                    f"outside the capture range {capture_range}."]
+        return lines + [f"The run reached the call site, and none of its calls was {requested}."]
+    return lines + ["No call was captured: the run never reached the call site, or none of its",
+                    f"calls was {requested}."]
