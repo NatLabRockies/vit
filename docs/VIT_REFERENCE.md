@@ -6,7 +6,8 @@ for options; this document says what they are for.
 ## Configuration (`vit.yaml`)
 
 Each project has a `vit.yaml` at its root. `vit init` writes a starter. VIT rewrites the file when
-it records a result (after `verify` and `integrate`), so comments in it do not survive.
+it records a result (after `verify` and `integrate`). Keys it does not manage are kept; comments are
+not.
 
 Relative paths are resolved against the directory holding `vit.yaml`. Commands in `kgen.*` run
 through a shell, from directories KGen chooses, so give them absolute paths.

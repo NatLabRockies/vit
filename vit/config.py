@@ -9,6 +9,7 @@ Stores project-specific settings in a vit.yaml file:
 - KGen path
 """
 
+import copy
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,6 +96,9 @@ class VitConfig:
     shared_files: list = field(default_factory=list)  # Shared headers/sources to copy to kernel (paths relative to project root)
 
     config_dir: str = "."  # Directory containing vit.yaml
+    # The YAML as loaded. save_config writes VIT's fields over it, so keys VIT
+    # does not manage survive a rewrite.
+    raw: dict = field(default_factory=dict, repr=False, compare=False)
 
     def abs_path(self, relpath: str) -> str:
         """Resolve a path relative to the config directory."""
@@ -178,6 +182,7 @@ def load_config(config_path: Optional[str] = None) -> VitConfig:
         add_source_cmd=kgen.get("add_source_cmd", ""),
         shared_files=data.get("shared_files", []),
         config_dir=config_dir,
+        raw=data,
     )
 
 
@@ -258,6 +263,7 @@ def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
             "invocation": config.invocation,
             **({"assumed_size_arrays": config.assumed_size_arrays} if config.assumed_size_arrays else {}),
             **({"dll_persistence": config.dll_persistence} if config.dll_persistence else {}),
+            **({"add_source_cmd": config.add_source_cmd} if config.add_source_cmd else {}),
         },
         "build_system": {
             "type": config.build_type,
@@ -267,6 +273,8 @@ def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
         "fortran": {
             "kind_aliases": config.kind_aliases,
             "compiler": config.fortran_compiler,
+            **({"cxx_compiler": config.cxx_compiler} if config.cxx_compiler != "g++" else {}),
+            **({"runtime_libs": config.fortran_runtime_libs} if config.fortran_runtime_libs else {}),
             "flags": config.fortran_flags,
             **({"preprocessor_defines": config.preprocessor_defines} if config.preprocessor_defines else {}),
         },
@@ -289,6 +297,8 @@ def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
     if config.shared_files:
         data["shared_files"] = config.shared_files
 
+    data = _over_raw(config.raw, data)
+
     if HAS_YAML:
         with open(config_path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
@@ -296,6 +306,32 @@ def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
         _save_config_fallback(data, config_path)
 
     return config_path
+
+
+def _over_raw(raw: dict, managed: dict) -> dict:
+    """VIT's fields written over the YAML as loaded.
+
+    VIT rewrites vit.yaml whenever it records a result. Writing only the
+    fields it manages dropped every other key the first time `vit verify` or
+    `vit integrate` ran, including documented ones (`kgen.add_source_cmd`,
+    `fortran.cxx_compiler`, `fortran.runtime_libs`). Unknown sections and
+    unknown keys within a section now survive, in their original order; within
+    `types`, each type keeps its other keys. A field VIT manages is replaced
+    whole, so `translations` and the dictionaries inside a section are exactly
+    what VIT holds. Comments are still lost: the file is re-serialised.
+    """
+    out = copy.deepcopy(raw) if isinstance(raw, dict) else {}
+    for key, value in managed.items():
+        old = out.get(key)
+        if key == "types" and isinstance(old, dict) and isinstance(value, dict):
+            out[key] = {**old, **{name: {**(old.get(name) or {}), **info}
+                                  if isinstance(old.get(name), dict) else info
+                                  for name, info in value.items()}}
+        elif key != "translations" and isinstance(old, dict) and isinstance(value, dict):
+            out[key] = {**old, **value}
+        else:
+            out[key] = value
+    return out
 
 
 def init_config(project_dir: str = ".", **overrides) -> str:

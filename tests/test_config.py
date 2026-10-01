@@ -257,3 +257,74 @@ class TestRecordTranslation:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestRewritePreservesKeys:
+    """VIT rewrites vit.yaml whenever it records a result.
+
+    It used to write only the fields it manages, so the first `vit verify`
+    deleted `kgen.add_source_cmd`, `fortran.cxx_compiler`,
+    `fortran.runtime_libs` and anything else a project had added.
+    """
+
+    YAML = """\
+project:
+  name: demo
+  source_dir: src
+  build_dir: /build/demo
+  owner: physics team
+kgen:
+  build_cmd: make
+  run_cmd: ./run
+  add_source_cmd: sed -i 's/x/y/' CMakeLists.txt
+fortran:
+  compiler: gfortran-13
+  cxx_compiler: g++-13
+  runtime_libs: -lgfortran -lquadmath
+  flags: -ffp-contract=off
+types:
+  State:
+    strategy: view
+    note: keep me
+notes:
+  reviewed: true
+translations: {}
+"""
+
+    def test_record_translation_keeps_every_other_key(self, tmp_path):
+        import yaml
+
+        path = tmp_path / CONFIG_FILENAME
+        path.write_text(self.YAML)
+        config = load_config(str(path))
+        assert config.add_source_cmd.startswith("sed")
+
+        record_translation(config, "drag", "verified", {"cases_passed": 20})
+
+        data = yaml.safe_load(path.read_text())
+        assert data["kgen"]["add_source_cmd"] == "sed -i 's/x/y/' CMakeLists.txt"
+        assert data["fortran"]["cxx_compiler"] == "g++-13"
+        assert data["fortran"]["runtime_libs"] == "-lgfortran -lquadmath"
+        assert data["project"]["owner"] == "physics team"
+        assert data["types"]["State"] == {"strategy": "view", "note": "keep me"}
+        assert data["notes"] == {"reviewed": True}
+        assert data["translations"]["drag"]["status"] == "verified"
+
+        reloaded = load_config(str(path))
+        assert reloaded.cxx_compiler == "g++-13"
+        assert reloaded.fortran_runtime_libs == "-lgfortran -lquadmath"
+
+    def test_vit_owned_fields_still_change(self, tmp_path):
+        import yaml
+
+        path = tmp_path / CONFIG_FILENAME
+        path.write_text(self.YAML)
+        config = load_config(str(path))
+        config.type_strategies["Params"] = "view"
+        config.fortran_flags = "-ffp-contract=off -O2"
+        save_config(config, str(path))
+
+        data = yaml.safe_load(path.read_text())
+        assert data["types"]["Params"] == {"strategy": "view"}
+        assert data["fortran"]["flags"] == "-ffp-contract=off -O2"
+        assert list(data)[:3] == ["project", "kgen", "fortran"], "the file keeps its order"
