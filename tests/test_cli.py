@@ -119,3 +119,65 @@ def test_check_list_needs_no_translation(tmp_path):
     missing = run("check")
     assert missing.returncode == 2
     assert "required" in missing.stdout
+
+
+_EXTRACT_SOURCE = """\
+module physics
+    implicit none
+contains
+    real(8) function drag(v)
+        real(8), intent(in) :: v
+        drag = v * v
+    end function drag
+
+    subroutine step(v)
+        real(8), intent(inout) :: v
+        v = v - drag(v)
+    end subroutine step
+end module physics
+"""
+
+
+@pytest.mark.parametrize("cases, expected_rc, expected_mark", [
+    (0, 1, "✗ Extraction captured no state data"),
+    (20, 0, "✓ Extraction successful"),
+])
+def test_extract_fails_when_it_captured_nothing(tmp_path, monkeypatch, capsys,
+                                                cases, expected_rc, expected_mark):
+    """A kernel with no captured state verifies nothing.
+
+    `vit extract` used to print "✓ Extraction successful" and exit 0 when KGen
+    produced a kernel but the instrumented build or run captured no state, so a
+    caller checking the exit code carried on with an empty kernel. KGen is
+    stubbed here; what is tested is how the CLI reports its result.
+    """
+    import argparse
+
+    import vit.cli
+    from vit.config import VitConfig
+
+    src = tmp_path / "src"
+    src.mkdir()
+    source = src / "physics.f90"
+    source.write_text(_EXTRACT_SOURCE)
+    kernel_dir = tmp_path / "kernel"
+
+    def fake_extract(**kwargs):
+        kernel_dir.mkdir(exist_ok=True)
+        (kernel_dir / "kernel_driver.f90").write_text("")
+        return {"success": True, "kernel_dir": str(kernel_dir), "state_dir": None,
+                "cmd": "", "output": "", "include_ini": None, "cleaned": [],
+                "state_cases": cases, "warnings": []}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(vit.cli, "run_kgen_extract", fake_extract)
+    config = VitConfig(config_dir=str(tmp_path), source_dir="src")
+    args = argparse.Namespace(function_name="drag", file=str(source), line=11,
+                              run_args=None, assumed_size=None, dry_run=False)
+
+    rc = vit.cli.cmd_extract(args, config)
+    out = capsys.readouterr().out
+
+    assert rc == expected_rc
+    assert expected_mark in out
+    assert source.read_text() == _EXTRACT_SOURCE, "the source must be restored"

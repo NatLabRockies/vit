@@ -488,15 +488,21 @@ def cmd_extract(args, config):
                 shutil.rmtree(state_dir)
                 result["state_dir"] = None
 
+            # A kernel with no captured state cannot verify anything, so it is
+            # a failed extraction, not a successful one with a warning. It
+            # used to print a success mark and exit 0, and a caller checking
+            # the exit code went on to verify against nothing.
             cases = result.get("state_cases", 0)
-            print(f"✓ Extraction successful")
+            if cases > 0:
+                print(f"✓ Extraction successful")
+            else:
+                print(f"✗ Extraction captured no state data")
             print(f"  Kernel: {result['kernel_dir']}")
             if result["state_dir"]:
                 print(f"  State:  {result['state_dir']}")
             if cases > 0:
                 print(f"  Cases:  {cases}")
             else:
-                print(f"  WARNING: No state data captured.")
                 # Surface any build/run errors from KGen output
                 output = result.get("output", "")
                 error_lines = [
@@ -524,7 +530,9 @@ def cmd_extract(args, config):
             shutil.copy2(backup_path, file_path)
             os.remove(backup_path)
 
-    return 0 if result["success"] else 1
+    if not result["success"] or result.get("state_cases", 0) == 0:
+        return 1
+    return 0
 
 
 def cmd_translate(args, config):
