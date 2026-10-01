@@ -52,7 +52,7 @@ from pathlib import Path
 from typing import Optional
 
 from .extract import line_calls
-from .fortran_parser import enclosing_procedure
+from .fortran_parser import enclosing_procedure, procedure_spans
 
 
 # --------------------------------------------------------------------------
@@ -346,6 +346,65 @@ def call_sites(coverage, source_dir, function_name) -> list:
     return sites
 
 
+def call_site_hits(coverage, source_dir, function_name, file_path, call_text,
+                   line_no=None) -> Optional[dict]:
+    """{test case: calls} for one call site, or None if coverage has no single record of it.
+
+    The site is the call of `function_name` in `file_path` whose text is
+    `call_text`, found in the source as measured, since the working tree's
+    line numbers can differ. Two identical calls in one file are told apart
+    by `line_no` when one of them is on it.
+    """
+    root = coverage_root(coverage, source_dir)
+    target = os.path.realpath(file_path)
+    sites = [s for s in call_sites(coverage, source_dir, function_name)
+             if os.path.realpath(os.path.join(root, s["path"])) == target
+             and s["text"] == call_text.strip()]
+    if len(sites) > 1 and line_no is not None:
+        sites = [s for s in sites if s["line"] == line_no] or sites
+    return sites[0]["hits"] if len(sites) == 1 else None
+
+
+def function_lines_by_case(coverage, source_dir, function_name) -> tuple:
+    """({test case: lines of the function's body that ran}, lines that ran in any case).
+
+    Read from the covered file that defines the function, as measured. The
+    SUBROUTINE or FUNCTION statement and the END statement are left out:
+    gcov counts an END line whether or not the body ran. ({}, 0) when no
+    covered file defines the function.
+    """
+    root = coverage_root(coverage, source_dir)
+    name = function_name.lower()
+    for rel, entry in coverage["files"].items():
+        text, _ = measured_text(coverage, root, rel)
+        if not text or name not in text.lower():
+            continue
+        for span in procedure_spans(text):
+            if span["name"].lower() != name or not span["end"]:
+                continue
+            body = range(span["start"] + 1, span["end"])
+            by_case = {case: sum(1 for n in body if d["lines"].get(str(n), 0) > 0)
+                       for case, d in entry["test_cases"].items()}
+            any_case = sum(1 for n in body
+                           if any(d["lines"].get(str(n), 0) > 0
+                                  for d in entry["test_cases"].values()))
+            return by_case, any_case
+    return {}, 0
+
+
+def choose_case(hits: dict, lines_by_case: dict, commands) -> Optional[str]:
+    """The test case to extract with: one that runs the call and has a command.
+
+    Preferred: the case that runs the most lines of the function, since lines
+    are what tell its behaviours apart; then the one that runs the call most
+    often; then by name, so the choice is the same every time.
+    """
+    candidates = [c for c, n in hits.items() if n > 0 and c in commands]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda c: (-lines_by_case.get(c, 0), -hits[c], c))
+
+
 # --------------------------------------------------------------------------
 # Procedures: which ones the test cases call, and which they never reach
 # --------------------------------------------------------------------------
@@ -369,8 +428,6 @@ def procedure_coverage(coverage, root) -> list:
     is "lines" rather than "calls", and "not built" cannot be told apart from
     "not reached". Files in no build are not covered, so they are not listed.
     """
-    from .fortran_parser import procedure_spans
-
     out = []
     for rel in sorted(coverage["files"]):
         entry = coverage["files"][rel]

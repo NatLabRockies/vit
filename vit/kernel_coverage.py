@@ -172,8 +172,9 @@ def compare(measured: dict, sig, coverage_file: Optional[str] = None,
 
     cases = data["files"][rel]["test_cases"]
     if case and case not in cases:
-        result["note"] = f"{os.path.relpath(coverage_file)} has no case {case} for {rel}"
-        return result
+        result["case_note"] = (f"the kernel was captured from case {case}, which "
+                               f"{os.path.relpath(coverage_file)} does not have for {rel}")
+        case = None
     chosen = [case] if case else list(cases)
     full = {n for n in span for c in chosen if cases[c]["lines"].get(str(n), 0) > 0}
 
@@ -227,6 +228,8 @@ def report(result: dict) -> list:
     if result.get("unmatched"):
         lines.append(f"  {len(result['unmatched'])} line(s) the full run executes could not be "
                      "matched to the kernel's copy and are not counted.")
+    if result.get("case_note"):
+        lines.append(f"  Compared with every case: {result['case_note']}.")
     if result.get("read") == "working_tree":
         lines.append("  The measured source was not available; line numbers are the working "
                      "tree's and may not match the coverage.")

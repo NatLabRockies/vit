@@ -148,6 +148,10 @@ def main():
                                 "then print the KGen command and the build and run scripts "
                                 "without running KGen")
     p_extract.add_argument("--run-args", help="Extra arguments to append to the run command (e.g., '--scenario 3')")
+    p_extract.add_argument("--case", metavar="NAME",
+                           help="Run this test case from coverage.cases. Without it, given a "
+                                "coverage file and cases, extraction runs the case that runs the "
+                                "most lines of the function; otherwise kgen.run_cmd")
     p_extract.add_argument("--assumed-size", action="append", metavar="NAME=SIZE",
                            help="Override assumed-size array size (e.g., --assumed-size avrSWAP=3000)")
 
@@ -645,11 +649,17 @@ def cmd_extract(args, config):
             actual_line = line_num
 
         call_text = lines[actual_line - 1].strip() if 0 < actual_line <= len(lines) else ""
+        case = _extraction_case(args, config, file_path, actual_line, call_text)
+        for line in case["report"]:
+            print(line)
+        if case["error"]:
+            return 1
+
         print(f"Inserting KGen pragma at {file_path}:{actual_line}")
         insert_kgen_pragma(file_path, actual_line, function_name=args.function_name)
 
-        # Apply --run-args to customize run command for this extraction
-        run_cmd = config.run_cmd
+        # The test case's command, or kgen.run_cmd; --run-args is appended to either
+        run_cmd = case["command"] or config.run_cmd
         if hasattr(args, 'run_args') and args.run_args:
             run_cmd = f"{run_cmd} {args.run_args}"
 
@@ -780,6 +790,8 @@ def cmd_extract(args, config):
             print(f"✓ Extraction successful")
             print(f"  Kernel: {result['kernel_dir']}")
             print(f"  Cases:  {cases}")
+            _record_extraction(result["kernel_dir"], case, run_cmd, file_path, actual_line,
+                               config.invocation)
             if failure:
                 # The captured calls stand, as they did before steps were
                 # recorded, and `vit verify` reads every one of them; what
@@ -831,21 +843,121 @@ def _coverage_of_call(config, file_path, call_text, function_name) -> list:
     from . import coverage as cov
     try:
         data = cov.load(coverage_file)
-        root = cov.coverage_root(data, config.abs_source_dir)
-        sites = [s for s in cov.call_sites(data, config.abs_source_dir, function_name)
-                 if os.path.realpath(os.path.join(root, s["path"])) == os.path.realpath(file_path)
-                 and s["text"] == call_text]
+        hits = cov.call_site_hits(data, config.abs_source_dir, function_name, file_path, call_text)
     except (OSError, ValueError, KeyError) as e:
         return [f"Coverage ({os.path.relpath(coverage_file)}) could not be read: {e}"]
-    if len(sites) != 1:
+    if hits is None:
         return [f"Coverage ({os.path.relpath(coverage_file)}) has no single record of this call; "
                 f"`vit find {function_name} --coverage` lists the calls it has."]
-    hits = sites[0]["hits"]
     if not hits:
         return [f"Coverage ({os.path.relpath(coverage_file)}): no test case runs this call."]
     ranked = sorted(hits.items(), key=lambda kv: (-kv[1], kv[0]))
     return [f"Coverage ({os.path.relpath(coverage_file)}): test cases that run this call:"] + \
         [f"  {case}: {count}" for case, count in ranked]
+
+
+def _extraction_case(args, config, file_path, line_no, call_text) -> dict:
+    """The test case extraction runs, and how often it runs this call.
+
+    With `--case NAME`, that case from coverage.cases. Without it, given a
+    coverage file and cases with commands, the case that runs the most lines
+    of the function among those that run this call (coverage.choose_case);
+    otherwise kgen.run_cmd, as before. The case's command is run from the
+    project directory, as `vit coverage run` runs it, with {build_dir} the
+    project's build directory. Choosing a case used to mean reading `vit find
+    --coverage`, editing kgen.run_cmd, and restoring it afterwards.
+
+    Returns {case, command, calls, report, error}: `calls` is how many times
+    the case runs this call, or None when unknown; `report` is what to print.
+    """
+    import shlex
+
+    from . import coverage as cov
+
+    out = {"case": None, "command": None, "calls": None, "report": [], "error": False}
+    named = getattr(args, "case", None)
+    cases = config.coverage_cases
+    project_dir = Path(config.config_dir).resolve()
+
+    def command(name):
+        filled = cov.fill(cases[name], project_dir, Path(config.abs_build_dir).resolve())
+        return f"cd {shlex.quote(str(project_dir))} && {filled}"
+
+    if named and named not in cases:
+        listed = f"; it lists {', '.join(cases)}" if cases else ""
+        out["report"].append(f"ERROR: no test case {named} in coverage.cases in vit.yaml{listed}.")
+        out["error"] = True
+        return out
+
+    coverage_file = config.abs_path(config.coverage_file)
+    rel = os.path.relpath(coverage_file)
+    hits, lines_by_case, any_lines = None, {}, 0
+    if os.path.exists(coverage_file) and config.abs_source_dir:
+        try:
+            data = cov.load(coverage_file)
+            hits = cov.call_site_hits(data, config.abs_source_dir, args.function_name,
+                                      file_path, call_text, line_no)
+            if hits is not None:
+                lines_by_case, any_lines = cov.function_lines_by_case(
+                    data, config.abs_source_dir, args.function_name)
+        except (OSError, ValueError, KeyError) as e:
+            out["report"].append(f"⚠ {rel} could not be read: {e}")
+
+    def describe(name):
+        text = f"it runs this call {hits.get(name, 0):,} time(s)"
+        if any_lines:
+            text += (f", and {lines_by_case.get(name, 0)} of the {any_lines} lines of "
+                     f"{args.function_name} that any case runs")
+        return text
+
+    if named:
+        out.update(case=named, command=command(named))
+        if hits is None:
+            why = (f"{rel} has no single record of this call" if os.path.exists(coverage_file)
+                   else "there is no coverage file")
+            out["report"].append(f"Test case: {named} (--case); {why}, so how often it runs "
+                                 f"the call is unknown.")
+        elif hits.get(named, 0) == 0:
+            out["report"].append(f"ERROR: {rel} says test case {named} never runs this call. If "
+                                 f"the source changed since it was measured, `vit coverage run` "
+                                 f"measures it again.")
+            out["error"] = True
+        else:
+            out["calls"] = hits[named]
+            out["report"].append(f"Test case: {named} (--case): {describe(named)}.")
+        return out
+
+    if hits is None:
+        if os.path.exists(coverage_file):
+            out["report"].append(f"Running kgen.run_cmd: {rel} has no single record of this call.")
+        return out
+    chosen = cov.choose_case(hits, lines_by_case, cases)
+    if chosen:
+        out.update(case=chosen, command=command(chosen), calls=hits[chosen])
+        out["report"].append(f"Test case: {chosen}, chosen from {rel}: {describe(chosen)}.")
+        return out
+    running = cov.choose_case(hits, lines_by_case, hits)
+    if running is None:
+        out["report"].append(f"⚠ Running kgen.run_cmd, though {rel} says no test case runs this "
+                             f"call: the run may capture nothing.")
+    else:
+        out["report"].append(f"Running kgen.run_cmd. In {rel}, {running} runs the most lines of "
+                             f"{args.function_name} among the cases that run this call; with its "
+                             f"command in coverage.cases, extraction would run it.")
+    return out
+
+
+EXTRACTION_RECORD = "extraction.json"
+
+
+def _record_extraction(kernel_dir, case, run_cmd, file_path, line_no, invocation) -> None:
+    """What a kernel was captured from, kept beside it: `vit verify` compares its
+    coverage with the case it came from."""
+    import json
+
+    record = {"case": case["case"], "calls_in_case": case["calls"], "run_cmd": run_cmd,
+              "call_site": f"{file_path}:{line_no}", "invocation": invocation}
+    Path(kernel_dir, EXTRACTION_RECORD).write_text(json.dumps(record, indent=2) + "\n")
 
 
 def cmd_translate(args, config):
@@ -1324,8 +1436,16 @@ def _kernel_coverage(args, config, sig, kernel_dir):
     if not measured["ok"]:
         print(f"\n  Kernel coverage: not measured. {measured['reason']}")
         return None
+    case = None
+    record = Path(kernel_dir, EXTRACTION_RECORD)
+    if record.exists():
+        import json
+        try:
+            case = json.loads(record.read_text()).get("case")
+        except ValueError:
+            pass
     result = kernel_coverage.compare(measured, sig, config.abs_path(config.coverage_file),
-                                     config.abs_source_dir)
+                                     config.abs_source_dir, case=case)
     kernel_coverage.save(kernel_dir, result)
     print()
     for line in kernel_coverage.report(result):

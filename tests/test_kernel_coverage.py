@@ -194,3 +194,20 @@ def test_without_a_coverage_file_the_kernel_is_the_basis(tmp_path):
     assert (result["run"], result["executable"]) == (1, 3)
     assert kernel_coverage.summary(result) == "1/3 executable lines"
     assert "No coverage file to compare with the full run" in kernel_coverage.report(result)[1]
+
+
+def test_compare_uses_the_case_the_kernel_came_from(tmp_path):
+    """`vit extract` records the case it ran (extraction.json); the comparison
+    is then with what that case executes. A case the coverage file does not
+    have falls back to every case, and says so."""
+    sig = _sig(tmp_path)
+    coverage = _coverage_file(tmp_path, {7: 500, 8: 99, 10: 401})
+    measured = _measured({"if (v > 30.0_dp) then", "drag = 1.1_dp * v * v"})
+
+    named = kernel_coverage.compare(measured, sig, coverage, str(tmp_path / "src"), case="long")
+    assert named["case"] == "long"
+    assert "executes in case long" in kernel_coverage.report(named)[0]
+
+    unknown = kernel_coverage.compare(measured, sig, coverage, str(tmp_path / "src"), case="gone")
+    assert unknown["case"] is None
+    assert any("captured from case gone" in l for l in kernel_coverage.report(unknown))
