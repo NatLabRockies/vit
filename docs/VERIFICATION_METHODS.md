@@ -29,6 +29,12 @@ input happens to expose.
 | Is reached by no run, and is not a validator | A hand-written dual-call harness |
 | Was rewritten as idiomatic C++, not translated line by line (for example file I/O) | None: program-level comparison only |
 
+Which row a function is in depends on whether a run reaches it, and that is measured, not guessed.
+List the program's test cases in `vit.yaml` and run `vit coverage run`: beside the coverage file it
+writes every procedure the cases call, with how often, and every one no case reaches. Given that
+file, the work order from `vit inventory --coverage` names each procedure's route: a kernel, with
+the test case that calls it most to extract with, or "not reached".
+
 Every integrated function also passes the program-level comparison. To decide whether a function no
 run reaches is called at all, `vit reachability` removes it and rebuilds.
 
