@@ -511,7 +511,7 @@ Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Con
 
 ## 7. Current State
 
-**Date:** 2026-09-30
+**Date:** 2026-10-01
 
 **Status:** Phase 0 complete. Phase 1 complete except the initialization-function revisit (KD10, OQ11). The fork's `main` (`db0796299`) has 32 functions integrated, with 17/17 baselines passing at the last integration (2026-07-24):
 - **AirfoilInfo: 20/20.** `AFI_Init` is an explicit hand-written special case; `CheckValuesAreUniqueMonotonicIncreasing` is its own unit.
@@ -522,6 +522,7 @@ Finite difference path (Modes 1/2): `ad_MHK_RM1_Fixed` has highest coverage. Con
 - 2026-07-24: `AFI_Init` re-integrated as a special case.
 - 2026-08-10: the fork's `TRANSLATION_TIPS.md` deleted. The translation prompt's guidance is now generated from VIT's check registry (`vit check --list`), and the callable shared functions are read from the shared headers.
 - 2026-09-24: VIT's adopt path; evaluated on the fork's `adopt-eval` branch (`f961dab51`), 17/17 baselines with generated wrappers for `ReadAFfile` and `AFI_Init`. Not merged.
+- 2026-10-01: VIT's planning and coverage tooling. `vit inventory` writes a work order for AeroDyn (section 2, "Ordering exceptions" and "Work order"); `vit coverage run` measures coverage in one command and reports, per procedure, which test cases reach it. This plan's coverage data turned out to record the wrong source for 52 of its 69 files, so call-site lookups in those files had reported other lines' counts; it was repaired (`data/line_coverage.json`, see its metadata note). It has line counts only: a fresh coverage run would add per-procedure call records. The fork's `generate_coverage.sh` now imports with `vit coverage import` (`4ea80cc7a`).
 
 No AeroDyn function has been integrated since 2026-07-24.
 
