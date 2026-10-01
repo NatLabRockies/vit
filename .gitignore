@@ -9,3 +9,5 @@ scratch/
 # two commits behind the fix a campaign was about to test AGAINST it. Generated
 # at read time instead.
 .vit_rev
+# Written by `vit extract` into the current directory; regenerated on every run.
+.vit_build_wrapper.sh

@@ -32,7 +32,7 @@ from pathlib import Path
 
 
 DEFAULT_COVERAGE = os.path.join(
-    os.path.dirname(__file__), "..", "analysis", "aerodyn", "line_coverage.json"
+    os.path.dirname(__file__), "..", "data", "line_coverage.json"
 )
 DEFAULT_SOURCE_DIR = None  # resolved at runtime
 

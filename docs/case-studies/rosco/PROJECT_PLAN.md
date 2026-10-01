@@ -872,12 +872,12 @@ A generality audit (2026-03-19) confirmed VIT has no ROSCO-specific logic in pro
 
 ## Retrospective (written 2026-04-14, corrected 2026-09-30)
 
-First published as the worked example in the planning method, `CREATING_PROJECT_PLANS.md`, and
+First published as the worked example in the planning method, `docs/CREATING_PROJECT_PLANS.md`, and
 moved here when that document was made generic. Five figures were corrected against the dev notes
 and the fork's history: ROSCO's size, the exception to "bit-identical", Phase 11.5's duration, the
 growth in compared values, and the age of the Phase 1 text.
 
-This plan delivered a pure-C++ port of an 11-module, ~8,600-line Fortran controller (53 C++ files) in 38 calendar days (2026-02-25 to 2026-04-03), matching the Fortran on 5,252,000 compared values except 3 tolerated ones (the Scenario 16 residual). But it was wrong in specific, informative ways, each of which became a principle of the planning method in `CREATING_PROJECT_PLANS.md`.
+This plan delivered a pure-C++ port of an 11-module, ~8,600-line Fortran controller (53 C++ files) in 38 calendar days (2026-02-25 to 2026-04-03), matching the Fortran on 5,252,000 compared values except 3 tolerated ones (the Scenario 16 residual). But it was wrong in specific, informative ways, each of which became a principle of the planning method in `docs/CREATING_PROJECT_PLANS.md`.
 
 **1. Granularity drift.** Phases 4, 5, 6, 7 and 8 all broke into sub-phases during execution (4A–D, 5A–B, 6A–B, 7A–B, 8A–C). The plan specified them as single phases. The goal of each phase was right; the step count was wrong, because the plan imposed uniform granularity on phases of very different complexity.
 
@@ -919,6 +919,6 @@ Later work found the following. The text above is unchanged.
 - **Three translations carried a grouping defect.** `sigma`, `SecLPFilter` and `SecLPFilter_Vel` wrote `a*x*x` where Fortran has `a*x**2`, which means `a*(x*x)` and can round differently. They had passed their kernels and the 5.25M-value comparison, because no sampled input exposed the difference. VIT's `exponent-grouping` check found them, and they were fixed on 2026-08-10 (ROSCO fork `7a0f87df8` on `main`, `479d97487` on `integrated`).
 - **Two locale dependencies were removed** on 2026-08-10: a date format and an upper-casing call, both of which would differ from the Fortran under a non-C locale set by the host program (`d7e27ee53` on `main`, `544972b13` on `integrated`).
 - **PreFilterMeasuredSignals was later KGen-verified**, 21/21, on 2026-07-24 (`33786842b` on `main`). Section 1 lists it among the simulation-verified functions.
-- **The generality claim did not hold.** The audits of 2026-03-19 and 2026-03-24 concluded that VIT had no ROSCO-specific logic. Dev note `202607231732` found four ROSCO/DISCON-specific literals in VIT's code, and as of 2026-09-30 they are still there (`vit/integrate.py`, `vit/kernel_verify.py`). `vit init`'s ROSCO defaults were removed on 2026-09-30.
+- **The generality claim did not hold.** The audits of 2026-03-19 and 2026-03-24 concluded that VIT had no ROSCO-specific logic. Dev note `202607231732` found four ROSCO/DISCON-specific literals in VIT's code (`vit/integrate.py`, `vit/kernel_verify.py`), and `vit init` wrote ROSCO's defaults into every new project. All were removed on 2026-09-30 (VIT commits `cc1facd` and `dfe1414`).
 - **ROSCO was translated again** in August 2026, from a new fork, with per-function telemetry. The dev notes from `202608071634` onward record that run.
 - **The fork's `main` no longer commits generated C++** (2026-09-30, `32f18998`). Its committed `src/*.cpp`, the "flat .cpp files" of section 1's branch layout, had drifted from `translations/`: 30 of 53 differed in the translated code, missing among others the grouping fixes above. `main` is now committed in its clean-Fortran state; `scripts/integrate_all.sh` produces the C++ build from `translations/`, and `integrated` remains the pure-C++ controller. `vit.yaml` also lists `translations/rosco_constants.h` in `shared_files` (`c4bea067`), which VIT now requires.

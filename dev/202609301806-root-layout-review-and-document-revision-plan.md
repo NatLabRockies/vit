@@ -1,6 +1,6 @@
 # Repository Root Review, and a Document-by-Document Revision Before Anything Moves
 **Date:** 2026-09-30
-**Status:** in-progress (review complete; no file moved, cut or revised yet)
+**Status:** completed 2026-09-30. Every document in scope, and the four in `docs/` named in the open question, was reviewed; each one kept was revised in its own commit, and the cuts and moves are in the commit that changed this line. Where that differs from the plan below: `guide_ROSCO.md` was cut, not moved (`docs/GETTING_STARTED.md` now runs the cycle on `examples/quickstart`); `docs/CONTAINER_SETUP.md` was cut (superseded by `docker/README.md` and the AeroDyn manual's "Workspace and Container"); `scripts/query_coverage.py` and `scripts/parse_gcov.py` moved with the data to `docs/case-studies/aerodyn/scripts/`; `docs/case-studies/README.md` indexes the case studies; `dev/` stayed, with a README.
 **Scope:** everything at the repository root; the documents slated to move into `docs/`
 
 ## Why this note exists

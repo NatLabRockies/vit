@@ -30,7 +30,7 @@
 
 ## 2. Structural Inventory
 
-Completed 2026-04-23. Data files in this repository's `analysis/aerodyn/`.
+Completed 2026-04-23. Data files in `data/`, beside this plan.
 
 | Metric | Value |
 |--------|-------|
@@ -67,14 +67,14 @@ Completed 2026-04-23. Data files in this repository's `analysis/aerodyn/`.
 | Standalone (no module) | 21 | 810 | 2 | 7 |
 
 **Inventory data files:**
-- `analysis/aerodyn/function_inventory.json` — 1,437 procedures with full metadata
-- `analysis/aerodyn/call_graph.json` — 3,451 caller→callee edges
-- `analysis/aerodyn/type_inventory.json` — 176 derived type definitions
-- `analysis/aerodyn/module_dependencies.json` — 35 modules, topologically sorted
-- `analysis/aerodyn/uncalled_procedures.json` — 67 uncalled, fully classified
-- `analysis/aerodyn/framework_boundary.json` — 192 external API procedures
-- `analysis/aerodyn/loc_metrics.json` — LOC breakdown
-- `analysis/aerodyn/inventory_summary.md` — human-readable digest
+- `data/function_inventory.json` — 1,437 procedures with full metadata
+- `data/call_graph.json` — 3,451 caller→callee edges
+- `data/type_inventory.json` — 176 derived type definitions
+- `data/module_dependencies.json` — 35 modules, topologically sorted
+- `data/uncalled_procedures.json` — 67 uncalled, fully classified
+- `data/framework_boundary.json` — 192 external API procedures
+- `data/loc_metrics.json` — LOC breakdown
+- `data/inventory_summary.md` — human-readable digest
 
 **Key observations that shaped this plan:**
 1. Nearly half (247/507) of hand-written procedures are leaf functions — translation can start at the edges
@@ -85,7 +85,7 @@ Completed 2026-04-23. Data files in this repository's `analysis/aerodyn/`.
 
 **Dev notes:** `202604232137` (inventory), `202604232243` (uncalled investigation), `202604232318` (uncalled refinement). The first inventory reported 210 procedures as dead code; classifying why each was uncalled (C-binding entry points, drivers, callbacks, framework interfaces) left 14.
 
-**Regenerating the inventory.** `scripts/fortran_inventory.py` is now generic, so AeroDyn's specifics are passed as options: `--generated-marker STARTOFREGISTRYGENERATEDFILE`, and the 35 framework interface names as entry points (`AD_`, `BEMT_`, `UA_`, `FVW_`, `DBEMT_` and `AA_` with `Init`, `End`, `UpdateStates` and `CalcOutput`, plus `BEMT_ReInit`, `AFI_Init`, `AFI_End`, and `AD_CalcConstrStateResidual`, `AD_CalcContStateDeriv`, `AD_UpdateDiscState`, `AD_GetOP` and the four `AD_JacobianP*` routines). Given those, it reproduces the committed procedure inventory, call graph, types, module graph and line counts exactly (checked 2026-09-30 on clean source, `edab46311`). Two differences from the committed files: the key `is_registry_generated` is now `is_generated`, and C entry points are recognised by `BIND(C)`, so the 23 non-BIND(C) helpers in the C-binding module are no longer counted as external interface.
+**Regenerating the inventory.** VIT's `scripts/fortran_inventory.py` is now generic, so AeroDyn's specifics are passed as options: `--generated-marker STARTOFREGISTRYGENERATEDFILE`, and the 35 framework interface names as entry points (`AD_`, `BEMT_`, `UA_`, `FVW_`, `DBEMT_` and `AA_` with `Init`, `End`, `UpdateStates` and `CalcOutput`, plus `BEMT_ReInit`, `AFI_Init`, `AFI_End`, and `AD_CalcConstrStateResidual`, `AD_CalcContStateDeriv`, `AD_UpdateDiscState`, `AD_GetOP` and the four `AD_JacobianP*` routines). Given those, it reproduces the committed procedure inventory, call graph, types, module graph and line counts exactly (checked 2026-09-30 on clean source, `edab46311`). Two differences from the committed files: the key `is_registry_generated` is now `is_generated`, and C entry points are recognised by `BIND(C)`, so the 23 non-BIND(C) helpers in the C-binding module are no longer counted as external interface.
 
 ## 3. Key Decisions
 
@@ -167,7 +167,7 @@ Functions that ALLOCATE the components of an `INTENT(OUT)` derived type stay in 
 
 ### OQ4: r-test coverage [answered 2026-04-25]
 
-9 BEMT-path cases + 8 OLAF-path cases cover BEMT, FVW, UnsteadyAero, AirfoilInfo, DBEMT. **Not covered:** AeroAcoustics (separate driver), C-binding (called from C), linearization (requires full OpenFAST). gcov line coverage per test case is in `analysis/aerodyn/line_coverage.json` (generated 2026-04-25 from clean source) and is how extraction test cases are chosen (`scripts/query_coverage.py`; dev note `202604250803`). It covers 17 of the 18 r-test cases: `ad_MHK_RM1_Fixed_UA`, added later as the 17th baseline, is not in it.
+9 BEMT-path cases + 8 OLAF-path cases cover BEMT, FVW, UnsteadyAero, AirfoilInfo, DBEMT. **Not covered:** AeroAcoustics (separate driver), C-binding (called from C), linearization (requires full OpenFAST). gcov line coverage per test case is in `data/line_coverage.json` (generated 2026-04-25 from clean source) and is how extraction test cases are chosen (`scripts/query_coverage.py`, beside this plan; dev note `202604250803`). It covers 17 of the 18 r-test cases: `ad_MHK_RM1_Fixed_UA`, added later as the 17th baseline, is not in it.
 
 ### OQ5: OpenMP in FVW [answered]
 

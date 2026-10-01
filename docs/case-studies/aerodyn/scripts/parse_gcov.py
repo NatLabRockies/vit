@@ -8,7 +8,7 @@ execution counts for every source file, for every test case.
 Usage:
     python3 parse_gcov.py \
         --gcov-dir /workspace/openfast/build-coverage/gcov_json \
-        --output /workspace/vit/analysis/aerodyn/line_coverage.json \
+        --output /workspace/vit/docs/case-studies/aerodyn/data/line_coverage.json \
         --source-root /workspace/openfast
 """
 

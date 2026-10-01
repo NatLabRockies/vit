@@ -28,12 +28,12 @@ cd vit
 docker build -f docker/Dockerfile -t vit .
 ```
 
-The first build compiles Python 2.7 and takes several minutes. [`docker/README.md`](docker/README.md)
+The first build compiles Python 2.7 and takes several minutes. [`docker/README.md`](../docker/README.md)
 describes the image and its build options.
 
 ## 2. Run the cycle on the example
 
-[`examples/quickstart`](examples/quickstart) is a projectile slowed by air drag, in about 40 lines of
+[`examples/quickstart`](../examples/quickstart) is a projectile slowed by air drag, in about 40 lines of
 Fortran:
 - `src/physics.f90` holds `drag`, the function to translate, and `step`, which calls it
 - `app/main.f90` runs 500 steps and writes speed and distance to `trajectory.txt` at full precision
@@ -92,7 +92,7 @@ replays them. The source is restored afterwards. Extraction also leaves `kgen.lo
 and `include.ini` in the project.
 
 Expect `Cases:  20`. If extraction reports `✗ Extraction captured no state data`, it exits non-zero
-and lists the errors it found; [`docs/EXTRACTION_INTERNALS.md`](docs/EXTRACTION_INTERNALS.md)
+and lists the errors it found; [`EXTRACTION_INTERNALS.md`](EXTRACTION_INTERNALS.md)
 section 7 is the debugging checklist.
 
 ### Translate
@@ -204,7 +204,7 @@ It writes `vit.yaml`. Then edit it:
 | `fortran.kind_aliases` | The project's kind parameters, such as `ReKi: REAL(8)`. VIT needs these to map types, and assumes none. |
 | `fortran.flags` | Flags for compiling kernels. Keep `-ffp-contract=off`, and add what the project's build uses, such as `-fdefault-real-8`. |
 
-[`docs/VIT_REFERENCE.md`](docs/VIT_REFERENCE.md) lists every field and command.
+[`VIT_REFERENCE.md`](VIT_REFERENCE.md) lists every field and command.
 
 ### Going further
 
@@ -215,7 +215,7 @@ It writes `vit.yaml`. Then edit it:
   validator is usually only the happy path. `vit test-validate` generates a prompt and a harness
   skeleton for tests of the error branches, to be filled in by an agent or by you.
   `vit sim-compare` compares simulation outputs saved as `.npz` arrays.
-  [`docs/VERIFICATION_METHODS.md`](docs/VERIFICATION_METHODS.md) covers when to use which.
+  [`VERIFICATION_METHODS.md`](VERIFICATION_METHODS.md) covers when to use which.
 - **Planning a whole code base:** [`CREATING_PROJECT_PLANS.md`](CREATING_PROJECT_PLANS.md)
   describes how to inventory a code base and order the work.
 
@@ -230,18 +230,16 @@ you making the judgment calls. When VIT needs one, it stops with a specific exit
 - **11, manual rewrite needed:** VIT found code it cannot safely rewrite and lists it in a
   `[VIT:MANUAL]` block. Nothing is written. The agent proposes a rewrite for you to approve.
 
-An agent should never confirm either on your behalf. [`docs/VIT_REFERENCE.md`](docs/VIT_REFERENCE.md)
+An agent should never confirm either on your behalf. [`VIT_REFERENCE.md`](VIT_REFERENCE.md)
 describes both protocols.
 
 Give the agent an operating manual for your project: its workspace, the per-function workflow, the
-test cases to extract with, and the rules it must follow. [`CLAUDE.md`](CLAUDE.md), the manual for
-the AeroDyn translation, is a full example.
+test cases to extract with, and the rules it must follow. The AeroDyn case study's
+[`AGENT_MANUAL.md`](case-studies/aerodyn/AGENT_MANUAL.md) is a full example.
 
 ## Where next
 
-- [`guide_ROSCO.md`](guide_ROSCO.md): a detailed walkthrough of the cycle on ROSCO, a wind turbine
-  controller and VIT's first complete translation
-- [`PROJECT_PLAN_ROSCO.md`](PROJECT_PLAN_ROSCO.md) and [`PROJECT_PLAN_AERODYN.md`](PROJECT_PLAN_AERODYN.md):
-  the plans for the two code bases VIT has been used on
-- [`docs/EXTRACTION_INTERNALS.md`](docs/EXTRACTION_INTERNALS.md): what extraction does, step by
+- [`case-studies/`](case-studies/README.md): the two code bases VIT has been used on, ROSCO and
+  AeroDyn, with their plans
+- [`EXTRACTION_INTERNALS.md`](EXTRACTION_INTERNALS.md): what extraction does, step by
   step, and how it fails

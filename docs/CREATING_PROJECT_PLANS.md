@@ -405,6 +405,10 @@ is a plan that goes stale.
 Start a translation with this document, write the plan, then execute it and write dev notes as the
 work happens.
 
+The [case studies](case-studies/README.md) hold two real plans: ROSCO's, written before this method
+and kept with a retrospective of where it went wrong, and AeroDyn's, written with it and maintained
+as the work continues.
+
 ## 11. Limits
 
 These practices come from Fortran-to-C++ translation with a small team and a bit-identical

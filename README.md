@@ -41,7 +41,7 @@ saved outputs (`vit sim-compare`).
 
 ## Getting started
 
-[`GETTING_STARTED.md`](GETTING_STARTED.md) builds VIT's container image, runs the whole cycle on a
+[`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) builds VIT's container image, runs the whole cycle on a
 small bundled example ([`examples/quickstart`](examples/quickstart)), and describes what your own
 project needs. Extraction runs KGen, which needs Linux and Python 2.7, so it runs in the container
 described in [`docker/README.md`](docker/README.md).
@@ -81,25 +81,29 @@ covers the configuration file and the known limitations.
 
 ## Case studies
 
-VIT has been developed on two Fortran code bases:
+VIT has been developed on two Fortran code bases, recorded in
+[`docs/case-studies/`](docs/case-studies/README.md):
 - **ROSCO**, a wind turbine controller (complete, April 2026): all 52 functions and the controller's
   entry point translated to a pure-C++ library. The plan, as a historical record, is
-  [`PROJECT_PLAN_ROSCO.md`](PROJECT_PLAN_ROSCO.md); it includes what was found after it was written.
+  [`PROJECT_PLAN.md`](docs/case-studies/rosco/PROJECT_PLAN.md); it includes what was found after it
+  was written.
 - **AeroDyn**, the aerodynamics module of OpenFAST (active): 32 functions in its AirfoilInfo and
-  DBEMT sub-modules are integrated. The plan is [`PROJECT_PLAN_AERODYN.md`](PROJECT_PLAN_AERODYN.md),
-  and the operating manual an agent works from is [`CLAUDE.md`](CLAUDE.md).
+  DBEMT sub-modules are integrated. The plan is
+  [`PROJECT_PLAN.md`](docs/case-studies/aerodyn/PROJECT_PLAN.md), and the operating manual an agent
+  works from is [`AGENT_MANUAL.md`](docs/case-studies/aerodyn/AGENT_MANUAL.md).
 
 ## Documentation
 
 | Document | What it covers |
 |---|---|
-| [`GETTING_STARTED.md`](GETTING_STARTED.md) | Install, the full cycle on an example, setting up your own project |
+| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) | Install, the full cycle on an example, setting up your own project |
 | [`docs/VIT_REFERENCE.md`](docs/VIT_REFERENCE.md) | Configuration, commands, exit codes, known limitations |
 | [`docs/VERIFICATION_METHODS.md`](docs/VERIFICATION_METHODS.md) | The verification methods and when to use each |
 | [`docs/EXTRACTION_INTERNALS.md`](docs/EXTRACTION_INTERNALS.md) | What extraction does step by step, and how to debug it |
-| [`CREATING_PROJECT_PLANS.md`](CREATING_PROJECT_PLANS.md) | How to plan the translation of a whole code base |
+| [`docs/CREATING_PROJECT_PLANS.md`](docs/CREATING_PROJECT_PLANS.md) | How to plan the translation of a whole code base |
+| [`docs/case-studies/`](docs/case-studies/README.md) | ROSCO and AeroDyn: plans, the AeroDyn agent manual, inventory and coverage data |
 | [`docker/README.md`](docker/README.md) | The container image |
-| [`dev/`](dev/) | Dated development notes: the decisions, investigations and corrections behind the code |
+| [`dev/`](dev/README.md) | Dated development notes: the decisions, investigations and corrections behind the code |
 
 ## Requirements
 
@@ -107,7 +111,7 @@ VIT has been developed on two Fortran code bases:
   Python 2.7 and KGen; it is tested on ARM64.
 - **Python 3.10 or later** for VIT itself.
 - **A Fortran project built with CMake and gfortran**, compiled with `-ffp-contract=off`, with a
-  program or test that calls the functions to translate. `GETTING_STARTED.md` lists the details.
+  program or test that calls the functions to translate. `docs/GETTING_STARTED.md` lists the details.
 
 ## Developing VIT
 

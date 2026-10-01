@@ -3,7 +3,7 @@
 fortran_inventory.py — Structural inventory of a Fortran codebase using fparser2.
 
 Produces seven JSON data files and a markdown summary, as input to planning a
-translation (CREATING_PROJECT_PLANS.md, Step 1: Structural Inventory).
+translation (docs/CREATING_PROJECT_PLANS.md, Step 1: Structural Inventory).
 
 Usage:
     python3 fortran_inventory.py --src path/to/src --output inventory/
