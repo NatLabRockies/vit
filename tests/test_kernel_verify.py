@@ -1138,3 +1138,102 @@ def test_the_field_log_says_what_it_compared():
     line = field_log_coverage(f, c)
     assert "1 field(s) compared on both sides" in line
     assert "logged only by Fortran" in line and "z" in line
+
+
+# --------------------------------------------------------------------------
+# No codebase's names in the tool (dev note 202607231732).
+
+def test_a_use_of_a_procedure_is_stripped_whatever_it_is_called(tmp_path):
+    """KGen writes `USE <caller>, ONLY: <caller>` when the call site's
+    enclosing procedure is an external entry point rather than a module
+    procedure. The strip used to match one name, `discon`; it now matches any
+    name the kernel defines as a procedure and never as a module."""
+    from vit.kernel_verify import _procedures_not_modules, _strip_use_of_procedures
+
+    (tmp_path / "ENTRY.F90").write_text(
+        "SUBROUTINE adi_c_init(kgen_unit)\n"
+        "    INTEGER :: kgen_unit\n"
+        "END SUBROUTINE adi_c_init\n")
+    (tmp_path / "controllers.f90").write_text(
+        "MODULE controllers\n"
+        "CONTAINS\n"
+        "    SUBROUTINE pitchcontrol()\n"
+        "    END SUBROUTINE pitchcontrol\n"
+        "    REAL(KIND=8) FUNCTION gain(x)\n"
+        "        REAL(KIND=8) :: x\n"
+        "        gain = x\n"
+        "    END FUNCTION gain\n"
+        "END MODULE controllers\n")
+    driver = ("PROGRAM kernel_driver\n"
+              "    USE kgen_utils_mod\n"
+              "    USE adi_c_init, ONLY: adi_c_init\n"
+              "    USE controllers, ONLY: pitchcontrol\n"
+              "END PROGRAM kernel_driver\n")
+    (tmp_path / "kernel_driver.f90").write_text(driver)
+
+    names = _procedures_not_modules(tmp_path)
+    assert {"adi_c_init", "pitchcontrol", "gain"} <= names
+    assert "controllers" not in names
+
+    out = _strip_use_of_procedures(driver, names)
+    assert "! VIT: removed USE adi_c_init" in out
+    assert "USE controllers, ONLY: pitchcontrol" in out
+    assert "USE kgen_utils_mod" in out
+
+
+def test_shared_files_come_only_from_the_project(tmp_path):
+    """The kernel used to receive `rosco_constants.h`, `vit_nwtc.h` and
+    `vit_nwtc.cpp` whenever vit.yaml listed no shared files: two codebases'
+    file names as a default. Without a list, nothing is copied."""
+    from vit.kernel_verify import _copy_shared_files
+
+    translations = tmp_path / "translations"
+    (translations / "Functions").mkdir(parents=True)
+    cpp = translations / "Functions" / "saturate.cpp"
+    cpp.write_text("double saturate(double x) { return x; }\n")
+    (translations / "rosco_constants.h").write_text("// constants\n")
+    kernel = tmp_path / "kernel"
+    kernel.mkdir()
+
+    assert _copy_shared_files(kernel, str(cpp), None, None) == ([], [])
+    assert not (kernel / "rosco_constants.h").exists()
+
+    copied, cpp_sources = _copy_shared_files(
+        kernel, str(cpp), ["translations/rosco_constants.h"], None)
+    assert copied == [str(kernel / "rosco_constants.h")]
+    assert cpp_sources == []
+
+
+def test_integration_copies_no_named_header(tmp_path):
+    """`vit integrate` used to look for `rosco_constants.h` above the
+    translation and copy it into the source tree. Shared headers now arrive
+    through vit.yaml `shared_files` and the integrate sync step."""
+    from vit.fortran_parser import parse_signature_from_source
+    from vit.integrate import generate_integration_plan
+
+    source = ("MODULE functions\n"
+              "CONTAINS\n"
+              "    REAL(8) FUNCTION saturate(x)\n"
+              "        REAL(8), INTENT(IN) :: x\n"
+              "        saturate = x\n"
+              "    END FUNCTION saturate\n"
+              "END MODULE functions\n")
+    src = tmp_path / "src"
+    src.mkdir()
+    f90 = src / "functions.f90"
+    f90.write_text(source)
+    translations = tmp_path / "translations" / "functions"
+    translations.mkdir(parents=True)
+    cpp = translations / "saturate.cpp"
+    cpp.write_text("double saturate(double x) { return x; }\n")
+    (tmp_path / "translations" / "rosco_constants.h").write_text("// constants\n")
+
+    sig = parse_signature_from_source(source, "saturate")
+    plan = generate_integration_plan(sig, str(cpp), str(f90), src_dir=str(src))
+    assert not any(p.filepath.endswith("rosco_constants.h") for p in plan.patches)
+
+
+def test_integrate_has_no_codebase_target_default():
+    import inspect
+    from vit.integrate import generate_integration_plan
+    assert inspect.signature(generate_integration_plan).parameters["target_name"].default == ""

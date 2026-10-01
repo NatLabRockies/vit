@@ -111,6 +111,36 @@ def _backup_or_restore_kgen_originals(kernel: Path) -> None:
         bridge_file.unlink()
 
 
+def _copy_shared_files(kernel: Path, cpp_impl_path: str,
+                       shared_files: Optional[list],
+                       source_dir: Optional[str]) -> tuple[list, list]:
+    """Copy the project's shared headers and sources into the kernel directory.
+
+    The project names them in vit.yaml `shared_files`. There is no default
+    list: a default would be one codebase's file names. Each is looked for
+    from the translation's directory upward, then under `source_dir`.
+
+    Returns (paths copied, names of the .cpp files among them).
+    """
+    copied, extra_cpp_sources = [], []
+    for filename in [Path(f).name for f in (shared_files or [])]:
+        found = None
+        for parent in [Path(cpp_impl_path).parent] + list(Path(cpp_impl_path).parent.parents):
+            if (parent / filename).exists():
+                found = parent / filename
+                break
+        if found is None and source_dir:
+            found = next(iter(sorted(Path(source_dir).rglob(filename))), None)
+        if found is None:
+            continue
+        dest = kernel / filename
+        shutil.copy2(str(found), str(dest))
+        copied.append(str(dest))
+        if filename.endswith(".cpp"):
+            extra_cpp_sources.append(filename)
+    return copied, extra_cpp_sources
+
+
 def setup_kernel_cpp(
     kernel_dir: str,
     sig: FortranSignature,
@@ -161,32 +191,9 @@ def setup_kernel_cpp(
     result["files_modified"].append(str(impl_dest))
 
     # --- Step 1a: Copy shared files (headers + sources) to kernel ---
-    # Use project-specific list from config, with legacy fallback
-    if shared_files:
-        shared_filenames = [Path(f).name for f in shared_files]
-    else:
-        shared_filenames = ["rosco_constants.h", "vit_nwtc.h", "vit_nwtc.cpp"]
-    extra_cpp_sources = []  # Track .cpp files for Makefile rules
-    for filename in shared_filenames:
-        found = False
-        for parent in [Path(cpp_impl_path).parent] + list(Path(cpp_impl_path).parent.parents):
-            candidate = parent / filename
-            if candidate.exists():
-                dest = kernel / filename
-                shutil.copy2(str(candidate), str(dest))
-                result["files_modified"].append(str(dest))
-                found = True
-                if filename.endswith(".cpp"):
-                    extra_cpp_sources.append(filename)
-                break
-        if not found and source_dir:
-            for candidate in sorted(Path(source_dir).rglob(filename)):
-                dest = kernel / filename
-                shutil.copy2(str(candidate), str(dest))
-                result["files_modified"].append(str(dest))
-                if filename.endswith(".cpp"):
-                    extra_cpp_sources.append(filename)
-                break
+    copied, extra_cpp_sources = _copy_shared_files(kernel, cpp_impl_path,
+                                                   shared_files, source_dir)
+    result["files_modified"].extend(copied)
 
     # --- Step 1b: Generate consolidated type header ---
     struct_headers = []
@@ -1436,6 +1443,34 @@ def _patch_kind_constants(kernel: Path, kind_aliases: dict,
 
 
 
+_MODULE_DEF = re.compile(r'^[ \t]*MODULE[ \t]+(?!PROCEDURE\b)(\w+)[ \t]*(?:!.*)?$',
+                         re.IGNORECASE | re.MULTILINE)
+_PROCEDURE_DEF = re.compile(
+    r'^[ \t]*(?!END\b)(?:[\w(),=*]+[ \t]+)*(?:SUBROUTINE|FUNCTION)[ \t]+(\w+)',
+    re.IGNORECASE | re.MULTILINE)
+
+
+def _procedures_not_modules(kernel: Path) -> set:
+    """Lower-case names the kernel defines as procedures and never as modules."""
+    modules, procedures = set(), set()
+    for f in kernel.glob("*.[fF]90"):
+        text = f.read_text(errors="replace")
+        modules.update(m.lower() for m in _MODULE_DEF.findall(text))
+        procedures.update(p.lower() for p in _PROCEDURE_DEF.findall(text))
+    return procedures - modules
+
+
+def _strip_use_of_procedures(content: str, names: set) -> str:
+    """Comment out `USE <name>` for each name that is a procedure, not a module."""
+    for name in sorted(names):
+        content = re.sub(
+            rf'^[ \t]*USE\b[ \t]*(?:::[ \t]*)?{re.escape(name)}\b.*$',
+            f'! VIT: removed USE {name} ({name} is a procedure, not a module)',
+            content, flags=re.MULTILINE | re.IGNORECASE,
+        )
+    return content
+
+
 def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
                           kind_aliases: Optional[dict] = None,
                           field_log: bool = True,
@@ -1462,6 +1497,7 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
     modified_files = []
     interface_block = generate_fortran_interface_block(sig, kind_aliases, derived_types)
     wrapper_body = generate_fortran_wrapper(sig, kind_aliases, derived_types, is_kernel=True, reverse_copy=True)
+    procedures_not_modules = _procedures_not_modules(kernel)
 
     for f90_file in sorted(kernel.glob("*.[fF]90")):
         content = f90_file.read_text()
@@ -1500,15 +1536,12 @@ def _patch_kernel_fortran(kernel: Path, sig: FortranSignature,
             )
             content = before_contains + after_contains
 
-        # Remove USE statements for DISCON module.
-        # When extracting from DISCON.F90, KGen generates the kernel driver
-        # with `USE discon, ONLY: discon` — but DISCON is a subroutine, not
-        # a module. The kernel driver calls discon() directly via EXTERNAL.
-        content = re.sub(
-            r'^\s*USE\s+discon\b.*$',
-            '! VIT: removed USE discon (subroutine, not module)',
-            content, flags=re.MULTILINE | re.IGNORECASE,
-        )
+        # Remove USE statements that name a procedure. When the call site's
+        # enclosing procedure is not in a module (an external entry point,
+        # such as a DLL's exported subroutine), KGen still emits
+        # `USE <procedure>, ONLY: <procedure>` in the kernel driver. A
+        # procedure cannot be USEd; the driver calls it as an external.
+        content = _strip_use_of_procedures(content, procedures_not_modules)
 
         # Fix assumed-size array arguments in KGen verification calls.
         # KGen generates comparison routines with DIMENSION(:) parameters but

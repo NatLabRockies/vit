@@ -1,7 +1,7 @@
 # Generalize the Dormant ROSCO/DISCON Carryovers in the VIT Tool
 
 **Date:** 2026-07-23
-**Status:** planned (investigation complete, implementation pending)
+**Status:** implemented 2026-09-30 (C2 in `cc1facd`, C1, C3 and C4 in the commit that changed this line). **C4 as planned below is wrong:** the stray `USE` names the call site's enclosing procedure (`DISCON`), not the extracted function (`sig.name`), so stripping `USE <sig.name>` would have left all five of ROSCO's DISCON-site kernels broken. The implemented rule strips `USE X` wherever the kernel defines `X` as a procedure and never as a module. ROSCO regression, 2026-09-30: all 42 golden kernels build and match (22 pass; 20 are NON_DISCRIMINATING, the red-test policy, unchanged by this work); the five DISCON-site kernels also needed `PUBLIC` removed from files that define no module, a separate fix in the following commit. ROSCO's `vit.yaml` must now list `translations/rosco_constants.h` in `shared_files`.
 **Scope:** VIT tool generality — `kernel_verify.py`, `integrate.py`, `config.py`; the "no codebase-specific logic" design rule
 
 ## TL;DR

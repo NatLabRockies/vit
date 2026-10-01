@@ -89,7 +89,7 @@ def generate_integration_plan(
     source_file: str,
     cmake_file: Optional[str] = None,
     src_dir: Optional[str] = None,
-    target_name: str = "discon",
+    target_name: str = "",
     kind_aliases: Optional[dict] = None,
     derived_types: Optional[dict] = None,
     reverse_copy: bool = False,
@@ -154,21 +154,8 @@ def generate_integration_plan(
         content=cpp_complete,
     ))
 
-    # 1a. Copy shared constants header to source directory (if not already present)
-    constants_header = Path(cpp_impl_path).parent
-    # Walk up to find rosco_constants.h in translations/ root
-    for parent in [constants_header] + list(constants_header.parents):
-        candidate = parent / "rosco_constants.h"
-        if candidate.exists():
-            dest = Path(src_dir) / "rosco_constants.h"
-            if not dest.exists():
-                patches.append(IntegrationPatch(
-                    filepath=str(dest),
-                    description="Copy shared constants header",
-                    action="create",
-                    content=candidate.read_text(),
-                ))
-            break
+    # Shared headers (vit.yaml `shared_files`) reach the source directory
+    # through `vit integrate`'s sync step, not through a named file here.
 
     # 1b. Create populator .f90 files for view-type args (if not already present)
     view_populator_names = []
