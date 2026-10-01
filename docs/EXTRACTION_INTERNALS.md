@@ -32,7 +32,7 @@ KGen                                                                  [kgen]
 
 VIT, after KGen
   14. Count the captured state files, and read whether the call site was reached
-  15. Undo the build-file patch: restore CMakeLists.txt, remove kgen_utils.f90, reconfigure CMake  [restore]
+  15. Undo the build-file patch: restore CMakeLists.txt, remove kgen_utils.f90, reconfigure  [restore]
   16. Settle KGen's source backups
   17. Move the kernel into kernel/<FuncName>/ if calls were captured, delete state/
   18. Restore the call-site file from its backup
@@ -54,9 +54,9 @@ in, one when it starts and one when it ends, and keeps its output in `.vit/extra
 ```
 
 The steps run in three kinds of process, and each records itself: VIT's own steps; KGen, whose
-whole output is `kgen.log`; and the two scripts KGen runs through its state Makefile,
-`.vit/extract/build.sh` and `.vit/extract/run.sh`. The directory is emptied at the start of each
-extraction and kept afterwards.
+output VIT keeps in `kgen_output.log` (KGen's own log is `kgen.log` in the project); and the two
+scripts KGen runs through its state Makefile, `.vit/extract/build.sh` and `.vit/extract/run.sh`.
+The directory is emptied at the start of each extraction and kept afterwards.
 
 | Step | What it is |
 |---|---|
@@ -99,12 +99,14 @@ it. Without them, it searches `project.source_dir` and stops if it finds no call
 one.
 
 **Extract at a call site, never at the definition.** With the pragma around a module procedure's
-definition, KGen's parent block is the module itself and the generated code does not compile. A
-line that is the function's SUBROUTINE or FUNCTION statement stops extraction before KGen runs, and
-the error lists the calls in that file. `vit find` lists every call and leaves out the definition.
+definition, KGen's parent block is the module itself and the generated code does not compile. The
+search for the call near `-l` never takes the function's SUBROUTINE or FUNCTION statement for a
+call. If it finds no call within five lines and `-l` is that statement, extraction stops before KGen
+runs, and the error lists the calls in that file. `vit find` lists every call and leaves out the
+definition.
 
-A line that does not name the function is used as given, with a warning: a call through a generic
-interface or a renamed import does not name it either.
+If it finds no call and `-l` is any other line, the line is used as given, with a warning: a call
+through a generic interface or a renamed import does not name the function either.
 
 ### Remove stale pragmas
 
@@ -130,9 +132,9 @@ different checkout, which then loads an uninstrumented library. VIT warns when i
 
 ### Remove stale artifacts
 
-VIT removes `kgen.log`, `model.ini`, `elapsedtime/` and `model/`, all of which KGen would otherwise
-reuse with data from an earlier extraction. It writes a dummy `strace.log`, so that KGen skips its
-own build-tracing phase: VIT supplies the module paths in `include.ini` instead.
+VIT removes KGen's log (`kgen.log`), `model.ini`, `elapsedtime/` and `model/`, all of which KGen
+would otherwise reuse with data from an earlier extraction. It writes a dummy `strace.log`, so that
+KGen skips its own build-tracing phase: VIT supplies the module paths in `include.ini` instead.
 
 **KGen's source backups.** KGen's state Makefile backs up each source it instruments to
 `<file>.kgen_org`. No backup may survive into an extraction: `save` keeps an existing one, and the
@@ -152,7 +154,7 @@ instrumented build would fail too, after KGen has spent minutes parsing.
 KGen's module search path: every directory under `project.build_dir` that holds `.mod` files, and
 every directory under `project.source_dir` that holds Fortran sources (both recursive).
 
-**What can fail:** a missing directory leaves symbols unresolved; `kgen.log` then shows
+**What can fail:** a missing directory leaves symbols unresolved; KGen's log, `kgen.log`, then shows
 `!!! UNRESOLVED !!!`. Unresolved intrinsic-module constants (`real64`, `int8`) and external
 libraries such as LAPACK are usually harmless: KGen writes stubs for them.
 
@@ -192,10 +194,13 @@ KGen runs the program by running a run command; VIT gives it `.vit/extract/run.s
 ```bash
 kgen <call-site file> \
   --cmd-build 'bash <project>/.vit/extract/build.sh' \
-  --cmd-run 'bash <project>/.vit/extract/run.sh' --cmd-clean '<clean_cmd>' \
-  --outdir <output dir> --invocation 0:0:1-20 \
-  -D <each preprocessor define>
+  --cmd-run 'bash <project>/.vit/extract/run.sh' \
+  [--cmd-clean '<clean_cmd>'] --invocation <kgen.invocation> \
+  [-D <each preprocessor define>]
 ```
+
+`<project>` here and below is the directory `vit extract` runs in. KGen runs there too, and writes
+`kernel/` and `state/` into it.
 
 ## 4. Inside KGen
 
@@ -213,7 +218,7 @@ kgen <call-site file> \
    - `recover` restores the originals again, from KGen's own copies in `state/`, as a safety net
 
 KGen exits with code 0 when its state Makefile fails, so VIT reads the step records rather than
-KGen's exit status. KGen's whole output is kept in `.vit/extract/kgen.log`. If KGen exits without
+KGen's exit status. KGen's output is kept in `.vit/extract/kgen_output.log`. If KGen exits without
 writing `kernel/` and `state/Makefile`, the report names step `kgen` with the end of that output.
 
 ## 5. State files
@@ -222,7 +227,7 @@ The instrumented code writes one file per captured call, to an absolute path fix
 generates the code:
 
 ```
-<output dir>/kernel/<FuncName>.<process>.<thread>.<call number>
+<project>/kernel/<FuncName>.<process>.<thread>.<call number>
 ```
 
 The program can run from any directory; the files still land in the kernel directory. They are
@@ -234,7 +239,7 @@ are captured. KGen counts calls per call site, so earlier work in the run can us
 After the run it lists the files in `kgen_statefile.lst`.
 
 The first time the call site runs, whether or not any call falls in the range, the instrumentation
-also writes `<output dir>/kernel/<FuncName>.reached`. This is a change in the KGen fork VIT depends
+also writes `<project>/kernel/<FuncName>.reached`. This is a change in the KGen fork VIT depends
 on (`62eb6e2`); VIT reads the marker and removes it.
 
 ## 6. Afterwards
@@ -244,7 +249,8 @@ Whether or not KGen succeeded, VIT:
   CMake's configure step (otherwise CMake keeps looking for `kgen_utils.f90`), as step `restore`.
   If that fails, the report warns that the next build may still look for `kgen_utils.f90`.
 - settles KGen's source backups, as before KGen (section 3). A step that failed before the state
-  Makefile moved them back leaves them beside the restored sources.
+  Makefile moved them back leaves them beside the restored sources. After a timeout VIT leaves
+  them, because the capture may still be running; the next extraction settles them.
 - if calls were captured, moves the kernel's files into `kernel/<FuncName>/`, replacing an earlier
   kernel there. If none were, it discards them, and `kernel/<FuncName>/` from an earlier extraction
   stays as it was, captured calls included.
@@ -254,7 +260,9 @@ Whether or not KGen succeeded, VIT:
   or `✗` with exit code 1. A step that failed after calls were captured, such as a run that crashed
   after its first calls were written, is reported as a warning beside the `✓`.
 
-Extraction leaves `.vit/extract/`, `kgen.log`, `strace.log` and `include.ini` in the project.
+Extraction leaves `.vit/extract/`, `include.ini` and the dummy `strace.log` in the project, and
+KGen leaves its log, `kgen.log`, and an empty `model/` directory, which VIT removes at the start of
+the next extraction.
 
 ### When every step succeeded and nothing was captured
 
@@ -313,7 +321,7 @@ those the target builds.
 The report and `.vit/extract/` settle most failures. When they do not:
 
 1. **Read the step's whole log.** The report shows the last lines; `.vit/extract/<step>.log` has
-   all of them, and `steps.jsonl` shows which steps ran.
+   all of them (KGen's are in `kgen_output.log`), and `steps.jsonl` shows which steps ran.
 2. **See the command.** `vit extract FuncName -f file -l LINE --dry-run` prints the KGen command and
    both scripts, after running the clean and the build. Check the paths, the defines and the test
    case.

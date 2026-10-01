@@ -18,10 +18,10 @@ through a shell, from directories KGen chooses, so give them absolute paths.
 | `project.source_dir` | `src` | Where VIT looks for Fortran sources and derived-type definitions. It can be broader than the code being translated, so that KGen finds the modules it USEs. |
 | `project.build_dir` | `build` | The CMake build directory. It may be absolute, for example inside a container. |
 | `kgen.path` | `kgen` | The KGen entry point. The container image puts the KGen fork on `PATH`. |
-| `kgen.build_cmd` | | Rebuilds the program, run with KGen's instrumentation in place. |
+| `kgen.build_cmd` | | Rebuilds the program: once before KGen, on the clean source, and again with KGen's instrumentation in place. If the first build fails, extraction stops there. |
 | `kgen.run_cmd` | | Runs the program so that it reaches the call site being extracted. `vit extract --run-args` appends to it. |
-| `kgen.clean_cmd` | | Cleans the build. |
-| `kgen.install_cmd` | | Copies the built library to where the program loads it, if not from the build directory. Without it, the run can load the uninstrumented library and capture nothing. |
+| `kgen.clean_cmd` | | Cleans the build, before the first build. If it fails, extraction stops there. |
+| `kgen.install_cmd` | | Copies the built library to where the program loads it, if not from the build directory. Without it, the run can load the uninstrumented library and capture nothing. If it fails, the extraction fails. |
 | `kgen.invocation` | `0:0:1-20` | Which calls to capture: process, thread, call range. The default captures the first 20 calls, which can be dominated by start-up behaviour (dev note `202608080640`). |
 | `kgen.assumed_size_arrays` | | `name: size` for assumed-size (`*`) array arguments. Without an entry, VIT infers the size and asks for confirmation (exit code 10). The size must cover every index the function touches; too small corrupts the heap silently. |
 | `kgen.dll_persistence` | | Reset statements for SAVE guards, applied between runs in one process, for a program that reloads a shared library whose SAVE state survives. |
@@ -209,8 +209,8 @@ measures and how it can mislead.
   coverage per test case (`coverage.file`), which cases run it; `vit find FuncName --coverage FILE`
   lists every call site's cases.
 - **Extract at a call site, not a definition.** With the pragma on a module procedure's definition,
-  KGen generates invalid code (dev note `202605010623`); `vit extract` refuses a line that defines
-  the function.
+  KGen generates invalid code (dev note `202605010623`). `vit extract` never puts the pragma there:
+  it uses a call within five lines of `-l`, or stops if there is none and `-l` is the definition.
 - **Calls are counted at the call site.** KGen counts executions of the extracted call site, so
   earlier calls in the run use up the capture range before the behaviour you want.
 - **Project flags.** KGen's kernel Makefiles do not inherit the project's flags; `fortran.flags`

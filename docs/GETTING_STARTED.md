@@ -89,7 +89,8 @@ VIT marks the call site for KGen. KGen instruments the source, and VIT rebuilds 
 program, which captures the inputs and outputs of the first 20 calls to `drag`. The result is
 `kernel/drag/`: the captured calls (`drag.0.0.1` to `drag.0.0.20`) and a standalone kernel that
 replays them. The source is restored afterwards. Extraction also leaves `.vit/extract/`, with each
-step's record and output, and `kgen.log`, `strace.log` and `include.ini` in the project.
+step's record and output, KGen's log `kgen.log`, an empty `model/` directory, `strace.log` and
+`include.ini` in the project.
 
 Expect `Cases:  20`. If extraction fails, it exits non-zero and names the step that failed, with the
 last lines of that step's output. If every step succeeded and nothing was captured, it says what
