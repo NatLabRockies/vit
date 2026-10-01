@@ -61,7 +61,7 @@ Status as of 2026-09-30. The fork's `vit.yaml` lists 32 functions, all integrate
 - **Translation boundary:** Everything inside AeroDyn → C++. Everything outside (NWTC Library, InflowWind, SeaState, LinDyn) → stays Fortran, crossed via BIND(C) / view structs. Individual NWTC utility functions used by AeroDyn translated in `vit_nwtc.h`.
 - **Key architectural decisions** (dev note `202604240012`): Registry generator for Registry types, VIT `analyze-types` for hand-written types. Bottom-up phasing by dependency layer. `-ffp-contract=off` during translation. See the plan for full scope decisions and open questions.
 - **Structural inventory** (dev note `202604232137`): 507 hand-written procedures, 247 leaf functions, 5 sub-systems, 176 derived types (150 AeroDyn, 26 from the NWTC Library), 1 SAVE-state procedure. The plan adds 14 genuinely dead procedures (excluded) and 10 C-binding entry points.
-- **Line coverage data:** `docs/case-studies/aerodyn/data/line_coverage.json` in VIT's repository (gcov, generated 2026-04-25 from clean source at `edab46311`, imported with `vit coverage import`). Regenerate from clean source: `docker exec vit-dev-openfast bash -c "cd /workspace/openfast && bash scripts/generate_coverage.sh"`.
+- **Line coverage data:** `docs/case-studies/aerodyn/data/line_coverage.json` in VIT's repository (gcov, generated 2026-04-25 from clean source: the fork at `c4cfa46e3`, with `AirfoilInfo.f90` restored from `edab46311` by `reset_to_clean.sh`). Regenerate from clean source: `docker exec vit-dev-openfast bash -c "cd /workspace/openfast && bash scripts/generate_coverage.sh"`.
 
 ## AeroDyn Workflow
 
@@ -247,7 +247,7 @@ cd /workspace/openfast && vit extract FunctionName -f modules/aerodyn/src/Caller
 
 Use the output of Step 1 to pick the call site. For example, to extract `DBEMT_ReInit`, Step 1 shows (abridged):
 ```
-2 call site(s) for 'DBEMT_ReInit', line numbers from the source at edab46311, where the coverage was measured:
+2 call site(s) for 'DBEMT_ReInit'. Line numbers are those of the source the coverage was measured on, except where marked:
   modules/aerodyn/src/BEMT.f90:778 in BEMT_ReInit
     call DBEMT_ReInit(p%DBEMT, x%DBEMT, OtherState%DBEMT, misc%DBEMT)
     ad_BAR_CombinedCases: 4

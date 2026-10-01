@@ -941,6 +941,7 @@
       }
     },
     "modules/aerodyn/src/AeroAcoustics_Types.f90": {
+      "blob": "78edce7d4ccef567b316b9b52597d72d26c16ec5",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -2537,6 +2538,7 @@
       }
     },
     "modules/aerodyn/src/AeroDyn.f90": {
+      "blob": "a96e04579232e9eb447befac3fb6c2ebfd55d50b",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -25312,6 +25314,7 @@
       }
     },
     "modules/aerodyn/src/AeroDyn_AllBldNdOuts_IO.f90": {
+      "blob": "240a07ffe9931a4723d2531c8ec858babaa1cb94",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -27377,6 +27380,7 @@
       }
     },
     "modules/aerodyn/src/AeroDyn_Driver.f90": {
+      "blob": "fb23ead32ee26df1104c7ada50d7dbc643a7aa6d",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -28141,6 +28145,7 @@
       }
     },
     "modules/aerodyn/src/AeroDyn_Driver_Subs.f90": {
+      "blob": "f00ce5cb57947073c95d5b0a547879cbc566c27e",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -38818,6 +38823,7 @@
       }
     },
     "modules/aerodyn/src/AeroDyn_Driver_Types.f90": {
+      "blob": "fd0ed3e19aacea962941a8cc72d814d7e9bf4d7e",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -40515,6 +40521,7 @@
       }
     },
     "modules/aerodyn/src/AeroDyn_IO.f90": {
+      "blob": "5f919bb211b4fd6d3cf08bf50c1145f59c1d6ee4",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -52724,6 +52731,7 @@
       }
     },
     "modules/aerodyn/src/AeroDyn_Inflow.f90": {
+      "blob": "042870b073d992e4e42fad260154e507a2751782",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -56551,6 +56559,7 @@
       }
     },
     "modules/aerodyn/src/AeroDyn_Inflow_Types.f90": {
+      "blob": "470536defcbf1b31682fdd928bdaf118305a6297",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -59649,6 +59658,7 @@
       }
     },
     "modules/aerodyn/src/AeroDyn_Types.f90": {
+      "blob": "d7cc9f3738b0500d35d12cfd3882f9af786c88f2",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -76218,6 +76228,7 @@
       }
     },
     "modules/aerodyn/src/AirfoilInfo.f90": {
+      "blob": "bd4409c627cfa6b1a91613a245d8914891a0e768",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -85366,6 +85377,7 @@
       }
     },
     "modules/aerodyn/src/AirfoilInfo_Types.f90": {
+      "blob": "ae02f958b3d3cc939925da1a42467de3bf09ceb3",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -86274,6 +86286,7 @@
       }
     },
     "modules/aerodyn/src/BEMT.f90": {
+      "blob": "04df6a4098f80c707511fd9fb7fced80b6a991a6",
       "test_cases": {
         "ad_BAR_CombinedCases": {
           "lines": {
@@ -91061,6 +91074,7 @@
       }
     },
     "modules/aerodyn/src/BEMTUncoupled.f90": {
+      "blob": "ac09dccab2ca80bd85090215bd5e45ed5d005329",
       "test_cases": {
         "ad_BAR_CombinedCases": {
           "lines": {
@@ -92641,6 +92655,7 @@
       }
     },
     "modules/aerodyn/src/BEMT_Types.f90": {
+      "blob": "fecc70a8f0e0a642fddf80ce5ad507225602a515",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -96636,6 +96651,7 @@
       }
     },
     "modules/aerodyn/src/DBEMT.f90": {
+      "blob": "add09cedc5d1ff18ef639842eeddfe58d4118ceb",
       "test_cases": {
         "ad_BAR_CombinedCases": {
           "lines": {
@@ -97495,6 +97511,7 @@
       }
     },
     "modules/aerodyn/src/DBEMT_Types.f90": {
+      "blob": "96f15f7fe97058db3f4d7f51b58cba3f7194c3d9",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -98695,6 +98712,7 @@
       }
     },
     "modules/aerodyn/src/FVW.f90": {
+      "blob": "d2fca5b80ce8a4694dc83c85d3ec43358fdc7553",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -102563,6 +102581,7 @@
       }
     },
     "modules/aerodyn/src/FVW_BiotSavart.f90": {
+      "blob": "fcc301511dda7b156787475fa75cb3edca705ae1",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -103389,6 +103408,7 @@
       }
     },
     "modules/aerodyn/src/FVW_IO.f90": {
+      "blob": "4cde5064d4717f5d11f2aee43b0c7dea46e97eca",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -104653,6 +104673,7 @@
       }
     },
     "modules/aerodyn/src/FVW_Subs.f90": {
+      "blob": "29b310b2742ffa38f409e09b64f0a5e391c2e940",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -108359,6 +108380,7 @@
       }
     },
     "modules/aerodyn/src/FVW_Types.f90": {
+      "blob": "53ff476c2fe031a04d3a0890b802f8d56df7e23c",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -113403,6 +113425,7 @@
       }
     },
     "modules/aerodyn/src/FVW_VortexTools.f90": {
+      "blob": "a4c5c6f920f5a6d58e9a70c7248f8f59704c860d",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -115537,6 +115560,7 @@
       }
     },
     "modules/aerodyn/src/FVW_Wings.f90": {
+      "blob": "4279d9d59c5020f85a2b9a3701c1c1359fb99c4b",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -117237,6 +117261,7 @@
       }
     },
     "modules/aerodyn/src/UnsteadyAero.f90": {
+      "blob": "396cc7419717bf9ffe0af6a85b72be927d04be05",
       "test_cases": {
         "ad_BAR_SineMotion_UA4_DBEMT3": {
           "lines": {
@@ -118523,6 +118548,7 @@
       }
     },
     "modules/aerodyn/src/UnsteadyAero_Types.f90": {
+      "blob": "41a52d6d4cd7164545ce8570d195caf5823741ae",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -121074,6 +121100,7 @@
       }
     },
     "modules/aerodyn/src/mod_root1dim.f90": {
+      "blob": "8d68f6e57b5cc84ed19e9f3de5a94262918d9598",
       "test_cases": {
         "ad_BAR_CombinedCases": {
           "lines": {
@@ -121823,6 +121850,7 @@
       }
     },
     "modules/inflowwind/src/IfW_FlowField.f90": {
+      "blob": "922b8318433c6e8b9ba2114dfa2c94287b154b6a",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -123149,6 +123177,7 @@
       }
     },
     "modules/inflowwind/src/IfW_FlowField_Types.f90": {
+      "blob": "8bbb8dbdc2263f6e2cea251c6b360e68f35f25a7",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -124439,6 +124468,7 @@
       }
     },
     "modules/inflowwind/src/InflowWind.f90": {
+      "blob": "b2eb702eee4fd62781b82e6e22c15bf5ed3b8394",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -125769,6 +125799,7 @@
       }
     },
     "modules/inflowwind/src/InflowWind_IO.f90": {
+      "blob": "40279b6a38e8e933576089a40d525d7e0b277920",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -127286,6 +127317,7 @@
       }
     },
     "modules/inflowwind/src/InflowWind_IO_Types.f90": {
+      "blob": "0a148e9825b3f50ee842c6cc74f0c9fd4fe6342c",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -127579,6 +127611,7 @@
       }
     },
     "modules/inflowwind/src/InflowWind_Subs.f90": {
+      "blob": "232c89ca97d030eee518ae3e47a7ba2d38d38473",
       "test_cases": {
         "ad_BAR_SineMotion": {
           "lines": {
@@ -130802,6 +130835,7 @@
       }
     },
     "modules/inflowwind/src/InflowWind_Types.f90": {
+      "blob": "5e85deaf1e50f5a324946a37fb5488a627ee99f0",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -132947,6 +132981,7 @@
       }
     },
     "modules/inflowwind/src/Lidar.f90": {
+      "blob": "f0dd9a1e715bf988c5fa40153d02068fbd6f4c9b",
       "test_cases": {
         "ad_BAR_SineMotion": {
           "lines": {
@@ -133104,6 +133139,7 @@
       }
     },
     "modules/inflowwind/src/Lidar_Types.f90": {
+      "blob": "826a08265ff5e835de5957e17e6afc7080562399",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -133533,6 +133569,7 @@
       }
     },
     "modules/nwtc-library/src/GridInterp.f90": {
+      "blob": "769b905fca8281f13695cc6975d5d7e186598832",
       "test_cases": {
         "ad_MHK_RM1_Fixed": {
           "lines": {
@@ -133806,6 +133843,7 @@
       }
     },
     "modules/nwtc-library/src/GridInterp_Types.f90": {
+      "blob": "798452b308ceb1071a0887af302dd031bdfc9ab8",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -133946,6 +133984,7 @@
       }
     },
     "modules/nwtc-library/src/ModMesh.f90": {
+      "blob": "5a9c834c0d13e9bd8846e2f025241560219db197",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -141443,6 +141482,7 @@
       }
     },
     "modules/nwtc-library/src/ModMesh_Mapping.f90": {
+      "blob": "79f3fed31d628874362cb6e68eda706f0b7551fc",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -149039,6 +149079,7 @@
       }
     },
     "modules/nwtc-library/src/ModMesh_Types.f90": {
+      "blob": "b50ab5d997163c8003b8d90956516de88afe0f85",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -149363,6 +149404,7 @@
       }
     },
     "modules/nwtc-library/src/ModVar.f90": {
+      "blob": "b8cadfecdf4e7df85fdf1bb8e484e9e8cda7bf15",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -151868,6 +151910,7 @@
       }
     },
     "modules/nwtc-library/src/NWTC_Base.f90": {
+      "blob": "33235ec2613b685988034853cd0f417a1c2cf32d",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -152061,6 +152104,7 @@
       }
     },
     "modules/nwtc-library/src/NWTC_IO.f90": {
+      "blob": "1fbe24a6ccd0e18471122c6e6ef318f70fc1f039",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -169315,6 +169359,7 @@
       }
     },
     "modules/nwtc-library/src/NWTC_Library.f90": {
+      "blob": "bd37a1ac85796083a8e08335ae2dd8a7593217df",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -169523,6 +169568,7 @@
       }
     },
     "modules/nwtc-library/src/NWTC_Library_Types.f90": {
+      "blob": "45bff23fc09b8f677d448ded888cc32d9d1497dc",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -170897,6 +170943,7 @@
       }
     },
     "modules/nwtc-library/src/NWTC_Num.f90": {
+      "blob": "a0f26777b068fe619a0cea5f30760bc262fa2b04",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -177959,6 +178006,7 @@
       }
     },
     "modules/nwtc-library/src/NWTC_RandomNumber.f90": {
+      "blob": "52c4f0640c91f51de4b9ff2d0c5848d438188a15",
       "test_cases": {
         "ad_MHK_RM1_Fixed": {
           "lines": {
@@ -178013,6 +178061,7 @@
       }
     },
     "modules/nwtc-library/src/NWTC_Str.f90": {
+      "blob": "a64eca9691788e7ca71b720762b7db8223ad4cd3",
       "test_cases": {
         "ad_BAR_OLAF": {
           "lines": {
@@ -178061,6 +178110,7 @@
       }
     },
     "modules/nwtc-library/src/NetLib/fftpack/NWTC_FFTPACK.f90": {
+      "blob": "21a3840e39401d4a0fadaaf7d124fc179ef4c270",
       "test_cases": {
         "ad_MHK_RM1_Fixed": {
           "lines": {
@@ -178161,6 +178211,7 @@
       }
     },
     "modules/nwtc-library/src/NetLib/fftpack/fftpack4.1.f": {
+      "blob": "34cee05a854671c398905f17b99a403fb5758165",
       "test_cases": {
         "ad_MHK_RM1_Fixed": {
           "lines": {
@@ -178681,6 +178732,7 @@
       }
     },
     "modules/nwtc-library/src/NetLib/lapack/NWTC_LAPACK.f90": {
+      "blob": "eafe4f583cb2958099f83bf2fffd7e1db138d829",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -179467,6 +179519,7 @@
       }
     },
     "modules/nwtc-library/src/SysGnuLinux.f90": {
+      "blob": "0fb51921b30002492aa0759d66916a8599fe49f3",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -180222,6 +180275,7 @@
       }
     },
     "modules/nwtc-library/src/VTK.f90": {
+      "blob": "625216e21684cdc250f44020c58a60da334604b2",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -180651,6 +180705,7 @@
       }
     },
     "modules/nwtc-library/src/YAML.f90": {
+      "blob": "5af02a209771860fcebbeadd7cc3497c41baf9d0",
       "test_cases": {
         "ad_MHK_RM1_Floating": {
           "lines": {
@@ -180683,6 +180738,7 @@
       }
     },
     "modules/nwtc-library/src/ranlux/RANLUX.f90": {
+      "blob": "e58830d546bb156ab76b9b7807ca801742053c1c",
       "test_cases": {
         "ad_MHK_RM1_Fixed": {
           "lines": {
@@ -180823,6 +180879,7 @@
       }
     },
     "modules/seastate/src/Current.f90": {
+      "blob": "83f7786c99cbec2fd0ec8450f50b0cd1a3bb6db2",
       "test_cases": {
         "ad_MHK_RM1_Fixed": {
           "lines": {
@@ -180907,6 +180964,7 @@
       }
     },
     "modules/seastate/src/Current_Types.f90": {
+      "blob": "b8a15c83a49ff205612e3b19ce70d724df0c2740",
       "test_cases": {
         "ad_MHK_RM1_Fixed": {
           "lines": {
@@ -180943,6 +181001,7 @@
       }
     },
     "modules/seastate/src/SeaSt_WaveField.f90": {
+      "blob": "a2ec7321da51d0061ed9f52bf9b6e56cd1288252",
       "test_cases": {
         "ad_MHK_RM1_Fixed": {
           "lines": {
@@ -181261,6 +181320,7 @@
       }
     },
     "modules/seastate/src/SeaState.f90": {
+      "blob": "f57de4396eefc503a50fd2362ec16a1e6d650636",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -182067,6 +182127,7 @@
       }
     },
     "modules/seastate/src/SeaState_Input.f90": {
+      "blob": "7ebfcf016b2690459a214705f5a037accad56767",
       "test_cases": {
         "ad_MHK_RM1_Fixed": {
           "lines": {
@@ -182711,6 +182772,7 @@
       }
     },
     "modules/seastate/src/SeaState_Output.f90": {
+      "blob": "2f596ed51a25c9ab8eaebdc885bbe960ac0bb3fd",
       "test_cases": {
         "ad_MHK_RM1_Fixed": {
           "lines": {
@@ -182883,6 +182945,7 @@
       }
     },
     "modules/seastate/src/SeaState_Types.f90": {
+      "blob": "b15181ef0c47c63b5d24071444591cc9b11df7c7",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -183165,6 +183228,7 @@
       }
     },
     "modules/seastate/src/UserWaves.f90": {
+      "blob": "454ad5ca7cc9537d9deac0d904b37a7a5addf118",
       "test_cases": {
         "ad_MHK_RM1_Fixed": {
           "lines": {
@@ -183237,6 +183301,7 @@
       }
     },
     "modules/seastate/src/Waves.f90": {
+      "blob": "a965549971c34c6338676029696e44baf5e132af",
       "test_cases": {
         "ad_MHK_RM1_Fixed": {
           "lines": {
@@ -184177,6 +184242,7 @@
       }
     },
     "modules/seastate/src/Waves2_Types.f90": {
+      "blob": "34e1bb24f287aba30f249fefa33d7cca2c142257",
       "test_cases": {
         "ad_MHK_RM1_Fixed": {
           "lines": {
@@ -184223,6 +184289,7 @@
       }
     },
     "modules/seastate/src/Waves_Types.f90": {
+      "blob": "dde08f29e3deafadb4e8c3bb3352b3de687ab4cf",
       "test_cases": {
         "ad_MHK_RM1_Fixed": {
           "lines": {
@@ -184277,6 +184344,7 @@
       }
     },
     "modules/version/src/VersionInfo.f90": {
+      "blob": "8f5ba66e10cd6d98283463310965711e671a4d22",
       "test_cases": {
         "ad_B1n2_OLAF": {
           "lines": {
@@ -185582,7 +185650,8 @@
   "metadata": {
     "file_count": 69,
     "generated": "2026-04-25T11:41:44.099458+00:00",
-    "source_commit": "edab46311",
+    "note": "Measured 2026-04-25 on the fork at c4cfa46e3 after reset_to_clean.sh, which restored modules/aerodyn/src/AirfoilInfo.f90 from edab46311. source_commit originally recorded edab46311 for every file; per-file blob ids were added on 2026-10-01 from those two commits. NWTC_Library_IncSubs.f90, recorded without a directory, has none.",
+    "source_commit": "c4cfa46e3c16014f874bb5565b440f736bcb4ff6",
     "source_root": "/workspace/openfast",
     "test_cases": [
       "ad_B1n2_OLAF",
