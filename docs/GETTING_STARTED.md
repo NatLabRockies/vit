@@ -222,8 +222,11 @@ It writes `vit.yaml`. Then edit it:
   runs each case and records its coverage, and writes `coverage_procedures.md`: which procedures
   each case calls, and which no case reaches. `vit find drag --coverage` then lists each call site
   with the cases that run it.
-- **Planning a whole code base:** [`CREATING_PROJECT_PLANS.md`](CREATING_PROJECT_PLANS.md)
-  describes how to inventory a code base and order the work.
+- **Planning a whole code base:** `vit inventory --src src --search . --output inventory/` writes
+  a work order, `inventory/work_order.md`: every procedure in the order to translate it, and, with
+  `--coverage coverage.json`, how to verify each one. `--search` lets it see callers outside `src`,
+  such as the example's program in `app/`; without it, `step` would look dead.
+  [`CREATING_PROJECT_PLANS.md`](CREATING_PROJECT_PLANS.md) describes the rest of planning.
 
 ## 4. Working with a coding agent
 
