@@ -1,7 +1,7 @@
 """
 Structural inventory of a Fortran codebase, using fparser2.
 
-Produces seven JSON data files and a markdown summary, as input to planning a
+Produces eight JSON data files and a markdown summary, as input to planning a
 translation (docs/CREATING_PROJECT_PLANS.md, Step 1: Structural Inventory).
 
 Usage:
@@ -20,7 +20,8 @@ Nothing here is specific to one codebase. What a codebase must tell it:
                          which no reading of the source alone can establish
 
 Output files:
-    function_inventory.json   — every procedure (name, module, file, args, visibility, ...)
+    function_inventory.json   — every procedure (name, module, file, args, visibility,
+                                its dependency depth, and the units it does I/O on)
     call_graph.json           — caller→callee edges with internal/external tags
     type_inventory.json       — derived TYPE definitions with fields
     module_dependencies.json  — USE graph, topologically sorted
@@ -28,6 +29,9 @@ Output files:
                                 each with the likely reason (not all are dead)
     framework_boundary.json   — procedures that form the external interface
     loc_metrics.json          — lines of code per file/module/procedure
+    ordering.json             — where leaf-first ordering goes wrong: procedures doing
+                                I/O on a unit they do not open, with the procedures
+                                that own it, and candidates for an early non-leaf
     inventory_summary.md      — human-readable digest
 """
 
@@ -84,17 +88,34 @@ def _despliced(path):
     return "".join(lines), n
 
 
+# The C preprocessor's predefined macros. fparser does not preprocess, so a
+# file using one, such as `Year = __DATE__(8:11)`, fails to parse as a whole.
+# Each becomes an identifier of the same length, which parses and keeps every
+# column where it was; the inventory never needs the value.
+_CPP_MACROS = re.compile(r"\b__(DATE|TIME|FILE|LINE)__\b")
+
+
+def _cpp_macros_as_names(text):
+    """Replace predefined cpp macros with identifiers. Returns (text, count)."""
+    return _CPP_MACROS.subn(lambda m: "vit_" + m.group(1).lower(), text)
+
+
 def parse_file(parser, path):
     """Parse a single Fortran file, return the AST or None on failure."""
     tmp_path = None
     try:
         text, n_spliced = _despliced(path)
+        text, n_macros = _cpp_macros_as_names(text)
         if n_spliced:
             print(
                 f"  NOTE: {os.path.basename(path)}: rewrote {n_spliced} cpp "
                 f"line-splice(s) as Fortran continuations before parsing",
                 file=sys.stderr,
             )
+        if n_macros:
+            print(f"  NOTE: {os.path.basename(path)}: read {n_macros} predefined cpp "
+                  f"macro(s) as names before parsing", file=sys.stderr)
+        if n_spliced or n_macros:
             fd, tmp_path = tempfile.mkstemp(suffix=os.path.basename(path))
             with os.fdopen(fd, "w") as f:
                 f.write(text)
@@ -962,7 +983,7 @@ def compute_loc_metrics(src_files, procedures, modules, file_generated_map):
 # ---------------------------------------------------------------------------
 
 def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
-                  uncalled, boundary):
+                  uncalled, boundary, ordering=None, unparsed=()):
     """Write inventory_summary.md."""
     lines = []
     lines.append("# Structural Inventory Summary")
@@ -1139,6 +1160,18 @@ def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
         lines.append(f"| {t['name']} | {t['module'] or '-'} | {t['field_count']} | {'yes' if has_alloc else 'no'} | {'yes' if has_ptr else 'no'} |")
     lines.append("")
 
+    if ordering is not None:
+        lines.extend(_ordering_summary(ordering))
+
+    if unparsed:
+        lines.append(f"## Files that could not be parsed: {len(unparsed)}")
+        lines.append("")
+        lines.append("These are missing from every count above.")
+        lines.append("")
+        for name in unparsed:
+            lines.append(f"- {name}")
+        lines.append("")
+
     # Sanity check answer
     if leaves:
         smallest = leaves[0]
@@ -1153,6 +1186,626 @@ def write_summary(output_dir, loc, procedures, call_edges, type_defs, mod_deps,
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
     print(f"  Wrote {path}")
+
+
+# ---------------------------------------------------------------------------
+# Pass 8: Ordering exceptions
+# ---------------------------------------------------------------------------
+#
+# Translating leaves first is right when a procedure computes on its
+# arguments: a leaf needs nothing its caller lacks. It is backwards when the
+# procedure works on a resource someone else owns. A routine whose body is
+# `READ(Un, ...)` reads from a Fortran unit number, which means nothing on the
+# C++ side; it can be translated only with the procedure that opens the unit,
+# or after it, when the file is a C++ stream and the routine shrinks to a line
+# of the standard library. The call graph does not show this, so this pass
+# finds it from the I/O statements themselves.
+#
+# Separately, a campaign of leaves never exercises calls between translated
+# procedures, so this pass also proposes small first non-leaf procedures.
+
+_IO_STMTS = (f2003.Read_Stmt, f2003.Write_Stmt, f2003.Open_Stmt, f2003.Close_Stmt,
+             f2003.Inquire_Stmt, f2003.Backspace_Stmt, f2003.Rewind_Stmt,
+             f2003.Endfile_Stmt, f2003.Flush_Stmt, f2003.Wait_Stmt)
+_SUBPROGRAMS = (f2003.Subroutine_Subprogram, f2003.Function_Subprogram)
+# gfortran's preconnected units: standard error, input and output.
+_PRECONNECTED = {"0", "5", "6"}
+
+
+def _own_nodes(proc_node, types):
+    """Nodes of `types` in this procedure, not in procedures it CONTAINS."""
+    found = []
+
+    def visit(node, top):
+        if not top and isinstance(node, _SUBPROGRAMS):
+            return
+        if isinstance(node, types):
+            found.append(node)
+        for child in getattr(node, "children", None) or ():
+            if child is not None and not isinstance(child, str):
+                visit(child, False)
+
+    visit(proc_node, True)
+    return found
+
+
+def _split_top_level(text):
+    """Split on commas outside parentheses and quotes."""
+    items, depth, quote, start = [], 0, None, 0
+    for i, ch in enumerate(text):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            items.append(text[start:i])
+            start = i + 1
+    items.append(text[start:])
+    return [i.strip() for i in items if i.strip()]
+
+
+def io_statement_unit(stmt):
+    """(operation, unit text) for an I/O statement, or None if it names no unit.
+
+    The unit is the UNIT= or NEWUNIT= item, or the first positional one.
+    `READ fmt, list` reads standard input, reported as `*`.
+    """
+    text = str(stmt).strip()
+    m = re.match(r"(?i)(READ|WRITE|OPEN|CLOSE|INQUIRE|BACKSPACE|REWIND|ENDFILE|FLUSH|WAIT)\s*",
+                 text)
+    if not m:
+        return None
+    op, rest = m.group(1).upper(), text[m.end():]
+    if not rest.startswith("("):
+        if op == "READ":
+            return op, "*"
+        unit = rest.split(",")[0].strip()
+        return (op, unit) if unit else None
+    depth = 0
+    for i, ch in enumerate(rest):
+        depth += (ch == "(") - (ch == ")")
+        if depth == 0:
+            inner = rest[1:i]
+            break
+    else:
+        return None
+    positional = None
+    for item in _split_top_level(inner):
+        k = re.match(r"([A-Za-z]+)\s*=(?!=)\s*(.*)$", item, re.S)
+        if k and k.group(1).upper() in ("UNIT", "NEWUNIT"):
+            return op, k.group(2).strip()
+        if not k and positional is None:
+            positional = item
+    return (op, positional) if positional else None
+
+
+def _declared_types(nodes):
+    """{name lower: type text} for the Type_Declaration_Stmts in `nodes`."""
+    out = {}
+    for decl in nodes:
+        type_text = str(decl.items[0]).upper() if decl.items else ""
+        for entity in walk(decl, f2003.Entity_Decl):
+            name = first_name(entity)
+            if name:
+                out[name.lower()] = type_text
+    return out
+
+
+def _integer_parameters(trees):
+    """{name lower: value} for integer named constants with a literal value."""
+    out = {}
+    for tree in trees:
+        for decl in walk(tree, f2003.Type_Declaration_Stmt):
+            text = str(decl).upper()
+            if not text.startswith("INTEGER") or "PARAMETER" not in text:
+                continue
+            for entity in walk(decl, f2003.Entity_Decl):
+                m = re.match(r"\s*(\w+)\s*=\s*(\d+)(?:_\w+)?\s*$", str(entity))
+                if m:
+                    out[m.group(1).lower()] = m.group(2)
+    return out
+
+
+def _module_spec_types(tree):
+    """{module lower: {name lower: type}} for variables declared at module level."""
+    out = {}
+    for mod in walk(tree, f2003.Module):
+        stmts = walk(mod, f2003.Module_Stmt)
+        if not stmts:
+            continue
+        spec = [c for c in mod.children if isinstance(c, f2003.Specification_Part)]
+        decls = walk(spec, f2003.Type_Declaration_Stmt) if spec else []
+        out[first_name(stmts[0]).lower()] = _declared_types(decls)
+    return out
+
+
+class _Scope:
+    """The names one procedure can see: its dummies, its locals, and, for an
+    internal procedure, its host's."""
+
+    def __init__(self, name, file, args, local_types, host=None, module=None):
+        self.name, self.file, self.module = name, file, module
+        self.args = [a.lower() for a in args]
+        self.local_types = local_types
+        self.host = host
+
+    def kind_of(self, base):
+        if base in self.args:
+            return "argument"
+        if base in self.local_types:
+            return "local"
+        if self.host and (base in self.host.args or base in self.host.local_types):
+            return "host"
+        return "module"
+
+    def type_of(self, base):
+        t = self.local_types.get(base)
+        if t is None and self.host:
+            t = self.host.local_types.get(base)
+        return t
+
+
+def _type_name(type_text):
+    m = re.search(r"TYPE\s*\(\s*(\w+)\s*\)", type_text or "", re.I)
+    return m.group(1).lower() if m else None
+
+
+def _parent_type(u, scope, global_types, type_fields):
+    """The derived type holding the last component of designator `u`, such as
+    `dvr%out%unOutFile(i)`, or None if the declarations do not say."""
+    parts = [re.sub(r"\(.*", "", part).lower() for part in u.split("%")]
+    declared = scope.type_of(parts[0])
+    if declared is None:
+        candidates = {_type_name(t) for t in global_types.get(parts[0], ())} - {None}
+        declared = f"TYPE({candidates.pop()})" if len(candidates) == 1 else None
+    current = _type_name(declared)
+    for field in parts[1:-1]:
+        if current is None:
+            return None
+        current = _type_name(type_fields.get(current, {}).get(field))
+    return current
+
+
+def _classify_unit(op, unit, scope, constants, field_types, global_types, type_fields=None):
+    """How a procedure gets the unit it names, or None if that is not unit I/O.
+
+    Returns a dict with `unit` and `source`: "argument" (a dummy, or a
+    component of one), "local", "host" (a variable of the procedure an
+    internal one is CONTAINed in), "module" (a module variable, or a
+    component of one) or "literal" (a fixed unit number, or an integer named
+    constant). A derived-type component also gets `component`. Standard input
+    and output are None, and so, for READ and WRITE, is an internal file: a
+    CHARACTER variable, which is string formatting, not a unit.
+    """
+    u = re.sub(r"\s+", "", unit)
+    if u == "*":
+        return None
+    lit = re.fullmatch(r"(\d+)(?:_\w+)?", u)
+    if lit:
+        return None if lit.group(1) in _PRECONNECTED else {"unit": lit.group(1), "source": "literal",
+                                                             "value": lit.group(1)}
+    base_m = re.match(r"[A-Za-z]\w*", u)
+    if not base_m:
+        return {"unit": u, "source": "unknown"}
+    base = base_m.group(0).lower()
+    component = u.rsplit("%", 1)[1].split("(")[0].lower() if "%" in u else None
+    kind = scope.kind_of(base)
+    if component is None and kind == "module" and base in constants:
+        value = constants[base]
+        return None if value in _PRECONNECTED else {"unit": u, "source": "literal", "value": value}
+    if op in ("READ", "WRITE"):
+        if component:
+            types = field_types.get(component, set())
+            if types and all(t.startswith("CHARACTER") for t in types):
+                return None
+        else:
+            declared = scope.type_of(base)
+            if declared is None and kind == "module":
+                types = global_types.get(base, set())
+                declared = "CHARACTER" if types and all(t.startswith("CHARACTER") for t in types) else ""
+            if (declared or "").startswith("CHARACTER"):
+                return None
+    entry = {"unit": u, "source": kind}
+    if component:
+        entry["component"] = component
+        holder = _parent_type(u, scope, global_types, type_fields or {})
+        if holder:
+            entry["component_of"] = holder
+    return entry
+
+
+def _identity(entry):
+    """What a unit is, independent of the procedure naming it: a component
+    name, a module variable or a unit number. None for a dummy or a local."""
+    if "component" in entry:
+        return ("component", entry.get("component_of"), entry["component"])
+    if entry["source"] == "literal":
+        return ("literal", entry["value"])
+    if entry["source"] == "module":
+        return ("module", re.match(r"[A-Za-z]\w*", entry["unit"]).group(0).lower())
+    return None
+
+
+def _calls(node):
+    """(callee lower, positional actual texts, {keyword: actual text}) for each
+    CALL in this procedure, not in procedures it CONTAINS."""
+    out = []
+    for call in _own_nodes(node, f2003.Call_Stmt):
+        names = walk(call, f2003.Name)
+        if not names:
+            continue
+        positional, keywords = [], {}
+        arg_list = call.items[1] if len(call.items) > 1 else None
+        for item in (getattr(arg_list, "items", None) or ()):
+            if isinstance(item, f2003.Actual_Arg_Spec):
+                keywords[str(item.items[0]).lower()] = str(item.items[1])
+            else:
+                positional.append(str(item))
+        out.append((str(names[0]).lower(), positional, keywords))
+    return out
+
+
+def _scopes(tree, fname):
+    """(node, _Scope) for every procedure in `tree`, hosts before their
+    internal procedures."""
+    out = []
+
+    def visit(node, host, module=None):
+        if isinstance(node, f2003.Module):
+            stmts = walk(node, f2003.Module_Stmt)
+            module = first_name(stmts[0]) if stmts else module
+        for child in getattr(node, "children", None) or ():
+            if child is None or isinstance(child, str):
+                continue
+            if isinstance(child, f2003.Module):
+                visit(child, host, module)
+            elif isinstance(child, _SUBPROGRAMS):
+                name = _get_procedure_name(child)
+                stmts = walk(child, (f2003.Subroutine_Stmt, f2003.Function_Stmt))
+                dummies = walk(stmts[0], f2003.Dummy_Arg_List) if stmts else []
+                args = get_names(dummies[0]) if dummies else []
+                local_types = _declared_types(_own_nodes(child, f2003.Type_Declaration_Stmt))
+                scope = _Scope(name or "?", fname, args, local_types, host, module)
+                out.append((child, scope))
+                visit(child, scope, module)
+            else:
+                visit(child, host, module)
+
+    visit(tree, None)
+    return out
+
+
+def find_unit_io(all_trees, dep_trees, procedures, type_defs):
+    """Set `unit_io` on every procedure, and gather what the ordering needs.
+
+    Reads the source and the dependencies: a dependency can be the procedure
+    that opens a unit, as a library's open-a-file routine does for its
+    callers. Returns a dict of facts for find_ordering_exceptions.
+    """
+    trees = list(all_trees.items()) + list((dep_trees or {}).items())
+    constants = _integer_parameters([t for _, t in trees])
+    field_types = defaultdict(set)
+    type_fields = {}
+    for t in type_defs:
+        fields = type_fields.setdefault(t["name"].lower(), {})
+        for fld in t.get("fields", []):
+            field_types[fld["name"].lower()].add(str(fld.get("type", "")).upper())
+            fields[fld["name"].lower()] = str(fld.get("type", "")).upper()
+    global_types = defaultdict(set)
+    for _, tree in trees:
+        for decls in _module_spec_types(tree).values():
+            for name, typ in decls.items():
+                global_types[name].add(typ)
+
+    by_key = {(p["name"].lower(), p["file"]): p for p in procedures}
+    for p in procedures:
+        p["unit_io"] = []
+
+    scopes, opens, opens_arg = {}, defaultdict(set), defaultdict(set)
+    statements = {}
+    for path, tree in trees:
+        fname = os.path.basename(path)
+        for node, scope in _scopes(tree, fname):
+            key = (scope.name.lower(), fname)
+            scopes[key] = scope
+            units = {}
+            for stmt in _own_nodes(node, _IO_STMTS):
+                found = io_statement_unit(stmt)
+                if not found:
+                    continue
+                op, unit = found
+                entry = _classify_unit(op, unit, scope, constants, field_types, global_types,
+                                       type_fields)
+                if entry is None:
+                    continue
+                if op == "OPEN":
+                    opens[key].add(entry["unit"].lower())
+                    if entry["source"] == "argument" and "component" not in entry:
+                        opens_arg[scope.name.lower()].add(entry["unit"].lower())
+                units.setdefault(entry["unit"].lower(), {**entry, "ops": set()})["ops"].add(op)
+            statements[key] = (node, units)
+            if key in by_key and path in all_trees:
+                by_key[key]["unit_io"] = [{**e, "ops": sorted(e["ops"])} for e in units.values()]
+
+    # Who opens each unit identity: by an OPEN of it, or by passing it to a
+    # procedure that OPENs the dummy it arrives in.
+    openers = defaultdict(set)
+    calls = []
+    args_by_name = {}
+    for (name, _), scope in scopes.items():
+        args_by_name.setdefault(name, scope.args)
+    for key, (node, units) in statements.items():
+        scope = scopes[key]
+        for u in units.values():
+            ident = _identity(u)
+            if ident and u["unit"].lower() in opens.get(key, ()):
+                openers[ident].add(scope)
+        for callee, positional, keywords in _calls(node):
+            calls.append((scope, callee, positional, keywords))
+            if callee not in opens_arg:
+                continue
+            callee_args = args_by_name.get(callee, [])
+            for dummy in opens_arg[callee]:
+                actual = _actual(callee_args, dummy, positional, keywords)
+                entry = _classify_unit("OPEN", actual, scope, constants, field_types,
+                                       global_types, type_fields) if actual else None
+                if entry and _identity(entry):
+                    openers[_identity(entry)].add(scope)
+                if entry and entry["source"] == "local":
+                    opens[key].add(entry["unit"].lower())
+
+    return {"scopes": scopes, "opens": opens, "openers": openers, "calls": calls,
+            "classify": lambda actual, scope: _classify_unit(
+                "OPEN", actual, scope, constants, field_types, global_types, type_fields)}
+
+
+def _actual(callee_args, dummy, positional, keywords):
+    """The actual argument a call passes for `dummy`, or None."""
+    if dummy in keywords:
+        return keywords[dummy]
+    if dummy in callee_args:
+        i = callee_args.index(dummy)
+        if i < len(positional):
+            return positional[i]
+    return None
+
+
+def generic_interfaces(all_trees):
+    """{generic name lower: specific procedure names lower} from named
+    INTERFACE blocks, so a call through the generic name reaches its specifics.
+    """
+    out = defaultdict(set)
+    for tree in all_trees.values():
+        for block in walk(tree, f2003.Interface_Block):
+            stmts = walk(block, f2003.Interface_Stmt)
+            names = walk(stmts[0], f2003.Name) if stmts else []
+            if not names:
+                continue  # an abstract or unnamed interface
+            for proc_stmt in walk(block, f2003.Procedure_Stmt):
+                out[str(names[0]).lower()].update(n.lower() for n in get_names(proc_stmt))
+    return out
+
+
+def _depths(procedures, internal_callees):
+    """Dependency depth: 0 for a leaf, else 1 + the deepest callee. A call that
+    closes a cycle is ignored."""
+    depth, visiting = {}, set()
+
+    def visit(name):
+        if name in depth:
+            return depth[name]
+        visiting.add(name)
+        d = 0
+        for callee in internal_callees.get(name, ()):
+            if callee not in visiting:
+                d = max(d, visit(callee) + 1)
+        visiting.discard(name)
+        depth[name] = d
+        return d
+
+    for p in procedures:
+        visit(p["name"].lower())
+    return depth
+
+
+def _resolver(scopes, module_uses):
+    """A function mapping (calling scope, procedure name) to the scope keys the
+    call can mean: the same file's, else the same module's, else a USEd
+    module's, else every procedure of that name."""
+    by_name = defaultdict(list)
+    for key, scope in scopes.items():
+        by_name[key[0]].append(key)
+
+    def resolve(caller, name):
+        keys = by_name.get(name, [])
+        if len(keys) <= 1:
+            return keys
+        mine = (caller.module or "").lower()
+        for test in (lambda k: k[1] == caller.file,
+                     lambda k: mine and (scopes[k].module or "").lower() == mine,
+                     lambda k: (scopes[k].module or "").lower() in module_uses.get(mine, ())):
+            narrowed = [k for k in keys if test(k)]
+            if narrowed:
+                return narrowed
+        return keys
+
+    return resolve
+
+
+def find_ordering_exceptions(procedures, call_edges, facts, generics=None, module_uses=None,
+                             max_probes=5):
+    """The procedures leaf-first ordering gets wrong, and early probe candidates.
+
+    A procedure is an exception when it does I/O on a unit it neither holds as
+    a local nor opens itself. Its owners are found by following the unit up the
+    call chain, actual argument by actual argument, to the caller that holds it
+    as a local; a unit stored in a derived type, a module variable or a fixed
+    number is owned by whoever opens it. Sets `depth` on every procedure; a
+    call through a generic interface counts as a call to each specific.
+    Returns {"unit_io_not_owned": [...], "probe_candidates": [...]}.
+    """
+    generics = generics or {}
+    names = {p["name"].lower() for p in procedures}
+    callees, callers = defaultdict(set), defaultdict(set)
+    for e in call_edges:
+        a = e["caller"].lower()
+        for b in generics.get(e["callee"].lower(), {e["callee"].lower()}):
+            if a != b and a in names and b in names:
+                callees[a].add(b)
+                callers[b].add(a)
+    depth = _depths(procedures, callees)
+    for p in procedures:
+        p["depth"] = depth.get(p["name"].lower(), 0)
+
+    scopes = facts["scopes"]
+    resolve = _resolver(scopes, {m.lower(): {u.lower() for u in uses}
+                                 for m, uses in (module_uses or {}).items()})
+    calls_to = defaultdict(list)
+    for scope, callee, positional, keywords in facts["calls"]:
+        for specific in generics.get(callee, {callee}):
+            for key in resolve(scope, specific):
+                calls_to[key].append((scope, positional, keywords))
+    openers, opens, classify = facts["openers"], facts["opens"], facts["classify"]
+
+    def owners_by_identity(ident, owners, notes, unit):
+        found = set(openers.get(ident, set()))
+        if ident[0] == "component" and ident[1] is None:
+            found = {n for k, ns in openers.items()
+                     if k[0] == "component" and k[2] == ident[2] for n in ns}
+            if found:
+                notes.append(f"{unit}: the type holding %{ident[2]} is not declared in the "
+                             f"scanned source, so its owners are matched by component name")
+        for n in found:
+            owners.setdefault(n, None)
+        if not found:
+            notes.append({
+                "component": f"{unit} is stored in a derived type"
+                             + (f" ({ident[1]})" if ident[1] else "")
+                             + ", and nothing in the scanned source opens it",
+                "module": f"{unit} is a module variable, and nothing in the scanned source "
+                          f"opens it",
+                "literal": f"unit {ident[1]} is opened nowhere in the scanned source; the "
+                           f"Fortran runtime opens it implicitly",
+            }[ident[0]])
+
+    def owners_by_argument(key, args, dummy, owners, notes):
+        frontier, seen, d = [(key, tuple(args), dummy)], set(), 0
+        while frontier and d < 50:
+            d += 1
+            nxt = []
+            for callee, callee_args, dm in frontier:
+                for scope, positional, keywords in calls_to.get(callee, ()):
+                    actual = _actual(list(callee_args), dm, positional, keywords)
+                    entry = classify(actual, scope) if actual else None
+                    if entry is None:
+                        continue
+                    if entry["source"] == "local":
+                        owners[scope] = min(d, owners.get(scope) or d)
+                    elif entry["source"] == "host":
+                        owners[scope.host] = min(d, owners.get(scope.host) or d)
+                    elif entry["source"] == "argument" and "component" not in entry:
+                        base = re.match(r"[A-Za-z]\w*", entry["unit"]).group(0).lower()
+                        step = ((scope.name.lower(), scope.file), tuple(scope.args), base)
+                        if step not in seen:
+                            seen.add(step)
+                            nxt.append(step)
+                    elif _identity(entry):
+                        owners_by_identity(_identity(entry), owners, notes, actual.strip())
+            frontier = nxt
+        if not owners and not notes:
+            notes.append(f"no caller in the scanned source passes it a unit it holds")
+
+    exceptions = []
+    for p in procedures:
+        key = (p["name"].lower(), p["file"])
+        held = opens.get(key, set())
+        not_owned = [u for u in p["unit_io"]
+                     if u["source"] not in ("local", "host") and u["unit"].lower() not in held
+                     and not (_identity(u) and any(
+                         (o.name.lower(), o.file) == key for o in openers.get(_identity(u), ())))]
+        if not not_owned:
+            continue
+        owners, notes = {}, []
+        for u in not_owned:
+            if u["source"] == "argument" and "component" not in u:
+                owners_by_argument(key, [a.lower() for a in p["args"]],
+                                   u["unit"].lower(), owners, notes)
+            elif _identity(u):
+                owners_by_identity(_identity(u), owners, notes, u["unit"])
+            else:
+                notes.append(f"{u['unit']}: cannot tell where the unit comes from")
+        exceptions.append({
+            "name": p["name"], "module": p["module"], "file": p["file"],
+            "depth": p["depth"], "units": not_owned,
+            "owners": [{"name": o.name, "module": o.module, "file": o.file,
+                        "host": o.host.name if o.host else None, "distance": d}
+                       for o, d in sorted(owners.items(),
+                                          key=lambda kv: (kv[1] or 0, kv[0].name.lower()))],
+            "notes": list(dict.fromkeys(notes)),
+        })
+
+    flagged = {e["name"].lower() for e in exceptions}
+    by_name = {p["name"].lower(): p for p in procedures}
+    candidates = []
+    for p in procedures:
+        name = p["name"].lower()
+        cs = callees.get(name, set())
+        if (p["depth"] != 1 or p["is_generated"] or p.get("is_internal")
+                or name in flagged or not callers.get(name)
+                or any(c in flagged for c in cs)):
+            continue
+        candidates.append({"name": p["name"], "module": p["module"], "file": p["file"],
+                           "line_count": p["line_count"], "arg_count": p["arg_count"],
+                           "callees": sorted(by_name[c]["name"] for c in cs)})
+    candidates.sort(key=lambda c: (c["line_count"], c["arg_count"], c["name"].lower()))
+    return {"unit_io_not_owned": exceptions, "probe_candidates": candidates[:max_probes]}
+
+
+def _ordering_summary(ordering):
+    """The summary's section on where leaf-first ordering goes wrong."""
+    lines = ["## Ordering Exceptions", ""]
+    exc = ordering["unit_io_not_owned"]
+    lines.append(f"### Unit I/O on a unit the procedure does not open: {len(exc)}")
+    lines.append("")
+    lines.append("C++ cannot read or write a Fortran unit number. Translate each of these with the "
+                 "procedure that owns the unit, or after it, whatever their depth in the call graph.")
+    lines.append("")
+    if exc:
+        lines.append("| Procedure | Module | Depth | Unit (source) | Owner | Note |")
+        lines.append("|-----------|--------|-------|---------------|-------|------|")
+        for e in sorted(exc, key=lambda e: (e["depth"], e["name"].lower())):
+            units = ", ".join(f"`{u['unit']}` ({u['source']})" for u in e["units"])
+            owners = ", ".join(
+                o["name"] + (f" in {o['host']}" if o["host"] else "")
+                + (f" ({o['module']})" if o["module"] else "")
+                + (f", {o['distance']} up" if o["distance"] else "")
+                for o in e["owners"]) or "-"
+            lines.append(f"| {e['name']} | {e['module'] or '-'} | {e['depth']} | {units} | "
+                         f"{owners} | {'; '.join(e['notes']) or '-'} |")
+    else:
+        lines.append("(none found)")
+    lines.append("")
+    probes = ordering["probe_candidates"]
+    lines.append(f"### First non-leaf probe candidates: {len(probes)}")
+    lines.append("")
+    lines.append("A run of leaves never exercises calls between translated procedures. Translate one "
+                 "of these early, with its callees, to exercise that path before the leaf phase is long.")
+    lines.append("")
+    if probes:
+        lines.append("| Procedure | Module | Lines | Args | Callees |")
+        lines.append("|-----------|--------|-------|------|---------|")
+        for c in probes:
+            lines.append(f"| {c['name']} | {c['module'] or '-'} | {c['line_count']} | "
+                         f"{c['arg_count']} | {', '.join(c['callees'])} |")
+    else:
+        lines.append("(none found)")
+    lines.append("")
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -1201,7 +1854,9 @@ def run(src, output, deps=None, search=None, generated_markers=(), entry_points=
         print(f"Generated files: {gen_count}")
 
     # Create parser
-    fparser = ParserFactory().create(std="f2003")
+    # The Fortran 2008 parser accepts everything the 2003 one does, and syntax
+    # such as OPEN(NEWUNIT=...) that would otherwise drop a whole file.
+    fparser = ParserFactory().create(std="f2008")
 
     # Pass 1: Parse primary source
     print("\nPass 1: Parsing source files and collecting modules/procedures...")
@@ -1251,6 +1906,23 @@ def run(src, output, deps=None, search=None, generated_markers=(), entry_points=
     print("\nPass 7: Computing LOC metrics...")
     loc = compute_loc_metrics(src_files, procedures, modules, file_generated_map)
 
+    # Pass 8: Ordering exceptions
+    print("\nPass 8: Finding ordering exceptions...")
+    facts = find_unit_io(all_trees, dep_trees, procedures, type_defs)
+    ordering = find_ordering_exceptions(
+        procedures, call_edges, facts,
+        generics=generic_interfaces({**all_trees, **dep_trees}),
+        module_uses={name: m["uses"] for name, m in {**dep_modules, **modules}.items()})
+    print(f"  Unit I/O on a unit the procedure does not open: "
+          f"{len(ordering['unit_io_not_owned'])}")
+    print(f"  First non-leaf probe candidates: {len(ordering['probe_candidates'])}")
+
+    unparsed = sorted(os.path.basename(f) for f in src_files + dep_files
+                      if f not in all_trees and f not in dep_trees)
+    if unparsed:
+        print(f"\n  WARNING: {len(unparsed)} file(s) could not be parsed and are missing "
+              f"from every count: {', '.join(unparsed)}")
+
     # Write JSON outputs
     def write_json(name, data):
         path = os.path.join(output, name)
@@ -1267,9 +1939,11 @@ def run(src, output, deps=None, search=None, generated_markers=(), entry_points=
     write_json("framework_boundary.json", boundary)
     write_json("loc_metrics.json", loc)
 
+    write_json("ordering.json", ordering)
+
     # Write markdown summary
     write_summary(output, loc, procedures, call_edges, type_defs, mod_deps,
-                  uncalled, boundary)
+                  uncalled, boundary, ordering=ordering, unparsed=unparsed)
 
     print(f"\nDone. {len(procedures)} procedures inventoried across {loc['file_count']} files.")
     return 0

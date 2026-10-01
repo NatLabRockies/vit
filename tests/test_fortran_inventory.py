@@ -131,3 +131,220 @@ def test_generated_files_are_recognised_only_by_a_given_marker(src, tmp_path):
     assert marked["procedures"]["copy_state"]["is_generated"] is True
     assert marked["procedures"]["drag"]["is_generated"] is False
     assert "| Generated procedures | 1 |" in marked["summary"]
+
+
+# ---------------------------------------------------------------------------
+# Ordering exceptions
+# ---------------------------------------------------------------------------
+
+READER = """\
+module reader
+  use lib_io, only: open_out
+  implicit none
+  integer :: log_unit
+  type :: report_t
+    integer :: un_out
+  end type report_t
+  type :: summary_t
+    integer :: un_out
+  end type summary_t
+  interface get
+    module procedure get_int, get_real
+  end interface get
+contains
+  subroutine load(fname, n, x)
+    character(*), intent(in) :: fname
+    integer, intent(out) :: n
+    real(8), intent(out) :: x
+    integer :: u
+    open(newunit=u, file=fname, status='old')
+    call read_header(u, n)
+    call read_body(u)
+    call get(u, x)
+    call finish()
+  contains
+    subroutine finish()
+      close(u)
+    end subroutine finish
+  end subroutine load
+  subroutine read_header(un, n)
+    integer, intent(in) :: un
+    integer, intent(out) :: n
+    read(un, *) n
+  end subroutine read_header
+  subroutine read_body(un)
+    integer, intent(in) :: un
+    call skip_line(un)
+  end subroutine read_body
+  subroutine skip_line(un)
+    integer, intent(in) :: un
+    character(len=80) :: line
+    read(un, '(A)') line
+  end subroutine skip_line
+  subroutine get_int(un, v)
+    integer, intent(in) :: un
+    integer, intent(out) :: v
+    read(un, *) v
+  end subroutine get_int
+  subroutine get_real(un, v)
+    integer, intent(in) :: un
+    real(8), intent(out) :: v
+    read(un, *) v
+  end subroutine get_real
+  subroutine format_value(x, s)
+    real(8), intent(in) :: x
+    character(len=32), intent(out) :: s
+    write(s, '(ES12.5)') x
+  end subroutine format_value
+  subroutine say(msg)
+    character(*), intent(in) :: msg
+    print *, msg
+    write(*, *) msg
+    write(6, *) msg
+  end subroutine say
+  subroutine log_msg(msg)
+    character(*), intent(in) :: msg
+    write(log_unit, '(A)') msg
+  end subroutine log_msg
+  subroutine open_log()
+    open(unit=log_unit, file='run.log')
+  end subroutine open_log
+  subroutine debug_dump(x)
+    real(8), intent(in) :: x
+    write(401, *) x
+  end subroutine debug_dump
+  subroutine init_report(r)
+    type(report_t), intent(inout) :: r
+    call open_out(r%un_out, 'report.txt')
+  end subroutine init_report
+  subroutine init_summary(s)
+    type(summary_t), intent(inout) :: s
+    open(newunit=s%un_out, file='summary.txt')
+  end subroutine init_summary
+  subroutine write_report(r, x)
+    type(report_t), intent(in) :: r
+    real(8), intent(in) :: x
+    write(r%un_out, *) x
+  end subroutine write_report
+  subroutine write_summary(s, x)
+    type(summary_t), intent(in) :: s
+    real(8), intent(in) :: x
+    write(s%un_out, *) x
+  end subroutine write_summary
+  subroutine stamp(s)
+    character(len=11), intent(out) :: s
+    s = __DATE__
+  end subroutine stamp
+  real(8) function double_it(x)
+    real(8), intent(in) :: x
+    double_it = 2d0 * x
+  end function double_it
+  real(8) function twice_scaled(x)
+    real(8), intent(in) :: x
+    twice_scaled = double_it(double_it(x))
+  end function twice_scaled
+  subroutine compute(x)
+    real(8), intent(inout) :: x
+    x = twice_scaled(x)
+  end subroutine compute
+end module reader
+"""
+
+OTHER = """\
+module other
+  implicit none
+contains
+  subroutine read_header(un, n)
+    integer, intent(in) :: un
+    integer, intent(out) :: n
+    read(un, *) n
+  end subroutine read_header
+  subroutine other_load(n)
+    integer, intent(out) :: n
+    integer :: v
+    open(newunit=v, file='other.txt')
+    call read_header(v, n)
+  end subroutine other_load
+end module other
+"""
+
+LIB_IO = """\
+module lib_io
+  implicit none
+contains
+  subroutine open_out(un, name)
+    integer, intent(out) :: un
+    character(*), intent(in) :: name
+    open(newunit=un, file=name)
+  end subroutine open_out
+end module lib_io
+"""
+
+
+@pytest.fixture
+def ordering(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "reader.f90").write_text(READER)
+    (src / "other.f90").write_text(OTHER)
+    (src / "broken.f90").write_text("module broken\n  this is not fortran\nend module broken\n")
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "lib_io.f90").write_text(LIB_IO)
+    out = tmp_path / "out"
+    r = _vit(tmp_path, "inventory", "--src", str(src), "--deps", str(lib), "--output", str(out))
+    assert r.returncode == 0, r.stderr[-1500:]
+    data = json.loads((out / "ordering.json").read_text())
+    return {
+        "flagged": {(e["name"], e["module"]): e for e in data["unit_io_not_owned"]},
+        "probes": [c["name"] for c in data["probe_candidates"]],
+        "procedures": {(p["name"], p["module"]): p
+                       for p in json.loads((out / "function_inventory.json").read_text())},
+        "summary": (out / "inventory_summary.md").read_text(),
+    }
+
+
+def _owners(entry):
+    return [(o["name"], o["distance"]) for o in entry["owners"]]
+
+
+def test_a_unit_passed_in_is_owned_by_the_caller_that_holds_it(ordering):
+    flagged = ordering["flagged"]
+    assert _owners(flagged[("read_header", "reader")]) == [("load", 1)]
+    assert _owners(flagged[("skip_line", "reader")]) == [("load", 2)], "via read_body"
+    assert _owners(flagged[("get_int", "reader")]) == [("load", 1)], "via the generic"
+    assert _owners(flagged[("get_real", "reader")]) == [("load", 1)]
+    assert _owners(flagged[("read_header", "other")]) == [("other_load", 1)], \
+        "a same-named procedure in another module has its own owner"
+
+
+def test_stored_module_and_fixed_units(ordering):
+    flagged = ordering["flagged"]
+    assert _owners(flagged[("write_report", "reader")]) == [("init_report", None)], \
+        "opened through a library routine that opens its argument"
+    assert _owners(flagged[("write_summary", "reader")]) == [("init_summary", None)], \
+        "the same component name in another type has another owner"
+    assert _owners(flagged[("log_msg", "reader")]) == [("open_log", None)]
+    assert flagged[("debug_dump", "reader")]["owners"] == []
+    assert "unit 401 is opened nowhere" in flagged[("debug_dump", "reader")]["notes"][0]
+
+
+def test_what_is_not_an_exception(ordering):
+    flagged = {name for name, _ in ordering["flagged"]}
+    for name in ("load", "finish", "format_value", "say", "open_log", "init_report",
+                 "init_summary", "read_body", "other_load", "stamp"):
+        assert name not in flagged, name
+
+
+def test_depth_and_the_first_non_leaf_probe(ordering):
+    procs = ordering["procedures"]
+    assert procs[("double_it", "reader")]["depth"] == 0
+    assert procs[("twice_scaled", "reader")]["depth"] == 1
+    assert procs[("compute", "reader")]["depth"] == 2
+    assert ordering["probes"] == ["twice_scaled"]
+
+
+def test_files_the_parser_cannot_read_are_reported(ordering):
+    assert ("stamp", "reader") in ordering["procedures"], "a predefined cpp macro parses"
+    assert "## Files that could not be parsed: 1" in ordering["summary"]
+    assert "- broken.f90" in ordering["summary"]
