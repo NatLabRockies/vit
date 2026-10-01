@@ -51,7 +51,7 @@ one.
 
 **Extract at a call site, never at the definition.** With the pragma around a module procedure's
 definition, KGen's parent block is the module itself, the generated code is invalid, and nothing is
-captured. `vit find` lists the definition along with the calls; pick a call.
+captured. `vit find` lists the calls and leaves out the definition.
 
 **What can fail:** a line number shifted by earlier integration (extract from clean source); a call
 site the run never reaches.

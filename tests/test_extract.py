@@ -574,6 +574,50 @@ class TestFindCallSites:
         assert len(results) == 1
         assert "CALL" in results[0][2].upper()
 
+    def test_excludes_a_definition_with_a_prefix(self, tmp_path):
+        """`REAL(ReKi) FUNCTION f(...)` is the definition, not a call.
+
+        Only an unprefixed FUNCTION or SUBROUTINE statement was recognised, so a
+        typed function's definition was listed as a call site. With coverage it
+        has the most executions of any line, which would point extraction at
+        the one place where KGen captures nothing.
+        """
+        from vit.extract import find_call_sites
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "funcs.f90").write_text(textwrap.dedent("""\
+            MODULE m
+            CONTAINS
+              REAL(ReKi) FUNCTION MyTarget(p, x) RESULT(offset)
+                offset = x
+              END FUNCTION MyTarget
+              pure real(8) function Other(x)
+                real(8), intent(in) :: x
+                Other = MyTarget(1, x)
+              end function Other
+              RECURSIVE SUBROUTINE Third()
+              END SUBROUTINE Third
+            END MODULE m
+        """))
+        results = find_call_sites(str(src), "MyTarget")
+        assert [r[1] for r in results] == [8]
+        assert find_call_sites(str(src), "Third") == []
+
+    def test_finds_a_call_with_no_argument_list(self, tmp_path):
+        """`CALL Reset` has no `(`; it is still a call."""
+        from vit.extract import find_call_sites
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "main.f90").write_text(textwrap.dedent("""\
+            SUBROUTINE Driver()
+                CALL Reset
+                CALL Reset_All()
+                ! CALL Reset
+            END SUBROUTINE
+        """))
+        results = find_call_sites(str(src), "Reset")
+        assert [r[1] for r in results] == [2]
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

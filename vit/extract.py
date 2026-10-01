@@ -353,7 +353,6 @@ def find_call_sites(source_dir: str, function_name: str,
         List of (filepath, line_number, line_text) tuples
     """
     results = []
-    name_upper = function_name.upper()
     source_path = Path(source_dir)
 
     for fpath in source_path.rglob(file_pattern):
@@ -363,18 +362,35 @@ def find_call_sites(source_dir: str, function_name: str,
             continue
 
         for i, line in enumerate(lines):
-            stripped = line.strip().upper()
-            # Remove comments
-            if "!" in stripped:
-                stripped = stripped[:stripped.index("!")]
-
-            # Look for function call (as expression) or CALL statement
-            if re.search(rf'\b{name_upper}\s*\(', stripped):
-                # Exclude the function definition itself
-                if not re.match(rf'\s*(FUNCTION|SUBROUTINE)\s+{name_upper}', stripped):
-                    results.append((str(fpath), i + 1, line.rstrip()))
+            if line_calls(line, function_name):
+                results.append((str(fpath), i + 1, line.rstrip()))
 
     return results
+
+
+def line_calls(line: str, function_name: str) -> bool:
+    """Whether one source line calls `function_name`, by the rule `vit find` uses.
+
+    Outside a comment, a call is a CALL statement naming it, with or without an
+    argument list, or the name followed by `(` in an expression. The
+    procedure's own SUBROUTINE or FUNCTION statement is not a call, including
+    one with a prefix such as `REAL(ReKi) FUNCTION` or `PURE SUBROUTINE`. One
+    line at a time: a function reference whose name and `(` are on different
+    continuation lines is not found.
+    """
+    name = re.escape(function_name.upper())
+    stripped = line.strip().upper()
+    if "!" in stripped:
+        stripped = stripped[:stripped.index("!")]
+    if not (re.search(rf'\bCALL\s+{name}\b', stripped)
+            or re.search(rf'\b{name}\s*\(', stripped)):
+        return False
+    return not _defines_procedure(name).match(stripped)
+
+
+def _defines_procedure(name: str):
+    """A SUBROUTINE or FUNCTION statement for `name`, prefixes allowed."""
+    return re.compile(rf'^(?:[A-Z0-9_()\s*,=:]*?\s)?(?:FUNCTION|SUBROUTINE)\s+{name}\b')
 
 
 # Construct openers, and the END keyword that closes each. Matched against the

@@ -76,8 +76,8 @@ rerun the two `cmake` commands to recreate it.
 vit find drag
 ```
 
-This lists the definition (line 8) and the call in `step` (line 17). Extraction needs a call site
-inside a procedure, not the definition.
+This lists the call in `step` (line 17), not the definition (line 8): extraction needs a call site
+inside a procedure, never the definition.
 
 ### Extract
 
