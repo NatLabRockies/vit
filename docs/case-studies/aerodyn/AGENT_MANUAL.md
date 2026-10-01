@@ -112,7 +112,7 @@ cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
 **Cycle telemetry.** Every `vit` command logs a start/end event to `.vit/cycle_log.jsonl` in the directory it runs from (override with `VIT_TELEMETRY_LOG`, disable with `VIT_TELEMETRY=0`). Joined against Claude Code session transcripts, this yields per-function tokens, wall clock, and attempts to first verification pass. From the VIT checkout:
 
 ```bash
-python3 scripts/join_telemetry.py --cycle-log ../openfast/.vit/cycle_log.jsonl \
+python3 -m vit.telemetry join --cycle-log ../openfast/.vit/cycle_log.jsonl \
     --transcripts ~/.claude/projects/<project-key>/ \
     --out per_function.csv
 ```

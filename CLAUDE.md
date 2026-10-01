@@ -22,7 +22,7 @@ strace. `docker/Dockerfile` provides both; see `docker/README.md`.
 |---|---|
 | `vit/` | The package. `cli.py` is the `vit` entry point. |
 | `tests/` | The pytest suite. `tests/conformance/` holds the Fortran/C++ conformance matrix. |
-| `scripts/` | Standalone helpers: the Fortran inventory and the telemetry join. |
+| `scripts/` | The Fortran inventory, a standalone helper. |
 | `examples/quickstart/` | A small runnable project; `docs/GETTING_STARTED.md` runs the whole cycle on it. |
 | `docker/` | The image that runs KGen. |
 | `docs/` | User documentation. `docs/case-studies/` holds everything specific to ROSCO and AeroDyn. |
