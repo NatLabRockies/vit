@@ -34,7 +34,7 @@ VIT, after KGen
   14. Count the captured state files, and read whether the call site was reached
   15. Undo the build-file patch: restore CMakeLists.txt, remove kgen_utils.f90, reconfigure CMake  [restore]
   16. Settle KGen's source backups
-  17. Move the kernel into kernel/<FuncName>/, delete state/
+  17. Move the kernel into kernel/<FuncName>/ if calls were captured, delete state/
   18. Restore the call-site file from its backup
   19. Report: success with the number of cases, or failure (exit 1) naming the step
 ```
@@ -245,7 +245,10 @@ Whether or not KGen succeeded, VIT:
   If that fails, the report warns that the next build may still look for `kgen_utils.f90`.
 - settles KGen's source backups, as before KGen (section 3). A step that failed before the state
   Makefile moved them back leaves them beside the restored sources.
-- moves the kernel's files into `kernel/<FuncName>/` and deletes `state/`
+- if calls were captured, moves the kernel's files into `kernel/<FuncName>/`, replacing an earlier
+  kernel there. If none were, it discards them, and `kernel/<FuncName>/` from an earlier extraction
+  stays as it was, captured calls included.
+- deletes `state/`
 - restores the call-site file from its backup
 - counts the files named `<FuncName>.N.N.N` and reports the result: `✓` with the number of cases,
   or `✗` with exit code 1. A step that failed after calls were captured, such as a run that crashed

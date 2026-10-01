@@ -725,6 +725,7 @@ def cmd_extract(args, config):
             print(result["output"])
             return 0
 
+        kept_kernel = None
         if result["success"]:
             # Move KGen's output into kernel/{function_name}/ for per-function isolation.
             # KGen deposits files directly into kernel/ (which may already contain
@@ -733,15 +734,27 @@ def cmd_extract(args, config):
             if result["kernel_dir"] and Path(result["kernel_dir"]).is_dir():
                 kernel_root = Path(result["kernel_dir"])
                 per_func_dir = kernel_root / args.function_name
+                # Only files: subdirectories are other functions' kernels.
+                loose = [item for item in kernel_root.iterdir() if item.is_file()]
                 if kernel_root.resolve() != per_func_dir.resolve():
-                    if per_func_dir.exists():
-                        shutil.rmtree(per_func_dir)
-                    per_func_dir.mkdir(parents=True, exist_ok=True)
-                    # Move only files (not subdirectories, which are other functions)
-                    for item in list(kernel_root.iterdir()):
-                        if item.is_file():
+                    if result.get("state_cases", 0) == 0:
+                        # A kernel with nothing captured replaces nothing. It
+                        # used to: a failed re-extraction deleted
+                        # kernel/<FuncName>/ and the calls an earlier extraction
+                        # had captured there. Its files are discarded, so the
+                        # next extraction does not move them in with its own.
+                        for item in loose:
+                            item.unlink()
+                        if per_func_dir.is_dir():
+                            kept_kernel = per_func_dir
+                        result["kernel_dir"] = None
+                    else:
+                        if per_func_dir.exists():
+                            shutil.rmtree(per_func_dir)
+                        per_func_dir.mkdir(parents=True, exist_ok=True)
+                        for item in loose:
                             shutil.move(str(item), str(per_func_dir / item.name))
-                    result["kernel_dir"] = str(per_func_dir)
+                        result["kernel_dir"] = str(per_func_dir)
 
             # Clean up state/ (intermediate artifacts, not needed after extraction)
             state_dir = Path(result.get("state_dir", "") or "state")
@@ -782,6 +795,8 @@ def cmd_extract(args, config):
         if restore_failure:
             print(f"⚠ Restoring the build failed: {restore_failure.summary} (output in "
                   f"{restore_failure.log}). The next build may still look for kgen_utils.f90.")
+        if kept_kernel:
+            print(f"  {os.path.relpath(kept_kernel)}/, from an earlier extraction, is unchanged.")
         if steps_dir and (failure or cases == 0):
             print(f"  Every step's record and output: {steps_dir}/")
 

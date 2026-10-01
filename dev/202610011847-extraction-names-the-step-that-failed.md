@@ -1,7 +1,7 @@
 # Extraction Names the Step That Failed
 
 **Date:** 2026-10-01
-**Status:** completed
+**Status:** completed. The failed re-extraction it records as not changed was fixed the same day: an extraction that captures nothing leaves `kernel/<FuncName>/` as it was (`docs/EXTRACTION_INTERNALS.md`, section 6)
 **Scope:** `vit extract` (step records, the build and run scripts, the report, KGen's source backups), the KGen fork's call-site instrumentation, `docs/EXTRACTION_INTERNALS.md` and the documents that point to it
 
 ## Why

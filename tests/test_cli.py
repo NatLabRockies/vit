@@ -209,6 +209,60 @@ def test_extract_fails_when_it_captured_nothing(tmp_path, monkeypatch, capsys,
     assert source.read_text() == _EXTRACT_SOURCE, "the source must be restored"
 
 
+@pytest.mark.parametrize("cases", [0, 20])
+def test_a_failed_reextraction_keeps_the_earlier_kernel(tmp_path, monkeypatch, capsys, cases):
+    """An extraction that captures nothing used to replace kernel/<FuncName>/
+    all the same: on the quickstart, an extraction that failed at the run
+    deleted the 20 calls the one before it had captured. One that captures
+    something still replaces it."""
+    import argparse
+
+    import vit.cli
+    from vit.config import VitConfig
+
+    src = tmp_path / "src"
+    src.mkdir()
+    source = src / "physics.f90"
+    source.write_text(_EXTRACT_SOURCE)
+    earlier = tmp_path / "kernel" / "drag"
+    earlier.mkdir(parents=True)
+    (earlier / "drag.0.0.1").write_text("captured earlier")
+    other = tmp_path / "kernel" / "lift"
+    other.mkdir()
+    (other / "lift.0.0.1").write_text("another function")
+
+    def fake_extract(**kwargs):
+        root = tmp_path / "kernel"
+        (root / "kernel_driver.f90").write_text("new kernel")
+        for n in range(1, cases + 1):
+            (root / f"drag.0.0.{n}").write_text("captured now")
+        return {"success": True, "kernel_dir": str(root), "state_dir": None, "cmd": "",
+                "output": "", "include_ini": None, "cleaned": [], "state_cases": cases,
+                "warnings": []}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(vit.cli, "run_kgen_extract", fake_extract)
+    config = VitConfig(config_dir=str(tmp_path), source_dir="src")
+    args = argparse.Namespace(function_name="drag", file=str(source), line=11,
+                              run_args=None, assumed_size=None, dry_run=False)
+
+    rc = vit.cli.cmd_extract(args, config)
+    out = capsys.readouterr().out
+
+    assert (other / "lift.0.0.1").exists(), "another function's kernel is never touched"
+    assert not any(p.is_file() for p in (tmp_path / "kernel").iterdir()), \
+        "no file is left loose in kernel/ for the next extraction to pick up"
+    if cases == 0:
+        assert rc == 1
+        assert sorted(p.name for p in earlier.iterdir()) == ["drag.0.0.1"]
+        assert (earlier / "drag.0.0.1").read_text() == "captured earlier"
+        assert "kernel/drag/, from an earlier extraction, is unchanged." in out
+    else:
+        assert rc == 0
+        assert len(list(earlier.glob("drag.0.0.*"))) == 20
+        assert (earlier / "drag.0.0.1").read_text() == "captured now"
+
+
 @pytest.mark.parametrize("line, expected_rc, expected", [
     (4, 1, "defines drag; extraction needs a line that calls it"),
     (5, None, "Inserting KGen pragma at {source}:5"),
