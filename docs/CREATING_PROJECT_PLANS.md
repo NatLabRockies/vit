@@ -174,7 +174,8 @@ It writes the following, each as JSON, plus a markdown summary:
 
 1. **Procedure inventory:** for every procedure, its module, file, line count, arguments,
    visibility, `PURE`/`ELEMENTAL`, SAVE state, `BIND(C)`, and whether it is machine-generated.
-2. **Call graph:** who calls whom. Leaves (no callees) are the first translation targets.
+2. **Call graph:** who calls whom. Leaves (no callees) are the natural first layer, with the
+   exceptions in Step 5.
 3. **Type inventory:** every derived type and its fields, including those from dependencies.
 4. **Module dependency graph:** the USE graph, topologically sorted.
 5. **Uncalled procedures:** procedures with no call site in the scanned source, each with the
@@ -182,6 +183,8 @@ It writes the following, each as JSON, plus a markdown summary:
 6. **External interface:** procedures called from outside the scope, which must keep their
    behaviour exactly.
 7. **Line counts:** per file, module and procedure.
+8. **Ordering exceptions:** procedures that do I/O on a Fortran unit they do not open, with the
+   procedures that own it, and small non-leaf procedures to translate early (Step 5).
 
 Two inputs only you can give it:
 - **`--generated-marker`:** the text a code generator puts in the files it writes, so generated
@@ -200,11 +203,14 @@ Two inputs only you can give it:
 Investigate each before excluding any from scope. Expect the genuinely dead ones to be a small
 fraction of the first count.
 
-**Add test coverage.** Build with coverage instrumentation (gfortran's `--coverage` and gcov), run
-the program's test cases, and record which lines each case reaches. Extraction needs a run that
-reaches the call site, and coverage answers "which test case exercises this function, and how
-often?" directly, without tracing code paths by hand. It also shows code no test reaches, which
-needs another verification method.
+**Measure line coverage per test case.** Extraction needs a run that reaches the call site. List the
+program's test cases in the `coverage` section of `vit.yaml` and run `vit coverage run`: it builds
+an instrumented copy, runs each case and records which lines each reaches. `vit find FUNC
+--coverage` then answers "which test case runs this function's call sites, and how often?"
+without tracing code paths by hand. Coverage also shows what no test case reaches. For each such
+function, add a test case that reaches it, or plan another verification method:
+[`VERIFICATION_METHODS.md`](VERIFICATION_METHODS.md) says which, and `vit reachability` settles
+whether it is called at all.
 
 **Sanity check:** before writing plan text, make sure you can answer "which leaf procedure has the
 fewest arguments?" or "how many procedures in module X have no callees?" from the data alone.
@@ -266,6 +272,17 @@ For each phase:
 
 A phase you are confident about can be a checklist; a speculative one is a paragraph marked "will be
 revised".
+
+**Ordering.** Order phases by dependency layer, leaves first: a leaf that computes on its arguments
+needs nothing its caller lacks. Two exceptions, both listed in the inventory's `ordering.json`:
+- **A procedure that works on a resource another procedure owns,** such as a Fortran unit it did
+  not open, cannot be translated on its own, because C++ cannot read from a Fortran unit. Translate
+  it with its owner, or after it; once the owner holds the file as a C++ stream, such a leaf often
+  shrinks to a line of standard library. The inventory names each one's owners.
+- **The first non-leaf.** Calls between translated procedures go through machinery no leaf
+  exercises, so a long leaf-only phase builds a record of passes that says nothing about it, and
+  that machinery's defects all appear at the first non-leaf. Translate one non-leaf early, on
+  purpose, as a probe; the inventory proposes small candidates.
 
 **Deliverable:** section 5, "Phase Roadmap".
 
