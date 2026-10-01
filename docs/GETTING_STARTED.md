@@ -88,12 +88,13 @@ vit extract drag -f src/physics.f90 -l 17
 VIT marks the call site for KGen. KGen instruments the source, and VIT rebuilds and runs the
 program, which captures the inputs and outputs of the first 20 calls to `drag`. The result is
 `kernel/drag/`: the captured calls (`drag.0.0.1` to `drag.0.0.20`) and a standalone kernel that
-replays them. The source is restored afterwards. Extraction also leaves `kgen.log`, `strace.log`
-and `include.ini` in the project.
+replays them. The source is restored afterwards. Extraction also leaves `.vit/extract/`, with each
+step's record and output, and `kgen.log`, `strace.log` and `include.ini` in the project.
 
-Expect `Cases:  20`. If extraction reports `✗ Extraction captured no state data`, it exits non-zero
-and lists the errors it found; [`EXTRACTION_INTERNALS.md`](EXTRACTION_INTERNALS.md)
-section 7 is the debugging checklist.
+Expect `Cases:  20`. If extraction fails, it exits non-zero and names the step that failed, with the
+last lines of that step's output. If every step succeeded and nothing was captured, it says what
+the evidence shows, for example that the run never reached the call.
+[`EXTRACTION_INTERNALS.md`](EXTRACTION_INTERNALS.md) describes every step.
 
 ### Translate
 
@@ -251,4 +252,4 @@ test cases to extract with, and the rules it must follow. The AeroDyn case study
 - [`case-studies/`](case-studies/README.md): the two code bases VIT has been used on, ROSCO and
   AeroDyn, with their plans
 - [`EXTRACTION_INTERNALS.md`](EXTRACTION_INTERNALS.md): what extraction does, step by
-  step, and how it fails
+  step, and what it reports when a step fails

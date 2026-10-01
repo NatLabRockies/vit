@@ -78,7 +78,7 @@ file with the **call site**.
 | Code | Meaning | Written to disk |
 |---|---|---|
 | 0 | Success | the changes made |
-| 1 | Failure. Among others: `vit extract` captured no state; `vit verify` found a mismatch, or the pass was `NON_DISCRIMINATING` (below); `vit check` reported findings | nothing beyond diagnostics |
+| 1 | Failure. Among others: a step of `vit extract` failed, or it captured no state; `vit verify` found a mismatch, or the pass was `NON_DISCRIMINATING` (below); `vit check` reported findings | nothing beyond diagnostics |
 | 2 | `vit check`: the translation or the Fortran file does not exist | nothing |
 | 10 | Confirmation needed | nothing |
 | 11 | Manual rewrite needed | nothing |
@@ -142,7 +142,6 @@ measures and how it can mislead.
 |---|---|
 | `VIT_TELEMETRY` | `0` turns telemetry off. |
 | `VIT_TELEMETRY_LOG` | Writes the cycle log to this path instead of `.vit/cycle_log.jsonl`. |
-| `VIT_WRAPPER_LOG` | Makes extraction's build wrapper log what it did, to this path (`docs/EXTRACTION_INTERNALS.md`). |
 
 ## Known limitations
 
@@ -205,20 +204,25 @@ measures and how it can mislead.
 
 ### Extraction
 
-- **The call site must run.** KGen captures nothing from a call site the run never reaches. Given
-  line coverage per test case, `vit find FuncName --coverage FILE` shows which case runs it.
+- **The call site must run.** KGen captures nothing from a call site the run never reaches. When
+  nothing is captured, `vit extract` says whether the run reached the call site, and, given line
+  coverage per test case (`coverage.file`), which cases run it; `vit find FuncName --coverage FILE`
+  lists every call site's cases.
 - **Extract at a call site, not a definition.** With the pragma on a module procedure's definition,
-  KGen generates invalid code and captures nothing (dev note `202605010623`).
+  KGen generates invalid code (dev note `202605010623`); `vit extract` refuses a line that defines
+  the function.
 - **Calls are counted at the call site.** KGen counts executions of the extracted call site, so
   earlier calls in the run use up the capture range before the behaviour you want.
 - **Project flags.** KGen's kernel Makefiles do not inherit the project's flags; `fortran.flags`
   supplies them.
 - **Cross-module instrumentation.** KGen can instrument files outside the CMake target; VIT moves
-  the generated routines into the target (`docs/EXTRACTION_INTERNALS.md`, section 6, F2).
+  the generated routines into the target (`docs/EXTRACTION_INTERNALS.md`, section 7, F2).
 - **Kernel repair.** When a kernel fails to build, VIT repairs missing constants, undefined symbols
   and link errors in a loop before giving up.
 - **Fixes in the KGen fork.** Some KGen failures are fixed in the fork VIT depends on, for example
-  PROCEDURE POINTER parsing (`31d653c`).
+  PROCEDURE POINTER parsing (`31d653c`). The fork's instrumentation also records the first time
+  the call site runs (`62eb6e2`); with an older KGen, `vit extract` cannot say whether a run that
+  captured nothing reached the call site.
 
 ### Coverage
 
