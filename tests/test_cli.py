@@ -209,6 +209,56 @@ def test_extract_fails_when_it_captured_nothing(tmp_path, monkeypatch, capsys,
     assert source.read_text() == _EXTRACT_SOURCE, "the source must be restored"
 
 
+@pytest.mark.parametrize("line, expected_rc, expected", [
+    (4, 1, "defines drag; extraction needs a line that calls it"),
+    (5, None, "Inserting KGen pragma at {source}:5"),
+    (11, None, "Inserting KGen pragma at {source}:11"),
+])
+def test_extract_refuses_the_definition_line(tmp_path, monkeypatch, capsys,
+                                             line, expected_rc, expected):
+    """A pragma at the function's definition makes KGen generate code that does
+    not compile, and that used to be the only symptom: the quickstart with
+    `-l 8` reported four compile errors from the instrumented build. The
+    search for the call near the given line also took a definition within
+    five lines for a call. Line 5 is a declaration one line below the
+    definition: it is used as given, with a warning, because a call through a
+    generic interface does not name the function either."""
+    import argparse
+
+    import vit.cli
+    from vit.config import VitConfig
+
+    src = tmp_path / "src"
+    src.mkdir()
+    source = src / "physics.f90"
+    source.write_text(_EXTRACT_SOURCE)
+    calls = []
+
+    def fake_extract(**kwargs):
+        calls.append(source.read_text())
+        return {"success": False, "kernel_dir": None, "state_dir": None, "cmd": "",
+                "output": "", "include_ini": None, "cleaned": [], "state_cases": 0,
+                "warnings": []}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(vit.cli, "run_kgen_extract", fake_extract)
+    config = VitConfig(config_dir=str(tmp_path), source_dir="src")
+    args = argparse.Namespace(function_name="drag", file=str(source), line=line,
+                              run_args=None, assumed_size=None, dry_run=False)
+
+    rc = vit.cli.cmd_extract(args, config)
+    out = capsys.readouterr().out
+
+    assert expected.format(source=source) in out
+    if expected_rc is not None:
+        assert rc == expected_rc
+        assert "Calls in this file: 11" in out
+        assert not calls, "KGen must not run"
+    else:
+        assert len(calls) == 1
+    assert source.read_text() == _EXTRACT_SOURCE, "the source must be restored"
+
+
 def test_status_reports_an_integrated_function_as_verified(capsys):
     """What `vit status` prints for a function verified and then integrated."""
     import vit.cli

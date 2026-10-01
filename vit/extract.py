@@ -388,6 +388,14 @@ def line_calls(line: str, function_name: str) -> bool:
     return not _defines_procedure(name).match(stripped)
 
 
+def line_defines(line: str, function_name: str) -> bool:
+    """Whether one source line is `function_name`'s SUBROUTINE or FUNCTION statement."""
+    stripped = line.strip().upper()
+    if "!" in stripped:
+        stripped = stripped[:stripped.index("!")]
+    return bool(_defines_procedure(re.escape(function_name.upper())).match(stripped))
+
+
 def _defines_procedure(name: str):
     """A SUBROUTINE or FUNCTION statement for `name`, prefixes allowed."""
     return re.compile(rf'^(?:[A-Z0-9_()\s*,=:]*?\s)?(?:FUNCTION|SUBROUTINE)\s+{name}\b')

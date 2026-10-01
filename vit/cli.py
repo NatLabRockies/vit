@@ -29,8 +29,8 @@ from .interface_gen import (
     generate_fortran_interface_block,
     generate_fortran_wrapper,
 )
-from .extract import (find_call_sites, insert_kgen_pragma, remove_kgen_pragma,
-                      run_kgen_extract, sweep_stale_pragmas)
+from .extract import (find_call_sites, insert_kgen_pragma, line_calls, line_defines,
+                      remove_kgen_pragma, run_kgen_extract, sweep_stale_pragmas)
 from .kernel_verify import setup_kernel_cpp, run_kernel_verify
 from .integrate import generate_integration_plan, apply_integration_plan
 from .sim_compare import compare_arrays, format_result
@@ -605,25 +605,37 @@ def cmd_extract(args, config):
     try:
 
         # Re-read line number after pragma removal (may have shifted)
-        # Search for the function call near the original line
+        # Search for the function call near the original line, by the rule
+        # `vit find` uses, so the function's own definition is never taken
+        # for a call: a pragma there makes KGen generate code that does not
+        # compile, and the failure used to surface only as a build error.
         lines = Path(file_path).read_text().split("\n")
-        name_upper = args.function_name.upper()
         actual_line = None
         # Search within ±5 lines of the original
         for offset in range(0, 6):
             for candidate in [line_num - 1 + offset, line_num - 1 - offset]:
                 if 0 <= candidate < len(lines):
-                    stripped = lines[candidate].strip().upper()
-                    if "!" in stripped:
-                        stripped = stripped[:stripped.index("!")]
-                    if re.search(rf'\b{name_upper}\s*\(', stripped):
+                    if line_calls(lines[candidate], args.function_name):
                         actual_line = candidate + 1  # back to 1-indexed
                         break
             if actual_line:
                 break
 
         if actual_line is None:
-            actual_line = line_num  # Fall back to original
+            given = lines[line_num - 1] if 0 < line_num <= len(lines) else ""
+            if line_defines(given, args.function_name):
+                calls = [str(i + 1) for i, l in enumerate(lines)
+                         if line_calls(l, args.function_name)]
+                print(f"ERROR: {file_path}:{line_num} defines {args.function_name}; "
+                      f"extraction needs a line that calls it.")
+                print(f"  Calls in this file: {', '.join(calls) if calls else 'none'}. "
+                      f"`vit find {args.function_name}` lists every call.")
+                return 1
+            # A call through a generic interface or a renamed import does not
+            # name the function, so the line is used as given.
+            print(f"⚠ {file_path}:{line_num} does not call {args.function_name} by name; "
+                  f"KGen will extract the call on that line.")
+            actual_line = line_num
 
         print(f"Inserting KGen pragma at {file_path}:{actual_line}")
         insert_kgen_pragma(file_path, actual_line, function_name=args.function_name)
