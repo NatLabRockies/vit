@@ -1,5 +1,22 @@
 # PROJECT PLAN: Full ROSCO Fortran → C++ Translation
 
+> **Historical record.** This is the plan for VIT's first translation, of the ROSCO wind turbine
+> controller, as it stood when that work finished: its Current State is dated 2026-04-04, and the
+> text was last edited on 2026-04-14. It is not maintained, and it describes VIT and the ROSCO fork
+> as they were then. Two sections were added at the end on 2026-09-30: the retrospective written
+> just after the work finished, and the later findings that change what this plan claims, including a
+> restart-path bug and three latent translation defects. Read "Since this plan" before relying on
+> section 1.
+>
+> Reading notes:
+> - Kernel results in the early phases count checks, two per captured case: "40/40" is 20 cases
+>   (dev note `202603180257`). Later phases count cases.
+> - `CLAUDE.md` means the ROSCO workspace's operating manual of the time. The exit-code protocols it
+>   described are now in `docs/VIT_REFERENCE.md`. `TRANSLATION_TIPS.md` has since been replaced by
+>   VIT's check registry (`vit check --list`). `PROJECT_PLAN.md` is this document's former name.
+> - Dev notes are in this repository's `dev/`. Commit IDs are in the ROSCO fork,
+>   `https://github.com/kevinmenear/ROSCO`.
+
 ## 1. Vision and Current State
 
 ### Vision
@@ -851,4 +868,56 @@ A generality audit (2026-03-19) confirmed VIT has no ROSCO-specific logic in pro
 - [ ] Packaging — PyPI distribution, Docker image, CI/CD
 - [ ] Test on another codebase — validate VIT on a second Fortran project to prove generality
 
+---
 
+## Retrospective (written 2026-04-14, corrected 2026-09-30)
+
+First published as the worked example in the planning method, `CREATING_PROJECT_PLANS.md`, and
+moved here when that document was made generic. Five figures were corrected against the dev notes
+and the fork's history: ROSCO's size, the exception to "bit-identical", Phase 11.5's duration, the
+growth in compared values, and the age of the Phase 1 text.
+
+This plan delivered a pure-C++ port of an 11-module, ~8,600-line Fortran controller (53 C++ files) in 38 calendar days (2026-02-25 to 2026-04-03), matching the Fortran on 5,252,000 compared values except 3 tolerated ones (the Scenario 16 residual). But it was wrong in specific, informative ways, each of which became a principle of the planning method in `CREATING_PROJECT_PLANS.md`.
+
+**1. Granularity drift.** Phases 4, 5, 6, 7 and 8 all broke into sub-phases during execution (4A–D, 5A–B, 6A–B, 7A–B, 8A–C). The plan specified them as single phases. The goal of each phase was right; the step count was wrong, because the plan imposed uniform granularity on phases of very different complexity.
+
+**2. Implicit strategy decisions.** Phase 10 shifted from "mirror-translate I/O line by line through KGen" to "write idiomatic C++ for I/O, verify at the simulation level". It was the biggest strategy decision of the project, and a good one, but it arrived mid-execution (2026-04-01). The plan never asked "can KGen verify file I/O?", a question that could have been asked from day one.
+
+**3. Unknown unknowns.** The FITPACK stack scrubber, the FMA contraction fix, the KGen BIND(C) parser bug, PIIController's need for upstream Flp_Mode=2 bug fixes, the `avr_size=500` silent heap overflow: none were in the plan. They could not have been predicted, but together they took a large share of the time. A plan should budget for toolchain investigation instead of assuming the toolchain works.
+
+**4. Phase 11.5 was entirely post-hoc.** The verification push (scenarios 12–27, 13-array output, the upstream comparison chain, the adversarial audit, the performance benchmark, the integrated-branch cleanup) was about two days of work (2026-04-03 to 04-04, by its dev notes and the fork's commits) that did not exist in the plan until it was done. The "done" bar moved from "the diff is empty" to "explain every bit" without a record of the change.
+
+**5. Scope grew along an axis the plan did not track.** Verification coverage grew from 692,000 compared values to 5,252,000, about 7.6×, while the translated surface stayed the same. The plan conflated the two.
+
+**6. No confidence markers.** Phase 1 (three trivial functions) was close to fully predictable; Phase 10 (I/O) perhaps 30%; Phase 11 (the DISCON entry point) perhaps 70%. The plan wrote all of them in the same declarative voice.
+
+**7. No revisit triggers.** There were natural moments to stop and re-evaluate: after Phase 4, after the first `vit analyze-types` failure, after PIIController's bug excavation. The re-evaluations happened, but implicitly.
+
+**8. Past and future mixed without markers.** By Phase 11, the Phase 1 description was 16 days old (Phase 1 completed 2026-03-18), Phase 12 was speculation, and Current State had drifted with every update. Sections 2–4 still read as they were written in March.
+
+**9. Uneven cross-references.** Some phases cite their dev notes and commits; others do not.
+
+**10. Audited only at the end.** The plan and the workspace manual were brought up to date in one cleanup pass on 2026-04-13, after the work was done. A plan is more useful wrong-but-updated throughout than right at the end.
+
+**What the plan did well:**
+- **Section 4 (Derived Type Translation Strategy) was researched before it was written.** The type classification (BIND(C) structs, view structs, the four blocker fixes to LocalVariables) came from investigation, and it held up.
+- **Phases cite their commits and dev notes**, if not consistently.
+- **It was updated as phases completed**, so it stayed approximately right even as later phases drifted.
+- **Checkboxes** made progress visible at a glance.
+- **Two levels**: the plan as skeleton, dev notes as detail, roughly one line of plan to ten of notes.
+
+**What it would do differently under the planning method:** confidence labels from the start (Phases 1–3 committed, 4–8 planned, 9 speculative, 10–11 unknown); "how do we verify file I/O that KGen cannot extract?" as the first open question, with a decision point before Phase 10; a speculative placeholder for raising verification rigor; revisit triggers named in advance; and a Change Log recording the Phase 10 shift, the emergence of Phase 11.5 and the integrated-branch cleanup as they happened.
+
+---
+
+## Since this plan (added 2026-09-30)
+
+Later work found the following. The text above is unchanged.
+
+- **The Scenario 16 mechanism is wrong.** Section 1 and Phase 11.5 attribute the `2^-70` residual to gfortran and g++ compiling the rate limiter differently. Dev note `202607240344` reproduced the residual and showed that the rate limiter compiles to bit-identical arithmetic. The difference is a sub-float32 divergence in the double-precision state, seeded by a one-ULP difference in the wind-speed estimator's EKF covariance `MATMUL` (Fortran's intrinsic against hand-unrolled C++ loops) and amplified through the closed loop. The conclusion stands: physically negligible, and not a translation bug.
+- **The restart path was not faithful.** No scenario issued a restart (`iStatus` −8/−9), as Stage C noted, so the restart translation was never compared. A dedicated harness found the C++ restart diverging on 6 of 13 output arrays: `discon.cpp` reset the `objInst` counters before reading the checkpoint, which then restored their old values. Fixed and verified bit-identical on 2026-07-24 (dev note `202607232319`; ROSCO fork `87f3c5673` on `main`, `bbd58e346` on `integrated`).
+- **Three translations carried a grouping defect.** `sigma`, `SecLPFilter` and `SecLPFilter_Vel` wrote `a*x*x` where Fortran has `a*x**2`, which means `a*(x*x)` and can round differently. They had passed their kernels and the 5.25M-value comparison, because no sampled input exposed the difference. VIT's `exponent-grouping` check found them, and they were fixed on 2026-08-10 (ROSCO fork `7a0f87df8` on `main`, `479d97487` on `integrated`).
+- **Two locale dependencies were removed** on 2026-08-10: a date format and an upper-casing call, both of which would differ from the Fortran under a non-C locale set by the host program (`d7e27ee53` on `main`, `544972b13` on `integrated`).
+- **PreFilterMeasuredSignals was later KGen-verified**, 21/21, on 2026-07-24 (`33786842b` on `main`). Section 1 lists it among the simulation-verified functions.
+- **The generality claim did not hold.** The audits of 2026-03-19 and 2026-03-24 concluded that VIT had no ROSCO-specific logic. Dev note `202607231732` found four ROSCO/DISCON-specific literals in VIT's code, and as of 2026-09-30 they are still there (`vit/integrate.py`, `vit/kernel_verify.py`). `vit init`'s ROSCO defaults were removed on 2026-09-30.
+- **ROSCO was translated again** in August 2026, from a new fork, with per-function telemetry. The dev notes from `202608071634` onward record that run.
