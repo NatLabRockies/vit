@@ -11,7 +11,6 @@ tests run the generated scripts with bash and read what they recorded.
 """
 
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -314,3 +313,26 @@ def test_coverage_says_which_cases_run_the_call(tmp_path):
                              "v = other(v)", "drag")[0].startswith("Coverage (")
     os.remove(tmp_path / "coverage.json")
     assert _coverage_of_call(config, str(tmp_path / "src" / "physics.f90"), "v = drag(v)", "drag") == []
+
+
+@pytest.mark.parametrize("writes_marker, marker, expected", [
+    (True, True, True),
+    (True, False, False),
+    # A KGen without the marker: its absence says nothing.
+    (False, False, None),
+    (False, True, None),
+])
+def test_the_reach_marker_counts_only_when_the_instrumentation_writes_one(
+        tmp_path, writes_marker, marker, expected):
+    """The KGen fork's instrumentation writes <kernel>/<name>.reached the first
+    time the call site runs. Read without checking that the instrumentation
+    writes one, an older KGen would make every empty capture "never reached"."""
+    kernel, state = tmp_path / "kernel", tmp_path / "state"
+    kernel.mkdir()
+    state.mkdir()
+    opener = 'OPEN (NEWUNIT=kgen_unit, FILE="/w/kernel/drag.reached", STATUS="REPLACE")\n'
+    (state / "physics.f90").write_text(opener if writes_marker else "CALL kgen_check_save()\n")
+    if marker:
+        (kernel / "drag.reached").write_text("")
+    assert extract_steps.call_site_reached(str(kernel), str(state), "drag") is expected
+    assert not (kernel / "drag.reached").exists(), "the marker is removed once read"

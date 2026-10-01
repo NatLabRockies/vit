@@ -16,7 +16,7 @@ ARG EXTRA_PIP_PACKAGES=""
 
 # KGen, VIT's state-capture engine. The fork carries capture fixes VIT depends on.
 ARG KGEN_REPO=https://github.com/kevinmenear/KGen.git
-ARG KGEN_REF=d3d651626c2d2005652c8b068fa7d56e4b98776a
+ARG KGEN_REF=62eb6e2c8107e1f870ae76c2e615d8aa56e5a8da
 
 # KGen runs only on Python 2.7, which Ubuntu 24.04 no longer packages; it is built from source.
 ARG PY27_URL=https://www.python.org/ftp/python/2.7.18/Python-2.7.18.tar.xz

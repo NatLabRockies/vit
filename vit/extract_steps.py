@@ -312,6 +312,40 @@ def instrumented_build_products(directory: str, build_dir: str) -> Optional[list
     return found
 
 
+def _reach_markers(kernel_dir: str, function_name: str) -> list[Path]:
+    if not kernel_dir or not os.path.isdir(kernel_dir):
+        return []
+    name = f"{function_name}.reached".lower()
+    return [p for p in Path(kernel_dir).iterdir() if p.name.lower() == name]
+
+
+def clear_reach_marker(kernel_dir: str, function_name: str) -> None:
+    """Remove a marker an earlier extraction left, so it cannot be read as this one's."""
+    for path in _reach_markers(kernel_dir, function_name):
+        path.unlink()
+
+
+def call_site_reached(kernel_dir: str, state_dir: str, function_name: str) -> Optional[bool]:
+    """Whether the run reached the call site, from KGen's first-reach marker.
+
+    The KGen fork's instrumentation writes `<kernel>/<name>.reached` the first
+    time the call site runs, whether or not any call falls in the capture
+    range. None when the instrumentation in state/ writes no marker (a KGen
+    without that change), so its absence is never read as "not reached". The
+    marker is removed once read.
+    """
+    if not state_dir or not os.path.isdir(state_dir):
+        return None
+    needle = f"/{function_name}.reached\"".lower()
+    writes_marker = any(needle in p.read_text(errors="replace").lower()
+                        for p in Path(state_dir).iterdir()
+                        if p.is_file() and p.suffix.lower() in (".f90", ".f", ".f03", ".f08"))
+    markers = _reach_markers(kernel_dir, function_name)
+    for path in markers:
+        path.unlink()
+    return bool(markers) if writes_marker else None
+
+
 def explain_empty_capture(directory: str, *, build_dir: str = "", state_dir: str = "",
                           invocation: str = "", reached: Optional[bool] = None) -> list[str]:
     """What the evidence says when every step succeeded and nothing was captured.

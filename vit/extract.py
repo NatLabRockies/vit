@@ -1647,7 +1647,9 @@ def run_kgen_extract(
         'state_dir', 'cmd', 'output', 'include_ini', 'cleaned', 'restored',
         'state_cases', 'warnings', 'steps_dir', 'failure' (an
         extract_steps.Failure, or None when every step succeeded),
-        'restore_failure' (the same, for restoring the build afterwards), and
+        'restore_failure' (the same, for restoring the build afterwards),
+        'reached' (whether the run reached the call site, from KGen's
+        first-reach marker; None when the instrumentation writes none), and
         'empty_capture' (when every step succeeded and nothing was captured,
         what the evidence says, as report lines)
     """
@@ -1744,6 +1746,7 @@ def run_kgen_extract(
         return result
 
     # Step 6: Run KGen
+    extract_steps.clear_reach_marker(os.path.join(output_dir or ".", "kernel"), function_name)
     kgen_rc = None
     timed_out = None
     extract_steps.record(directory, "kgen", "started")
@@ -1775,6 +1778,8 @@ def run_kgen_extract(
             result["state_cases"] = count_kernel_cases(
                 result["kernel_dir"], function_name)
             result["success"] = True
+            result["reached"] = extract_steps.call_site_reached(
+                result["kernel_dir"], result["state_dir"], function_name)
 
             # Deduplicate kgen_statefile.lst. KGen's ElapsedTime phase
             # appends profiling-selected invocation triples to the CLI
@@ -1829,7 +1834,7 @@ def run_kgen_extract(
     if result["failure"] is None and result["state_cases"] == 0:
         result["empty_capture"] = extract_steps.explain_empty_capture(
             directory, build_dir=build_dir, state_dir=result["state_dir"] or "",
-            invocation=invocation)
+            invocation=invocation, reached=result.get("reached"))
     return result
 
 
