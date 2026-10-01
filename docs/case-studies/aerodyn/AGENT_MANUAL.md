@@ -61,7 +61,7 @@ Status as of 2026-09-30. The fork's `vit.yaml` lists 32 functions, all integrate
 - **Translation boundary:** Everything inside AeroDyn → C++. Everything outside (NWTC Library, InflowWind, SeaState, LinDyn) → stays Fortran, crossed via BIND(C) / view structs. Individual NWTC utility functions used by AeroDyn translated in `vit_nwtc.h`.
 - **Key architectural decisions** (dev note `202604240012`): Registry generator for Registry types, VIT `analyze-types` for hand-written types. Bottom-up phasing by dependency layer. `-ffp-contract=off` during translation. See the plan for full scope decisions and open questions.
 - **Structural inventory** (dev note `202604232137`): 507 hand-written procedures, 247 leaf functions, 5 sub-systems, 176 derived types (150 AeroDyn, 26 from the NWTC Library), 1 SAVE-state procedure. The plan adds 14 genuinely dead procedures (excluded) and 10 C-binding entry points.
-- **Line coverage data:** `docs/case-studies/aerodyn/data/line_coverage.json` in VIT's repository (gcov, generated 2026-04-25 from clean source). Regenerate from clean source: `docker exec vit-dev-openfast bash -c "cd /workspace/openfast && bash scripts/generate_coverage.sh"`.
+- **Line coverage data:** `docs/case-studies/aerodyn/data/line_coverage.json` in VIT's repository (gcov, generated 2026-04-25 from clean source at `edab46311`, imported with `vit coverage import`). Regenerate from clean source: `docker exec vit-dev-openfast bash -c "cd /workspace/openfast && bash scripts/generate_coverage.sh"`.
 
 ## AeroDyn Workflow
 
@@ -217,9 +217,9 @@ Extraction requires clean (pre-integration) source. Line numbers shift after eac
 
 **Step 1 — Query coverage data for the call site and test case:**
 ```bash
-docker exec vit-dev-openfast bash -c "python3 /workspace/vit/docs/case-studies/aerodyn/scripts/query_coverage.py --call-sites FunctionName"
+docker exec vit-dev-openfast bash -c "cd /workspace/openfast && vit find FunctionName --coverage /workspace/vit/docs/case-studies/aerodyn/data/line_coverage.json"
 ```
-This returns every call site (file:line) with which test cases exercise it. Pick the call site and test case with the most hits. **Do not manually trace code paths to guess test cases** — the coverage data is definitive (see dev note `202604250803`).
+This lists every call site (file:line, and the procedure it is in) with the test cases that run it and how often, and ends with the call site and test case with the most executions. Pick that pair unless there is a reason not to. Its line numbers are those of the source the coverage was measured on, which the output names; if the clean source of Step 2 differs, `vit find FunctionName` there gives the same call's current line. **Do not manually trace code paths to guess test cases** — the coverage data is definitive (see dev note `202604250803`).
 
 If coverage data doesn't exist yet, generate it (once, ~10 min):
 ```bash
@@ -245,10 +245,16 @@ cd /workspace/openfast && vit extract FunctionName -f modules/aerodyn/src/Caller
 ```
 **CRITICAL: The `-f` file and `-l` line must point to a CALL site (where the function is called from), NOT the function definition.** KGen requires the pragma to be inside a subroutine scope. When the pragma wraps a module-level subroutine definition, KGen's parentblock becomes the MODULE (not a subroutine), and it places `INTENT(IN/OUT)` declarations at module scope — invalid Fortran, and nothing is captured.
 
-Use the `query_coverage.py` output from Step 1 to pick the call site. For example, to extract `DBEMT_ReInit`, if coverage shows:
+Use the output of Step 1 to pick the call site. For example, to extract `DBEMT_ReInit`, Step 1 shows (abridged):
 ```
-modules/aerodyn/src/BEMT.f90:778 (BEMT_ReInit) -> ad_BAR_CombinedCases: 4
-modules/aerodyn/src/DBEMT.f90:231 (DBEMT_Init) -> ad_BAR_CombinedCases: 3
+2 call site(s) for 'DBEMT_ReInit', line numbers from the source at edab46311, where the coverage was measured:
+  modules/aerodyn/src/BEMT.f90:778 in BEMT_ReInit
+    call DBEMT_ReInit(p%DBEMT, x%DBEMT, OtherState%DBEMT, misc%DBEMT)
+    ad_BAR_CombinedCases: 4
+  modules/aerodyn/src/DBEMT.f90:231 in DBEMT_Init
+    call DBEMT_ReInit(p, x,OtherState,m)
+    ad_BAR_CombinedCases: 3
+Most executions: ad_BAR_CombinedCases runs modules/aerodyn/src/BEMT.f90:778 4 times.
 ```
 Use `-f modules/aerodyn/src/BEMT.f90 -l 778`, not `-f modules/aerodyn/src/DBEMT.f90 -l 236` (the definition). See dev note `202605010526` for the full diagnosis.
 

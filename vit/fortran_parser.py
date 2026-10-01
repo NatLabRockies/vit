@@ -521,3 +521,38 @@ def enclosing_module(source: str, procedure_name: str) -> Optional[str]:
         if decl.match(line) and not line.strip().upper().startswith("END"):
             return stack[-1] if stack else None
     return stack[-1] if stack else None
+
+_PROC_OPEN = re.compile(
+    r'^\s*(?:[A-Za-z0-9_()\s*,=:]*?\s)?(?:SUBROUTINE|FUNCTION)\s+(\w+)', re.IGNORECASE)
+_PROC_END = re.compile(r'^\s*END\s*(?:SUBROUTINE|FUNCTION)\b', re.IGNORECASE)
+_PROGRAM_OPEN = re.compile(r'^\s*PROGRAM\s+(\w+)', re.IGNORECASE)
+_PROGRAM_END = re.compile(r'^\s*END\s*PROGRAM\b', re.IGNORECASE)
+
+
+def enclosing_procedure(source: str, line_no: int) -> Optional[str]:
+    """The procedure (or main program) that line `line_no` (1-based) is in.
+
+    Tracks scope the way enclosing_module does: push on a SUBROUTINE, FUNCTION
+    or PROGRAM statement, pop on its END statement, and report what is open at
+    the line, so a line in an internal procedure names the internal one and a
+    line after it names its host again. Returns None for a line outside any
+    procedure, such as a module's specification part.
+
+    A procedure closed by a bare `END`, without SUBROUTINE or FUNCTION, is not
+    recognised as closed.
+    """
+    stack: list[str] = []
+    for i, raw in enumerate(source.split("\n"), 1):
+        line = raw.split("!", 1)[0]
+        if _PROC_END.match(line) or _PROGRAM_END.match(line):
+            if i == line_no:
+                return stack[-1] if stack else None
+            if stack:
+                stack.pop()
+            continue
+        m = _PROC_OPEN.match(line) or _PROGRAM_OPEN.match(line)
+        if m and not line.strip().upper().startswith("END"):
+            stack.append(m.group(1))
+        if i == line_no:
+            return stack[-1] if stack else None
+    return None

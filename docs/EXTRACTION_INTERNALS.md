@@ -185,7 +185,7 @@ Extraction leaves `kgen.log`, `strace.log` and `include.ini` in the project.
 
 | # | Failure | Symptom | Cause | First check |
 |---|---|---|---|---|
-| F1 | Call site not reached | no state files | the run never executes the call, or not within the capture range | Which test case reaches the line, and how often (line coverage, if you have it) |
+| F1 | Call site not reached | no state files | the run never executes the call, or not within the capture range | Which test case reaches the line, and how often: `vit find FuncName --coverage FILE`, given line coverage |
 | F2 | Cross-module instrumentation | build fails, no state files | KGen instrumented a file outside the build target | Usually fixed by the wrapper (below); with `VIT_WRAPPER_LOG`, look for its messages |
 | F3 | Stale pragmas | wrong function extracted | a `!$kgen` pragma or `.kgen_org` file left by an earlier run | `grep -rl '!$kgen' <source_dir>`; remove `*.kgen_org` |
 | F4 | `kgen_utils.f90` not compiled | no state files | the build file was not patched | The wrapper now stops with an error; check the build file's source list |
@@ -215,7 +215,8 @@ routines, and moves them into the in-target file that defines the same module. T
 When extraction captures nothing, in this order:
 
 1. **Is the call reached?** Confirm that the run in `kgen.run_cmd` executes the line, within the
-   capture range. With gcov line coverage of the test cases, this is a lookup.
+   capture range. With line coverage per test case (`vit coverage import`), this is a lookup:
+   `vit find FuncName --coverage FILE`.
 2. **See the command.** `vit extract FuncName -f file -l LINE --dry-run` prints the KGen command and
    the wrapper. Check the paths, the defines and the test case.
 3. **Generate without building.** Run KGen with no-op commands to get `kernel/` and `state/` for

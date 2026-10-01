@@ -167,7 +167,7 @@ Functions that ALLOCATE the components of an `INTENT(OUT)` derived type stay in 
 
 ### OQ4: r-test coverage [answered 2026-04-25]
 
-9 BEMT-path cases + 8 OLAF-path cases cover BEMT, FVW, UnsteadyAero, AirfoilInfo, DBEMT. **Not covered:** AeroAcoustics (separate driver), C-binding (called from C), linearization (requires full OpenFAST). gcov line coverage per test case is in `data/line_coverage.json` (generated 2026-04-25 from clean source) and is how extraction test cases are chosen (`scripts/query_coverage.py`, beside this plan; dev note `202604250803`). It covers 17 of the 18 r-test cases: `ad_MHK_RM1_Fixed_UA`, added later as the 17th baseline, is not in it.
+9 BEMT-path cases + 8 OLAF-path cases cover BEMT, FVW, UnsteadyAero, AirfoilInfo, DBEMT. **Not covered:** AeroAcoustics (separate driver), C-binding (called from C), linearization (requires full OpenFAST). gcov line coverage per test case is in `data/line_coverage.json` (generated 2026-04-25 from clean source) and is how extraction test cases are chosen (`vit find FunctionName --coverage data/line_coverage.json`; dev note `202604250803`). It covers 17 of the 18 r-test cases: `ad_MHK_RM1_Fixed_UA`, added later as the 17th baseline, is not in it.
 
 ### OQ5: OpenMP in FVW [answered]
 

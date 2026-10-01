@@ -89,6 +89,29 @@ def main():
     p_find = subparsers.add_parser("find", help="Find call sites for a function")
     p_find.add_argument("function_name", help="Function name to find")
     p_find.add_argument("--source-dir", help="Override source directory")
+    p_find.add_argument("--coverage", metavar="FILE",
+                        help="Line coverage from `vit coverage import`: show which test "
+                             "cases reach each call site, and how often")
+
+    # --- coverage ---
+    p_cov = subparsers.add_parser(
+        "coverage", help="Line coverage per test case: import it, or query a line")
+    cov_sub = p_cov.add_subparsers(dest="coverage_action", required=True)
+    p_cov_imp = cov_sub.add_parser(
+        "import", help="Merge per-test-case gcov JSON (gcov -j) into one coverage file")
+    p_cov_imp.add_argument("--gcov-dir", required=True,
+                           help="Directory with one subdirectory of .gcov.json.gz files "
+                                "per test case")
+    p_cov_imp.add_argument("--source-root", required=True,
+                           help="Root of the source tree; paths are stored relative to it")
+    p_cov_imp.add_argument("--output", "-o", required=True, help="Coverage file to write")
+    p_cov_imp.add_argument("--prefix", default=None,
+                           help="Keep only files under this path, relative to the source root")
+    p_cov_line = cov_sub.add_parser("line", help="Which test cases run a line, and how often")
+    p_cov_line.add_argument("location", metavar="FILE:LINE",
+                            help="Source file, relative to the source root, and line number")
+    p_cov_line.add_argument("--coverage", required=True, metavar="FILE",
+                            help="Coverage file from `vit coverage import`")
 
     # --- parse ---
     p_parse = subparsers.add_parser("parse", help="Parse a function signature")
@@ -272,6 +295,8 @@ def _dispatch(args, config, parser):
         return cmd_inventory(args)
     elif args.command == "find":
         return cmd_find(args, config)
+    elif args.command == "coverage":
+        return cmd_coverage(args)
     elif args.command == "parse":
         return cmd_parse(args, config)
     elif args.command == "extract":
@@ -337,6 +362,8 @@ def cmd_inventory(args):
 def cmd_find(args, config):
     """Find call sites for a function."""
     source_dir = args.source_dir or config.abs_source_dir
+    if getattr(args, "coverage", None):
+        return _find_with_coverage(args.function_name, source_dir, args.coverage)
     sites = find_call_sites(source_dir, args.function_name)
 
     if not sites:
@@ -347,6 +374,92 @@ def cmd_find(args, config):
     for filepath, line_num, line_text in sites:
         print(f"  {filepath}:{line_num}")
         print(f"    {line_text.strip()}")
+    return 0
+
+
+def _by_count(hits):
+    return sorted(hits.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
+def _find_with_coverage(function_name, source_dir, coverage_file):
+    """Call sites with the test cases that reach each (vit/coverage.py)."""
+    from . import coverage as cov
+
+    data = cov.load(coverage_file)
+    sites, source = cov.call_sites(data, source_dir, function_name)
+    commit = (source["commit"] or "")[:12]
+    if source["kind"] == "commit":
+        where = f"the source at {commit}, where the coverage was measured"
+    elif commit:
+        where = (f"the working tree. The coverage was measured at {commit}, which this "
+                 f"repository does not have, so lines may have moved")
+    else:
+        where = ("the working tree. The coverage records no commit, so lines may have "
+                 "moved since it was measured")
+
+    if not sites:
+        print(f"No call sites found for '{function_name}' in {source_dir}, "
+              f"reading {where}.")
+        return 1
+    print(f"{len(sites)} call site(s) for '{function_name}', line numbers from {where}:")
+    for site in sites:
+        caller = f" in {site['caller']}" if site["caller"] else ""
+        print(f"  {site['path']}:{site['line']}{caller}")
+        print(f"    {site['text']}")
+        if not site["hits"]:
+            print("    no test case runs this line")
+        for case, count in _by_count(site["hits"]):
+            print(f"    {case}: {count}")
+    ranked = [(count, case, site) for site in sites for case, count in site["hits"].items()]
+    if ranked:
+        count, case, site = max(ranked, key=lambda t: t[0])
+        print(f"Most executions: {case} runs {site['path']}:{site['line']} {count} times.")
+    else:
+        print("No test case runs any of these call sites.")
+    return 0
+
+
+def cmd_coverage(args):
+    """`vit coverage import` and `vit coverage line` (vit/coverage.py)."""
+    from . import coverage as cov
+
+    if args.coverage_action == "import":
+        data, report = cov.import_gcov(args.gcov_dir, args.source_root, prefix=args.prefix)
+        meta = data["metadata"]
+        if not data["files"]:
+            print(f"No coverage imported from {args.gcov_dir}: "
+                  f"{len(meta['test_cases'])} test case directories, "
+                  f"{report['gcov_files']} gcov files, no line that ran under "
+                  f"{meta['source_root']}" + (f"/{args.prefix}" if args.prefix else "") + ".",
+                  file=sys.stderr)
+            return 1
+        cov.write(data, args.output)
+        print(f"Wrote {args.output}: {meta['file_count']} source files, "
+              f"{len(meta['test_cases'])} test cases, {report['gcov_files']} gcov files")
+        print(f"  source root: {meta['source_root']}, commit "
+              + (meta["source_commit"] or "not recorded (not a git repository)"))
+        if report["cases_without_data"]:
+            print(f"  test cases with no gcov files: {', '.join(report['cases_without_data'])}")
+        if report["outside_root"]:
+            print(f"  left out: {len(report['outside_root'])} file(s) outside the source root")
+        if report["filtered"]:
+            print(f"  left out: {len(report['filtered'])} file(s) not under {args.prefix}")
+        for problem in report["unreadable"]:
+            print(f"  WARNING: unreadable: {problem}")
+        return 0
+
+    location, _, line = args.location.rpartition(":")
+    if not location or not line.isdigit():
+        print(f"Expected FILE:LINE, got {args.location}", file=sys.stderr)
+        return 2
+    data = cov.load(args.coverage)
+    hits = cov.line_hits(data, location, int(line))
+    if not hits:
+        print(f"No test case runs {location}:{line}.")
+        return 1
+    print(f"{location}:{line}")
+    for case, count in _by_count(hits):
+        print(f"  {case}: {count}")
     return 0
 
 

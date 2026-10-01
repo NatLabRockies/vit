@@ -48,7 +48,8 @@ through a shell, from directories KGen chooses, so give them absolute paths.
 |---|---|---|
 | `vit init` | Write a starter `vit.yaml` | `--name`, `--source-dir`, `--build-cmd`, `--run-cmd` |
 | `vit inventory` | Inventory a code base for planning: procedures, call graph, types, module graph, uncalled procedures, line counts. Needs fparser (`pip install 'vit[inventory]'`) | `--src`, `--output`, `--deps`, `--search`, `--generated-marker`, `--entry-point`, `--entry-points-file` |
-| `vit find` | Find a function's call sites | `--source-dir` |
+| `vit find` | Find a function's call sites; with `--coverage`, the test cases that run each, and how often | `--source-dir`, `--coverage FILE` |
+| `vit coverage` | `import`: merge line coverage per test case from `gcov -j` output into one file. `line`: which test cases run one line | `import --gcov-dir DIR --source-root DIR --output FILE [--prefix PATH]`; `line FILE:LINE --coverage FILE` |
 | `vit parse` | Print a function's parsed signature | `-f FILE` |
 | `vit extract` | Capture a function's calls with KGen | `-f FILE -l LINE` (the call site), `--run-args`, `--assumed-size NAME=SIZE`, `--dry-run` |
 | `vit translate` | Write the C++ scaffold and print the prompt | `-f FILE` (the definition), `--module`, `-o DIR` |
@@ -161,7 +162,8 @@ person's behalf.
 
 ### Extraction
 
-- **The call site must run.** KGen captures nothing from a call site the run never reaches.
+- **The call site must run.** KGen captures nothing from a call site the run never reaches. Given
+  line coverage per test case, `vit find FuncName --coverage FILE` shows which case runs it.
 - **Extract at a call site, not a definition.** With the pragma on a module procedure's definition,
   KGen generates invalid code and captures nothing (dev note `202605010623`).
 - **Calls are counted at the call site.** KGen counts executions of the extracted call site, so

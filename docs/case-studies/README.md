@@ -24,5 +24,4 @@ integrated. Translation fork: `https://github.com/kevinmenear/openfast`.
 | [`aerodyn/PROJECT_PLAN.md`](aerodyn/PROJECT_PLAN.md) | The living plan: scope, key decisions, phases and current state |
 | [`aerodyn/AGENT_MANUAL.md`](aerodyn/AGENT_MANUAL.md) | The operating manual an agent works from: the workspace, the per-function workflow, extraction and test cases |
 | [`aerodyn/NWTC_UTILITIES.md`](aerodyn/NWTC_UTILITIES.md) | The shared C++ translations of NWTC Library routines |
-| [`aerodyn/data/`](aerodyn/data/) | The structural inventory (procedures, call graph, types, modules, line counts) and gcov line coverage of 17 test cases |
-| [`aerodyn/scripts/`](aerodyn/scripts/) | `parse_gcov.py` builds the line coverage; `query_coverage.py` reads it to choose a call site and test case for extraction |
+| [`aerodyn/data/`](aerodyn/data/) | The structural inventory from `vit inventory` (procedures, call graph, types, modules, line counts), and line coverage of 17 test cases for `vit find --coverage` |

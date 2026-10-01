@@ -32,7 +32,7 @@ status line before relying on a note.
 | `PROJECT_PLAN_AERODYN.md` | `docs/case-studies/aerodyn/PROJECT_PLAN.md` |
 | `docs/NWTC_UTILITIES.md` | `docs/case-studies/aerodyn/NWTC_UTILITIES.md` |
 | `analysis/aerodyn/` | `docs/case-studies/aerodyn/data/` |
-| `scripts/query_coverage.py`, `scripts/parse_gcov.py` | `docs/case-studies/aerodyn/scripts/` |
+| `scripts/query_coverage.py`, `scripts/parse_gcov.py` | `vit find --coverage`, `vit coverage import` and `vit coverage line` (`vit/coverage.py`) |
 | `scripts/join_telemetry.py` | `python3 -m vit.telemetry join` (`vit/telemetry.py`) |
 | `scripts/fortran_inventory.py` | `vit inventory` (`vit/inventory.py`) |
 | `GETTING_STARTED.md`, `CREATING_PROJECT_PLANS.md` | `docs/` |
