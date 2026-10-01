@@ -690,6 +690,11 @@ def _generate_cmake_patches(cmake_file: str, cpp_source_name: str,
         detected_target = _find_target_for_source(content, fortran_source)
 
     effective_target = detected_target or target_name
+    if not effective_target:
+        raise ValueError(
+            f"Could not tell which CMake target in {cmake_file} builds "
+            f"{fortran_source or 'the Fortran source'}. Set build_system.target_name "
+            f"in vit.yaml to the add_library target it belongs to.")
 
     # --- Pattern 1: set(SOURCES ...) ---
     has_sources_var = re.search(

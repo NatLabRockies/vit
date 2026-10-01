@@ -41,15 +41,14 @@ DEFAULT_CONFIG = {
     "build_system": {
         "type": "cmake",  # or "make"
         "cmake_file": "CMakeLists.txt",
-        "target_name": "discon",
+        # Optional: `vit integrate` finds the add_library target that lists the
+        # source file, and uses this only when it cannot.
+        "target_name": "",
     },
     "fortran": {
-        "kind_aliases": {
-            "ReKi": "REAL(8)",
-            "DbKi": "REAL(8)",
-            "SiKi": "REAL(4)",
-            "IntKi": "INTEGER(4)",
-        },
+        # The project's own kind parameters, e.g. {"ReKi": "REAL(8)"}. None by
+        # default: a guessed precision is worse than an unmapped one.
+        "kind_aliases": {},
         "compiler": "gfortran",
         "flags": "",  # Extra Fortran flags for kernel compilation (e.g., -fdefault-real-8)
     },
@@ -76,14 +75,9 @@ class VitConfig:
 
     build_type: str = "cmake"
     cmake_file: str = "CMakeLists.txt"
-    target_name: str = "discon"
+    target_name: str = ""  # fallback when integrate cannot find the target
 
-    kind_aliases: dict = field(default_factory=lambda: {
-        "ReKi": "REAL(8)",
-        "DbKi": "REAL(8)",
-        "SiKi": "REAL(4)",
-        "IntKi": "INTEGER(4)",
-    })
+    kind_aliases: dict = field(default_factory=dict)
     fortran_compiler: str = "gfortran"
     cxx_compiler: str = "g++"
     fortran_runtime_libs: str = ""  # "" = derive from fortran_compiler
@@ -168,8 +162,8 @@ def load_config(config_path: Optional[str] = None) -> VitConfig:
         invocation=kgen.get("invocation", "0:0:1-20"),
         build_type=build.get("type", "cmake"),
         cmake_file=build.get("cmake_file", "CMakeLists.txt"),
-        target_name=build.get("target_name", "discon"),
-        kind_aliases=fortran.get("kind_aliases", DEFAULT_CONFIG["fortran"]["kind_aliases"]),
+        target_name=build.get("target_name", ""),
+        kind_aliases=fortran.get("kind_aliases", {}),
         fortran_compiler=fortran.get("compiler", "gfortran"),
         cxx_compiler=fortran.get("cxx_compiler", "g++"),
         fortran_runtime_libs=fortran.get("runtime_libs", ""),
@@ -310,6 +304,9 @@ def init_config(project_dir: str = ".", **overrides) -> str:
 
     Returns the path to the created config file.
     """
+    # Verification is bit-for-bit, so FMA contraction must be off in the
+    # kernels as it must be in the project's own build.
+    overrides.setdefault("fortran_flags", "-ffp-contract=off")
     config = VitConfig(config_dir=project_dir, **overrides)
     return save_config(config, os.path.join(project_dir, CONFIG_FILENAME))
 

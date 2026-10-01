@@ -165,6 +165,15 @@ class TestInitConfig:
         assert config.project_name == "MyProject"
         assert config.source_dir == "my/src"
 
+    def test_writes_no_project_specific_defaults(self, tmp_path):
+        """`vit init` used to write ROSCO's target (`discon`) and ROSCO's kind
+        aliases into every new project, where they were wrong and silent: a
+        wrong precision for ReKi changes every translated type."""
+        config = load_config(init_config(str(tmp_path)))
+        assert config.target_name == ""
+        assert config.kind_aliases == {}
+        assert "-ffp-contract=off" in config.fortran_flags
+
 
 # === record_translation tests ===
 

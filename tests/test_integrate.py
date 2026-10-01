@@ -222,6 +222,30 @@ class TestGenerateCmakePatches:
         descriptions = [p.description for p in patches]
         assert any("CXX" in d for d in descriptions)
 
+    def test_finds_the_target_without_a_configured_name(self, tmp_path):
+        """With the source listed in an add_library, no target_name is needed."""
+        cmake = self._write_cmake(tmp_path,
+            "project(toy LANGUAGES Fortran)\n"
+            "add_library(physics STATIC\n"
+            "    src/physics.f90\n"
+            ")\n"
+        )
+        patches = _generate_cmake_patches(cmake, "drag.cpp", "",
+                                          fortran_source="src/physics.f90")
+        assert any("to physics source list" in p.description for p in patches)
+
+    def test_no_target_is_an_error_not_a_silent_skip(self, tmp_path):
+        """No configured name and nothing to detect it from: stop and say so.
+        Otherwise no pattern matches, the C++ never enters the build, and the
+        failure surfaces later as an unrelated link error."""
+        cmake = self._write_cmake(tmp_path,
+            "project(toy LANGUAGES Fortran)\n"
+            "add_library(physics STATIC ${SOURCES})\n"
+        )
+        with pytest.raises(ValueError, match="build_system.target_name"):
+            _generate_cmake_patches(cmake, "drag.cpp", "",
+                                    fortran_source="src/physics.f90")
+
     def test_skips_cxx_if_present(self, tmp_path):
         cmake = self._write_cmake(tmp_path,
             "project(ROSCO VERSION 2.9.0 LANGUAGES Fortran C)\n"
