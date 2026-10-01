@@ -1,298 +1,247 @@
-# Getting Started with VIT on ROSCO
+# Getting Started with VIT
 
-## What This Is
+VIT (Verified Incremental Translator) moves a Fortran code base to C++ one function at a time, and
+checks each step against the original. For each function it:
 
-VIT (Verified Incremental Translator) is an agent-driven pipeline for verified Fortran→C++ translation in scientific codebases. It captures runtime state from real simulations, verifies that C++ translations produce bit-identical results, and integrates them into the codebase.
+1. **extracts** the function's real inputs and outputs from a run of your program, using KGen
+2. **translates**: generates a C++ scaffold and a translation prompt
+3. **verifies** a C++ translation against the captured calls, in a standalone kernel
+4. **integrates** the verified C++ into your build, replacing the Fortran body
 
-VIT is designed to be driven by a coding agent — Claude Code, OpenCode, Codex, Cursor, or any agent that can run shell commands and follow project instructions. The agent orchestrates VIT's CLI commands, handles interactive decision protocols, and mediates between VIT and you. You bring the Fortran/C++ domain expertise; the agent handles the tooling.
+VIT does not write the translation. You do, or a coding agent does.
 
-ROSCO is an NREL wind turbine controller written in Fortran. It is the test case for VIT. You will walk through the full translation workflow — extracting functions, writing (or generating) C++ translations, verifying them against captured runtime state, and integrating them into the codebase.
+This guide builds VIT's container image, runs the whole cycle on a small bundled example, and then
+covers what your own project needs.
 
----
+## Requirements
 
-## Repos
+- **Docker**: Docker Desktop, Colima or Docker Engine. Extraction runs KGen, which needs Linux and
+  Python 2.7; the image provides both, along with gfortran, g++ and CMake. This guide was tested
+  with Colima on Apple Silicon.
+- **git**, to get VIT.
 
-Three repos, cloned into a shared workspace directory:
-
-```
-vit_translation/
-  vit/           → git@github.com:NatLabRockies/vit.git       (the tool)
-  ROSCO/         → git@github.com:kevinmenear/ROSCO.git        (the codebase — fork of NREL/ROSCO)
-  KGen/          → git@github.com:kevinmenear/KGen.git             (fork of NCAR/KGen)
-```
-
-**What goes where:**
-- VIT tool code, tests, dev notes, PROJECT_PLAN.md → **VIT repo**
-- C++ translations, vit.yaml, kernel fixtures, TRANSLATION_TIPS.md → **ROSCO repo**
-
----
-
-## Environment Setup
-
-All VIT commands, ROSCO builds, and KGen operations run inside a Docker container. KGen's Fortran parser does not work on macOS — never run VIT commands directly on the Mac.
-
-**Prerequisites:** Docker Desktop or [Colima](https://github.com/abiosoft/colima) on macOS. The container image is ARM (Apple Silicon). If you're on an Intel Mac, let us know.
-
-1. **Clone the repos** into a single workspace directory:
-   ```bash
-   mkdir -p ~/vit_translation && cd ~/vit_translation
-   git clone git@github.com:NatLabRockies/vit.git
-   git clone git@github.com:kevinmenear/ROSCO.git
-   git clone git@github.com:kevinmenear/KGen.git
-   ```
-
-2. **Load the shared Docker image:**
-   ```bash
-   docker load < vit-dev-image.tar.gz
-   ```
-
-3. **Create and start the container** with your workspace mounted as `/workspace`:
-   ```bash
-   docker run -d --name vit-dev \
-       -v ~/vit_translation:/workspace \
-       vit-dev-image
-   ```
-   Replace `~/vit_translation` with wherever you cloned the repos.
-
-4. **Install VIT and ROSCO** inside the container:
-   ```bash
-   docker exec -it vit-dev bash -c "pip3 install -e /workspace/vit --break-system-packages"
-   docker exec -it vit-dev bash -c "pip3 install -e /workspace/ROSCO --break-system-packages"
-   ```
-   This creates editable installs so the container uses your local clones.
-
-5. **Verify everything works:**
-   ```bash
-   docker exec -it vit-dev bash -c "vit --help"
-   docker exec -it vit-dev bash -c "python2.7 --version"
-   docker exec -it vit-dev bash -c "gfortran --version | head -1"
-   docker exec -it vit-dev bash -c "cd /workspace/ROSCO && vit verify saturate translations/Functions/saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/saturate 2>&1 | tail -3"
-   ```
-   The first three commands confirm the toolchain is present. The last command runs a real verification — it should show `40/40 passed`.
-
-6. **Start the container** if it's stopped:
-   ```bash
-   docker start vit-dev
-   ```
-
-Commands in the container look like:
-```bash
-docker exec -it vit-dev bash -c "cd /workspace/ROSCO && <command>"
-```
-
----
-
-## The Agent-Driven Workflow
-
-VIT is not a standalone CLI tool you memorize commands for. It is designed to be driven by a coding agent that reads the project documentation and orchestrates the pipeline interactively with you.
-
-### How it works
-
-1. Your coding agent reads `CLAUDE.md` in the VIT repo root — this is the full operating manual (~50KB) covering the development environment, workflow steps, testing protocols, known limitations, and everything the agent needs to drive VIT correctly.
-
-2. You tell the agent what you want to do ("translate the saturate function", "verify this C++ file", "prepare a clean ROSCO baseline").
-
-3. The agent runs VIT commands inside the Docker container and interprets the results.
-
-4. When VIT encounters a decision that requires human judgment, it signals the agent with structured exit codes:
-   - **Exit code 10 (Confirmation needed):** VIT inferred a value from source evidence but isn't certain. The agent presents the assumption — what was inferred, from where, what value will be used. You confirm or provide an alternative. The agent re-runs with the confirmed value.
-   - **Exit code 11 (Manual rewrite needed):** VIT can auto-rewrite most references to a field but found code it can't safely transform (e.g., complex arithmetic). The agent proposes a replacement, you approve or adjust, and the agent re-runs with the override.
-
-5. These protocols keep you in the loop for every decision that requires judgment — VIT never silently guesses.
-
-### Agent configuration
-
-- **Claude Code:** CLAUDE.md is read automatically from the repo root. No extra setup needed.
-- **Other agents (OpenCode, Codex, Cursor, etc.):** Load the contents of `vit/CLAUDE.md` into the agent's system context — project instructions, custom instructions, or whatever mechanism the agent provides for persistent context. This file is the source of truth for how to use VIT.
-
----
-
-## Initialize Your Agent's Context
-
-**This is the most important step.** Before doing any work, have your agent read the project documentation, then use it as a teacher to build your understanding.
-
-Tell your agent:
-
-> "Read these files to understand the VIT project: GETTING_STARTED.md, PROJECT_PLAN.md, guide_ROSCO.md, and the dev notes in vit/dev/. Then let's discuss — I want to understand the workflow before we start."
-
-Then ask questions:
-
-- "Walk me through the VIT pipeline — what does each step do?"
-- "How does the Docker container work? Why can't I run VIT on Mac?"
-- "What are exit codes 10 and 11? Give me an example of each."
-- "Show me what functions have been translated so far."
-- "What does a typical translation session look like end to end?"
-- "What is KGen and why does VIT need it?"
-- "How does the verification work — what does 40/40 IDENTICAL mean?"
-
-The agent has full context from CLAUDE.md, the project plan, the dev notes, and the guide. It can explain any aspect of the project, show you the current state, and walk you through workflows. This is faster and more effective than reading 50KB of documentation yourself.
-
----
-
-## Prepare a Clean ROSCO
-
-The ROSCO fork you received includes bug fixes, type compatibility changes, `vit.yaml` configuration, and translation infrastructure. But to walk through the translation workflow from scratch, you need **clean Fortran source files** — no integration wrappers from previous translations.
-
-Tell your agent:
-
-> "Prepare ROSCO for a clean build — reset the source files to their pre-integration state and build a pure-Fortran baseline."
-
-The agent knows how to do this (it's documented in CLAUDE.md). It will:
-
-1. **Reset Fortran source files** to upstream, removing any C++ integration wrappers
-2. **Preserve what must stay:** bug fixes (two uninitialized variables in Flp_Mode=2 research code), type compatibility changes (ROSCO_Types.f90 with BIND(C)), CMakeLists.txt settings (`-ffp-contract=off` for deterministic floating-point)
-3. **Create C++ stubs** for files referenced in CMakeLists.txt
-4. **Build clean Fortran** and run the simulation to capture a baseline output
-
-The baseline output (`baseline_output.txt`) is your reference. After translating and integrating any function, you rebuild and diff against it. An empty diff means the C++ produces byte-identical results to the original Fortran.
-
----
-
-## Your First Translation
-
-Once the baseline is captured, pick a function and walk through the full pipeline. `saturate` is the simplest starting point — three scalar arguments, one line of logic (`MIN(MAX(val, minval), maxval)`).
-
-Tell your agent:
-
-> "Let's translate the saturate function. Walk me through the full pipeline."
-
-The agent will drive five steps:
-
-1. **Extract** (`vit extract`) — KGen instruments the Fortran code, rebuilds, runs the simulation, and captures the runtime inputs/outputs of `saturate` across 20 invocations. This produces a kernel directory with state files.
-
-2. **Translate** (`vit translate`) — VIT generates a C++ scaffold with the correct function signature and a translation prompt containing the original Fortran source, struct definitions, and project-specific tips. You write the algorithm (or the agent generates it via LLM and you review).
-
-3. **Verify** (`vit verify`) — VIT wires the C++ into the KGen kernel, compiles it, and runs verification against all captured state. You're looking for `40/40 passed` — every captured invocation produces bit-identical output.
-
-4. **Integrate** (`vit integrate --apply`) — VIT patches the Fortran module (adds an interface block and wrapper), updates CMakeLists.txt (enables C++, adds the source file, links stdc++), and generates the `extern "C"` wrapper file.
-
-5. **Rebuild and diff** — Rebuild ROSCO with the C++ integrated and compare simulation output against the baseline. Empty diff = success.
-
-As the Fortran/C++ expert, your role is to evaluate the translations, understand what the code does, and make judgment calls when VIT or the agent asks. The agent handles the tooling orchestration — running commands, interpreting output, managing files.
-
----
-
-## Progressing Through Functions
-
-After `saturate`, the existing translations in `ROSCO/translations/` serve as references for what verified C++ looks like at different complexity levels. Work through functions in order of increasing complexity:
-
-**Simple scalars:**
-- `saturate`, `wrap_180`, `wrap_360` — pure functions, scalar args, no state
-
-**Arrays and error handling:**
-- `interp1d`, `sigma` — assumed-shape arrays, ErrorVariables struct pointer
-
-**Struct pointers (filters):**
-- `LPFilter`, `HPFilter`, `SecLPFilter` — FilterParameters struct pointer, instance-indexed state fields
-
-**OPTIONAL arguments:**
-- `NotchFilter`, `NotchFilterSlopes` — Fortran OPTIONAL args handled via sentinel values
-
-**Struct read/write (controllers):**
-- `PIController`, `PIIController`, `ResController` — piParams/resParams struct pointers with fields updated on each call
-
-Each follows the same pipeline: extract → translate → verify → integrate → rebuild → diff. The complexity increases (struct pointers, instance-indexed state, OPTIONAL arguments, cross-module calls) but the workflow is identical. The agent adapts automatically — it generates the right interface layer, struct headers, and kernel patches for each case.
-
----
-
-## Troubleshooting
-
-### Container image won't run
-
-If you see `exec format error` or `platform mismatch`, the image is ARM (Apple Silicon) and your machine is Intel x86. You'll need to build the container from scratch (see below).
-
-### `vit: command not found` after loading the image
-
-The editable installs need to be re-created after mounting your workspace. Run step 4 from Environment Setup:
-```bash
-docker exec -it vit-dev bash -c "pip3 install -e /workspace/vit --break-system-packages"
-docker exec -it vit-dev bash -c "pip3 install -e /workspace/ROSCO --break-system-packages"
-```
-
-### Container was destroyed or corrupted
-
-Re-create it from the image:
-```bash
-docker run -d --name vit-dev \
-    -v ~/vit_translation:/workspace \
-    vit-dev-image
-```
-Then re-run the `pip3 install -e` commands above.
-
----
-
-## Building the Container from Scratch
-
-If the shared image doesn't work on your machine (wrong architecture, corrupted, etc.), you can build the environment from scratch.
-
-**1. Create a container from a base Ubuntu image:**
-```bash
-docker run -d --name vit-dev \
-    -v ~/vit_translation:/workspace \
-    ubuntu:24.04 \
-    tail -f /dev/null
-```
-
-**2. Install system packages:**
-```bash
-docker exec -it vit-dev bash -c "
-    apt-get update &&
-    apt-get install -y \
-        gfortran g++ cmake make \
-        python3 python3-pip python3-dev \
-        libssl-dev zlib1g-dev libffi-dev \
-        git strace
-"
-```
-
-**3. Build Python 2.7 from source** (required by KGen):
-
-A pre-downloaded tarball is in the workspace at `/workspace/Python-2.7.18.tar.xz`. If it's not there, your agent can help you obtain it.
+## 1. Build the image
 
 ```bash
-docker exec -it vit-dev bash -c "
-    cd /workspace &&
-    tar xf Python-2.7.18.tar.xz &&
-    cd Python-2.7.18 &&
-    ./configure --prefix=/opt/python27 &&
-    make -j\$(nproc) &&
-    make install &&
-    ln -s /opt/python27/bin/python2.7 /usr/local/bin/python2.7
-"
+git clone https://github.com/NatLabRockies/vit.git
+cd vit
+docker build -f docker/Dockerfile -t vit .
 ```
 
-**4. Install VIT, ROSCO, and Python dependencies:**
+The first build compiles Python 2.7 and takes several minutes. [`docker/README.md`](docker/README.md)
+describes the image and its build options.
+
+## 2. Run the cycle on the example
+
+[`examples/quickstart`](examples/quickstart) is a projectile slowed by air drag, in about 40 lines of
+Fortran:
+- `src/physics.f90` holds `drag`, the function to translate, and `step`, which calls it
+- `app/main.f90` runs 500 steps and writes speed and distance to `trajectory.txt` at full precision
+- `CMakeLists.txt` builds `src/` as a library, `physics`, and the program, `simulate`, with
+  `-ffp-contract=off` for both Fortran and C++
+- `vit.yaml` is VIT's configuration for the project; section 3 explains its fields
+
+Copy it somewhere outside the VIT checkout, then start a container with the copy mounted at
+`/workspace`, and open a shell in it:
+
 ```bash
-docker exec -it vit-dev bash -c "
-    pip3 install -e /workspace/vit --break-system-packages &&
-    pip3 install -e /workspace/ROSCO --break-system-packages
-"
+cp -r examples/quickstart ~/vit-quickstart
+cd ~/vit-quickstart
+docker run -d --name vit-quickstart -v "$PWD":/workspace vit sleep infinity
+docker exec -it vit-quickstart bash
 ```
 
-ROSCO pulls in its dependencies (numpy, scipy, matplotlib, etc.) automatically via its `setup.py`.
+Every command from here to the end of section 2 runs in that shell, in `/workspace`. The files stay
+on your machine, so you can read and edit them with your own tools.
 
-**5. Verify:**
+### Build, and record a baseline
+
 ```bash
-docker exec -it vit-dev bash -c "vit --help"
-docker exec -it vit-dev bash -c "python2.7 --version"
-docker exec -it vit-dev bash -c "gfortran --version | head -1"
-docker exec -it vit-dev bash -c "cd /workspace/ROSCO && vit verify saturate translations/Functions/saturate.cpp -f rosco/controller/src/Functions.f90 --kernel-dir kernel/saturate 2>&1 | tail -3"
+cmake -S . -B /build/quickstart
+cmake --build /build/quickstart
+(cd /build/quickstart && ./simulate)
+cp /build/quickstart/trajectory.txt baseline.txt
 ```
 
-The last command should show `40/40 passed`.
+`baseline.txt` is the pure-Fortran result. The rebuilt program is compared with it at the end.
 
----
+The build directory is inside the container, not on the mount. On macOS, a CMake rebuild on a
+host-mounted directory can fail when gfortran rewrites a Fortran module file (`Error copying Fortran
+module`), and extraction rewrites one. The build directory is lost if the container is removed;
+rerun the two `cmake` commands to recreate it.
 
-## Key Files
+### Find a call site
 
-| File | Location | Purpose |
-|------|----------|---------|
-| `CLAUDE.md` | `vit/CLAUDE.md` | Agent operating manual — your agent reads this to know how to drive VIT |
-| `PROJECT_PLAN.md` | `vit/PROJECT_PLAN.md` | Full translation roadmap — every function, its status, and the phase structure |
-| `README.md` | `vit/README.md` | Pipeline overview, CLI reference, current status |
-| `guide_ROSCO.md` | `vit/guide_ROSCO.md` | Detailed technical walkthrough of the saturate pipeline |
-| `dev/` | `vit/dev/` | Development notes — project history, decisions, and lessons learned |
-| `TRANSLATION_TIPS.md` | `ROSCO/TRANSLATION_TIPS.md` | Lessons from translation failures (automatically included in `vit translate` prompts) |
-| `vit.yaml` | `ROSCO/vit.yaml` | Project configuration — KGen paths, kind aliases, compiler flags, translation status |
-| `kernel/` | `ROSCO/kernel/<func>/` | Golden kernel fixtures — pre-captured state for fast verification without re-extraction |
-| `translations/` | `ROSCO/translations/<module>/` | Reference C++ translations organized by Fortran source module |
+```bash
+vit find drag
+```
+
+This lists the definition (line 8) and the call in `step` (line 17). Extraction needs a call site
+inside a procedure, not the definition.
+
+### Extract
+
+```bash
+vit extract drag -f src/physics.f90 -l 17
+```
+
+VIT marks the call site for KGen. KGen instruments the source, and VIT rebuilds and runs the
+program, which captures the inputs and outputs of the first 20 calls to `drag`. The result is
+`kernel/drag/`: the captured calls (`drag.0.0.1` to `drag.0.0.20`) and a standalone kernel that
+replays them. The source is restored afterwards. Extraction also leaves `kgen.log`, `strace.log`
+and `include.ini` in the project.
+
+Expect `Cases:  20`. If extraction reports `✗ Extraction captured no state data`, it exits non-zero
+and lists the errors it found; [`docs/EXTRACTION_INTERNALS.md`](docs/EXTRACTION_INTERNALS.md)
+section 7 is the debugging checklist.
+
+### Translate
+
+```bash
+vit translate drag -f src/physics.f90
+```
+
+This writes a scaffold, `translations/physics/drag.cpp`, and prints a translation prompt: the
+Fortran source, the C++ signature, and guidance generated from VIT's defect checks. Give the prompt
+to a coding agent, or write the translation yourself. Replace the scaffold's body:
+
+```cpp
+double drag(double v, double cd, double area) {
+    return 0.5 * 1.225 * cd * area * (v * v);
+}
+```
+
+Running `vit translate` again refreshes the scaffold only while it still holds the `TODO`
+placeholder. Once you have written an implementation, VIT keeps it.
+
+### Check
+
+```bash
+vit check translations/physics/drag.cpp -f src/physics.f90
+```
+
+`vit check` looks for defect shapes known to change results. `vit check --list` shows them all.
+Try it with `v * v` in place of `(v * v)`: the `exponent-grouping` check reports that Fortran's
+`a*v**2` means `a*(v*v)`, while C++ evaluates `a*v*v` as `(a*v)*v`, which can round differently.
+Here that version also passes verification and the full-run comparison: for this example's inputs,
+the two groupings happen to round the same. The check catches what testing may not reach.
+
+### Verify
+
+```bash
+vit verify drag translations/physics/drag.cpp -f src/physics.f90 --kernel-dir kernel/drag
+```
+
+VIT builds the kernel with your C++ in place of the Fortran and compares every output of the 20
+captured calls. Expect `✓ VERIFICATION PASSED: 20/20 passed`. It then runs a red test: it perturbs
+an input and confirms the kernel reports a mismatch. A kernel that cannot fail proves nothing, so a
+pass without a working red test is reported as `NON_DISCRIMINATING` and exits non-zero.
+
+### Integrate
+
+```bash
+vit integrate drag translations/physics/drag.cpp -f src/physics.f90 --apply
+```
+
+This creates `src/drag.cpp` (your implementation, plus an `extern "C"` wrapper, `drag_c`), replaces
+the body of the Fortran `drag` with a call to `drag_c` through a `BIND(C)` interface, and adds the
+C++ source to the `physics` target in `CMakeLists.txt`. Without `--apply`, it prints the plan and
+changes nothing.
+
+### Rebuild and compare
+
+```bash
+cmake --build /build/quickstart
+(cd /build/quickstart && ./simulate)
+cmp /build/quickstart/trajectory.txt baseline.txt && echo IDENTICAL
+vit status
+```
+
+The program now runs your C++, and all 500 steps must match the baseline byte for byte. The kernel
+checked 20 calls in isolation; the full run checks every call, and everything computed from it.
+`vit status` reports `drag: integrated (verified 20/20 cases)`.
+
+To start over, remove `~/vit-quickstart` and copy the example again. To stop the container:
+`docker rm -f vit-quickstart`.
+
+## 3. Your own project
+
+### What VIT needs
+
+- **A CMake build compiled with gfortran**, with `-ffp-contract=off` for both Fortran and C++, as in
+  the example's `CMakeLists.txt`. Verification is bit for bit, and fused multiply-add contraction
+  changes results. `vit integrate` enables C++ in the build but does not set its flags.
+- **The Fortran source listed in an `add_library` target, one file per line, with a `src/`
+  directory beside `CMakeLists.txt`.** During extraction VIT copies KGen's support file into `src/`
+  and adds it to the source list. For a layout it cannot patch, set `kgen.add_source_cmd` to a
+  command that adds `src/kgen_utils.f90` to the build file.
+- **A command that runs the program and reaches the call site**, such as a simulation or a test.
+- **A build directory that CMake has already configured.**
+- **A git branch to work on.** Extraction and integration edit your sources, `CMakeLists.txt` and
+  `vit.yaml`, and `git diff` shows exactly what changed.
+
+### Configure
+
+Start the container with your project mounted, then run `vit init` from the project root:
+
+```bash
+vit init --name myproject --source-dir src \
+    --build-cmd "cd /build/myproject && cmake --build ." \
+    --run-cmd "cd /build/myproject && ./my_program"
+```
+
+It writes `vit.yaml`. Then edit it:
+
+| Field | What to set |
+|---|---|
+| `project.source_dir` | The directory holding the Fortran sources. |
+| `project.build_dir` | The CMake build directory. Use an absolute path inside the container, such as `/build/myproject`. |
+| `kgen.build_cmd`, `kgen.run_cmd` | Commands that rebuild and run the program. Use absolute container paths. |
+| `kgen.install_cmd` | A command that copies the built library to where the program loads it from, if it is not loaded from the build directory. |
+| `kgen.invocation` | Which calls to capture. `0:0:1-20` is process 0, thread 0, calls 1 to 20. |
+| `build_system.cmake_file` | The `CMakeLists.txt` that lists the sources, relative to the project root. |
+| `build_system.target_name` | Leave empty. `vit integrate` finds the `add_library` target that lists the source file, and stops with an error asking for this field if it cannot. |
+| `fortran.kind_aliases` | The project's kind parameters, such as `ReKi: REAL(8)`. VIT needs these to map types, and assumes none. |
+| `fortran.flags` | Flags for compiling kernels. Keep `-ffp-contract=off`, and add what the project's build uses, such as `-fdefault-real-8`. |
+
+[`docs/VIT_REFERENCE.md`](docs/VIT_REFERENCE.md) lists every field and command.
+
+### Going further
+
+- **Derived types:** `vit analyze-types` reports which types can cross to C++ unchanged. For a type
+  with ALLOCATABLE fields, `vit translate` sets up a view struct itself, and records it in
+  `vit.yaml`.
+- **Branches no run reaches:** a kernel replays the calls a run made, which for an input
+  validator is usually only the happy path. `vit test-validate` generates a prompt and a harness
+  skeleton for tests of the error branches, to be filled in by an agent or by you.
+  `vit sim-compare` compares simulation outputs saved as `.npz` arrays.
+  [`docs/VERIFICATION_METHODS.md`](docs/VERIFICATION_METHODS.md) covers when to use which.
+- **Planning a whole code base:** [`CREATING_PROJECT_PLANS.md`](CREATING_PROJECT_PLANS.md)
+  describes how to inventory a code base and order the work.
+
+## 4. Working with a coding agent
+
+VIT is designed to be driven by a coding agent that runs its commands and reads their output, with
+you making the judgment calls. When VIT needs one, it stops with a specific exit code:
+
+- **10, confirmation needed:** VIT inferred a value, such as a buffer size, and prints it with its
+  source in a `[VIT:CONFIRM]` block. Nothing is written. The agent must show you the value and
+  re-run with the one you confirm.
+- **11, manual rewrite needed:** VIT found code it cannot safely rewrite and lists it in a
+  `[VIT:MANUAL]` block. Nothing is written. The agent proposes a rewrite for you to approve.
+
+An agent should never confirm either on your behalf. [`docs/VIT_REFERENCE.md`](docs/VIT_REFERENCE.md)
+describes both protocols.
+
+Give the agent an operating manual for your project: its workspace, the per-function workflow, the
+test cases to extract with, and the rules it must follow. [`CLAUDE.md`](CLAUDE.md), the manual for
+the AeroDyn translation, is a full example.
+
+## Where next
+
+- [`guide_ROSCO.md`](guide_ROSCO.md): a detailed walkthrough of the cycle on ROSCO, a wind turbine
+  controller and VIT's first complete translation
+- [`PROJECT_PLAN_ROSCO.md`](PROJECT_PLAN_ROSCO.md) and [`PROJECT_PLAN_AERODYN.md`](PROJECT_PLAN_AERODYN.md):
+  the plans for the two code bases VIT has been used on
+- [`docs/EXTRACTION_INTERNALS.md`](docs/EXTRACTION_INTERNALS.md): what extraction does, step by
+  step, and how it fails
