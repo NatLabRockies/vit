@@ -369,26 +369,16 @@ def _extract_function_body(content: str, name: str, is_function: bool) -> Option
     return start_idx, end_idx, lines[start_idx:end_idx + 1]
 
 
-def _run_fortran_reference(kernel: Path, sig: FortranSignature,
-                           env: dict,
-                           tolerance: float) -> Optional[list[dict]]:
-    """
-    Run the kernel with original Fortran (no C++ replacement) to get a
-    reference field log. Returns the field_data list, or None on failure.
+def fortran_reference_files(kernel: Path, sig: FortranSignature) -> Optional[tuple[Path, str, str]]:
+    """What the kernel's Fortran reference build is made of, without writing it.
 
-    Replaces only the C++ wrapper function body with the original Fortran
-    function body from the .kgen backup. All other VIT patches (field
-    logging, USE statement fixes, NaN comparison patches) are preserved
-    so the Fortran run produces comparable field log output.
-
-    This is necessary when the target function and the KGen verification
-    subroutines are in the same file (common in AeroDyn where caller and
-    callee are module procedures in the same source file). Restoring the
-    entire file would strip the field logging patches.
-
-    Both runs use the same state file exit reference, so any state file
-    artifacts appear identically in both field logs and cancel out when
-    comparing Fortran vs C++.
+    Returns (the file holding the target function, its content with the
+    original Fortran body from the `.kgen` backup spliced over the C++
+    wrapper, and the Makefile without the C++ objects), or None if the
+    function or its backup cannot be found. Only the wrapper is replaced: the
+    other VIT patches in the file (field logging, USE fixes, NaN comparisons)
+    stay, so the reference build is the verification build with the Fortran
+    put back.
     """
     makefile = kernel / "Makefile"
 
@@ -429,7 +419,48 @@ def _run_fortran_reference(kernel: Path, sig: FortranSignature,
     # keeping all other VIT patches (field logging, USE fixes, etc.)
     patched_lines = patched_content.split("\n")
     fortran_ref_lines = patched_lines[:wrapper_start] + original_lines + patched_lines[wrapper_end + 1:]
-    fortran_ref_content = "\n".join(fortran_ref_lines)
+
+    # Strip VIT C++ additions from Makefile but keep Fortran patches
+    mk_content = makefile.read_text()
+    # Remove VIT C++ object files from ALL_OBJS
+    mk_content = re.sub(r'\b' + re.escape(sig.name.lower()) + r'\.o\b', '', mk_content)
+    # Remove VIT object files from ALL_OBJS
+    mk_content = re.sub(r'\bvit_\w+\.o\b', '', mk_content)
+    mk_content = re.sub(r'\b\w+_cpp\.o\b', '', mk_content)
+    # Remove -lstdc++ from link line
+    mk_content = mk_content.replace('-lstdc++', '')
+    # Clean up multiple spaces in ALL_OBJS line
+    mk_content = re.sub(r'  +', ' ', mk_content)
+    return target_file, "\n".join(fortran_ref_lines), mk_content
+
+
+def _run_fortran_reference(kernel: Path, sig: FortranSignature,
+                           env: dict,
+                           tolerance: float) -> Optional[list[dict]]:
+    """
+    Run the kernel with original Fortran (no C++ replacement) to get a
+    reference field log. Returns the field_data list, or None on failure.
+
+    Replaces only the C++ wrapper function body with the original Fortran
+    function body from the .kgen backup. All other VIT patches (field
+    logging, USE statement fixes, NaN comparison patches) are preserved
+    so the Fortran run produces comparable field log output.
+
+    This is necessary when the target function and the KGen verification
+    subroutines are in the same file (common in AeroDyn where caller and
+    callee are module procedures in the same source file). Restoring the
+    entire file would strip the field logging patches.
+
+    Both runs use the same state file exit reference, so any state file
+    artifacts appear identically in both field logs and cancel out when
+    comparing Fortran vs C++.
+    """
+    makefile = kernel / "Makefile"
+    reference = fortran_reference_files(kernel, sig)
+    if reference is None:
+        return None
+    target_file, fortran_ref_content, mk_content = reference
+    patched_content = target_file.read_text()
 
     # Save current state
     saved_target = patched_content
@@ -438,18 +469,6 @@ def _run_fortran_reference(kernel: Path, sig: FortranSignature,
     try:
         # Write the spliced version (original function body + VIT logging patches)
         target_file.write_text(fortran_ref_content)
-
-        # Strip VIT C++ additions from Makefile but keep Fortran patches
-        mk_content = saved_makefile
-        # Remove VIT C++ object files from ALL_OBJS
-        mk_content = re.sub(r'\b' + re.escape(sig.name.lower()) + r'\.o\b', '', mk_content)
-        # Remove VIT object files from ALL_OBJS
-        mk_content = re.sub(r'\bvit_\w+\.o\b', '', mk_content)
-        mk_content = re.sub(r'\b\w+_cpp\.o\b', '', mk_content)
-        # Remove -lstdc++ from link line
-        mk_content = mk_content.replace('-lstdc++', '')
-        # Clean up multiple spaces in ALL_OBJS line
-        mk_content = re.sub(r'  +', ' ', mk_content)
         makefile.write_text(mk_content)
 
         # Build and run

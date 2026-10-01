@@ -173,6 +173,8 @@ def main():
     p_verify.add_argument("--file", "-f", help="Fortran source with function definition")
     p_verify.add_argument("--no-field-log", action="store_true",
                           help="Suppress per-field value logging")
+    p_verify.add_argument("--no-kernel-coverage", action="store_true",
+                          help="Do not measure which lines of the function the captured calls run")
 
     # --- check ---
     p_check = subparsers.add_parser(
@@ -233,6 +235,8 @@ def main():
     p_run.add_argument("--skip-verify", action="store_true")
     p_run.add_argument("--no-field-log", action="store_true",
                        help="Suppress per-field value logging")
+    p_run.add_argument("--no-kernel-coverage", action="store_true",
+                       help="Do not measure which lines of the function the captured calls run")
     p_run.add_argument("--apply", action="store_true")
 
     # --- status ---
@@ -1281,22 +1285,52 @@ def cmd_verify(args, config):
             })
             return 1
 
-        valid = verify_result.total_cases - verify_result.skipped_cases
-        record_translation(config, args.function_name, "verified", {
+        extras = {
             "cases_passed": verify_result.passed_cases,
-            "cases_total": valid,
+            "cases_total": verify_result.total_cases - verify_result.skipped_cases,
             "cases_skipped": verify_result.skipped_cases,
             "cpp_file": args.cpp_file,
             "kernel_dir": kernel_dir,
             "red_test": red["verdict"],
             "red_test_detail": red["message"],
-        })
+        }
+        covered = _kernel_coverage(args, config, sig, kernel_dir)
+        if covered:
+            extras["kernel_coverage"] = covered
+        record_translation(config, args.function_name, "verified", extras)
     else:
         for detail in verify_result.details:
             if detail["status"] == "FAILED":
                 print(f"  FAILED: {detail['line']}")
 
     return 0 if verify_result.success else 1
+
+
+def _kernel_coverage(args, config, sig, kernel_dir):
+    """Measure and print which lines of the function the captured calls run.
+
+    A pass is evidence for what the captured calls exercise and nothing else
+    (vit/kernel_coverage.py). Returns the one-line summary for the
+    translation record, or None when it was not measured. A measurement that
+    fails is reported and does not fail the verification.
+    """
+    from . import kernel_coverage
+
+    if getattr(args, "no_kernel_coverage", False):
+        print("\n  Kernel coverage: not measured (--no-kernel-coverage).")
+        return None
+    measured = kernel_coverage.measure(kernel_dir, sig, config.fortran_compiler or "gfortran",
+                                       config.coverage_gcov)
+    if not measured["ok"]:
+        print(f"\n  Kernel coverage: not measured. {measured['reason']}")
+        return None
+    result = kernel_coverage.compare(measured, sig, config.abs_path(config.coverage_file),
+                                     config.abs_source_dir)
+    kernel_coverage.save(kernel_dir, result)
+    print()
+    for line in kernel_coverage.report(result):
+        print(f"  {line}")
+    return kernel_coverage.summary(result)
 
 
 def _run_red_test(args, config, sig, kernel_dir, derived_types, field_log,
@@ -1539,6 +1573,7 @@ def cmd_run(args, config):
             if not verify_result.success:
                 print("Aborting pipeline — verification must pass before integration.")
                 return 1
+            _kernel_coverage(args, config, sig, kernel_dir)
         else:
             print("\nStep 2: Skipped (no kernel/ directory found)")
             print("  Run 'vit extract' first for verified integration")
