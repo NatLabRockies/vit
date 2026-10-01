@@ -204,7 +204,7 @@ The r-test suite has 18 AeroDyn cases. 17 have committed baselines in `openfast/
 - **Multi-table interpolation:** `ad_MHK_RM1_Fixed`
 - **2D UA interpolation:** `ad_MHK_RM1_Fixed_UA`
 - **OLAF/FVW functions:** `ad_BAR_OLAF` or `ad_Kite_OLAF`
-- **DBEMT functions (Modes 1/2):** `ad_MHK_RM1_Fixed` (DBEMT_Mod=2)
+- **DBEMT functions (Modes 1/2):** `ad_MHK_RM1_Fixed` (DBEMT_Mod=2; 38,400 calls to `DBEMT_UpdateStates`, more than any other case)
 - **DBEMT functions (Mode 3 only):** `ad_BAR_SineMotion_UA4_DBEMT3` (DBEMT_Mod=3, ONLY test with Mode 3)
 
 This guide is a starting point. For a specific call site, the coverage query in the next section is definitive.
@@ -262,6 +262,7 @@ Then rebuild.
 
 **Other pitfalls:**
 - KGen can leave `AirfoilInfo_Types.f90` and `AeroDyn_Driver.f90` modified. Check `git status` after extraction and `git checkout` them.
+- **NWTC constants are set at run time.** `Pi`, `D2R`, `R2D` and their double-precision versions are module variables assigned by `SetConstants`, which `NWTC_Init` calls (`NWTC_Num.f90`, `NWTC_Library.f90`); they are not PARAMETERs. A test-validate or file-output bridge that runs Fortran using them must `CALL NWTC_Init()` first, or the Fortran side computes with zeros.
 - If a kernel fixture already exists, its `kernel_driver.f90` contains the actual call site — this is ground truth.
 
 ## Shared C++ Headers
