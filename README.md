@@ -39,6 +39,18 @@ did not exercise. For code a kernel cannot capture well, VIT has other methods: 
 harnesses for branches no run reaches (`vit test-validate`), and simulation-level comparison of
 saved outputs (`vit sim-compare`).
 
+## Planning a whole code base
+
+Which function to translate next is computed, not chosen. `vit inventory` reads the code base
+(procedures, call graph, types, modules) and writes a work order: every procedure in scope, in the
+order to translate it, with the reason for its place. Callees come before callers, except where
+that is wrong, such as a routine reading a file another routine opened, which is translated with
+that routine. `vit coverage run` measures which of the program's test cases reach which
+procedures; given that, the work order also says how to verify each one and which test case to
+extract it with. What only a person can decide comes in as input: the scope, the entry points a
+host program calls, and any procedure to leave out or defer, each with a reason.
+[`docs/CREATING_PROJECT_PLANS.md`](docs/CREATING_PROJECT_PLANS.md) covers the rest of planning.
+
 ## Getting started
 
 [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) builds VIT's container image, runs the whole cycle on a
@@ -61,7 +73,7 @@ decision itself. [`docs/VIT_REFERENCE.md`](docs/VIT_REFERENCE.md) describes both
 | Command | What it does |
 |---|---|
 | `vit init` | Create a starter `vit.yaml` |
-| `vit inventory` | Inventory a Fortran code base (procedures, call graph, types, modules) for planning |
+| `vit inventory` | Inventory a Fortran code base for planning, and write the work order: every procedure in the order to translate it |
 | `vit find` | Find the call sites of a function; with `--coverage`, which test cases run each |
 | `vit coverage` | Measure line coverage per test case (`run`), import existing gcov output, list the procedures no test case reaches, or look up one line |
 | `vit parse` | Print a function's parsed signature |
@@ -112,6 +124,7 @@ VIT has been developed on two Fortran code bases, recorded in
 - **Docker** to run extraction and verification. The image provides gfortran, g++, CMake, strace,
   Python 2.7 and KGen; it is tested on ARM64.
 - **Python 3.10 or later** for VIT itself.
+- **fparser** for `vit inventory` only. The image has it; elsewhere, `pip install 'vit[inventory]'`.
 - **A Fortran project built with CMake and gfortran**, compiled with `-ffp-contract=off`, with a
   program or test that calls the functions to translate. `docs/GETTING_STARTED.md` lists the details.
 
