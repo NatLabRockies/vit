@@ -121,6 +121,32 @@ def test_check_list_needs_no_translation(tmp_path):
     assert "required" in missing.stdout
 
 
+def test_inventory_without_fparser_says_how_to_install(tmp_path, monkeypatch, capsys):
+    """fparser is an optional dependency, needed only by `vit inventory`.
+
+    Without it the command must fail with the install line, not a traceback,
+    and no other command may need it: the CLI imports vit.inventory only when
+    the command runs.
+    """
+    import argparse
+
+    import vit.cli
+
+    for name in [m for m in sys.modules if m == "fparser" or m.startswith("fparser.")]:
+        monkeypatch.setitem(sys.modules, name, None)
+    monkeypatch.setitem(sys.modules, "fparser", None)
+    monkeypatch.delitem(sys.modules, "vit.inventory", raising=False)
+
+    args = argparse.Namespace(src=str(tmp_path), output=str(tmp_path / "out"),
+                              deps=None, search=None, generated_marker=[],
+                              entry_point=[], entry_points_file=None)
+    rc = vit.cli.cmd_inventory(args)
+
+    assert rc == 1
+    assert "pip install 'vit[inventory]'" in capsys.readouterr().err
+    assert not (tmp_path / "out").exists()
+
+
 _EXTRACT_SOURCE = """\
 module physics
     implicit none

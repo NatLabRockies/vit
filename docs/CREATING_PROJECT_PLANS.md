@@ -161,11 +161,11 @@ treat raising it as a decision.
 
 **Goal:** queryable data about the target codebase.
 
-VIT includes a tool for this, `scripts/fortran_inventory.py`. It parses the source with fparser2,
-which the container image provides:
+VIT includes a command for this, `vit inventory`. It parses the source with fparser2, an optional
+dependency that the container image provides (elsewhere, `pip install 'vit[inventory]'`):
 
 ```bash
-python3 scripts/fortran_inventory.py --src path/to/src --output inventory/ \
+vit inventory --src path/to/src --output inventory/ \
     [--deps path/to/dependency/src] [--search path/to/whole/repo] \
     [--generated-marker TEXT] [--entry-point NAME | --entry-points-file FILE]
 ```

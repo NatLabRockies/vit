@@ -64,7 +64,7 @@ ENV PYTEST_ADDOPTS="-o cache_dir=/tmp/pytest_cache"
 RUN python3 -m venv /opt/venv
 
 # VIT is installed editable from /opt/vit: mount a checkout over /opt/vit to run that instead.
-# pytest runs VIT's test suite; fparser is used by scripts/fortran_inventory.py.
+# pytest runs VIT's test suite; fparser is used by `vit inventory`.
 # Bytecode caches and build metadata copied from the host are removed first: builders that ignore
 # Dockerfile.dockerignore would otherwise bring them in, and a host-compiled .pyc carries the
 # host's source path, which breaks tracebacks and inspect.getsource inside the container.

@@ -64,6 +64,27 @@ def main():
     p_init.add_argument("--build-cmd", default="cmake --build build")
     p_init.add_argument("--run-cmd", default="python run_simulation.py")
 
+    # --- inventory ---
+    p_inv = subparsers.add_parser(
+        "inventory", help="Structural inventory of a Fortran codebase, for planning")
+    p_inv.add_argument("--src", required=True,
+                       help="Directory of Fortran sources to inventory (not recursive)")
+    p_inv.add_argument("--output", "-o", required=True,
+                       help="Directory for the JSON files and the summary")
+    p_inv.add_argument("--deps", default=None,
+                       help="Directory of dependency sources, read for modules and types only")
+    p_inv.add_argument("--search", default=None,
+                       help="Broader tree to search for callers outside --src, such as the "
+                            "whole repository. A procedure referenced there is classified "
+                            "as a framework interface, not dead code.")
+    p_inv.add_argument("--generated-marker", action="append", default=[], metavar="TEXT",
+                       help="Text that marks a machine-generated file (repeatable). "
+                            "Without one, every file counts as hand-written.")
+    p_inv.add_argument("--entry-point", action="append", default=[], metavar="NAME",
+                       help="A procedure called from outside the source tree (repeatable)")
+    p_inv.add_argument("--entry-points-file", default=None, metavar="FILE",
+                       help="File of entry-point names, one per line; # starts a comment")
+
     # --- find ---
     p_find = subparsers.add_parser("find", help="Find call sites for a function")
     p_find.add_argument("function_name", help="Function name to find")
@@ -247,6 +268,8 @@ def _dispatch(args, config, parser):
     """Route a parsed command to its handler."""
     if args.command == "init":
         return cmd_init(args, config)
+    elif args.command == "inventory":
+        return cmd_inventory(args)
     elif args.command == "find":
         return cmd_find(args, config)
     elif args.command == "parse":
@@ -292,6 +315,23 @@ def cmd_init(args, config):
     print(f"Created {path}")
     print("Edit this file to configure your project settings.")
     return 0
+
+
+def cmd_inventory(args):
+    """Structural inventory of a Fortran codebase (vit/inventory.py)."""
+    try:
+        from . import inventory
+    except ImportError as e:
+        print(f"vit inventory needs fparser, which is not installed ({e}).\n"
+              f"Install it with: pip install 'vit[inventory]'  (or: pip install fparser)",
+              file=sys.stderr)
+        return 1
+    entry_points = list(args.entry_point)
+    if args.entry_points_file:
+        entry_points += inventory.read_entry_points_file(args.entry_points_file)
+    return inventory.run(args.src, args.output, deps=args.deps, search=args.search,
+                         generated_markers=args.generated_marker,
+                         entry_points=entry_points)
 
 
 def cmd_find(args, config):

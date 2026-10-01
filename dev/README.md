@@ -34,6 +34,7 @@ status line before relying on a note.
 | `analysis/aerodyn/` | `docs/case-studies/aerodyn/data/` |
 | `scripts/query_coverage.py`, `scripts/parse_gcov.py` | `docs/case-studies/aerodyn/scripts/` |
 | `scripts/join_telemetry.py` | `python3 -m vit.telemetry join` (`vit/telemetry.py`) |
+| `scripts/fortran_inventory.py` | `vit inventory` (`vit/inventory.py`) |
 | `GETTING_STARTED.md`, `CREATING_PROJECT_PLANS.md` | `docs/` |
 | `guide_ROSCO.md` | Removed; `docs/GETTING_STARTED.md` walks through the cycle on `examples/quickstart` |
 | `SCENARIO16_RATE_LIMITER_ARTIFACT.md` | Removed; its explanation was superseded by dev note `202607240344` |

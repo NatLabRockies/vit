@@ -22,4 +22,4 @@ dependencies:
   - pip
   - pip:
       - -e .
-      - fparser  # scripts/fortran_inventory.py
+      - fparser  # vit inventory

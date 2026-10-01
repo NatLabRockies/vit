@@ -1,4 +1,4 @@
-"""scripts/fortran_inventory.py on a codebase it was not written for.
+"""`vit inventory` (vit/inventory.py) on a codebase it was not written for.
 
 The inventory was written for one codebase and carried its assumptions: a
 summary titled after it, its code generator's marker built in as the only way to
@@ -8,6 +8,7 @@ already says (`BIND(C)`). Each test below fails against that version.
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,7 +18,6 @@ import pytest
 pytest.importorskip("fparser")
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "fortran_inventory.py"
 
 PHYSICS = """\
 module physics
@@ -67,10 +67,15 @@ def src(tmp_path):
     return d
 
 
+def _vit(cwd, *argv):
+    """Run the `vit` CLI in `cwd`, with telemetry off so no cycle log is written."""
+    env = dict(os.environ, VIT_TELEMETRY="0", PYTHONPATH=str(ROOT))
+    return subprocess.run([sys.executable, "-m", "vit.cli", *argv],
+                          capture_output=True, text=True, cwd=cwd, env=env)
+
+
 def _run(src, out, *extra):
-    r = subprocess.run([sys.executable, str(SCRIPT), "--src", str(src),
-                        "--output", str(out), *extra],
-                       capture_output=True, text=True)
+    r = _vit(out.parent, "inventory", "--src", str(src), "--output", str(out), *extra)
     assert r.returncode == 0, r.stderr[-1500:]
     load = lambda name: json.loads((out / name).read_text())
     return {

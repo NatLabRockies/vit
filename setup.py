@@ -12,6 +12,10 @@ setup(
         "numpy",
         "pyyaml>=6.0",
     ],
+    extras_require={
+        # `vit inventory` parses Fortran with fparser2.
+        "inventory": ["fparser"],
+    },
     entry_points={
         "console_scripts": [
             "vit=vit.cli:main",

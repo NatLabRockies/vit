@@ -47,6 +47,7 @@ through a shell, from directories KGen chooses, so give them absolute paths.
 | Command | Purpose | Notable options |
 |---|---|---|
 | `vit init` | Write a starter `vit.yaml` | `--name`, `--source-dir`, `--build-cmd`, `--run-cmd` |
+| `vit inventory` | Inventory a code base for planning: procedures, call graph, types, module graph, uncalled procedures, line counts. Needs fparser (`pip install 'vit[inventory]'`) | `--src`, `--output`, `--deps`, `--search`, `--generated-marker`, `--entry-point`, `--entry-points-file` |
 | `vit find` | Find a function's call sites | `--source-dir` |
 | `vit parse` | Print a function's parsed signature | `-f FILE` |
 | `vit extract` | Capture a function's calls with KGen | `-f FILE -l LINE` (the call site), `--run-args`, `--assumed-size NAME=SIZE`, `--dry-run` |
