@@ -44,10 +44,15 @@ PHYSICS = textwrap.dedent("""\
 # drag is called at lines 10 (in step) and 15 (in settle); line 3 defines it.
 
 
-def gcov_file(path, files, cwd=None):
-    """Write a .gcov.json.gz in the shape `gcov -j` produces."""
+def gcov_file(path, files, cwd=None, functions=None):
+    """Write a .gcov.json.gz in the shape `gcov -j` produces. `functions` maps
+    a file to [(symbol, start line, end line, calls)]."""
+    functions = functions or {}
     data = {"format_version": "1", "gcc_version": "13.2.0", "files": [
-        {"file": name, "lines": [{"line_number": n, "count": c} for n, c in lines.items()]}
+        {"file": name,
+         "lines": [{"line_number": n, "count": c} for n, c in lines.items()],
+         "functions": [{"name": sym, "demangled_name": sym, "start_line": a, "end_line": b,
+                        "execution_count": n} for sym, a, b, n in functions.get(name, [])]}
         for name, lines in files.items()]}
     if cwd:
         data["current_working_directory"] = cwd
@@ -369,4 +374,96 @@ def test_coverage_run_end_to_end(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "src/physics.f90:17 in step" in r.stdout
     assert "twice: 1000" in r.stdout and "once: 500" in r.stdout
+
+
+def test_coverage_run_reports_procedures(tmp_path):
+    """Every run writes which procedures the cases call and which none does."""
+    _toolchain_for_coverage()
+    project = tmp_path / "qs"
+    shutil.copytree(ROOT / "examples" / "quickstart", project)
+    physics = project / "src" / "physics.f90"
+    physics.write_text(physics.read_text().replace("end module physics", textwrap.dedent("""\
+            subroutine unused_helper(v)
+                real(dp), intent(inout) :: v
+                v = 0.0_dp
+            end subroutine unused_helper
+        end module physics""")))
+    (project / "vit.yaml").write_text(textwrap.dedent("""\
+        project:
+          source_dir: src
+        coverage:
+          cases:
+            once: cd {build_dir} && ./simulate
+    """))
+    r = vit(project, "coverage", "run")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "procedures: 3 reached, 1 not reached by any test case, 0 not built" in r.stdout
+    report = (project / "coverage_procedures.md").read_text()
+    assert "| unused_helper | src/physics.f90 |" in report
+    assert "| drag | src/physics.f90 | 500 (once) | 1 |" in report
+
+    r = vit(project, "coverage", "procedures", "--not-reached")
+    assert r.stdout.strip().endswith("unused_helper")
+
+
+MODULE_SRC = textwrap.dedent("""\
+    module m
+    contains
+      subroutine host(x)
+        real(8), intent(inout) :: x
+        call inner()
+      contains
+        subroutine inner()
+          x = x + 1d0
+        end subroutine inner
+      end subroutine host
+      subroutine never()
+        integer :: i
+        i = 1
+      end subroutine never
+    #ifdef NOT_SET
+      subroutine excluded()
+      end subroutine excluded
+    #endif
+    end module m
+""")
+
+
+def _module_project(tmp_path, functions=True):
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "m.f90").write_text(MODULE_SRC)
+    gcov = tmp_path / "gcov"
+    (gcov / "case_a").mkdir(parents=True)
+    src = str(root / "m.f90")
+    # never's END line (14) has a count: gcov does this for procedures that
+    # never ran, so it must not count as a call.
+    lines = {3: 4, 5: 4, 7: 4, 8: 4, 14: 2}
+    funcs = {src: [("__m_MOD_host", 3, 10, 4), ("inner.0", 7, 9, 4),
+                   ("__m_MOD_never", 11, 14, 0), ("__m_MOD___copy_x", 19, 19, 0)]}
+    gcov_file(gcov / "case_a" / "m.gcov.json.gz", {src: lines},
+              functions=funcs if functions else None)
+    data, _ = cov.import_gcov(gcov, root)
+    return data, root
+
+
+def test_procedures_from_call_records(tmp_path):
+    data, root = _module_project(tmp_path)
+    assert data["files"]["m.f90"]["functions"]["11"]["calls"] == {}, "built, never called"
+    procs = {p["name"]: p for p in cov.procedure_coverage(data, root)}
+    assert procs["host"]["status"] == "reached" and procs["host"]["calls"] == {"case_a": 4}
+    assert procs["inner"]["status"] == "reached" and procs["inner"]["host"] == "host"
+    assert procs["never"]["status"] == "not reached"
+    assert procs["excluded"]["status"] == "not built"
+    assert set(procs) == {"host", "inner", "never", "excluded"}, \
+        "compiler-generated functions have no definition in the source"
+
+
+def test_procedures_from_line_counts_ignore_end_lines(tmp_path):
+    """An older coverage file has only line counts."""
+    data, root = _module_project(tmp_path, functions=False)
+    procs = {p["name"]: p for p in cov.procedure_coverage(data, root)}
+    assert procs["host"]["status"] == "reached" and procs["host"]["basis"] == "lines"
+    assert procs["never"]["status"] == "not reached", "a count on its END line only"
+    assert procs["excluded"]["status"] == "not reached", "not built is indistinguishable here"
 

@@ -61,10 +61,14 @@ from .fortran_parser import enclosing_procedure
 
 
 def read_gcov_json_gz(path) -> list:
-    """(source path, {line: count}) for each file in one gcov JSON file.
+    """(source path, {line: count}, {start line: function}) per file in one
+    gcov JSON file.
 
-    Only lines that ran are kept. A relative source path is resolved against
-    the directory gcov recorded as its working directory.
+    Only lines that ran are kept. Every compiled function is kept, whether or
+    not it ran, keyed by the line of its SUBROUTINE or FUNCTION statement,
+    with its symbol, end line and call count: that is what tells a procedure
+    no case calls from one the build does not contain. A relative source path
+    is resolved against the directory gcov recorded as its working directory.
     """
     with gzip.open(path, "rt") as f:
         data = json.load(f)
@@ -78,8 +82,13 @@ def read_gcov_json_gz(path) -> list:
         for line in entry.get("lines", []):
             if line["count"] > 0:
                 lines[str(line["line_number"])] = line["count"]
-        if lines:
-            results.append((source, lines))
+        functions = {}
+        for fn in entry.get("functions", []):
+            functions[str(fn["start_line"])] = {"symbol": fn.get("name", ""),
+                                                "end_line": fn.get("end_line"),
+                                                "count": fn.get("execution_count", 0)}
+        if lines or functions:
+            results.append((source, lines, functions))
     return results
 
 
@@ -111,6 +120,7 @@ def import_gcov(gcov_dir, source_root, prefix=None) -> tuple:
               "filtered": set(), "cases_without_data": []}
 
     merged: dict = {}
+    functions: dict = {}  # rel -> start line -> {symbol, end_line, calls: {case: n}}
     for case in cases:
         gz_files = sorted((gcov_dir / case).glob("*.gcov.json.gz"))
         if not gz_files:
@@ -122,7 +132,7 @@ def import_gcov(gcov_dir, source_root, prefix=None) -> tuple:
             except (OSError, ValueError, KeyError) as e:
                 report["unreadable"].append(f"{gz}: {e}")
                 continue
-            for source, lines in entries:
+            for source, lines, funcs in entries:
                 rel = os.path.relpath(os.path.realpath(source), root)
                 if rel == ".." or rel.startswith(".." + os.sep):
                     report["outside_root"].add(source)
@@ -130,15 +140,25 @@ def import_gcov(gcov_dir, source_root, prefix=None) -> tuple:
                 if prefix and not rel.startswith(prefix):
                     report["filtered"].add(rel)
                     continue
-                counts = merged.setdefault(rel, {}).setdefault(case, {})
-                for line, count in lines.items():
-                    counts[line] = counts.get(line, 0) + count
+                file_cases = merged.setdefault(rel, {})
+                if lines:
+                    counts = file_cases.setdefault(case, {})
+                    for line, count in lines.items():
+                        counts[line] = counts.get(line, 0) + count
+                for start, fn in funcs.items():
+                    rec = functions.setdefault(rel, {}).setdefault(
+                        start, {"symbol": fn["symbol"], "end_line": fn["end_line"], "calls": {}})
+                    if fn["count"]:
+                        rec["calls"][case] = rec["calls"].get(case, 0) + fn["count"]
 
     files = {
         rel: {"test_cases": {case: {"lines": merged[rel][case]}
                              for case in sorted(merged[rel])}}
         for rel in sorted(merged)
     }
+    for rel, funcs in functions.items():
+        files[rel]["functions"] = {start: funcs[start]
+                                   for start in sorted(funcs, key=int)}
     commit = git_head(root)
     report["stored_text"] = _record_measured_content(root, commit, files)
     coverage = {
@@ -323,6 +343,127 @@ def call_sites(coverage, source_dir, function_name) -> list:
                     "read": read,
                 })
     return sites
+
+
+# --------------------------------------------------------------------------
+# Procedures: which ones the test cases call, and which they never reach
+# --------------------------------------------------------------------------
+
+
+def procedure_coverage(coverage, root) -> list:
+    """Every procedure defined in a covered file, with how the test cases reach it.
+
+    Procedures are read from the measured source (procedure_spans), so their
+    names are the Fortran names, and matched to gcov's records by start line.
+    Each is a dict with `file`, `name`, `start`, `end`, `host` and `status`:
+
+      reached      a test case calls it; `calls` is {case: number of calls}
+      not reached  the build contains it and no test case calls it
+      not built    defined in a file the build compiled, but not in the build,
+                   as when it sits in a branch of #ifdef that is not taken
+
+    A coverage file imported before gcov's function records were kept has
+    only line counts. Then a procedure counts as reached when one of its own
+    lines ran, `calls` holds the most executions of any of its lines, `basis`
+    is "lines" rather than "calls", and "not built" cannot be told apart from
+    "not reached". Files in no build are not covered, so they are not listed.
+    """
+    from .fortran_parser import procedure_spans
+
+    out = []
+    for rel in sorted(coverage["files"]):
+        entry = coverage["files"][rel]
+        text, read = measured_text(coverage, root, rel)
+        if text is None or not rel.lower().endswith(".f90"):
+            continue
+        spans = procedure_spans(text)
+        functions = entry.get("functions")
+        for span in spans:
+            item = {"file": rel, "name": span["name"], "start": span["start"],
+                    "end": span["end"], "host": span["host"], "read": read}
+            if functions is not None:
+                rec = functions.get(str(span["start"]))
+                item["basis"] = "calls"
+                item["calls"] = dict(rec["calls"]) if rec else {}
+                item["status"] = ("reached" if item["calls"] else
+                                  "not reached" if rec else "not built")
+            else:
+                own = _own_lines(span, spans)
+                runs = {}
+                for case, data in entry["test_cases"].items():
+                    counts = [c for n, c in data["lines"].items() if int(n) in own]
+                    if counts:
+                        runs[case] = max(counts)
+                item["basis"] = "lines"
+                item["calls"] = runs
+                item["status"] = "reached" if runs else "not reached"
+            out.append(item)
+    return out
+
+
+def _own_lines(span, spans) -> set:
+    """Lines of a procedure, without those of the procedures it CONTAINS, and
+    without its END statement: gcov can attribute counts to a procedure's END
+    line when the procedure never ran (seen in AeroDyn's coverage), so that
+    line is not evidence of a call."""
+    if span["end"] is None:
+        return set()
+    own = set(range(span["start"], span["end"]))
+    for other in spans:
+        if other["host"] == span["name"] and other["start"] > span["start"] and other["end"]:
+            own -= set(range(other["start"], other["end"] + 1))
+    return own
+
+
+def procedure_report(procedures, coverage_path) -> str:
+    """Markdown: the procedures no test case reaches, those not built, and the
+    rest with the case that calls each most."""
+    by_status = {s: [p for p in procedures if p["status"] == s]
+                 for s in ("not reached", "not built", "reached")}
+    basis = {p["basis"] for p in procedures}
+    lines = ["# Procedures and test cases", "",
+             f"From `{Path(coverage_path).name}`: {len(procedures)} procedures in the files the coverage "
+             f"build compiled; {len(by_status['reached'])} reached, "
+             f"{len(by_status['not reached'])} not reached, "
+             f"{len(by_status['not built'])} not built.", ""]
+    if "lines" in basis:
+        lines += ["This coverage file has line counts only. A procedure counts as reached when "
+                  "one of its own lines ran, the figure per case is the most executions of any "
+                  "of its lines, and procedures outside the build cannot be told from ones no "
+                  "case reaches. `vit coverage run` records calls.", ""]
+
+    def name(p):
+        return p["name"] + (f" (in {p['host']})" if p["host"] else "")
+
+    lines += [f"## Not reached by any test case: {len(by_status['not reached'])}", "",
+              "A kernel captures nothing from these. Verify them another way, or add a test "
+              "case that reaches them.", ""]
+    if by_status["not reached"]:
+        lines += ["| Procedure | File | Line |", "|---|---|---|"]
+        lines += [f"| {name(p)} | {p['file']} | {p['start']} |" for p in by_status["not reached"]]
+    else:
+        lines.append("(none)")
+    lines += ["", f"## Not built: {len(by_status['not built'])}", "",
+              "Defined in a compiled file, but not in the build, for example in an #ifdef "
+              "branch that is not taken.", ""]
+    if by_status["not built"]:
+        lines += ["| Procedure | File | Line |", "|---|---|---|"]
+        lines += [f"| {name(p)} | {p['file']} | {p['start']} |" for p in by_status["not built"]]
+    else:
+        lines.append("(none)")
+    unit = "calls" if basis == {"calls"} else "count"
+    lines += ["", f"## Reached: {len(by_status['reached'])}", "",
+              "| Procedure | File | Most " + unit + " (case) | Cases |", "|---|---|---|---|"]
+    for p in by_status["reached"]:
+        case, n = max(p["calls"].items(), key=lambda kv: (kv[1], kv[0]))
+        lines.append(f"| {name(p)} | {p['file']} | {n} ({case}) | {len(p['calls'])} |")
+    return "\n".join(lines) + "\n"
+
+
+def report_path(coverage_path) -> Path:
+    """Where the procedure report for a coverage file goes: beside it."""
+    path = Path(coverage_path)
+    return path.with_name(path.stem + "_procedures.md")
 
 
 # --------------------------------------------------------------------------

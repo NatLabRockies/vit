@@ -115,6 +115,12 @@ def main():
                            help="Coverage file to write (default: coverage.file in vit.yaml)")
     p_cov_imp.add_argument("--prefix", default=None,
                            help="Keep only files under this path, relative to the source root")
+    p_cov_procs = cov_sub.add_parser(
+        "procedures", help="Which procedures the test cases call, and which none reaches")
+    p_cov_procs.add_argument("--coverage", default=None, metavar="FILE",
+                             help="Coverage file (default: coverage.file in vit.yaml)")
+    p_cov_procs.add_argument("--not-reached", action="store_true",
+                             help="List only the procedures no test case reaches")
     p_cov_line = cov_sub.add_parser("line", help="Which test cases run a line, and how often")
     p_cov_line.add_argument("location", metavar="FILE:LINE",
                             help="Source file, relative to the source root, and line number")
@@ -447,11 +453,35 @@ def _print_coverage_written(path, data, report):
         print(f"  WARNING: unreadable: {problem}")
 
 
+def _write_procedure_report(cov, data, output):
+    """Write the procedure report beside the coverage file, and summarise it."""
+    procedures = cov.procedure_coverage(data, cov.coverage_root(data, "."))
+    path = cov.report_path(output)
+    path.write_text(cov.procedure_report(procedures, output))
+    counts = {s: sum(1 for p in procedures if p["status"] == s)
+              for s in ("reached", "not reached", "not built")}
+    print(f"  procedures: {counts['reached']} reached, {counts['not reached']} not reached "
+          f"by any test case, {counts['not built']} not built; see {path}")
+
+
 def cmd_coverage(args, config):
-    """`vit coverage run`, `import` and `line` (vit/coverage.py)."""
+    """`vit coverage run`, `import`, `procedures` and `line` (vit/coverage.py)."""
     from . import coverage as cov
 
     default_file = config.abs_path(config.coverage_file)
+
+    if args.coverage_action == "procedures":
+        path = args.coverage or default_file
+        data = cov.load(path)
+        procedures = cov.procedure_coverage(data, cov.coverage_root(data, "."))
+        if args.not_reached:
+            for p in procedures:
+                if p["status"] == "not reached":
+                    host = f" (in {p['host']})" if p["host"] else ""
+                    print(f"{p['file']}:{p['start']}  {p['name']}{host}")
+            return 0
+        print(cov.procedure_report(procedures, path), end="")
+        return 0
 
     if args.coverage_action == "run":
         try:
@@ -464,6 +494,7 @@ def cmd_coverage(args, config):
             output = args.output or default_file
             cov.write(data, output)
             _print_coverage_written(output, data, report)
+            _write_procedure_report(cov, data, output)
         else:
             print("No coverage written: no case ran a line under "
                   f"{data['metadata']['source_root']}.", file=sys.stderr)
@@ -488,6 +519,7 @@ def cmd_coverage(args, config):
         output = args.output or default_file
         cov.write(data, output)
         _print_coverage_written(output, data, report)
+        _write_procedure_report(cov, data, output)
         return 0
 
     location, _, line = args.location.rpartition(":")

@@ -556,3 +556,41 @@ def enclosing_procedure(source: str, line_no: int) -> Optional[str]:
         if i == line_no:
             return stack[-1] if stack else None
     return None
+
+
+_INTERFACE_OPEN = re.compile(r'^\s*(?:ABSTRACT\s+)?INTERFACE\b', re.IGNORECASE)
+_INTERFACE_END = re.compile(r'^\s*END\s*INTERFACE\b', re.IGNORECASE)
+
+
+def procedure_spans(source: str) -> list:
+    """Every procedure (and main program) defined in `source`, in order.
+
+    Each is a dict with `name`, `start` and `end` (1-based lines of its
+    SUBROUTINE, FUNCTION or PROGRAM statement and of its END statement), and
+    `host`, the name of the procedure it is CONTAINed in, or None. Interface
+    bodies declare procedures without defining them, so lines inside
+    INTERFACE blocks are skipped. As in enclosing_procedure, a procedure closed
+    by a bare `END` is not recognised as closed; its `end` is then None.
+    """
+    spans, stack, in_interface = [], [], 0
+    for i, raw in enumerate(source.split("\n"), 1):
+        line = raw.split("!", 1)[0]
+        if _INTERFACE_END.match(line):
+            in_interface = max(0, in_interface - 1)
+            continue
+        if _INTERFACE_OPEN.match(line):
+            in_interface += 1
+            continue
+        if in_interface:
+            continue
+        if _PROC_END.match(line) or _PROGRAM_END.match(line):
+            if stack:
+                stack.pop()["end"] = i
+            continue
+        m = _PROC_OPEN.match(line) or _PROGRAM_OPEN.match(line)
+        if m and not line.strip().upper().startswith("END"):
+            span = {"name": m.group(1), "start": i, "end": None,
+                    "host": stack[-1]["name"] if stack else None}
+            spans.append(span)
+            stack.append(span)
+    return spans

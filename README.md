@@ -63,7 +63,7 @@ decision itself. [`docs/VIT_REFERENCE.md`](docs/VIT_REFERENCE.md) describes both
 | `vit init` | Create a starter `vit.yaml` |
 | `vit inventory` | Inventory a Fortran code base (procedures, call graph, types, modules) for planning |
 | `vit find` | Find the call sites of a function; with `--coverage`, which test cases run each |
-| `vit coverage` | Measure line coverage per test case (`run`), import existing gcov output, or look up one line |
+| `vit coverage` | Measure line coverage per test case (`run`), import existing gcov output, list the procedures no test case reaches, or look up one line |
 | `vit parse` | Print a function's parsed signature |
 | `vit extract` | Capture a function's inputs and outputs with KGen |
 | `vit translate` | Write the C++ scaffold and print the translation prompt |
