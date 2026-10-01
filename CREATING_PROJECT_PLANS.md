@@ -1,414 +1,413 @@
-# CREATING_PROJECT_PLANS.md
+# Creating Project Plans
 
-A methodology for producing `PROJECT_PLAN_<TARGET>.md` documents for VIT translation efforts. This is not a template to fill in — it is a set of principles and practices derived from what worked and what drifted during the ROSCO translation project. Read this before starting a new plan document.
+How to write the plan for translating a Fortran codebase, or a large part of one, to C++ with VIT.
+This is not a template to fill in. It is a set of principles and practices, learned from planning
+real translations, about what keeps a plan useful and what lets it drift.
 
 ## 1. Purpose
 
-Every VIT translation effort past a certain size needs a plan document. The plan serves several overlapping purposes simultaneously:
+A translation large enough to need a plan is too large to hold in one head or one session. The plan
+serves several purposes at once:
 
-- **Shared mental model** — collaborators (including future-you) understand what we are doing and why
-- **Scope boundary** — what is in, what is out, where the edges are
-- **Decision record** — why we chose this approach over alternatives, so nobody redoes those decisions
-- **Progress tracker** — what is done, what is in flight, what is blocked
-- **Forecasting aid** — rough effort estimate, always imprecise
-- **Retrospective anchor** — a reader six months from now can reconstruct what we knew when
+- **Shared mental model:** collaborators, including your future self and future agent sessions,
+  understand what is being done and why
+- **Scope boundary:** what is in, what is out, and where the edges are
+- **Decision record:** why one approach was chosen over the alternatives, so no one has to make
+  the same decision twice
+- **Progress tracker:** what is done, in flight or blocked
+- **Forecasting aid:** a rough estimate of the remaining effort, always imprecise
+- **Retrospective anchor:** a reader months later can reconstruct what was known when
 
-The ROSCO plan (`PROJECT_PLAN_ROSCO.md`) served some of these purposes well (progress tracking, mental model, partial decision records) and others poorly (scope negotiation was implicit, forecasting was wrong about granularity, strategy shifts were invisible). This document codifies what we learned so future plans inherit the strengths and avoid the drift.
+## 2. When you need a plan
 
-## 2. When you actually need a plan document
-
-Not every piece of work needs a plan. Cost-benefit: a plan document is worth ~1-3 days of upfront work and ongoing maintenance cost. It only pays back if the effort is large enough that collaborators would lose alignment without it.
+A plan costs a few days up front and steady maintenance afterwards. It pays back only when the work
+is large enough that people would otherwise lose alignment.
 
 **Write a plan when:**
-- Scope spans multiple weeks of focused work
-- Work decomposes into multiple phases with dependencies between them
-- Multiple people (or multiple AI sessions) will touch the project over time
-- The "done" criteria are non-obvious and likely to be negotiated
-- The target is a whole codebase, a whole module, or a substantial feature
+- the work spans weeks
+- it decomposes into phases that depend on one another
+- several people, or several agent sessions, will work on it over time
+- what "done" means is not obvious and is likely to be negotiated
+- the target is a whole codebase, a whole module or a substantial subsystem
 
-**Do not write a plan for:**
-- One-off scripts, small refactors, single-day investigations
-- Bug fixes, even complex ones (use a dev note instead)
-- Exploratory experiments where the outcome is "we will learn something"
-- Work where the plan doc would take longer to write than the work itself
+**Do not write one for:**
+- one-off scripts, small refactors and single-day investigations
+- bug fixes, even complex ones: write a dev note instead
+- experiments whose outcome is "we will learn something"
+- work that takes less time than the plan would
 
-If you are unsure, default to writing a dev note first. Promote it to a plan document only if the scope grows.
+If unsure, write a dev note first, and promote it to a plan if the scope grows.
 
-## 3. What ROSCO taught us (honest retrospective)
+## 3. How plans drift
 
-`PROJECT_PLAN_ROSCO.md` is not a failure. It delivered a bit-identical pure-C++ port of a 53-file, 8-module Fortran controller in 38 calendar days with rigorous verification. But it was wrong in specific, informative ways that a better methodology would have avoided. Each failure mode below is a principle inverted.
+Translation plans fail in recognisable ways. Each is a principle in section 4, inverted.
 
-**1. Granularity drift.** Phases 4, 5, 6, 7, and 8 all broke into sub-phases during execution (4A–D, 5A–B, 6A–B, 7A–B, 8A–C). The original plan specified these as single phases. The goal of each phase was right; the step count was wrong. Root cause: the plan tried to impose uniform granularity across phases of non-uniform complexity. Fix: mark confidence levels, let complex phases be sketches initially.
-
-**2. Implicit strategy decisions.** Phase 10 shifted from "mirror-translate I/O line-by-line through KGen" to "write idiomatic C++ for I/O, verify at simulation level." This was the single biggest strategy decision in the project. It was smart. But it arrived mid-execution, not up front. The original plan was silent on the question "can KGen verify file I/O?" even though the answer was known to be no from day one. Fix: make key decisions first-class, with explicit "committed" vs "deferred" markers.
-
-**3. Unknown unknowns that should have been flagged.** FITPACK stack scrubber, FMA contraction fix, KGen BIND(C) parser bug, PIIController requiring upstream Flp_Mode=2 bug fixes, `avr_size=500` silent heap overflow — none of these were in the plan. They couldn't have been predicted, but they collectively consumed significant fraction of project time. Fix: plans should budget for toolchain investigation, not assume the toolchain works.
-
-**4. Phase 11.5 was entirely post-hoc.** The verification expansion push (scenarios 12–27, 13-array output, upstream comparison chain, adversarial audit, performance benchmark, integrated branch cleanup) was a legitimate 10-day effort that did not exist in the plan until after it was done. The "done" bar moved from "diff is empty" to "explain every bit." Fix: name the done criteria explicitly, and treat any change to them as a plan update requiring a change-log entry.
-
-**5. Scope grew along an axis the plan did not acknowledge.** Verification coverage went from 692K values to 5.25M values — 7× growth. Translation scope stayed the same. These are different things. The plan conflated them. Fix: verification rigor is its own scope axis, separate from translation surface area.
-
-**6. No confidence markers.** Phase 1 (three trivial functions) was 99% predictable. Phase 10 (I/O modules) was maybe 30% predictable. Phase 11 (DISCON entry point) was ~70%. A reader of the plan could not tell which was which — everything was written in uniform declarative voice. Fix: confidence labels on every phase, every decision, every open question.
-
-**7. No revisit triggers.** There were natural moments in the project where stopping to re-evaluate would have been valuable — after Phase 4 completed, after the first `vit analyze-types` failure, after PIIController's bug excavation. These re-evaluations happened anyway, but implicitly. Nothing in the plan said "stop here and reassess." Fix: explicit dead-reckoning points in the roadmap.
-
-**8. Historical and forward-looking content mixed without markers.** By Phase 11, the Phase 1 description was a 5-week-old historical record, the Phase 12 description was speculation, and "Current State" had drifted with every update. A reader couldn't tell which text was about the past vs the future without git-blaming individual paragraphs. Fix: temporal structure in the document format.
-
-**9. No cross-reference discipline.** Some phase descriptions cited dev notes and commits; others didn't. A reader who wanted to understand Phase 8 had to guess which dev notes were relevant. Fix: every phase entry must link to its dev notes and delivering commits.
-
-**10. The plan was never audited until the very end.** CLAUDE.md and PROJECT_PLAN.md were updated in April 2026 as a single cleanup pass after the project was done. That worked for documentation but not for execution guidance — the plan should have been wrong-but-updated throughout, not right-at-the-end. Fix: scheduled plan reviews, not opportunistic ones.
+1. **Granularity drift.** Phases planned as single steps break into sub-phases during execution,
+   because the plan gave phases of very different complexity the same level of detail.
+2. **Implicit strategy decisions.** The biggest decision of a project, such as verifying file I/O
+   at the simulation level because kernels cannot capture it, arrives mid-execution because the
+   plan never asked the question.
+3. **Unbudgeted toolchain work.** Compiler differences, parser bugs and build-system surprises
+   consume a large share of the time, and the plan assumed the toolchain would just work.
+4. **Post-hoc phases.** Work the plan never mentioned, such as a verification push after the
+   translation is "complete", happens anyway, and the plan learns about it afterwards.
+5. **Conflated scope.** Verification rigor grows severalfold while the translated surface stays
+   the same, and a plan that tracks only "functions translated" cannot show it.
+6. **Uniform confidence.** Trivial phases and guesses are written in the same declarative voice, so
+   a reader cannot tell which parts of the plan are solid.
+7. **No stopping points.** Natural moments to re-evaluate pass without anyone stopping, because the
+   plan did not name them.
+8. **Past and future mixed.** Months-old history and speculation sit side by side without markers.
+9. **Thin cross-references.** Some phases cite their commits and dev notes and others do not, so
+   the detail behind a phase has to be hunted for.
+10. **A stale Current State.** Work continues while the plan's status section keeps its old date,
+    and the plan quietly stops describing the project. An intention to update it is not enough; the
+    update has to be part of the workflow.
 
 ## 4. Principles
 
-Ten principles distilled from the above. Every plan document should embody them.
-
 ### P1: Research precedes prescription
 
-No plan text until there are structural facts about the target. Spend the first 2-3 days producing data artifacts (function inventory, call graph, type dependency graph, dead code list, module layering, framework boundaries). Commit those artifacts as data files alongside the plan. Then write plan text *using* them, not guessing.
-
-The best-executed part of the ROSCO plan was Section 4 (Derived Type Translation Strategy) — and the reason was that it was research-backed before being committed to text. Every section should be written that way.
+Write no plan text until you have structural facts about the target. Spend the first days producing
+data: a procedure inventory, the call graph, the type and module structure, uncalled procedures,
+the external interface and test coverage (Step 1 below). Commit the data alongside the plan, then
+write the plan from it, not from guesses.
 
 ### P2: Confidence is explicit
 
-Each phase, decision, and open question gets a confidence label:
+Every phase, decision and open question gets a confidence label:
 
-- **committed** — scope is fully understood, work is defined, ready to execute
-- **planned** — general shape is clear, details will fill in via analysis or early phases
-- **speculative** — aware this is needed, no concrete scope yet, will be revised before execution
-- **unknown** — acknowledged gap, awaiting investigation
+- **committed:** scope fully understood, work defined, ready to execute
+- **planned:** the general shape is clear; details will come from analysis or earlier phases
+- **speculative:** known to be needed, no concrete scope yet; will be revised before execution
+- **unknown:** an acknowledged gap, awaiting investigation
 
-A plan that labels everything "committed" is lying. A plan where late phases are honestly marked "speculative" is telling the truth about what is known.
+A plan that labels everything "committed" is not telling the truth.
 
-### P3: Facts, decisions, and conjectures are labeled separately
+### P3: Facts, decisions and conjectures are labeled separately
 
-Three kinds of content live in a plan document and they should not blend:
+Three kinds of content live in a plan, and they should not blend:
 
-- **Facts**: what the codebase contains, derived from analysis. "AeroDyn is 42 Fortran files, 75,430 lines, 11 sub-modules." Not opinions, not plans — observations.
-- **Decisions**: architectural choices we have committed to. "View structs for NWTC Framework state types, BIND(C) for scalar-only types." These were once conjectures, but we have decided.
-- **Conjectures**: what we think we will do, subject to revision. "Phase 3 will probably translate BEMT before DBEMT because the call graph shows DBEMT depends on BEMT." These are best guesses that may change.
+- **Facts** come from measurement: file, line and procedure counts from the inventory, or which
+  tests reach a function from coverage. A figure taken before the inventory is an estimate, not a
+  fact, and it can be wrong.
+- **Decisions** are choices you have committed to: "generated types are produced by extending the
+  code generator; hand-written types are handled by VIT's type analysis".
+- **Conjectures** are what you expect, subject to revision: "the I/O routines will probably be
+  rewritten as idiomatic C++ and verified at the simulation level, because a kernel cannot capture
+  file state".
 
-Mixing these is the root cause of most of ROSCO's drift. When a conjecture ("we will use KGen for I/O") read like a decision, it took months to un-decide.
+Most drift starts when a conjecture reads like a decision and takes months to un-decide.
 
 ### P4: Open questions are first-class
 
-A plan document has a dedicated "Open Questions" section. Each entry has:
-- The question itself
-- Why it matters (what downstream decisions it blocks)
-- What information would answer it
-- When we expect to have that information (or: what work would produce it)
-- Decision owner (who decides, once the information is in)
+The plan has an Open Questions section. Each entry has:
+- the question
+- why it matters: what it blocks
+- what information would answer it
+- when that information is expected, or what work would produce it
+- who decides, once the information is in
 
-ROSCO's Phase 10 strategy shift should have been a named open question from day one: "How do we verify file I/O that KGen cannot extract? Decide before Phase 10 starts."
+A question such as "how do we verify the parts KGen cannot extract, like file I/O?" belongs here from
+day one, with a decision point, not in the middle of execution.
 
 ### P5: Granularity follows complexity
 
-Do not force uniform phase size. A phase that translates three trivial functions should have 4-5 checkboxes and ~20 lines of description. A phase that translates a complex stateful module should be marked "speculative" and broken down only once the preceding work informs its scope.
-
-The ROSCO plan's Phase 1 (three functions) and Phase 7B (10 main controllers) were presented at the same apparent granularity. They should not have been.
+Do not force phases to the same size. A phase that translates three small functions needs a few
+checkboxes. A phase that translates a complex stateful subsystem should be marked speculative and
+broken down only when earlier work has informed it.
 
 ### P6: Plans are living documents, not contracts
 
-The plan's job is to be *approximately right about current state*, not *perfectly predictive*. Revisions are expected. Every completed phase becomes part of the historical record; every upcoming phase is subject to being rewritten as new information arrives. Commit plan updates frequently.
+The plan's job is to be approximately right about the current state, not to predict perfectly.
+Completed phases become history; upcoming phases are rewritten as information arrives. Commit plan
+updates often.
 
-### P7: Cross-reference everything with git and dev notes
+### P7: Cross-reference everything
 
-Every phase, decision, and major event in the plan links to:
-- Delivering commits (by hash)
-- Associated dev notes (by filename)
-
-A reader of a phase description should be able to reach the full execution detail in one click. The plan is a skeleton; dev notes are the flesh; cross-references are the ligaments.
+Every phase, decision and major event links to its delivering commits (by hash) and its dev notes
+(by ID). A reader should reach the execution detail in one step. The plan is the skeleton and the dev
+notes are the flesh.
 
 ### P8: Revisit triggers are named
 
-Dead reckoning points: explicit markers for when to stop and re-evaluate. Examples:
-- "After Phase 4 completes, re-examine Phase 5 sub-phase ordering using updated type registry."
-- "Before starting Phase 10, revisit the mirror-vs-idiomatic decision with ROSCO developer + engineering review."
-- "Quarterly: re-read Current State section and verify it matches actual repo state."
+Name the points at which to stop and re-evaluate, for example:
+- "When phase 2 completes, re-examine phase 3's ordering against the updated type inventory."
+- "Before the I/O phase starts, revisit how file I/O will be verified."
+- "Monthly: check that Current State matches the repository."
 
-Revisit triggers prevent the "oh wait, should we stop and think?" moment from being lost. They create legitimacy for pausing the march.
+Named triggers make pausing legitimate.
 
-### P9: "Done" is explicit and can change
+### P9: "Done" is explicit, and changes are recorded
 
-The plan names its done criteria in Section 1 (Vision and Done Criteria) and flags any change as a first-class event. If the done bar moves — as it did for ROSCO, from "diff is empty" to "explain every bit" — the plan gets a Change Log entry recording what changed and why. This prevents retrospective confusion about what the project was actually trying to accomplish.
+The plan states its done criteria in section 1. If the bar moves, for example from "the simulation
+output diff is empty" to "every difference is explained", the plan records the change, the date
+and the reason. A project that cannot say what it was trying to achieve cannot say whether it did.
 
 ### P10: Verification rigor is its own scope axis
 
-Plans should distinguish between:
-- **Translation surface area** — how much code is ported
-- **Verification rigor** — how thoroughly the port is validated
+Distinguish two dimensions:
+- **translation surface:** how much code is ported
+- **verification rigor:** how thoroughly the port is checked
 
-These are independent dimensions of scope. You can have 100% translation with 10% verification, or 10% translation with 100% verification. A plan that only tracks "functions translated" will miss the possibility of escalating rigor mid-project.
+They are independent: full translation with thin verification is possible, and so is the reverse.
+State the target rigor ("byte-identical output on the existing regression tests", or "byte-identical
+on a scenario set that exercises every mode, with an independent audit of the comparison"), and
+treat raising it as a decision.
 
-The plan should state its target rigor level explicitly ("byte-identical on 10 scenarios" vs "three-build chain on 27 scenarios with adversarial audit") and treat escalation as a named decision.
+## 5. The method, step by step
 
-## 5. The methodology (step by step)
+### Step 1: Structural inventory (before any plan text)
 
-### Step 1: Structural inventory (2-3 days before any plan text)
+**Goal:** queryable data about the target codebase.
 
-**Goal:** produce queryable data about the target codebase.
+VIT includes a tool for this, `scripts/fortran_inventory.py`. It parses the source with fparser2,
+which the container image provides:
 
-**Deliverables** (committed as data files in `analysis/` directory alongside the plan doc):
+```bash
+python3 scripts/fortran_inventory.py --src path/to/src --output inventory/ \
+    [--deps path/to/dependency/src] [--search path/to/whole/repo] \
+    [--generated-marker TEXT] [--entry-point NAME | --entry-points-file FILE]
+```
 
-1. **Function inventory** — every procedure in scope. For each: name, module, file, line count, argument signature, `PUBLIC`/`PRIVATE`, `PURE`/`ELEMENTAL`/neither, has SAVE state (yes/no), Registry-generated (yes/no).
-2. **Call graph** — who calls whom, across and within modules. Computed. Used to identify leaves (no callees → first translation targets) and roots (many callees → last targets).
-3. **Type dependency graph** — which derived types contain other derived types. Transitive closure. Used to identify the type system layering.
-4. **Module dependency graph** — which modules USE which modules. Topologically sorted.
-5. **Dead code list** — procedures with zero call sites anywhere in the scope. Candidates for skipping entirely (like ROSCO's `matinv3`, `CPfunction`).
-6. **Framework boundary list** — procedures called by code *outside* the translation scope. These are the external API that must be preserved bit-identically.
-7. **Lines-of-code metrics** — total, per-module, per-file, per-function. Used for effort estimation and identifying unusually large functions.
+It writes the following, each as JSON, plus a markdown summary:
 
-**Tools:** for Fortran, `fparser2` is the recommended AST toolkit — mature, Python-native, handles modern Fortran, part of the PSyclone ecosystem. Alternatives (LFortran, flang, VIT's own `fortran_parser.py`, KGen's parser) each lose on at least one dimension. For other languages, pick an equivalent mature AST tool.
+1. **Procedure inventory:** for every procedure, its module, file, line count, arguments,
+   visibility, `PURE`/`ELEMENTAL`, SAVE state, `BIND(C)`, and whether it is machine-generated.
+2. **Call graph:** who calls whom. Leaves (no callees) are the first translation targets.
+3. **Type inventory:** every derived type and its fields, including those from dependencies.
+4. **Module dependency graph:** the USE graph, topologically sorted.
+5. **Uncalled procedures:** procedures with no call site in the scanned source, each with the
+   likely reason.
+6. **External interface:** procedures called from outside the scope, which must keep their
+   behaviour exactly.
+7. **Line counts:** per file, module and procedure.
 
-**Output format:** JSON or structured markdown tables. JSON is better for programmatic querying; markdown is better for human scanning. Both if time permits.
+Two inputs only you can give it:
+- **`--generated-marker`:** the text a code generator puts in the files it writes, so generated
+  code is counted apart from hand-written code. Generated code is usually best handled by changing
+  the generator, not by translating its output.
+- **`--entry-point`:** the procedures a host program or framework calls. Nothing in the source
+  shows those calls, so the tool cannot find them for itself.
 
-**Sanity check:** before writing any plan text, verify you can answer questions like "what is the leaf function with the smallest argument list?" or "how many functions in module X have zero callees?" purely from the data files, without opening source.
+**Uncalled is not dead.** A procedure with no call site in the scanned source may be:
+- a C entry point (`BIND(C)`)
+- called from a driver program or a test
+- passed as a callback
+- called from a commented-out line
+- called from outside the scanned tree: pass the wider tree with `--search`
+
+Investigate each before excluding any from scope. Expect the genuinely dead ones to be a small
+fraction of the first count.
+
+**Add test coverage.** Build with coverage instrumentation (gfortran's `--coverage` and gcov), run
+the program's test cases, and record which lines each case reaches. Extraction needs a run that
+reaches the call site, and coverage answers "which test case exercises this function, and how
+often?" directly, without tracing code paths by hand. It also shows code no test reaches, which
+needs another verification method.
+
+**Sanity check:** before writing plan text, make sure you can answer "which leaf procedure has the
+fewest arguments?" or "how many procedures in module X have no callees?" from the data alone.
 
 ### Step 2: Scope negotiation
 
-**Goal:** establish what is in, what is out, what "done" looks like.
+**Goal:** agree what is in, what is out and what "done" means.
 
-Have an explicit conversation (with the user, in writing in the plan doc) about:
-- Target codebase identity
-- Target scope — entire codebase? one module? a specific function set?
-- Target rigor — bit-identical? within-tolerance? matches-on-selected-outputs?
-- Deadline or timeframe if any
-- Stakeholders and their success criteria
-- Explicit out-of-scope items
+Have the conversation explicitly, and write the outcome into the plan:
+- the target codebase
+- the scope: the whole codebase, one module, or a set of functions
+- the rigor: bit-identical, within a tolerance, or matching on selected outputs
+- any deadline
+- the stakeholders and their success criteria
+- explicit out-of-scope items
 
-**Deliverable:** Section 1 of the plan doc — "Vision and Done Criteria" — with all of the above written down.
+**Deliverable:** section 1 of the plan, "Vision and Done Criteria".
 
-**Sanity check:** if someone asks "is feature X in scope?", can the plan answer without further consultation?
+**Sanity check:** can the plan answer "is X in scope?" without asking anyone?
 
-### Step 3: Key decisions identification
+### Step 3: Key decisions
 
-**Goal:** enumerate the architectural choices that will shape everything else.
+**Goal:** enumerate the architectural choices that shape everything else.
 
-Walk through the inventory and the scope. For each piece of the system, ask: what choice are we making? Examples from ROSCO:
-- Mirror-translate Fortran line-by-line, or write idiomatic C++?
-- BIND(C) structs for types, or view structs, or decomposed field args?
-- In-place source modification, or out-of-tree translation?
-- KGen kernel verification, or simulation-level verification, or both?
+Walk through the inventory and the scope, asking at each part of the system what choice is being
+made. For example:
+- translate line by line, or write idiomatic C++ for some parts and verify those differently?
+- pass derived types as `BIND(C)` structs, as view structs, or as separate arguments?
+- modify the source in place, or translate out of tree?
+- verify with KGen kernels, at the simulation level, or both?
+- for generated code: translate its output, or extend its generator?
 
-For each decision:
-- State the decision
-- State the alternatives considered
-- State the rationale
-- Label it **committed** (decided, will not revisit without plan update) or **deferred** (waiting on information, will decide at point X)
+For each decision, record the decision, the alternatives, the rationale and its status:
+**committed**, or **deferred** to a named decision point.
 
-**Deliverable:** Section 3 of the plan doc — "Key Decisions."
+**Deliverable:** section 3, "Key Decisions". Decisions made later, during execution, are added
+here too, not left in the roadmap where they were made.
 
-### Step 4: Open questions enumeration
+### Step 4: Open questions
 
 **Goal:** make known unknowns first-class.
 
-Walk through the key decisions and identify every one labeled "deferred." Each deferred decision becomes an entry in the Open Questions section with:
-- The question
-- Why it matters (what it blocks)
-- Information needed to answer
-- When we expect to have that information
-- Decision owner
+Every deferred decision becomes an Open Questions entry with the five fields from P4. Add the
+technical unknowns that are not yet decisions: "does VIT handle this Fortran pattern?", "does KGen
+work with this build?", "what does the framework's interface contract require?"
 
-Also include technical unknowns not yet surfaced as decisions: "does VIT's parser handle this Fortran pattern?", "does KGen work with this build system?", "what does the NWTC Framework interface contract actually require?" These become investigation items.
+**Deliverable:** section 4, "Open Questions".
 
-**Deliverable:** Section 4 — "Open Questions."
+### Step 5: Phase roadmap
 
-### Step 5: Draft phase roadmap
-
-**Goal:** sequence the work, with explicit confidence levels.
+**Goal:** sequence the work, with explicit confidence.
 
 For each phase:
-- Name and one-sentence goal
-- Confidence label (committed / planned / speculative / unknown)
-- Dependencies on prior phases
-- Revisit trigger (when do we stop and reassess this phase's scope?)
-- Placeholder for delivering commits and dev notes (filled in as work happens)
+- a name and a one-sentence goal
+- its confidence label
+- its dependencies on earlier phases
+- its revisit trigger
+- a place for delivering commits and dev notes, filled in as the work happens
 
-Granularity follows complexity. A phase you are confident about can be detailed in checkbox form. A phase you are speculative about is a paragraph or two with a "will be revised" marker. Do not force uniform detail.
+A phase you are confident about can be a checklist; a speculative one is a paragraph marked "will be
+revised".
 
-**Deliverable:** Section 5 — "Phase Roadmap."
+**Deliverable:** section 5, "Phase Roadmap".
 
 ### Step 6: Revisit triggers and review cadence
 
-**Goal:** decide upfront when the plan will be reviewed.
+**Goal:** decide in advance when the plan will be reviewed:
+- after every completed phase: review the adjacent phases for drift
+- at the named triggers in the roadmap: stop and reassess
+- on any strategy or done-criteria change: update the plan at once, with a Change Log entry
+- on a fixed cadence: check that Current State is still current
 
-Explicit triggers to set:
-- After every completed phase → review adjacent phases for scope drift
-- At named dead reckoning points in the roadmap → stop and reassess before continuing
-- On strategy decisions → update plan immediately with a Change Log entry
-- On "done criteria" changes → update plan immediately with a Change Log entry
-- Weekly or biweekly → quick "is Current State still current?" check
+**Deliverable:** section 6, "Revisit Triggers".
 
-**Deliverable:** Section 6 — "Revisit Triggers." Plus a commitment to actually follow them.
+### Step 7: Write the plan text
 
-### Step 7: Write plan text using the above
+Only now write prose. The data, scope, decisions, questions and roadmap already exist; you are
+turning them into readable text, not inventing them.
 
-Now, and only now, write prose for each section. The data, scope, decisions, questions, and roadmap structure are already laid out — you are converting them into readable text, not inventing them on the fly.
+**Deliverable:** the plan, committed alongside the inventory data.
 
-**Deliverable:** complete `PROJECT_PLAN_<TARGET>.md`, committed alongside the inventory data.
+## 6. Document structure
 
-## 6. Document structure template
-
-Every `PROJECT_PLAN_<TARGET>.md` should have these sections, in this order:
+Every plan has these sections, in this order:
 
 ```markdown
 # PROJECT PLAN: <Target> Translation
 
 ## 1. Vision and Done Criteria
-   - Goal statement
-   - Explicit done criteria (what "complete" looks like)
-   - Explicit out-of-scope items
-   - Target rigor level
-   - Stakeholders and their success criteria
+   - Goal, done criteria, out-of-scope items, target rigor, stakeholders
 
 ## 2. Structural Inventory
-   - Summary stats (LOC, function count, module count)
-   - Pointers to committed data files (analysis/*.json or analysis/*.md)
-   - Key observations from the inventory that shaped the plan
+   - Summary figures, pointers to the committed data, observations that shaped the plan
 
 ## 3. Key Decisions
-   - One subsection per committed decision, with rationale and alternatives
-   - One subsection per deferred decision, with decision point marker
+   - One entry per decision: rationale, alternatives, committed or deferred
 
 ## 4. Open Questions
-   - Numbered list; each entry has the five fields above (question, why it matters, info needed, when, owner)
+   - Each with the five fields from P4
 
 ## 5. Phase Roadmap
-   - Phases with confidence labels (committed / planned / speculative / unknown)
-   - Dependencies, revisit triggers
-   - Checkboxes for executed work (filled as phases progress)
-   - Cross-reference slots for commits and dev notes
+   - Phases with confidence labels, dependencies, revisit triggers, checkboxes and
+     cross-references
 
-## 6. Revisit Triggers / Dead Reckoning Points
-   - Named triggers embedded in the roadmap
-   - Review cadence commitment
+## 6. Revisit Triggers
+   - Named triggers and the review cadence
 
 ## 7. Current State
-   - Date-stamped snapshot of where the project is right now
-   - Updated after every completed phase or major event
-   - Historical snapshots archived in a subsection or via git history
+   - A dated snapshot of where the project is
 
 ## 8. Change Log
-   - First-class record of plan revisions
-   - Every strategy shift, scope change, and done-criteria change logged here
-   - Entry format: date, what changed, why, link to commit
+   - Changes to strategy, scope and done criteria: date, what changed, why, link
 ```
+
+Keep the Change Log to plan-level changes. A log that also tries to record every session duplicates
+the dev notes, is never complete, and gets abandoned. Point to the dev notes for execution history,
+grouped by phase.
 
 ## 7. Confidence labels in practice
 
-Apply the labels from Principle 2 to everything:
-
 **Phases:**
-- **committed** phases have full checkboxes and detailed scope
-- **planned** phases have goal + rough outline, details deferred
-- **speculative** phases have a paragraph-long sketch + "will revise" note
-- **unknown** phases are named placeholders — "Phase X: something about Y, TBD"
+- **committed** phases have full checklists and detailed scope
+- **planned** phases have a goal and a rough outline
+- **speculative** phases have a short sketch and a "will revise" note
+- **unknown** phases are named placeholders
 
-**Decisions:**
-- **committed** decisions are in Section 3, with rationale
-- **deferred** decisions are in Section 3, with decision point, *and* in Section 4 as open questions
+**Decisions:** committed decisions in section 3 with their rationale; deferred ones in section 3
+with their decision point, and in section 4 as open questions.
 
-**Open questions:**
-- **unknown** — no information yet
-- **investigating** — information gathering in progress
-- **answered** — decision made, moves to Section 3
+**Open questions:** **unknown** (no information yet), **investigating**, or **answered** (the
+decision moves to section 3).
 
-Use the labels consistently. A plan that downgrades "committed" to "planned" when updated is telling the truth about what changed.
+A plan that downgrades "committed" to "planned" when it learns something is telling the truth.
 
 ## 8. Maintenance practices
 
+**Make updating the plan part of finishing the work.** Update Current State, and tick the phase's
+checkboxes, in the same commit or session that completes a function or a phase. A plan updated "later"
+is a plan that goes stale.
+
 **After every completed phase:**
-1. Re-read adjacent phases — has anything changed about how they should look?
-2. Update Current State section
-3. Move completed phase text to historical record (keep the text, do not retroactively rewrite)
-4. Fill in cross-references (delivering commits, dev notes)
-5. Commit the plan update with a descriptive message
+1. Re-read the adjacent phases: has anything changed?
+2. Update Current State, with the date.
+3. Leave the completed phase's text as history; do not rewrite it.
+4. Fill in its cross-references.
+5. Commit.
 
-**On strategy shifts:**
-1. Write a dev note explaining the shift
-2. Add an entry to Change Log
-3. Update affected phases in the Roadmap
-4. Update Key Decisions section if a decision changed
-5. Commit
+**On a strategy shift:**
+1. Write a dev note explaining it.
+2. Add a Change Log entry.
+3. Update the affected phases, and Key Decisions.
+4. Commit.
 
-**On done-criteria changes:**
-1. Change Log entry (mandatory — this is the highest-impact plan update)
-2. Update Section 1 (Vision and Done Criteria)
-3. Update Current State to reflect the new bar
-4. Commit
+**On a change to the done criteria:**
+1. Add a Change Log entry. This is the most important kind.
+2. Update section 1.
+3. Update Current State against the new bar.
+4. Commit.
 
-**At revisit triggers:**
-1. Stop the work
-2. Re-read the affected phases in the plan
-3. Ask explicitly: is this plan still right? What would I do differently?
-4. If the answer is "same plan" — note the review in Change Log, continue
-5. If the answer is "different plan" — revise, Change Log, commit, then continue
+**At a revisit trigger:**
+1. Stop.
+2. Re-read the affected phases.
+3. Ask whether the plan is still right.
+4. If it is, note the review in the Change Log and continue.
+5. If not, revise, log, commit, then continue.
 
-**Scheduled reviews (weekly or biweekly):**
-1. Read Current State — does it match reality?
-2. Read top three upcoming phases — are they still the right next steps?
-3. Read Open Questions — has any answered since last review?
-4. Commit any updates with "Plan review YYYY-MM-DD" message
+**On the review cadence:**
+1. Does Current State match the repository?
+2. Are the next three phases still the right ones?
+3. Has any open question been answered?
+4. Commit any updates.
 
 ## 9. Anti-patterns
 
-Things that look reasonable but cause drift:
+- **Writing plan text before the inventory.** The plan is then built on guesses about the code.
+- **Uniform granularity.** A trivial phase and a complex one should not look alike.
+- **Implicit strategy decisions.** "We will work out how to verify X when we get there" is a deferred
+  decision; give it an entry and a decision point.
+- **Rewriting completed phases.** Keep history accurate; corrections go in Current State or the
+  Change Log.
+- **Treating the plan as a contract.** Revisions are expected, not failures.
+- **A Current State without a recent date.** If it has not changed in a month while work has, the
+  plan is stale, and a stale plan misleads.
+- **Past and future without markers.** Write "Phase 3 (complete): delivered..." and "Phase 7
+  (planned): will deliver...".
+- **Missing cross-references.** Every completed phase cites its dev notes and commits.
+- **A moved "done" bar with no Change Log entry.**
+- **Writing the plan alone.** A plan is a conversation with the people it serves, about scope,
+  decisions and unknowns.
 
-**Writing plan text before doing structural analysis.** The result is plans based on guesses about the codebase. The ROSCO plan had this in places where it guessed at Phase 5-8 sub-phase structures. Always do Step 1 (inventory) first.
+## 10. How this fits with the other documents
 
-**Uniform granularity across phases.** Phase 1 and Phase 10 should not look the same in the plan document. Complexity is non-uniform; detail should follow.
+- **The plan** says what is being done and why, phase by phase. There is one per translation.
+- **An operating manual for the workspace,** such as a `CLAUDE.md` an agent loads, says how each
+  step is done: the workflow, the commands, the test cases and the rules.
+- **Dev notes** record what happened, dated and in detail, and the plan cites them.
 
-**Implicit strategy decisions.** "We will figure out how to verify file I/O when we get to Phase 10" is not a plan — it is a deferred decision that deserves first-class treatment. Name it in Section 4 with a decision point.
+Start a translation with this document, write the plan, then execute it and write dev notes as the
+work happens.
 
-**Retroactively rewriting completed phases.** Preserve historical accuracy. If Phase 5A was executed as described, leave that description alone even when you learn something new. Corrections go in Current State or Change Log.
+## 11. Limits
 
-**Treating the plan as a contract.** The plan is not a commitment to execute specific steps — it is a commitment to stay approximately right about what we are trying to do. Revisions are expected, not failures.
-
-**Letting Current State drift.** A 3-month-old Current State section is actively misleading. Every Current State section should have a date, and if more than a month has passed without an update, the plan is stale.
-
-**Mixing historical and forward-looking content without markers.** Use temporal language. "Phase 3 (complete): delivered..." vs "Phase 7 (planned): will deliver..." Do not let a reader guess which is which.
-
-**Forgetting to cross-reference dev notes.** The plan is the skeleton; dev notes are the flesh. A plan that does not link to dev notes leaves readers without the execution detail. Every completed phase should cite its dev notes.
-
-**"Done" bar drift without a Change Log entry.** If the project's definition of "done" changes — even informally, even because "we decided we care more about X now" — that is a first-class event. Write it down.
-
-**Writing the plan in isolation.** Plan creation is a conversation with the user about scope, decisions, and unknowns. A plan written without that conversation is a solo guess at what the user wants.
-
-## 10. ROSCO as retrospective case study
-
-`PROJECT_PLAN_ROSCO.md` (formerly `PROJECT_PLAN.md`) can be read as a case study in this methodology — where it embodies the principles and where it violates them. A few specific observations:
-
-**What ROSCO's plan did well:**
-- **P1 applied to types.** Section 4 (Derived Type Translation Strategy) was research-backed before text. The type classification (BIND(C) structs vs view structs, the 4-blocker fixes to LocalVariables) was derived from investigation, not guessed. That section held up end-to-end.
-- **P7 partially applied.** Many phases cited commits and dev notes. The cross-reference discipline was not consistent, but it was present.
-- **P6 in spirit.** The plan was updated as phases completed. It was always "approximately right" even when late phases drifted.
-- **Checkbox structure.** `- [x]` vs `- [ ]` made progress visible at a glance. Kept for this methodology.
-- **Two-level structure.** Plan as skeleton, dev notes as flesh, with cross-references. The ratio of plan-text-to-dev-note-text was roughly 1:10, and that felt right.
-
-**What ROSCO's plan would do differently under this methodology:**
-
-1. **Confidence labels on all phases from the start.** Phases 1-3 would have been marked `committed`; Phases 4-8 as `planned` (shape known, sub-phases TBD); Phase 9 as `speculative`; Phases 10-11 as `unknown` until research arrived. A reader would instantly see where the plan was solid and where it was guesswork.
-
-2. **Explicit open question from day one: "How do we verify file I/O that KGen cannot extract?"** This was the biggest deferred decision in the project and it was invisible in the plan until Phase 10 arrived. Under this methodology it would have been Section 4 entry #1 with a decision point labeled "before Phase 10 starts, consult ROSCO developer and engineering review."
-
-3. **Phase 11.5 would have been anticipated.** Once the "verification rigor" axis is separate from "translation surface area" (P10), the possibility of escalating rigor mid-project is visible. The plan would have had a placeholder: "Phase 11.5 (speculative): verification rigor escalation if the initial target is judged insufficient." That placeholder would have been ready for the adversarial question when it arrived.
-
-4. **Revisit triggers named in advance.** "After Phase 4 completes, re-examine Phase 5 sub-phase ordering." "Before Phase 10 starts, re-read the mirror-vs-idiomatic question." These would have been in the plan from day one, not discovered in the moment.
-
-5. **Change Log section.** The strategy shifts (Phase 10 approach change, Phase 11.5 scope emergence, the integrated-branch-cleanup retrofit) all happened without formal log entries. Under this methodology they would be recorded the moment they happened, making the retrospective reconstruction trivial.
-
-The ROSCO plan is not a failure — it is a very good plan document with specific, enumerable weaknesses, and the AeroDyn plan (and all future plans) should inherit its strengths and fix its weaknesses.
-
-## 11. Relationship to CLAUDE.md and dev notes
-
-- **CLAUDE.md** is for day-to-day work inside the VIT codebase. It documents how to build, test, extract, verify, integrate, and commit. Read it when you are *doing* work.
-- **CREATING_PROJECT_PLANS.md** (this file) is for starting a new translation effort. Read it when you are *planning* work.
-- **PROJECT_PLAN_<TARGET>.md** is the output of applying this document to a specific target. There is one per project.
-- **Dev notes** (in `vit/dev/`) are the flesh of execution detail, cross-referenced from plans.
-
-When a new project begins, read CREATING_PROJECT_PLANS.md first, then apply its methodology to produce PROJECT_PLAN_<TARGET>.md, then execute the plan and write dev notes as work happens.
-
-## 12. A note on the limits of this methodology
-
-This document is derived from one completed project (ROSCO). One data point is not a proven methodology — it is informed speculation from a particular kind of project (Fortran-to-C++ translation, small team, bit-identical verification goal). It may not transfer cleanly to projects with different shapes: UI work, infrastructure migrations, multi-team efforts, projects without a clear "done" criterion. The principles above are the ones that seemed to generalize from ROSCO; they should be treated as hypotheses for the next project, not gospel.
-
-Revise this document when the AeroDyn project teaches us something new. If a principle proves wrong, mark it. If a new principle emerges, add it. This document is itself a living artifact, subject to the same revision discipline it prescribes for plan documents.
+These practices come from Fortran-to-C++ translation with a small team and a bit-identical
+verification goal. They are hypotheses for the next project, not settled method, and may not carry
+over to work of a different shape. When a principle proves wrong, mark it here; when a new one
+emerges, add it.
