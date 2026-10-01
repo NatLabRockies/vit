@@ -1,43 +1,69 @@
-# NWTC Utility Library Reference (`vit_nwtc.h` / `vit_nwtc.cpp`)
+# `vit_nwtc`: NWTC Library Routines in C++ (AeroDyn)
 
-C++ translations of NWTC_Library functions used by AeroDyn translations. Located at `modules/aerodyn/src/`. All translations `#include "vit_nwtc.h"`. VIT automatically copies both files to kernel directories during verification.
+Part of the AeroDyn case study. `vit_nwtc.h` and `vit_nwtc.cpp`, in the OpenFAST fork's
+`modules/aerodyn/src/`, hold C++ translations of the NWTC Library routines that translated AeroDyn
+code calls.
 
-## Design Rationale
+## Why it exists
 
-NWTC_Library stays Fortran as a module, but individual utility functions needed by AeroDyn are translated to C++ for the pure-C++ end state. Compiled as a separate unit (not header-only inline) so implementations exist once regardless of how many translations include the header. KGen kernel verification transitively validates these against the Fortran originals. `reset_to_clean.sh` preserves `vit_nwtc.cpp` (shared utility, not a per-function wrapper stub).
+The NWTC Library stays Fortran: it is shared by all of OpenFAST, and AeroDyn crosses into it
+through C interop (key decision KD5 in the AeroDyn plan). But a C++ translation that called a small
+NWTC routine, such as an interpolation or an error-status update, would cross back into Fortran for
+each call. So the routines that translated code calls are translated once, here, and shared.
 
-## Constants (header, `static constexpr`)
+Small routines are `inline` in the header; larger ones are declared in the header and implemented in
+`vit_nwtc.cpp`, so each exists once however many translations include it. As of the fork's
+`db0796299`, 31 of the 39 translation sources include the header.
 
-`Pi`, `TwoPi`, `PiBy2`, `D2R`, `R2D`, `ErrMsgLen`, `ErrID_None`, `ErrID_Warn`, `ErrID_Severe`, `ErrID_Fatal`, `AbortErrLev`
+## How VIT uses it
 
-## Functions (13 total)
+- **Listed in `vit.yaml` `shared_files`,** so VIT copies both files into each kernel directory for
+  verification. They already live in the directory the integrated build compiles.
+  `reset_to_clean.sh` leaves `vit_nwtc.cpp` in place: it is shared code, not a per-function file to
+  stub.
+- **Read into every translation prompt.** `vit translate` reads the header's declarations
+  (`vit/header_api.py`) and lists them under "Shared functions available to call", so a translation
+  calls them instead of reimplementing them inline. The `//` comment line immediately above a
+  declaration is carried along, which is where a function's conventions belong.
+- **Verified through its callers.** The routines are exercised by the kernels, test-validate
+  harnesses and simulation baselines of the translations that call them.
 
-- **`SetErrStat(errStatLcl, errMsgLcl, errStat*, errMsg*, routineName)`** — accumulate errors from callee calls (from NWTC_Base.f90). Keeps highest severity, concatenates messages with routine name prefix. Has `const char*` and `std::string` overloads. See TRANSLATION_TIPS.md for usage pattern.
+## Reference
 
-- **`EqualRealNos(a, b)`** — epsilon-based relative tolerance comparison (from `EqualRealNos8` in NWTC_Num.f90)
+**The header is the reference.** Each declaration names the NWTC routine it translates, with its file
+and line, and describes its array layouts and index conventions. This note does not repeat the
+signatures: an earlier version did, and drifted from the header in a function count and a signature.
 
-- **`fZeros(x, f, n, roots, roots_size, nZeros, has_period, period)`** — zero-crossing finder with optional periodic wraparound (from `fZero_R8`). Arrays are 0-based. `has_period`/`period` replace the Fortran OPTIONAL parameter.
+Contents as of 2026-09-30, with the NWTC routine each translates:
 
-- **`InterpExtrapStp(XVal, XAry, YAry, Ind, AryLen)`** — linear interpolation/extrapolation with stepping index search (from NWTC_Num.f90). `Ind` is **1-based** (Fortran convention) — caller initializes to 1. Arrays are 0-based.
+| Purpose | Functions |
+|---|---|
+| Error handling | `SetErrStat` (NWTC_Base `SetErrStat`; `const char*` and `std::string` overloads), `setErrMsg` (pads and fills an error-message buffer), `num2lstr` (as `Num2LStr`, for messages) |
+| Comparison | `EqualRealNos` (`EqualRealNos8`) |
+| Interpolation | `InterpExtrapStp`, `InterpStp` (`InterpStpReal8`), `LocateBin`, `CubicSplineInitM`, `CubicLinSplineInitM`, `CubicSplineInterpM` |
+| Angles | `MPi2Pi` (`MPi2Pi_R8`), `AddOrSub2Pi` (`AddOrSub2Pi_R8`), `Angles_ExtrapInterp1` (`Angles_ExtrapInterp1_R8`) |
+| Other | `fZeros` (`fZero_R8`), `kernelSmoothing` |
 
-- **`InterpStp(XVal, XAry, YAry, Ind, AryLen)`** — linear interpolation with stepping (no extrapolation, clamps to endpoint values). Same calling convention as InterpExtrapStp.
+Constants: `Pi`, `TwoPi`, `PiBy2`, `D2R`, `R2D`; `ErrMsgLen`, `ErrID_None`, `ErrID_Warn`,
+`ErrID_Severe`, `ErrID_Fatal`, `AbortErrLev`; and the `kernelType_*` selectors for
+`kernelSmoothing`.
 
-- **`kernelSmoothing(x, f, n, bw, kernelType, xs, fs, ns)`** — kernel density smoothing with configurable kernel type (Epanechnikov, Quartic, Biweight, Triweight, Tricube, Gaussian). Constants: `kernelType_EPANECHINIKOV` through `kernelType_GAUSSIAN`.
+## Conventions
 
-- **`MPi2Pi(angle)`** — normalize angle to [-Pi, Pi]. Inline (header-only). Uses `fmod` + conditional adjustment to match Fortran `MODULO` semantics.
+- **Arrays are 0-based.** Index-tracking arguments are not: the `Ind` argument of `InterpStp` and
+  `InterpExtrapStp`, and the value `LocateBin` returns, are 1-based, as in Fortran. Callers start
+  `Ind` at 1.
+- **Multi-dimensional arrays are column-major**, as in Fortran. The spline coefficient array is
+  `[nCoefRows × curves × 4]` with `nCoefRows = NumPts - 1`; pass its actual first dimension.
+- **A Fortran `OPTIONAL` argument becomes a flag and a value**, as `has_period` and `period` in
+  `fZeros`.
+- **The constants are compile-time here and run-time in Fortran.** `Pi`, `D2R` and `R2D` are
+  `constexpr` in the header, but in the NWTC Library they are set by `NWTC_Init`. A Fortran test
+  bridge must call `NWTC_Init()` first (see the AeroDyn operating manual's pitfalls).
 
-- **`LocateBin(XVal, XAry, AryLen)`** — binary search returning 1-based lower-bound index. Returns 0 if below range, AryLen if above. Arrays are 0-based in C++.
+## Adding a function
 
-- **`CubicSplineInterpM(X, XAry, YAry, Coef, Res, NumPts, nCols, nCoefRows)`** — multi-column cubic spline interpolation. `nCoefRows` is the first dimension of the Coef array — typically `NumPts-1`. Column-major layout for both YAry and Coef. **Critical:** always pass the actual Coef dimension, not NumPts.
-
-- **`CubicSplineInitM(XAry, YAry, Coef, NumPts, NumCrvs, errStat*, errMsg*)`** — compute natural cubic spline coefficients for irregularly-spaced data with multiple curves. Custom Gaussian elimination on tridiagonal system. Output Coef: `[nCoefRows x NumCrvs x 4]` where nCoefRows = NumPts-1.
-
-- **`CubicLinSplineInitM(XAry, YAry, Coef, NumPts, NumCrvs, errStat*, errMsg*)`** — compute linear spline coefficients in cubic format (c2=c3=0). Same array layouts as CubicSplineInitM.
-
-- **`AddOrSub2Pi(OldAngle, NewAngle*)`** — adjusts NewAngle to within Pi of OldAngle by adding/subtracting multiples of 2*Pi. Coarse jump via `int(delta/2Pi)`, then iterative ±2Pi fine adjustment (max 10 steps).
-
-- **`Angles_ExtrapInterp1(Angle1, Angle2, tin[2], Angle_out*, tin_out)`** — angle-aware linear interpolation between two angles. Calls AddOrSub2Pi to adjust Angle2 within Pi of Angle1 before interpolating. Short-circuits if angles are equal. Used by AFI_UA_BL_Type_ExtrapInterp1 for 8 angle fields.
-
-## Array Convention
-
-All arrays are 0-based in C++. Index-tracking parameters (`Ind` in InterpStp/InterpExtrapStp, return from LocateBin) are 1-based to match Fortran convention.
+Translate the NWTC routine once, here, rather than inline in a translation. If it is small (under
+about 15 lines, no complex loops), make it `inline` in the header; otherwise declare it in the header
+and implement it in `vit_nwtc.cpp`. Put a one-line comment directly above the declaration stating
+its convention: that is the line VIT shows the next translation.
