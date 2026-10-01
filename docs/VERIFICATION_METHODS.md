@@ -1,165 +1,116 @@
-# Verification Methods Reference
+# Verification Methods
 
-Five verification approaches for AeroDyn translations. Each suits a different class of function.
+How VIT establishes that a C++ translation matches the Fortran it replaces, and which method fits
+which kind of function. The commands are in [`VIT_REFERENCE.md`](VIT_REFERENCE.md); the case
+studies show each method used on real code.
 
-## 1. KGen Kernel Verification (Physics Functions)
+## Two layers, both needed
 
-The default verification path. KGen captures function inputs/outputs during a real simulation; VIT replaces the Fortran with C++ in the kernel and compares bit-identically.
+- **Function level.** A kernel or a test harness compares the function's outputs, for specific
+  inputs, with the Fortran's. It is fast and says exactly which output differs. But it covers only
+  the inputs it has: by default a kernel holds the function's first 20 calls.
+- **Program level.** After integration, the whole program runs and its outputs are compared with a
+  baseline produced by the original Fortran. This covers every call, and catches differences too
+  small for a kernel to notice that feedback loops amplify over many time steps.
 
-**When to use:** Functions with floating-point arithmetic — the bulk of AeroDyn.
+A function-level pass with a program-level failure is a translation defect until shown otherwise.
+Look at the translation first, not the compiler or the tooling.
 
-**Workflow:**
-```bash
-# Extract (inside vit-dev-openfast container, from /workspace/openfast)
-vit extract FuncName -f modules/aerodyn/src/File.f90 -l LINE
+Before either, `vit check` looks for defect shapes known to change results, some of which no sampled
+input happens to expose.
 
-# Verify (20/20 IDENTICAL expected)
-vit verify FuncName translations/Module/funcname.cpp -f modules/aerodyn/src/File.f90 --kernel-dir kernel/FuncName
+## Choosing a method
 
-# Integrate
-vit integrate FuncName translations/Module/funcname.cpp -f modules/aerodyn/src/File.f90 --apply [--reverse-copy]
+| The function | Function-level method |
+|---|---|
+| Does arithmetic, and a run reaches it | KGen kernel: `vit extract`, then `vit verify` |
+| Checks its inputs and reports errors (a validator) | `vit test-validate` |
+| Writes files | File-output comparison, with a hand-written harness |
+| Is reached by no run, and is not a validator | A hand-written dual-call harness |
+| Was rewritten as idiomatic C++, not translated line by line (for example file I/O) | None: program-level comparison only |
 
-# Rebuild + regression test (17/17 must pass)
-cd build && cmake .. && cmake --build . --target aerodyn_driver -j$(nproc)
-cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
-```
+Every integrated function also passes the program-level comparison. To decide whether a function no
+run reaches is called at all, `vit reachability` removes it and rebuilds.
 
-## 2. Test-Validate (Validation Functions)
+## 1. KGen kernel
 
-Prompt-based dual-call testing for functions whose interesting behavior is error-branch coverage, not floating-point arithmetic.
+`vit extract` captures the function's inputs and outputs at a call site during a real run. `vit
+verify` builds the resulting kernel with the C++ in place of the Fortran, replays the captured calls,
+and compares every output field.
 
-**When to use:** Functions named `Validate*`, `Check*`, or functions that only call `SetErrStat` with no math. KGen kernel verification only exercises the happy path (valid inputs → ErrStat=0), leaving all error branches untested.
+- **Results per output:** `IDENTICAL`, `IN_TOL` (within `verification.tolerance`) or out of
+  tolerance. With fused multiply-add disabled (below), anything but `IDENTICAL` usually means a
+  translation defect. A per-field log is written unless `--no-field-log` is given.
+- **The red test.** After a pass, VIT changes one input slightly and expects the kernel to report a
+  mismatch. If it does not, the pass proves nothing. When every input arrives behind a pointer or
+  inside a derived type, VIT cannot construct a safe change; the result is `NON_DISCRIMINATING` and
+  the command exits 1. Such a function then rests on the other layer.
+- **Uninitialized memory.** Captured state can contain NaN from uninitialized fields. VIT treats NaN
+  as equal to NaN, and reports cases whose reference data is all NaN as skipped.
 
-**How it works:** VIT extracts raw materials (Fortran source, C++ translation, struct definitions), generates a test harness skeleton and a Fortran BIND(C) bridge, and assembles a prompt. The LLM writes branch-coverage tests. Each test calls both C++ and Fortran and asserts they produce the same `ErrStat`.
+## 2. Test-validate (validators)
 
-**What VIT generates:**
-- **Test skeleton** (`<name>_test.cpp`) — boilerplate: includes, TestResult struct, main runner, extern "C" bridge declaration. LLM fills in `make_valid_input()` and per-branch test functions.
-- **Fortran bridge** (`<name>_bridge.f90`) — BIND(C) subroutine that receives derived types as `TYPE(C_PTR)`.
-- **Patched source** — if the function is PRIVATE, a local copy with `PUBLIC :: FuncName` added.
-- **Makefile** — compiles patched source + bridge + test, links against production `.a` libraries.
+A kernel replays the calls a run made, which for an input validator is usually only the happy path.
+`vit test-validate` generates what is needed to test the error branches:
 
-**Workflow:**
-```bash
-# 1. Generate scaffold + prompt
-vit translate FuncName -f modules/aerodyn/src/Source.f90 --module ModuleName
+- a test skeleton, `<name>_test.cpp`, for an agent or a person to fill in with one test per branch
+- a Fortran `BIND(C)` bridge, `<name>_bridge.f90`, that calls the original Fortran. A derived type
+  with ALLOCATABLE fields is passed field by field and rebuilt as a real Fortran type in the bridge.
+- a copy of the Fortran source with the function made `PUBLIC`, if it was `PRIVATE`
+- a Makefile that links against the project's built libraries
 
-# 2. Write C++ implementation
+They are written to `translations/<Module>/<name>_test/`, and the command prints a prompt for writing
+the tests. Each test calls both implementations with the same input and asserts that they report the
+same error status, and that it is the expected one. `--run` builds and runs the tests. Running the
+command again keeps a test file that has been filled in (no `// --- TODO:` markers left), unless
+`--force` is given; the other files are regenerated.
 
-# 3. Generate test harness + prompt (does NOT overwrite existing test file)
-vit test-validate FuncName translations/Module/funcname.cpp \
-  -f modules/aerodyn/src/Source.f90 --module ModuleName
+## 3. File-output comparison (functions that write files)
 
-# 4. Write test implementations using the prompt
+Neither a kernel nor test-validate sees what a function writes to a file. Write a harness that builds
+the same input for both implementations, calls each so it writes its own file, and compares the
+files. VIT has no command for this.
 
-# 5. Build and run tests (inside container)
-vit test-validate FuncName translations/Module/funcname.cpp \
-  -f modules/aerodyn/src/Source.f90 --module ModuleName --run
+What usually needs care:
+- **Format descriptors.** Fortran `WRITE` formats (`F20.6`, `I17`, `ES17.8`) must be reproduced
+  exactly by the C++ format strings.
+- **Timestamps.** Dates and times differ between runs; skip those lines in the comparison, or fix
+  the time.
+- **I/O helpers.** The Fortran may write through the code base's own I/O routines, which the C++
+  replaces with the standard library.
 
-# 6. Integrate + rebuild + baselines (same as KGen path)
-vit integrate FuncName translations/Module/funcname.cpp \
-  -f modules/aerodyn/src/Source.f90 --apply
-cd build && cmake --build . --target aerodyn_driver -j$(nproc)
-cd /workspace/openfast && ./scripts/verify_aerodyn_baselines.sh all
-```
+## 4. Dual-call harness (functions no run reaches)
 
-**File overwrite protection:** Re-running `vit test-validate` skips the test file if it contains real implementations (no `// --- TODO:` markers). Use `--force` to overwrite. Bridge, Makefile, and patched source are always regenerated.
+For a function no test case calls, typically on an initialization or linearization path, a kernel
+captures nothing and the program-level comparison passes trivially. Write a Fortran program that:
+1. builds real Fortran inputs, including derived types with ALLOCATABLE fields
+2. makes a deep copy for the C++ call, with the code base's own copy routines
+3. calls the original Fortran on one copy, and the C++ through its views and `_c` entry point on the
+   other
+4. compares the results field by field
 
-**Test storage:** `translations/<Module>/<name>_test.cpp`, alongside the translation, bridge, and Makefile.
+Compare LOGICALs with `.NEQV.`, not `/=`. The view structs cannot be turned back into Fortran types
+with `C_F_POINTER` when they have ALLOCATABLE fields, which is why the program owns real Fortran types
+and copies them.
 
-## 3. File-Output Verification (Debug/Write Functions)
+## 5. Program-level comparison
 
-Dual-call testing that compares file output instead of ErrStat.
+Run the program's test cases and compare their outputs with baselines from the original Fortran,
+after every integration. Generate baselines from the clean Fortran build, never from an integrated
+one. For outputs saved as `.npz` arrays, `vit sim-compare <baseline_dir> <integrated_dir>` compares
+them exactly by default (`--tolerance` sets an absolute tolerance).
 
-**When to use:** Functions whose purpose is writing formatted output to files. Typically named `Wr*`, `Write*`, `Debug*`, `Output*`. Neither KGen nor test-validate works for these.
+## Floating point
 
-**How it works:** The test constructs mock data, calls both C++ and Fortran implementations (each writing to a separate file), then diffs the files.
+**Fused multiply-add.** Compile both the Fortran and the C++ with `-ffp-contract=off` while
+translating. Otherwise each compiler fuses different multiply-adds, producing one-ULP differences
+that closed-loop code amplifies. The flag is for verification; once a code base is entirely C++,
+fused multiply-add can be enabled again.
 
-**What to write (hand-crafted, no VIT command):**
-- **Test harness** (`<name>_filetest.cpp`) — constructs mock data, calls C++ → `output_cpp.dat`, calls Fortran bridge → `output_f90.dat`, runs byte-level comparison.
-- **Fortran bridge** (`<name>_filetest_bridge.f90`) — BIND(C) subroutine that receives mock data as C-compatible types, builds native Fortran types, calls the original Fortran function.
-- **Makefile rules** — same pattern as test-validate. Add to existing `translations/<Module>/Makefile`.
-
-**Key challenges:**
-- **Format string matching:** Fortran `WRITE` format descriptors (`F20.6`, `I17`, `ES17.8`) must be matched exactly by C++ `fprintf`/`snprintf` format strings.
-- **Timestamp lines:** Fortran `CurDate()`/`CurTime()` produce timestamps that differ between runs. Either skip these lines in the diff, or mock the timestamp.
-- **NWTC I/O utilities:** Fortran uses `GetNewUnit`, `OpenFOutFile`, `WrFileNR`. C++ uses `fopen`/`fprintf` directly.
-
-**Workflow:**
-```bash
-# 1. Write C++ translation (using vit translate scaffold)
-# 2. Write Fortran bridge
-# 3. Write C++ test harness
-# 4. Add Makefile rules
-# 5. Build and run (inside container):
-cd /workspace/openfast/translations/AirfoilInfo && make test_<name>_filetest && ./test_<name>_filetest
-# 6. Integrate + rebuild + baselines
-```
-
-**Test storage:** `translations/<Module>/`. Files named `<name>_filetest.cpp`, `<name>_filetest_bridge.f90`.
-
-## 4. Custom Fortran Test Harness (Zero-Coverage Functions)
-
-Dual-call testing using a hand-written Fortran program. For functions with ALLOCATABLE types that have zero gcov coverage — KGen can't extract (no state data), baselines pass trivially (function never called), and `vit test-validate`'s generated bridge can't handle view types with ALLOCATABLE fields (C_F_POINTER layout mismatch).
-
-**When to use:** Functions that are never called in the 17 test cases (e.g., Jacobian-path-only functions, initialization functions called before timestepping). The function may be a thin wrapper around already-verified callees, but the wrapper's loop bounds and argument passing still need verification.
-
-**How it works:** A Fortran program owns all memory (real Fortran derived types), creates deep copies via Registry routines, calls both original Fortran and C++ (via view populators + BIND(C) wrapper), and compares results field-by-field.
-
-**Pattern (from DBEMT_InitStates_AllNodes):**
-```fortran
-! 1. Allocate real Fortran types with test data
-CALL setup_types(NumNodes, NumBlades, DBEMT_Mod, u, p, x_f90, os_f90)
-
-! 2. Deep copy for C++ path
-CALL DBEMT_CopyContState(x_f90, x_cpp, MESH_NEWCOPY, ErrStat, ErrMsg)
-CALL DBEMT_CopyOtherState(os_f90, os_cpp, MESH_NEWCOPY, ErrStat, ErrMsg)
-
-! 3. Call original Fortran
-CALL DBEMT_InitStates_AllNodes(u, p, x_f90, os_f90)
-
-! 4. Call C++ via views
-CALL vit_populate_*(x_cpp, x_view)  ! etc.
-CALL func_c(C_LOC(u_view), C_LOC(p_view), C_LOC(x_view), C_LOC(os_view))
-CALL vit_copy_scalars_to_*(x_view, x_cpp)  ! reverse-copy
-
-! 5. Compare field-by-field
-```
-
-**Key challenges:**
-- **ALLOCATABLE fields:** Can't use C_F_POINTER to cast view structs to Fortran types — must create real Fortran types and use Registry Copy routines for deep copies.
-- **Fortran LOGICAL comparison:** Use `.NEQV.` not `/=`. Assignment uses `.TRUE.`/`.FALSE.` not integer literals.
-- **Registry routine names:** Shortened (e.g., `DBEMT_CopyContState` not `DBEMT_CopyContinuousStateType`).
-- **The `_c` wrapper:** The C++ translation needs an `extern "C"` wrapper for Fortran to call it. Add this to the translation file.
-
-**Test storage:** `translations/<Module>/test_<name>.f90` + `translations/<Module>/Makefile.test_<name>`.
-
-## 5. Simulation Baseline Verification
-
-17 AeroDyn regression test cases with committed baselines (`openfast/baselines/aerodyn/`). Run after integrating ANY function.
-
-```bash
-# Bit-identical gate (must pass 17/17)
-bash scripts/verify_aerodyn_baselines.sh all
-
-# NREL correctness gate (1e-2 tolerance)
-bash scripts/run_nrel_regression.sh
-
-# Informational drift reporter
-bash scripts/check_aerodyn_nrel_drift.sh
-```
-
-New baselines must be generated from clean Fortran (not from the integrated C++ build).
-
-## FMA Contraction and Bit-Identical Verification
-
-`-ffp-contract=off` disables FMA contraction during the translation/verification phase, ensuring gfortran and g++ produce bit-identical results for equivalent expressions. Without this, compilers schedule FMA differently, causing 1-ULP differences that accumulate in closed-loop feedback.
-
-**This flag is for verification, not permanent.** Once all of AeroDyn is pure C++, FMA can be re-enabled.
-
-**If a translation shows `IN_TOL` (instead of `IDENTICAL`) with `-ffp-contract=off`**, it likely indicates a real translation bug.
-
-**Debugging persistent kernel failures (same cases fail regardless of code changes):** If the same N cases fail with the same diffs whether using C++ or pure Fortran (replace the VIT wrapper with the `.kgen` original), the issue is NOT in the translation — it's in the kernel compilation environment. The most common cause: **vectorized vs scalar math library** — production links `libmvec` (SIMD cos/sin) while the kernel may not. Check with `nm production_binary | grep _ZGV` vs `nm kernel.exe | grep _ZGV`. VIT's `-fvect-cost-model=unlimited` + `-lmvec -lm` flags address this. See dev note `202604260357`.
-
-## Kernel Vectorization Flags
-
-VIT adds `-fvect-cost-model=unlimited` to kernel Fortran compilation and `-lmvec -lm` to the linker. KGen-reduced modules have fewer functions than the full production build, which changes gfortran's vectorization cost heuristics — loops vectorized in production (using libmvec SIMD) may not be vectorized in the kernel (falling back to scalar libm). The flags force consistent vectorization.
+**Kernel failures that do not depend on the translation.** If the same cases fail with the same
+differences whether the kernel runs the C++ or the original Fortran (restore the `.kgen` copy of the
+Fortran), the problem is the kernel's build, not the translation. The usual cause is vectorized
+math: the production build calls SIMD `sin`, `cos` or `exp` from libmvec, while the reduced kernel
+falls back to scalar libm, one ULP apart. Compare `nm <production binary> | grep _ZGV` with the
+kernel's. VIT compiles kernels with `-fvect-cost-model=unlimited` and links `-lmvec -lm` for this
+reason.
