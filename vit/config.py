@@ -94,6 +94,14 @@ class VitConfig:
     add_source_cmd: str = ""  # shell command to add kgen_utils.f90 to the build file,
                                # for a build system or source list the default cannot match
     shared_files: list = field(default_factory=list)  # Shared headers/sources to copy to kernel (paths relative to project root)
+    # Line coverage per test case (`vit coverage run`). Paths are relative to
+    # vit.yaml; commands may use {build_dir} and {project_dir}.
+    coverage_file: str = "coverage.json"
+    coverage_build_dir: str = "build-coverage"
+    coverage_configure_cmd: str = ""  # "" = CMake with --coverage on every compiler and linker
+    coverage_build_cmd: str = ""  # "" = cmake --build {build_dir}
+    coverage_gcov: str = ""  # "" = the gcov matching the build's Fortran compiler
+    coverage_cases: dict = field(default_factory=dict)  # name -> shell command
 
     config_dir: str = "."  # Directory containing vit.yaml
     # The YAML as loaded. save_config writes VIT's fields over it, so keys VIT
@@ -153,6 +161,7 @@ def load_config(config_path: Optional[str] = None) -> VitConfig:
     build = data.get("build_system", {})
     fortran = data.get("fortran", {})
     verify = data.get("verification", {})
+    coverage = data.get("coverage", {}) or {}
 
     return VitConfig(
         project_name=project.get("name", "my_project"),
@@ -181,6 +190,12 @@ def load_config(config_path: Optional[str] = None) -> VitConfig:
         dll_persistence=kgen.get("dll_persistence", {}),
         add_source_cmd=kgen.get("add_source_cmd", ""),
         shared_files=data.get("shared_files", []),
+        coverage_file=coverage.get("file", "coverage.json"),
+        coverage_build_dir=coverage.get("build_dir", "build-coverage"),
+        coverage_configure_cmd=coverage.get("configure_cmd", ""),
+        coverage_build_cmd=coverage.get("build_cmd", ""),
+        coverage_gcov=coverage.get("gcov", ""),
+        coverage_cases={str(k): str(v) for k, v in (coverage.get("cases") or {}).items()},
         config_dir=config_dir,
         raw=data,
     )
@@ -296,6 +311,17 @@ def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
 
     if config.shared_files:
         data["shared_files"] = config.shared_files
+
+    coverage = {key: value for key, value, default in (
+        ("file", config.coverage_file, "coverage.json"),
+        ("build_dir", config.coverage_build_dir, "build-coverage"),
+        ("configure_cmd", config.coverage_configure_cmd, ""),
+        ("build_cmd", config.coverage_build_cmd, ""),
+        ("gcov", config.coverage_gcov, ""),
+        ("cases", config.coverage_cases, {}),
+    ) if value != default}
+    if coverage:
+        data["coverage"] = coverage
 
     data = _over_raw(config.raw, data)
 

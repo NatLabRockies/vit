@@ -89,14 +89,21 @@ def main():
     p_find = subparsers.add_parser("find", help="Find call sites for a function")
     p_find.add_argument("function_name", help="Function name to find")
     p_find.add_argument("--source-dir", help="Override source directory")
-    p_find.add_argument("--coverage", metavar="FILE",
-                        help="Line coverage from `vit coverage import`: show which test "
-                             "cases reach each call site, and how often")
+    p_find.add_argument("--coverage", metavar="FILE", nargs="?", const="",
+                        help="Line coverage from `vit coverage run` or `import` (default: "
+                             "coverage.file in vit.yaml): show which test cases reach each "
+                             "call site, and how often")
 
     # --- coverage ---
     p_cov = subparsers.add_parser(
         "coverage", help="Line coverage per test case: import it, or query a line")
     cov_sub = p_cov.add_subparsers(dest="coverage_action", required=True)
+    p_cov_run = cov_sub.add_parser(
+        "run", help="Build with coverage, run the test cases in vit.yaml, and import the result")
+    p_cov_run.add_argument("--case", action="append", default=[], metavar="NAME",
+                           help="Run only this case (repeatable)")
+    p_cov_run.add_argument("--output", "-o", default=None,
+                           help="Coverage file to write (default: coverage.file in vit.yaml)")
     p_cov_imp = cov_sub.add_parser(
         "import", help="Merge per-test-case gcov JSON (gcov -j) into one coverage file")
     p_cov_imp.add_argument("--gcov-dir", required=True,
@@ -104,14 +111,15 @@ def main():
                                 "per test case")
     p_cov_imp.add_argument("--source-root", required=True,
                            help="Root of the source tree; paths are stored relative to it")
-    p_cov_imp.add_argument("--output", "-o", required=True, help="Coverage file to write")
+    p_cov_imp.add_argument("--output", "-o", default=None,
+                           help="Coverage file to write (default: coverage.file in vit.yaml)")
     p_cov_imp.add_argument("--prefix", default=None,
                            help="Keep only files under this path, relative to the source root")
     p_cov_line = cov_sub.add_parser("line", help="Which test cases run a line, and how often")
     p_cov_line.add_argument("location", metavar="FILE:LINE",
                             help="Source file, relative to the source root, and line number")
-    p_cov_line.add_argument("--coverage", required=True, metavar="FILE",
-                            help="Coverage file from `vit coverage import`")
+    p_cov_line.add_argument("--coverage", default=None, metavar="FILE",
+                            help="Coverage file (default: coverage.file in vit.yaml)")
 
     # --- parse ---
     p_parse = subparsers.add_parser("parse", help="Parse a function signature")
@@ -296,7 +304,7 @@ def _dispatch(args, config, parser):
     elif args.command == "find":
         return cmd_find(args, config)
     elif args.command == "coverage":
-        return cmd_coverage(args)
+        return cmd_coverage(args, config)
     elif args.command == "parse":
         return cmd_parse(args, config)
     elif args.command == "extract":
@@ -362,8 +370,9 @@ def cmd_inventory(args):
 def cmd_find(args, config):
     """Find call sites for a function."""
     source_dir = args.source_dir or config.abs_source_dir
-    if getattr(args, "coverage", None):
-        return _find_with_coverage(args.function_name, source_dir, args.coverage)
+    if getattr(args, "coverage", None) is not None:
+        return _find_with_coverage(args.function_name, source_dir,
+                                   args.coverage or config.abs_path(config.coverage_file))
     sites = find_call_sites(source_dir, args.function_name)
 
     if not sites:
@@ -416,9 +425,55 @@ def _find_with_coverage(function_name, source_dir, coverage_file):
     return 0
 
 
-def cmd_coverage(args):
-    """`vit coverage import` and `vit coverage line` (vit/coverage.py)."""
+def _print_coverage_written(path, data, report):
+    meta = data["metadata"]
+    print(f"Wrote {path}: {meta['file_count']} source files, "
+          f"{len(meta['test_cases'])} test cases, {report['gcov_files']} gcov files")
+    print(f"  source root: {meta['source_root']}, commit "
+          + (meta["source_commit"] or "not recorded (not a git repository)"))
+    if report["stored_text"] and meta["source_commit"]:
+        print(f"  {len(report['stored_text'])} file(s) differ from that commit; the "
+              f"measured text is stored in the coverage file")
+    elif report["stored_text"]:
+        print(f"  the measured text of {len(report['stored_text'])} file(s) is stored in the "
+              f"coverage file, since no git repository holds it")
+    if report["cases_without_data"]:
+        print(f"  test cases with no gcov files: {', '.join(report['cases_without_data'])}")
+    if report["outside_root"]:
+        print(f"  left out: {len(report['outside_root'])} file(s) outside the source root")
+    if report["filtered"]:
+        print(f"  left out: {len(report['filtered'])} file(s) not under the prefix")
+    for problem in report["unreadable"]:
+        print(f"  WARNING: unreadable: {problem}")
+
+
+def cmd_coverage(args, config):
+    """`vit coverage run`, `import` and `line` (vit/coverage.py)."""
     from . import coverage as cov
+
+    default_file = config.abs_path(config.coverage_file)
+
+    if args.coverage_action == "run":
+        try:
+            data, report, results = cov.run_coverage(config, case_names=args.case)
+        except cov.CoverageRunError as e:
+            print(f"vit coverage run: {e}", file=sys.stderr)
+            return 1
+        failed = [r for r in results if r["exit_code"] or not r["gcov_files"]]
+        if data["files"]:
+            output = args.output or default_file
+            cov.write(data, output)
+            _print_coverage_written(output, data, report)
+        else:
+            print("No coverage written: no case ran a line under "
+                  f"{data['metadata']['source_root']}.", file=sys.stderr)
+        for r in failed:
+            why = (f"exited {r['exit_code']}" if r["exit_code"]
+                   else "produced no coverage data")
+            print(f"  WARNING: case {r['name']} {why}; its coverage is missing or partial")
+            if r["output_tail"]:
+                print("    " + r["output_tail"].replace("\n", "\n    "))
+        return 1 if failed or not data["files"] else 0
 
     if args.coverage_action == "import":
         data, report = cov.import_gcov(args.gcov_dir, args.source_root, prefix=args.prefix)
@@ -430,29 +485,16 @@ def cmd_coverage(args):
                   f"{meta['source_root']}" + (f"/{args.prefix}" if args.prefix else "") + ".",
                   file=sys.stderr)
             return 1
-        cov.write(data, args.output)
-        print(f"Wrote {args.output}: {meta['file_count']} source files, "
-              f"{len(meta['test_cases'])} test cases, {report['gcov_files']} gcov files")
-        print(f"  source root: {meta['source_root']}, commit "
-              + (meta["source_commit"] or "not recorded (not a git repository)"))
-        if report["stored_text"]:
-            print(f"  {len(report['stored_text'])} file(s) differ from that commit; the "
-                  f"measured text is stored in the coverage file")
-        if report["cases_without_data"]:
-            print(f"  test cases with no gcov files: {', '.join(report['cases_without_data'])}")
-        if report["outside_root"]:
-            print(f"  left out: {len(report['outside_root'])} file(s) outside the source root")
-        if report["filtered"]:
-            print(f"  left out: {len(report['filtered'])} file(s) not under {args.prefix}")
-        for problem in report["unreadable"]:
-            print(f"  WARNING: unreadable: {problem}")
+        output = args.output or default_file
+        cov.write(data, output)
+        _print_coverage_written(output, data, report)
         return 0
 
     location, _, line = args.location.rpartition(":")
     if not location or not line.isdigit():
         print(f"Expected FILE:LINE, got {args.location}", file=sys.stderr)
         return 2
-    data = cov.load(args.coverage)
+    data = cov.load(args.coverage or default_file)
     hits = cov.line_hits(data, location, int(line))
     if not hits:
         print(f"No test case runs {location}:{line}.")

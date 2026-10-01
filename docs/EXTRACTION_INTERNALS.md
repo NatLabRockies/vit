@@ -215,7 +215,7 @@ routines, and moves them into the in-target file that defines the same module. T
 When extraction captures nothing, in this order:
 
 1. **Is the call reached?** Confirm that the run in `kgen.run_cmd` executes the line, within the
-   capture range. With line coverage per test case (`vit coverage import`), this is a lookup:
+   capture range. With line coverage per test case (`vit coverage run`), this is a lookup:
    `vit find FuncName --coverage FILE`.
 2. **See the command.** `vit extract FuncName -f file -l LINE --dry-run` prints the KGen command and
    the wrapper. Check the paths, the defines and the test case.

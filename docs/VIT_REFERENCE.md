@@ -38,6 +38,11 @@ through a shell, from directories KGen chooses, so give them absolute paths.
 | `types` | | Per derived type, `strategy: bind_c` (the default) or `strategy: view`. `vit translate` sets `view` itself for a type with ALLOCATABLE fields. |
 | `allocatable.helpers` | | Routines that allocate arrays, as `name`, `array_arg` and `size_arg` positions, for `vit analyze-types --scan-allocatable`. |
 | `shared_files` | | Shared headers and sources. VIT copies them into each kernel, and beside the integrated source after `vit integrate --apply`; `vit translate` lists the headers' declarations in its prompt. |
+| `coverage.cases` | | For `vit coverage run`: the test cases, as `name: shell command`, run from the project directory. `{build_dir}` and `{project_dir}` are replaced by quoted absolute paths. |
+| `coverage.build_dir` | `build-coverage` | The instrumented build, separate from `project.build_dir`. On macOS, an absolute path inside the container, as for `project.build_dir`. |
+| `coverage.configure_cmd`, `coverage.build_cmd` | CMake | How to configure and build with coverage. By default `cmake -S {project_dir} -B {build_dir}` with `--coverage` added to the Fortran, C, C++ and linker flags, then `cmake --build {build_dir}`. |
+| `coverage.gcov` | (matched) | The gcov to use. By default VIT finds the one from the same GCC release as the Fortran compiler CMake chose; a gcov from another release, or LLVM's, cannot read the data. |
+| `coverage.file` | `coverage.json` | Where `vit coverage run` and `import` write, and where `vit find --coverage` and `vit coverage line` read when given no file. |
 | `translations` | | Written by VIT: each function's status, case counts and red-test result. |
 
 ## Commands
@@ -49,8 +54,8 @@ through a shell, from directories KGen chooses, so give them absolute paths.
 |---|---|---|
 | `vit init` | Write a starter `vit.yaml` | `--name`, `--source-dir`, `--build-cmd`, `--run-cmd` |
 | `vit inventory` | Inventory a code base for planning: procedures, call graph, types, module graph, uncalled procedures, line counts. Needs fparser (`pip install 'vit[inventory]'`) | `--src`, `--output`, `--deps`, `--search`, `--generated-marker`, `--entry-point`, `--entry-points-file` |
-| `vit find` | Find a function's call sites; with `--coverage`, the test cases that run each, and how often | `--source-dir`, `--coverage FILE` |
-| `vit coverage` | `import`: merge line coverage per test case from `gcov -j` output into one file. `line`: which test cases run one line | `import --gcov-dir DIR --source-root DIR --output FILE [--prefix PATH]`; `line FILE:LINE --coverage FILE` |
+| `vit find` | Find a function's call sites; with `--coverage`, the test cases that run each, and how often | `--source-dir`, `--coverage [FILE]` |
+| `vit coverage` | Line coverage per test case. `run`: build with coverage, run the cases in `coverage.cases`, and import the result. `import`: merge existing `gcov -j` output, one directory per case. `line`: which cases run one line | `run [--case NAME]`; `import --gcov-dir DIR --source-root DIR [--output FILE] [--prefix PATH]`; `line FILE:LINE [--coverage FILE]` |
 | `vit parse` | Print a function's parsed signature | `-f FILE` |
 | `vit extract` | Capture a function's calls with KGen | `-f FILE -l LINE` (the call site), `--run-args`, `--assumed-size NAME=SIZE`, `--dry-run` |
 | `vit translate` | Write the C++ scaffold and print the prompt | `-f FILE` (the definition), `--module`, `-o DIR` |

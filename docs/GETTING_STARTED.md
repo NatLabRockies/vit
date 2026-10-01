@@ -217,10 +217,10 @@ It writes `vit.yaml`. Then edit it:
   `vit sim-compare` compares simulation outputs saved as `.npz` arrays.
   [`VERIFICATION_METHODS.md`](VERIFICATION_METHODS.md) covers when to use which.
 - **Choosing a test case to extract with:** with several test cases, line coverage per case says
-  which one runs a call site, and how often. Build with `--coverage`, run each case, and write
-  `gcov -j` output (gcc 9 or later) into one directory per case. Then
-  `vit coverage import --gcov-dir DIR --source-root . --output coverage.json`, and
-  `vit find FUNC --coverage coverage.json` lists each call site with the cases that run it.
+  which one runs a call site, and how often. List the cases in the `coverage` section of
+  `vit.yaml`, as the example's does, then run `vit coverage run`: it builds an instrumented copy,
+  runs each case and records its coverage. `vit find drag --coverage` then lists each call site
+  with the cases that run it.
 - **Planning a whole code base:** [`CREATING_PROJECT_PLANS.md`](CREATING_PROJECT_PLANS.md)
   describes how to inventory a code base and order the work.
 

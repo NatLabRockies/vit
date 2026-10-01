@@ -13,9 +13,11 @@ directory of `.gcov.json.gz` files per case:
       case_a/  *.gcov.json.gz
       case_b/  *.gcov.json.gz
 
-`vit coverage import` merges them into one JSON file. `vit find FUNC --coverage
-FILE` lists each call site with the cases that reach it, and `vit coverage line
-FILE:LINE` answers for one line.
+`vit coverage import` merges them into one JSON file. `vit coverage run` does all
+of it, from the `coverage` section of vit.yaml: it builds an instrumented copy,
+runs each case, collects the gcov output and imports it. `vit find FUNC
+--coverage` lists each call site with the cases that reach it, and `vit
+coverage line FILE:LINE` answers for one line.
 
 The file holds, per source file relative to the source root, per test case, the
 execution count of every line that ran:
@@ -29,17 +31,23 @@ Line numbers belong to the source the coverage was measured on, which is not
 necessarily any commit: a project that measures on pre-integration source
 restores old versions of some files into a newer checkout. So import records,
 per file, the git blob id of the content it measured, and the text itself when
-that content is not in the checked-out commit. Lookups read that content, so
-later edits do not shift the lines. A file without a blob id (an older coverage
-file, or a source root outside git) is read at `source_commit`, failing that
-from the working tree, and the lookup says so.
+that content is not in the checked-out commit, or when there is no git
+repository to recover it from. Lookups read that content, so later edits do not
+shift the lines. A file without a blob id (an older coverage file) is read at
+`source_commit`; failing that, the working tree is read, and the lookup says
+whether it still matches what was measured.
 """
 
 import datetime
 import gzip
+import hashlib
 import json
 import os
+import re
+import shlex
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -146,15 +154,24 @@ def import_gcov(gcov_dir, source_root, prefix=None) -> tuple:
     return coverage, report
 
 
+def _blob_id(data: bytes) -> str:
+    """Git's blob id for `data`, computed without git."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
 def _record_measured_content(root, commit, files) -> list:
     """Give each file its blob id, and its text when `commit` does not hold it.
 
-    Returns the paths whose text was stored. Outside a git repository nothing
-    is recorded, and lookups read the working tree.
+    Outside a git repository nothing else can recover the content later, so
+    every file's text is stored. Returns the paths whose text was stored.
     """
-    if commit is None:
-        return []
     rels = [rel for rel in files if (Path(root) / rel).is_file()]
+    if commit is None:
+        for rel in rels:
+            data = (Path(root) / rel).read_bytes()
+            files[rel]["blob"] = _blob_id(data)
+            files[rel]["source"] = data.decode("utf-8", errors="replace")
+        return rels
     if not rels:
         return []
     measured = _git(root, "hash-object", "--stdin-paths", stdin="\n".join(rels) + "\n")
@@ -259,7 +276,9 @@ def measured_text(coverage, root, rel) -> tuple:
             if r.returncode == 0:
                 return r.stdout, "commit"
     if path.is_file():
-        return path.read_text(errors="replace"), "working_tree"
+        data = path.read_bytes()
+        unchanged = blob is not None and _blob_id(data) == blob
+        return data.decode("utf-8", errors="replace"), "measured" if unchanged else "working_tree"
     return None, "working_tree"
 
 
@@ -304,3 +323,186 @@ def call_sites(coverage, source_dir, function_name) -> list:
                     "read": read,
                 })
     return sites
+
+
+# --------------------------------------------------------------------------
+# Run: build, run each case, collect gcov output, import
+# --------------------------------------------------------------------------
+
+_COVERAGE_FLAGS = ("CMAKE_Fortran_FLAGS", "CMAKE_C_FLAGS", "CMAKE_CXX_FLAGS",
+                   "CMAKE_EXE_LINKER_FLAGS", "CMAKE_SHARED_LINKER_FLAGS")
+DEFAULT_CONFIGURE = ("cmake -S {project_dir} -B {build_dir} "
+                     + " ".join(f"-D{flag}=--coverage" for flag in _COVERAGE_FLAGS))
+DEFAULT_BUILD = "cmake --build {build_dir}"
+
+
+class CoverageRunError(RuntimeError):
+    """A step of `vit coverage run` failed; the message says which and why."""
+
+
+def fill(command, project_dir, build_dir) -> str:
+    """Substitute {project_dir} and {build_dir}, quoted for the shell.
+
+    Plain replacement rather than str.format, so a command's own braces, as
+    in ${VAR}, are left alone.
+    """
+    return (command.replace("{build_dir}", shlex.quote(str(build_dir)))
+                   .replace("{project_dir}", shlex.quote(str(project_dir))))
+
+
+def cmake_fortran_compiler(build_dir) -> Optional[str]:
+    """The Fortran compiler CMake chose for a configured build directory."""
+    cache = Path(build_dir) / "CMakeCache.txt"
+    if not cache.is_file():
+        return None
+    for line in cache.read_text(errors="replace").splitlines():
+        if line.startswith("CMAKE_Fortran_COMPILER:"):
+            return line.split("=", 1)[1].strip() or None
+    return None
+
+
+def _run(argv, **kwargs):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, **kwargs)
+    except OSError as e:
+        return subprocess.CompletedProcess(argv, 127, "", str(e))
+
+
+def _gcov_major(gcov) -> Optional[str]:
+    """The GCC major version of a gcov, or None if it is not GCC's gcov.
+
+    macOS puts LLVM's gcov on PATH as `gcov`; it cannot read GCC's data files.
+    """
+    r = _run([gcov, "--version"], timeout=30)
+    first = (r.stdout or "").splitlines()[:1]
+    if r.returncode or not first or not first[0].startswith("gcov"):
+        return None
+    m = re.search(r"(\d+)\.\d+(?:\.\d+)?\s*$", first[0])
+    return m.group(1) if m else None
+
+
+def find_gcov(compiler, configured="") -> tuple:
+    """(gcov path or None, description) for data written by `compiler`.
+
+    gcov must come from the same GCC release as the compiler, and be GCC 9 or
+    later for JSON output. Tries a version-suffixed gcov beside the compiler,
+    then on PATH, then plain `gcov`, and takes the first whose version matches.
+    """
+    if configured:
+        path = shutil.which(configured)
+        if not path:
+            return None, f"coverage.gcov is {configured}, which is not an executable on PATH"
+        return path, f"{path} (coverage.gcov)"
+    r = _run([compiler, "-dumpversion"], timeout=30)
+    major = r.stdout.strip().split(".")[0] if r.returncode == 0 and r.stdout.strip() else None
+    names = []
+    suffix = re.search(r"-(\d+)$", Path(compiler).name)
+    if suffix:
+        names.append(f"gcov-{suffix.group(1)}")
+    if major:
+        names.append(f"gcov-{major}")
+    names.append("gcov")
+    found = []
+    for name in dict.fromkeys(names):
+        sibling = Path(compiler).parent / name
+        for candidate in ([str(sibling)] if sibling.is_file() else []) + [shutil.which(name)]:
+            if not candidate:
+                continue
+            version = _gcov_major(candidate)
+            found.append(f"{candidate} ({version or 'not GCC gcov'})")
+            if version and (major is None or version == major) and int(version) >= 9:
+                return candidate, f"{candidate}, GCC {version}, matching {compiler}"
+    want = f"GCC {major}" if major else "a GCC gcov"
+    return None, (f"no gcov for {want} (the compiler is {compiler}); tried "
+                  + (", ".join(found) or ", ".join(names)) + ". Set coverage.gcov.")
+
+
+def _shell(command, cwd, timeout=None):
+    return _run(command, shell=True, cwd=cwd, timeout=timeout)
+
+
+def _tail(result, n=20) -> str:
+    text = ((result.stdout or "") + (result.stderr or "")).strip().splitlines()
+    return "\n".join(text[-n:])
+
+
+def collect_gcov(gcov, build_dir, out_dir) -> int:
+    """Run gcov -j on every object directory with data, into `out_dir`.
+
+    gcov names its output after the source, so two directories holding the
+    same file name would overwrite each other; each file is prefixed with its
+    directory's index. Returns the number of files written.
+    """
+    by_dir: dict = {}
+    for gcda in Path(build_dir).rglob("*.gcda"):
+        gcno = gcda.with_suffix(".gcno")
+        if gcno.is_file():
+            by_dir.setdefault(gcda.parent, []).append(str(gcno))
+    written = 0
+    for index, directory in enumerate(sorted(by_dir)):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = _run([gcov, "-j", "-o", str(directory), *sorted(by_dir[directory])], cwd=tmp)
+            if r.returncode:
+                raise CoverageRunError(f"gcov failed on {directory}:\n{_tail(r)}")
+            for out in sorted(Path(tmp).glob("*.gcov.json.gz")):
+                shutil.move(str(out), str(Path(out_dir) / f"{index:03d}-{out.name}"))
+                written += 1
+    return written
+
+
+def run_coverage(config, case_names=None, log=print) -> tuple:
+    """Build with coverage, run each case, collect gcov output, and import it.
+
+    Returns (coverage, report, results), where results has one entry per case
+    with its exit code and the number of gcov files it produced. Raises
+    CoverageRunError when the build, gcov or the configuration is the problem.
+    """
+    project_dir = Path(config.config_dir).resolve()
+    build_dir = Path(config.abs_path(config.coverage_build_dir)).resolve()
+    cases = dict(config.coverage_cases)
+    if not cases:
+        raise CoverageRunError(
+            "no test cases: list them in vit.yaml as coverage.cases, a name and a shell "
+            "command each, for example\n  coverage:\n    cases:\n      default: "
+            "{build_dir}/my_program input.txt")
+    if case_names:
+        unknown = [n for n in case_names if n not in cases]
+        if unknown:
+            raise CoverageRunError(f"unknown case(s) {', '.join(unknown)}; vit.yaml lists "
+                                   f"{', '.join(cases)}")
+        cases = {n: cases[n] for n in case_names}
+    for name in cases:
+        if not name or "/" in name or name in (".", ".."):
+            raise CoverageRunError(f"case name {name!r} cannot be a directory name")
+
+    for step, command in (("configure", config.coverage_configure_cmd or DEFAULT_CONFIGURE),
+                          ("build", config.coverage_build_cmd or DEFAULT_BUILD)):
+        command = fill(command, project_dir, build_dir)
+        log(f"{step}: {command}")
+        r = _shell(command, project_dir)
+        if r.returncode:
+            raise CoverageRunError(f"the coverage {step} failed (exit {r.returncode}):\n{_tail(r)}")
+
+    compiler = cmake_fortran_compiler(build_dir) or config.fortran_compiler
+    gcov, how = find_gcov(compiler, config.coverage_gcov)
+    if not gcov:
+        raise CoverageRunError(how)
+    log(f"gcov: {how}")
+
+    gcov_dir = build_dir / "vit-gcov"
+    shutil.rmtree(gcov_dir, ignore_errors=True)
+    results = []
+    for name, command in cases.items():
+        for stale in build_dir.rglob("*.gcda"):
+            stale.unlink()
+        command = fill(command, project_dir, build_dir)
+        log(f"case {name}: {command}")
+        r = _shell(command, project_dir)
+        case_dir = gcov_dir / name
+        case_dir.mkdir(parents=True)
+        files = collect_gcov(gcov, build_dir, case_dir)
+        results.append({"name": name, "exit_code": r.returncode, "gcov_files": files,
+                        "output_tail": _tail(r, 8) if r.returncode else ""})
+
+    coverage, report = import_gcov(gcov_dir, project_dir)
+    return coverage, report, results

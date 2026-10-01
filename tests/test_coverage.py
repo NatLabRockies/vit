@@ -10,6 +10,7 @@ or every count it reports belongs to some other line.
 import gzip
 import json
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -123,12 +124,35 @@ def test_import_records_the_content_measured(project, gcov_dir, tmp_path):
     assert data["metadata"]["source_commit"] == head
     entry = data["files"]["src/physics.f90"]
     assert entry["blob"] == blob
+    assert cov._blob_id((project / "src" / "physics.f90").read_bytes()) == blob
     assert "source" not in entry, "the commit holds this content; no need to store it"
     assert report["stored_text"] == []
 
     plain = tmp_path / "plain"
     plain.mkdir()
     assert cov.git_head(plain) is None
+
+
+def test_outside_git_the_measured_text_is_stored(tmp_path):
+    """No commit can recover the content later, so import keeps it."""
+    root = tmp_path / "plain"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "physics.f90").write_text(PHYSICS)
+    gcov = tmp_path / "gcov"
+    (gcov / "long").mkdir(parents=True)
+    gcov_file(gcov / "long" / "p.gcov.json.gz",
+              {str(root / "src" / "physics.f90"): {10: 500, 15: 2}})
+
+    data, report = cov.import_gcov(gcov, root)
+    assert data["metadata"]["source_commit"] is None
+    assert report["stored_text"] == ["src/physics.f90"]
+
+    sites = cov.call_sites(data, root / "src", "drag")
+    assert [(s["line"], s["read"]) for s in sites] == [(10, "measured"), (15, "measured")]
+
+    (root / "src" / "physics.f90").write_text("! later\n" + PHYSICS)
+    sites = cov.call_sites(data, root / "src", "drag")
+    assert [(s["line"], s["read"]) for s in sites] == [(10, "measured"), (15, "measured")]
 
 
 # --------------------------------------------------------------------------
@@ -251,3 +275,98 @@ def test_cli_import_with_nothing_to_import_fails(project, tmp_path):
     assert r.returncode == 1
     assert "No coverage imported" in r.stderr
     assert not out.exists()
+
+
+# --------------------------------------------------------------------------
+# Run
+# --------------------------------------------------------------------------
+
+
+def test_fill_quotes_paths_and_leaves_shell_braces(tmp_path):
+    cmd = cov.fill("cd {build_dir} && ./run ${HOME} {project_dir}/in", "/p q", "/b")
+    assert cmd == "cd /b && ./run ${HOME} '/p q'/in"
+
+
+def _fake(path, text):
+    path.write_text("#!/bin/sh\n" + text)
+    path.chmod(0o755)
+    return path
+
+
+def test_find_gcov_matches_the_compiler_version(tmp_path, monkeypatch):
+    """The gcov must come from the compiler's GCC release. A bare `gcov` may be
+    LLVM's (macOS) or another release's, and neither can read the data."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    compiler = _fake(bin_dir / "gfortran", 'echo 77\n')
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    _fake(bin_dir / "gcov", 'echo "Apple LLVM version 17.0.0 (clang-1700)"\n')
+    path, how = cov.find_gcov(str(compiler))
+    assert path is None
+    assert "GCC 77" in how and "Set coverage.gcov" in how
+
+    _fake(bin_dir / "gcov", 'echo "gcov (GCC) 76.1.0"\n')
+    assert cov.find_gcov(str(compiler))[0] is None, "another release's gcov"
+
+    _fake(bin_dir / "gcov-77", 'echo "gcov (GCC) 77.2.0"\n')
+    assert cov.find_gcov(str(compiler))[0] == str(bin_dir / "gcov-77")
+
+    path, _ = cov.find_gcov(str(compiler), configured="gcov")
+    assert path == str(bin_dir / "gcov"), "an explicit setting is taken as given"
+
+
+def test_cmake_fortran_compiler(tmp_path):
+    (tmp_path / "CMakeCache.txt").write_text(
+        "CMAKE_C_COMPILER:FILEPATH=/usr/bin/cc\n"
+        "CMAKE_Fortran_COMPILER:FILEPATH=/opt/gcc/bin/gfortran-13\n")
+    assert cov.cmake_fortran_compiler(tmp_path) == "/opt/gcc/bin/gfortran-13"
+    assert cov.cmake_fortran_compiler(tmp_path / "none") is None
+
+
+def test_run_needs_cases(tmp_path):
+    from vit.config import VitConfig
+
+    with pytest.raises(cov.CoverageRunError, match="coverage.cases"):
+        cov.run_coverage(VitConfig(config_dir=str(tmp_path)), log=lambda m: None)
+    config = VitConfig(config_dir=str(tmp_path), coverage_cases={"a": "true"})
+    with pytest.raises(cov.CoverageRunError, match="unknown case"):
+        cov.run_coverage(config, case_names=["b"], log=lambda m: None)
+
+
+def _toolchain_for_coverage():
+    """Skip unless CMake, gfortran and a matching gcov are available."""
+    if not (shutil.which("cmake") and shutil.which("gfortran")):
+        pytest.skip("needs cmake and gfortran")
+    if cov.find_gcov("gfortran")[0] is None:
+        pytest.skip("no gcov matching gfortran")
+
+
+def test_coverage_run_end_to_end(tmp_path):
+    """The quickstart, two cases: one run of the program and two. Each run
+    calls drag 500 times."""
+    _toolchain_for_coverage()
+    project = tmp_path / "qs"
+    shutil.copytree(ROOT / "examples" / "quickstart", project)
+    (project / "vit.yaml").write_text(textwrap.dedent("""\
+        project:
+          source_dir: src
+        coverage:
+          cases:
+            once: cd {build_dir} && ./simulate
+            twice: cd {build_dir} && ./simulate && ./simulate
+            broken: cd {build_dir} && ./simulate && false
+    """))
+
+    r = vit(project, "coverage", "run")
+    assert r.returncode == 1, "a failing case must fail the run"
+    assert "WARNING: case broken exited 1" in r.stdout
+    assert "3 test cases" in r.stdout
+
+    r = vit(project, "coverage", "run", "--case", "once", "--case", "twice")
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = vit(project, "find", "drag", "--coverage")
+    assert r.returncode == 0, r.stderr
+    assert "src/physics.f90:17 in step" in r.stdout
+    assert "twice: 1000" in r.stdout and "once: 500" in r.stdout
+

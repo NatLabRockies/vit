@@ -20,4 +20,8 @@ fortran:
   flags: -ffp-contract=off
 verification:
   tolerance: 1.0e-14
+coverage:
+  build_dir: /build/quickstart-coverage
+  cases:
+    default: cd {build_dir} && ./simulate
 translations: {}
