@@ -469,7 +469,8 @@ def work_order_markdown(order, inputs):
     steps = order["steps"]
     n_procs = sum(len(s["procedures"]) for s in steps)
     lines = ["# Work Order", "",
-             f"{n_procs} procedures in {len(steps)} steps, in the order to translate them. "
+             f"{n_procs} procedure{'s' if n_procs != 1 else ''} in {len(steps)} "
+             f"step{'s' if len(steps) != 1 else ''}, in the order to translate them. "
              "Callees come before callers; procedures in one step are translated together.", ""]
     lines += ["Inputs: " + "; ".join(f"{k}: {v}" for k, v in inputs.items()), ""]
     if not order["coverage"]:
@@ -494,7 +495,11 @@ def work_order_markdown(order, inputs):
             lines.append(f"| {s['position'] if i == 0 else ''} | {name} | {p['module'] or '-'} | "
                          f"{p['lines']} | {p['verification']['note']} | "
                          f"{'; '.join(s['why']) if i == 0 else ''} |")
-    lines += ["", f"## Left out: {len(order['left_out'])}", "",
-              "| Procedure | Module | Why |", "|---|---|---|"]
-    lines += [f"| {o['name']} | {o['module'] or '-'} | {o['reason']} |" for o in order["left_out"]]
+    lines += ["", f"## Left out: {len(order['left_out'])}", ""]
+    if order["left_out"]:
+        lines += ["| Procedure | Module | Why |", "|---|---|---|"]
+        lines += [f"| {o['name']} | {o['module'] or '-'} | {o['reason']} |"
+                  for o in order["left_out"]]
+    else:
+        lines.append("(none)")
     return "\n".join(lines) + "\n"

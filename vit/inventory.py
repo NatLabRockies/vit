@@ -2014,8 +2014,9 @@ def run(src, output, deps=None, search=None, generated_markers=(), entry_points=
     with open(order_md, "w") as f:
         f.write(wo.work_order_markdown(order, inputs))
     print(f"  Wrote {order_md}")
-    print(f"\nWork order: {sum(len(s['procedures']) for s in order['steps'])} procedures in "
-          f"{len(order['steps'])} steps; {len(order['left_out'])} left out"
+    n_procs, n_steps = sum(len(s["procedures"]) for s in order["steps"]), len(order["steps"])
+    print(f"\nWork order: {n_procs} procedure{'s' if n_procs != 1 else ''} in "
+          f"{n_steps} step{'s' if n_steps != 1 else ''}; {len(order['left_out'])} left out"
           + (f"; {len(order['needs_decision'])} need"
              + ("s" if len(order["needs_decision"]) == 1 else "") + " a decision"
              if order["needs_decision"] else ""))
