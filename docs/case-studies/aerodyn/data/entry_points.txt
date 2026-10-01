@@ -1,0 +1,37 @@
+# AeroDyn procedures a host calls, or that the framework template keeps although
+# nothing calls them. For vit inventory --entry-points-file.
+AD_Init
+AD_End
+AD_UpdateStates
+AD_CalcOutput
+AD_CalcConstrStateResidual
+AD_CalcContStateDeriv
+AD_UpdateDiscState
+AD_JacobianPInput
+AD_JacobianPContState
+AD_JacobianPDiscState
+AD_JacobianPConstrState
+AD_GetOP
+BEMT_Init
+BEMT_End
+BEMT_UpdateStates
+BEMT_CalcOutput
+BEMT_ReInit
+UA_Init
+UA_End
+UA_UpdateStates
+UA_CalcOutput
+FVW_Init
+FVW_End
+FVW_UpdateStates
+FVW_CalcOutput
+DBEMT_Init
+DBEMT_End
+DBEMT_UpdateStates
+DBEMT_CalcOutput
+AA_Init
+AA_End
+AA_UpdateStates
+AA_CalcOutput
+AFI_Init
+AFI_End

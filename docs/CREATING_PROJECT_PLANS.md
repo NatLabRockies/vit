@@ -185,6 +185,8 @@ It writes the following, each as JSON, plus a markdown summary:
 7. **Line counts:** per file, module and procedure.
 8. **Ordering exceptions:** procedures that do I/O on a Fortran unit they do not open, with the
    procedures that own it, and small non-leaf procedures to translate early (Step 5).
+9. **Work order:** every procedure in scope, in the order to translate it, with the reason for its
+   place and, given coverage, how to verify it (Step 5).
 
 Two inputs only you can give it:
 - **`--generated-marker`:** the text a code generator puts in the files it writes, so generated
@@ -274,8 +276,23 @@ For each phase:
 A phase you are confident about can be a checklist; a speculative one is a paragraph marked "will be
 revised".
 
-**Ordering.** Order phases by dependency layer, leaves first: a leaf that computes on its arguments
-needs nothing its caller lacks. Two exceptions, both listed in the inventory's `ordering.json`:
+**Ordering.** The order is computed, not chosen: `vit inventory` writes `work_order.md` (and
+`work_order.json`), and the roadmap's phases are cut from it. Given `--coverage` from `vit coverage
+run`, each procedure also gets its verification route: a kernel, with the test case that calls it
+most to extract with, or "not reached", which needs another method. The rules:
+- callees before callers, by layer; within a layer, procedures a test case reaches first, then
+  smaller ones, then by name
+- generated code, procedures nothing calls, and test code are left out, each with its reason; an
+  internal procedure is translated with its host; procedures that call each other in a cycle are
+  one step
+
+The person running it supplies only what the source cannot show: the scope (`--src`, `--deps`), the
+entry points a host outside the repository calls or that are kept although nothing calls them, the
+test cases, and an `--overrides` file for the rare procedure to leave out or defer by decision, such
+as a subsystem rewritten as idiomatic C++ rather than mirrored. Each override needs a reason, and
+one that names no procedure is an error.
+
+Leaf-first has two exceptions, both applied in the work order and listed in `ordering.json`:
 - **A procedure that works on a resource another procedure owns,** such as a Fortran unit it did
   not open, cannot be translated on its own, because C++ cannot read from a Fortran unit. Translate
   it with its owner, or after it; once the owner holds the file as a C++ stream, such a leaf often
@@ -283,7 +300,8 @@ needs nothing its caller lacks. Two exceptions, both listed in the inventory's `
 - **The first non-leaf.** Calls between translated procedures go through machinery no leaf
   exercises, so a long leaf-only phase builds a record of passes that says nothing about it, and
   that machinery's defects all appear at the first non-leaf. Translate one non-leaf early, on
-  purpose, as a probe; the inventory proposes small candidates.
+  purpose, as a probe; the work order puts the smallest candidate a test case reaches first, after
+  its callees.
 
 **Deliverable:** section 5, "Phase Roadmap".
 

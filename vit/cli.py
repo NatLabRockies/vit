@@ -84,6 +84,12 @@ def main():
                        help="A procedure called from outside the source tree (repeatable)")
     p_inv.add_argument("--entry-points-file", default=None, metavar="FILE",
                        help="File of entry-point names, one per line; # starts a comment")
+    p_inv.add_argument("--coverage", default=None, metavar="FILE",
+                       help="Coverage file from `vit coverage run`: the work order then "
+                            "gives each procedure's verification route and extraction case")
+    p_inv.add_argument("--overrides", default=None, metavar="FILE",
+                       help="JSON {procedure: {status: out_of_scope|deferred, reason}} "
+                            "for the work order")
 
     # --- find ---
     p_find = subparsers.add_parser("find", help="Find call sites for a function")
@@ -370,7 +376,8 @@ def cmd_inventory(args):
         entry_points += inventory.read_entry_points_file(args.entry_points_file)
     return inventory.run(args.src, args.output, deps=args.deps, search=args.search,
                          generated_markers=args.generated_marker,
-                         entry_points=entry_points)
+                         entry_points=entry_points,
+                         coverage=args.coverage, overrides=args.overrides)
 
 
 def cmd_find(args, config):

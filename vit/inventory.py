@@ -1,7 +1,7 @@
 """
 Structural inventory of a Fortran codebase, using fparser2.
 
-Produces eight JSON data files and a markdown summary, as input to planning a
+Produces nine JSON data files, a markdown summary and a work order, as input to planning a
 translation (docs/CREATING_PROJECT_PLANS.md, Step 1: Structural Inventory).
 
 Usage:
@@ -32,6 +32,9 @@ Output files:
     ordering.json             — where leaf-first ordering goes wrong: procedures doing
                                 I/O on a unit they do not open, with the procedures
                                 that own it, and candidates for an early non-leaf
+    work_order.json, .md      — every in-scope procedure in the order to translate it,
+                                with its reason and, given --coverage, its verification
+                                route (vit/work_order.py)
     inventory_summary.md      — human-readable digest
 """
 
@@ -371,11 +374,13 @@ def _extract_procedure(node, kind, module_name, filename, is_gen,
 
     # Line count
     lines = procedure_line_count(node)
+    span = getattr(getattr(stmt, "item", None), "span", None)
 
     return {
         "name": name,
         "module": module_name,
         "file": filename,
+        "start_line": span[0] if span else None,
         "kind": kind,
         "args": args,
         "arg_count": len(args),
@@ -672,6 +677,14 @@ def _name_found_in_tree(name, exclude_dir, search_dir):
     return False
 
 
+def is_test_procedure(name, module):
+    """Test code by its name: a module with "test" in its name, or a procedure
+    with Test as a word of its name (TEST01_x, DBEMT_TEST01, Test_Foo,
+    RunUnitTests), not merely as letters (LATEST_VALUE)."""
+    words = {w.upper() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+", name or "")}
+    return "test" in (module or "").lower() or bool(words & {"TEST", "TESTS"})
+
+
 def find_uncalled_procedures(procedures, call_edges, src_dir, search_dir=None,
                              entry_points=frozenset()):
     """
@@ -851,7 +864,7 @@ def find_uncalled_procedures(procedures, call_edges, src_dir, search_dir=None,
         elif any_live_reference:
             if "driver" in mod.lower():
                 reason = "driver_entry_point"
-            elif "test" in mod.lower() or "TEST" in name:
+            elif is_test_procedure(name, mod):
                 reason = "test_function"
             else:
                 reason = "unknown"
@@ -1328,8 +1341,10 @@ class _Scope:
     """The names one procedure can see: its dummies, its locals, and, for an
     internal procedure, its host's."""
 
-    def __init__(self, name, file, args, local_types, host=None, module=None):
+    def __init__(self, name, file, args, local_types, host=None, module=None, start_line=None):
         self.name, self.file, self.module = name, file, module
+        self.start_line = start_line
+        self.key = (name.lower(), file, start_line)
         self.args = [a.lower() for a in args]
         self.local_types = local_types
         self.host = host
@@ -1470,7 +1485,9 @@ def _scopes(tree, fname):
                 dummies = walk(stmts[0], f2003.Dummy_Arg_List) if stmts else []
                 args = get_names(dummies[0]) if dummies else []
                 local_types = _declared_types(_own_nodes(child, f2003.Type_Declaration_Stmt))
-                scope = _Scope(name or "?", fname, args, local_types, host, module)
+                span = getattr(getattr(stmts[0], "item", None), "span", None) if stmts else None
+                scope = _Scope(name or "?", fname, args, local_types, host, module,
+                               span[0] if span else None)
                 out.append((child, scope))
                 visit(child, scope, module)
             else:
@@ -1502,16 +1519,17 @@ def find_unit_io(all_trees, dep_trees, procedures, type_defs):
             for name, typ in decls.items():
                 global_types[name].add(typ)
 
-    by_key = {(p["name"].lower(), p["file"]): p for p in procedures}
+    by_key = {(p["name"].lower(), p["file"], p.get("start_line")): p for p in procedures}
     for p in procedures:
         p["unit_io"] = []
+        p["host"] = None
 
     scopes, opens, opens_arg = {}, defaultdict(set), defaultdict(set)
     statements = {}
     for path, tree in trees:
         fname = os.path.basename(path)
         for node, scope in _scopes(tree, fname):
-            key = (scope.name.lower(), fname)
+            key = scope.key
             scopes[key] = scope
             units = {}
             for stmt in _own_nodes(node, _IO_STMTS):
@@ -1531,14 +1549,15 @@ def find_unit_io(all_trees, dep_trees, procedures, type_defs):
             statements[key] = (node, units)
             if key in by_key and path in all_trees:
                 by_key[key]["unit_io"] = [{**e, "ops": sorted(e["ops"])} for e in units.values()]
+                by_key[key]["host"] = scope.host.name if scope.host else None
 
     # Who opens each unit identity: by an OPEN of it, or by passing it to a
     # procedure that OPENs the dummy it arrives in.
     openers = defaultdict(set)
     calls = []
     args_by_name = {}
-    for (name, _), scope in scopes.items():
-        args_by_name.setdefault(name, scope.args)
+    for key, scope in scopes.items():
+        args_by_name.setdefault(key[0], scope.args)
     for key, (node, units) in statements.items():
         scope = scopes[key]
         for u in units.values():
@@ -1573,6 +1592,30 @@ def _actual(callee_args, dummy, positional, keywords):
         if i < len(positional):
             return positional[i]
     return None
+
+
+def program_calls(all_trees, procedures):
+    """(program name, callee name lower) for each call a main program makes.
+
+    The call graph records calls from procedures; a driver's PROGRAM block is
+    a caller too, and without it a procedure called from a program and from a
+    test looks called only from the test.
+    """
+    names = {p["name"].lower() for p in procedures}
+    out = set()
+    for tree in all_trees.values():
+        for prog in walk(tree, f2003.Main_Program):
+            stmts = walk(prog, f2003.Program_Stmt)
+            prog_name = first_name(stmts[0]) if stmts else "main"
+            for call in walk(prog, f2003.Call_Stmt):
+                callee = walk(call, f2003.Name)
+                if callee:
+                    out.add((prog_name, str(callee[0]).lower()))
+            for ref in walk(prog, (f2003.Part_Ref, f2003.Structure_Constructor)):
+                ref_names = walk(ref, f2003.Name)
+                if ref_names and str(ref_names[0]).lower() in names:
+                    out.add((prog_name, str(ref_names[0]).lower()))
+    return sorted(out)
 
 
 def generic_interfaces(all_trees):
@@ -1710,7 +1753,7 @@ def find_ordering_exceptions(procedures, call_edges, facts, generics=None, modul
                         owners[scope.host] = min(d, owners.get(scope.host) or d)
                     elif entry["source"] == "argument" and "component" not in entry:
                         base = re.match(r"[A-Za-z]\w*", entry["unit"]).group(0).lower()
-                        step = ((scope.name.lower(), scope.file), tuple(scope.args), base)
+                        step = (scope.key, tuple(scope.args), base)
                         if step not in seen:
                             seen.add(step)
                             nxt.append(step)
@@ -1722,12 +1765,12 @@ def find_ordering_exceptions(procedures, call_edges, facts, generics=None, modul
 
     exceptions = []
     for p in procedures:
-        key = (p["name"].lower(), p["file"])
+        key = (p["name"].lower(), p["file"], p.get("start_line"))
         held = opens.get(key, set())
         not_owned = [u for u in p["unit_io"]
                      if u["source"] not in ("local", "host") and u["unit"].lower() not in held
                      and not (_identity(u) and any(
-                         (o.name.lower(), o.file) == key for o in openers.get(_identity(u), ())))]
+                         o.key == key for o in openers.get(_identity(u), ())))]
         if not not_owned:
             continue
         owners, notes = {}, []
@@ -1741,8 +1784,10 @@ def find_ordering_exceptions(procedures, call_edges, facts, generics=None, modul
                 notes.append(f"{u['unit']}: cannot tell where the unit comes from")
         exceptions.append({
             "name": p["name"], "module": p["module"], "file": p["file"],
+            "start_line": p.get("start_line"),
             "depth": p["depth"], "units": not_owned,
             "owners": [{"name": o.name, "module": o.module, "file": o.file,
+                        "start_line": o.start_line,
                         "host": o.host.name if o.host else None, "distance": d}
                        for o, d in sorted(owners.items(),
                                           key=lambda kv: (kv[1] or 0, kv[0].name.lower()))],
@@ -1760,6 +1805,7 @@ def find_ordering_exceptions(procedures, call_edges, facts, generics=None, modul
                 or any(c in flagged for c in cs)):
             continue
         candidates.append({"name": p["name"], "module": p["module"], "file": p["file"],
+                           "start_line": p.get("start_line"),
                            "line_count": p["line_count"], "arg_count": p["arg_count"],
                            "callees": sorted(by_name[c]["name"] for c in cs)})
     candidates.sort(key=lambda c: (c["line_count"], c["arg_count"], c["name"].lower()))
@@ -1823,10 +1869,13 @@ def read_entry_points_file(path):
     return names
 
 
-def run(src, output, deps=None, search=None, generated_markers=(), entry_points=()):
+def run(src, output, deps=None, search=None, generated_markers=(), entry_points=(),
+        coverage=None, overrides=None):
     """Inventory the Fortran files in `src` and write the results to `output`.
 
     `vit inventory` calls this. See the module docstring for the outputs.
+    `coverage` (a file from `vit coverage run`) and `overrides` (a JSON file of
+    procedure dispositions) feed the work order; see vit/work_order.py.
     """
     entry_points = {n.strip().lower() for n in entry_points if n.strip()}
     generated_markers = list(generated_markers)
@@ -1940,6 +1989,36 @@ def run(src, output, deps=None, search=None, generated_markers=(), entry_points=
     write_json("loc_metrics.json", loc)
 
     write_json("ordering.json", ordering)
+
+    from . import work_order as wo
+    coverage_procs = None
+    if coverage:
+        from . import coverage as cov
+        data = cov.load(coverage)
+        coverage_procs = cov.procedure_coverage(data, cov.coverage_root(data, src))
+    order = wo.build_work_order(
+        procedures, call_edges, ordering, uncalled,
+        program_calls=program_calls(all_trees, procedures),
+        generics=generic_interfaces({**all_trees, **dep_trees}),
+        module_uses={name: m["uses"] for name, m in {**dep_modules, **modules}.items()},
+        coverage_procedures=coverage_procs,
+        overrides=wo.load_overrides(overrides, procedures))
+    write_json("work_order.json", order)
+    inputs = {"source": src, "dependencies": deps or "none",
+              "entry points": len(entry_points),
+              "coverage": os.path.basename(coverage) if coverage else "none",
+              "overrides": os.path.basename(overrides) if overrides else "none"}
+    if unparsed:
+        inputs["not parsed"] = ", ".join(unparsed)
+    order_md = os.path.join(output, "work_order.md")
+    with open(order_md, "w") as f:
+        f.write(wo.work_order_markdown(order, inputs))
+    print(f"  Wrote {order_md}")
+    print(f"\nWork order: {sum(len(s['procedures']) for s in order['steps'])} procedures in "
+          f"{len(order['steps'])} steps; {len(order['left_out'])} left out"
+          + (f"; {len(order['needs_decision'])} need"
+             + ("s" if len(order["needs_decision"]) == 1 else "") + " a decision"
+             if order["needs_decision"] else ""))
 
     # Write markdown summary
     write_summary(output, loc, procedures, call_edges, type_defs, mod_deps,

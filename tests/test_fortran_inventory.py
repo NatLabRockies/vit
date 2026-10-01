@@ -348,3 +348,202 @@ def test_files_the_parser_cannot_read_are_reported(ordering):
     assert ("stamp", "reader") in ordering["procedures"], "a predefined cpp macro parses"
     assert "## Files that could not be parsed: 1" in ordering["summary"]
     assert "- broken.f90" in ordering["summary"]
+
+
+# ---------------------------------------------------------------------------
+# Work order
+# ---------------------------------------------------------------------------
+
+PLANT = """\
+module plant
+  implicit none
+contains
+  real(8) function double_it(x)
+    real(8), intent(in) :: x
+    double_it = 2d0 * x
+  end function double_it
+  real(8) function twice(x)
+    real(8), intent(in) :: x
+    twice = double_it(double_it(x))
+  end function twice
+  subroutine compute(x)
+    real(8), intent(inout) :: x
+    x = twice(x)
+    call finish()
+  contains
+    subroutine finish()
+      x = x + 1d0
+    end subroutine finish
+  end subroutine compute
+  subroutine other(x)
+    real(8), intent(inout) :: x
+    call finish()
+  contains
+    subroutine finish()
+      x = 0d0
+    end subroutine finish
+  end subroutine other
+  subroutine load(fname, x)
+    character(*), intent(in) :: fname
+    real(8), intent(out) :: x
+    integer :: u
+    open(newunit=u, file=fname)
+    call reader(u, x)
+    close(u)
+  end subroutine load
+  subroutine reader(un, x)
+    integer, intent(in) :: un
+    real(8), intent(out) :: x
+    read(un, *) x
+  end subroutine reader
+  subroutine dump(x)
+    real(8), intent(in) :: x
+    write(401, *) x
+  end subroutine dump
+  subroutine slow_path(x)
+    real(8), intent(inout) :: x
+    x = double_it(x)
+  end subroutine slow_path
+  subroutine legacy(x)
+    real(8), intent(inout) :: x
+    x = -x
+  end subroutine legacy
+  subroutine test_compute()
+    real(8) :: y
+    y = 1d0
+    call compute(y)
+    call check_close(y)
+  end subroutine test_compute
+  subroutine check_close(y)
+    real(8), intent(in) :: y
+  end subroutine check_close
+end module plant
+"""
+
+MAIN = """\
+program main
+  use plant
+  real(8) :: v
+  v = 1d0
+  call compute(v)
+  call other(v)
+  call load('in.txt', v)
+  call dump(v)
+  call slow_path(v)
+  call legacy(v)
+end program main
+"""
+
+
+def _plant_coverage(path, root):
+    """A coverage file for PLANT, as `vit coverage run` would write it outside git."""
+    from vit.fortran_parser import procedure_spans
+
+    start = {}
+    for s in procedure_spans(PLANT):
+        start[(s["name"], s["host"])] = s["start"]
+    calls = {("double_it", None): {"case_a": 10}, ("twice", None): {"case_a": 5},
+             ("compute", None): {"case_a": 1}, ("finish", "compute"): {"case_a": 1},
+             ("load", None): {"case_b": 3}, ("reader", None): {"case_b": 3},
+             ("other", None): {}, ("finish", "other"): {}, ("slow_path", None): {},
+             ("legacy", None): {}}
+    functions = {str(start[k]): {"symbol": k[0], "end_line": None, "calls": v}
+                 for k, v in calls.items()}
+    data = {"metadata": {"source_root": str(root), "source_commit": None,
+                         "test_cases": ["case_a", "case_b"], "file_count": 1},
+            "files": {"src/plant.f90": {"source": PLANT, "test_cases": {}, "functions": functions}}}
+    path.write_text(json.dumps(data))
+
+
+@pytest.fixture
+def work(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "plant.f90").write_text(PLANT)
+    (src / "main.f90").write_text(MAIN)
+    coverage = tmp_path / "coverage.json"
+    _plant_coverage(coverage, tmp_path)
+    overrides = tmp_path / "overrides.json"
+    overrides.write_text(json.dumps({
+        "slow_path": {"status": "deferred", "reason": "waits on the new solver"},
+        "legacy": {"status": "out_of_scope", "reason": "replaced by std::abs"},
+    }))
+
+    def run(*extra, out="out"):
+        r = _vit(tmp_path, "inventory", "--src", str(src), "--output", str(tmp_path / out), *extra)
+        return r, tmp_path / out
+
+    return run, coverage, overrides
+
+
+def _order(out):
+    data = json.loads((out / "work_order.json").read_text())
+    names = [[p["name"] for p in s["procedures"]] for s in data["steps"]]
+    return data, names
+
+
+def test_work_order_places_every_procedure_by_rule(work):
+    run, coverage, overrides = work
+    r, out = run("--coverage", str(coverage), "--overrides", str(overrides))
+    assert r.returncode == 0, r.stderr[-1500:]
+    data, steps = _order(out)
+
+    assert steps[:2] == [["double_it"], ["twice"]], "the probe's callee, then the probe"
+    flat = [n for step in steps for n in step]
+    assert flat.index("compute") > flat.index("twice"), "callees first"
+    assert ["load", "reader"] in steps, "a unit's owner and its reader are one step"
+    assert ["compute"] in steps and ["other"] in steps, \
+        "each host's internal finish is its own; they do not join the hosts"
+    assert steps[-1] == ["slow_path"], "deferred goes last"
+    assert [d["name"] for d in data["needs_decision"]] == ["dump"]
+
+    left = {o["name"]: o["reason"] for o in data["left_out"]}
+    assert left["legacy"].startswith("out of scope by override: replaced by std::abs")
+    assert left["test_compute"].startswith("test code")
+    assert left["check_close"] == "test code: called only from test code"
+    assert "finish" not in flat and "finish" not in left, "internal procedures go with their host"
+
+
+def test_work_order_verification_routes(work):
+    run, coverage, overrides = work
+    r, out = run("--coverage", str(coverage))
+    data, _ = _order(out)
+    route = {p["name"]: p["verification"] for s in data["steps"] for p in s["procedures"]}
+    assert route["double_it"] == {"route": "kernel", "case": "case_a", "count": 10,
+                                  "note": "extract with case_a (10 calls)"}
+    assert route["reader"]["case"] == "case_b"
+    assert route["other"]["route"] == "not reached"
+    assert route["dump"]["route"] == "not built"
+    md = (out / "work_order.md").read_text()
+    assert "| compute (with finish) | plant |" in md
+
+
+def test_work_order_is_deterministic(work):
+    run, coverage, overrides = work
+    _, a = run("--coverage", str(coverage), "--overrides", str(overrides), out="a")
+    _, b = run("--coverage", str(coverage), "--overrides", str(overrides), out="b")
+    assert (a / "work_order.json").read_text() == (b / "work_order.json").read_text()
+
+
+def test_work_order_without_coverage(work):
+    run, _, _ = work
+    r, out = run()
+    assert r.returncode == 0, r.stderr[-1500:]
+    data, steps = _order(out)
+    assert data["coverage"] is False
+    assert steps[:2] == [["double_it"], ["twice"]]
+    assert "No coverage was given" in (out / "work_order.md").read_text()
+
+
+@pytest.mark.parametrize("body, message", [
+    ({"nosuch": {"status": "deferred", "reason": "r"}}, "matches no procedure"),
+    ({"legacy": {"status": "deferred"}}, "has no reason"),
+    ({"legacy": {"status": "skip", "reason": "r"}}, "expected one of"),
+])
+def test_overrides_are_checked(work, tmp_path, body, message):
+    run, _, _ = work
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps(body))
+    r, _ = run("--overrides", str(bad))
+    assert r.returncode == 1
+    assert message in r.stderr

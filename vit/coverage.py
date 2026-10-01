@@ -259,15 +259,16 @@ def coverage_root(coverage, source_dir) -> Path:
     """The directory the coverage paths are relative to.
 
     The recorded source root when it exists here; otherwise the git repository
-    holding `source_dir` (the recorded root is often a container path), and
-    failing that `source_dir` itself.
+    holding `source_dir` (the recorded root is often a container path), or
+    the one holding the current directory, and failing that `source_dir`.
     """
     recorded = coverage.get("metadata", {}).get("source_root")
     if recorded and os.path.isdir(recorded):
         return Path(recorded)
-    r = _git(source_dir, "rev-parse", "--show-toplevel")
-    if r.returncode == 0:
-        return Path(r.stdout.strip())
+    for where in (source_dir, "."):
+        r = _git(where, "rev-parse", "--show-toplevel")
+        if r.returncode == 0:
+            return Path(r.stdout.strip())
     return Path(source_dir)
 
 
