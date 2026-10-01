@@ -219,7 +219,7 @@ Extraction requires clean (pre-integration) source. Line numbers shift after eac
 ```bash
 docker exec vit-dev-openfast bash -c "cd /workspace/openfast && vit find FunctionName --coverage /workspace/vit/docs/case-studies/aerodyn/data/line_coverage.json"
 ```
-This lists every call site (file:line, and the procedure it is in) with the test cases that run it and how often, and ends with the call site and test case with the most executions. Pick that pair unless there is a reason not to. Its line numbers are those of the source the coverage was measured on, which the output names; if the clean source of Step 2 differs, `vit find FunctionName` there gives the same call's current line. **Do not manually trace code paths to guess test cases** — the coverage data is definitive (see dev note `202604250803`).
+This lists every call site (file:line, and the procedure it is in) with the test cases that run it and how often, and ends with the call site and test case with the most executions. Pick that pair unless there is a reason not to. Its line numbers are those of the source the coverage was measured on, and it marks any it could not read that way; if the clean source of Step 2 differs, `vit find FunctionName` there gives the same call's current line. **Do not manually trace code paths to guess test cases** — the coverage data is definitive (see dev note `202604250803`).
 
 If coverage data doesn't exist yet, generate it (once, ~10 min):
 ```bash

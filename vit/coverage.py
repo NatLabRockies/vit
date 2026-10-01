@@ -22,12 +22,17 @@ execution count of every line that ran:
 
     {"metadata": {"generated", "test_cases", "source_root", "source_commit",
                   "file_count"},
-     "files": {"<path>": {"test_cases": {"<case>": {"lines": {"<line>": count}}}}}}
+     "files": {"<path>": {"blob": "<git blob id>", "source": "<text, if needed>",
+                          "test_cases": {"<case>": {"lines": {"<line>": count}}}}}}
 
-Line numbers belong to the source the coverage was measured on. When the source
-root is a git repository, import records its commit, and call sites are then
-looked up in the source at that commit, so later edits, such as integration
-wrappers, do not shift the lines.
+Line numbers belong to the source the coverage was measured on, which is not
+necessarily any commit: a project that measures on pre-integration source
+restores old versions of some files into a newer checkout. So import records,
+per file, the git blob id of the content it measured, and the text itself when
+that content is not in the checked-out commit. Lookups read that content, so
+later edits do not shift the lines. A file without a blob id (an older coverage
+file, or a source root outside git) is read at `source_commit`, failing that
+from the working tree, and the lookup says so.
 """
 
 import datetime
@@ -38,7 +43,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from .extract import find_call_sites, line_calls
+from .extract import line_calls
 from .fortran_parser import enclosing_procedure
 
 
@@ -126,17 +131,45 @@ def import_gcov(gcov_dir, source_root, prefix=None) -> tuple:
                              for case in sorted(merged[rel])}}
         for rel in sorted(merged)
     }
+    commit = git_head(root)
+    report["stored_text"] = _record_measured_content(root, commit, files)
     coverage = {
         "metadata": {
             "generated": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "test_cases": cases,
             "source_root": root,
-            "source_commit": git_head(root),
+            "source_commit": commit,
             "file_count": len(files),
         },
         "files": files,
     }
     return coverage, report
+
+
+def _record_measured_content(root, commit, files) -> list:
+    """Give each file its blob id, and its text when `commit` does not hold it.
+
+    Returns the paths whose text was stored. Outside a git repository nothing
+    is recorded, and lookups read the working tree.
+    """
+    if commit is None:
+        return []
+    rels = [rel for rel in files if (Path(root) / rel).is_file()]
+    if not rels:
+        return []
+    measured = _git(root, "hash-object", "--stdin-paths", stdin="\n".join(rels) + "\n")
+    in_commit = _git(root, "cat-file", "--batch-check=%(objectname)",
+                     stdin="".join(f"{commit}:./{rel}\n" for rel in rels))
+    if measured.returncode or in_commit.returncode:
+        return []
+    stored = []
+    for rel, blob, committed in zip(rels, measured.stdout.split(),
+                                    in_commit.stdout.splitlines()):
+        files[rel]["blob"] = blob
+        if committed.split()[0] != blob:  # "<object> missing" when untracked
+            files[rel]["source"] = (Path(root) / rel).read_text(errors="replace")
+            stored.append(rel)
+    return stored
 
 
 def write(coverage, path):
@@ -176,36 +209,13 @@ def line_hits(coverage, rel_path, line_no) -> dict:
             if d["lines"].get(key, 0) > 0}
 
 
-def _git(root, *args):
-    return subprocess.run(["git", "-C", str(root), *args],
-                          capture_output=True, text=True, timeout=60)
-
-
-def _commit_available(root, commit) -> bool:
-    if not commit:
-        return False
+def _git(root, *args, stdin=None):
     try:
-        return _git(root, "cat-file", "-e", f"{commit}^{{commit}}").returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
-def _sites_at_commit(root, rel_dir, commit, function_name) -> list:
-    """(rel path, line, text) for each call, in the source at `commit`."""
-    r = _git(root, "grep", "-z", "-n", "-I", "-i", "-F", function_name,
-             commit, "--", rel_dir)
-    if r.returncode not in (0, 1):  # 1: no match
-        raise RuntimeError(f"git grep failed in {root}: {r.stderr.strip()}")
-    sites = []
-    for record in r.stdout.splitlines():
-        try:
-            location, line_no, text = record.split("\0", 2)
-        except ValueError:
-            continue
-        path = location[len(commit) + 1:]
-        if path.endswith(".f90") and line_calls(text, function_name):
-            sites.append((path, int(line_no), text.rstrip()))
-    return sites
+        return subprocess.run(["git", "-C", str(root), *args], input=stdin,
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess(args, 1, "", str(e))
 
 
 def coverage_root(coverage, source_dir) -> Path:
@@ -218,49 +228,79 @@ def coverage_root(coverage, source_dir) -> Path:
     recorded = coverage.get("metadata", {}).get("source_root")
     if recorded and os.path.isdir(recorded):
         return Path(recorded)
-    try:
-        r = _git(source_dir, "rev-parse", "--show-toplevel")
-        if r.returncode == 0:
-            return Path(r.stdout.strip())
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    r = _git(source_dir, "rev-parse", "--show-toplevel")
+    if r.returncode == 0:
+        return Path(r.stdout.strip())
     return Path(source_dir)
 
 
-def call_sites(coverage, source_dir, function_name) -> tuple:
+def measured_text(coverage, root, rel) -> tuple:
+    """(text, how) for a covered file, as it was when the coverage was measured.
+
+    `how` is "measured" when the text is the measured content (stored, or
+    found by blob id), "commit" when it was read at `source_commit` for an
+    entry with no blob id, and "working_tree" when neither was available and
+    the current file was read instead, whose lines may not match the counts.
+    Text is None if the file cannot be read at all.
+    """
+    entry = coverage["files"].get(rel, {})
+    if "source" in entry:
+        return entry["source"], "measured"
+    path = Path(root) / rel
+    blob = entry.get("blob")
+    if blob:
+        r = _git(root, "cat-file", "blob", blob)
+        if r.returncode == 0:
+            return r.stdout, "measured"
+    else:
+        commit = coverage.get("metadata", {}).get("source_commit")
+        if commit:
+            r = _git(root, "show", f"{commit}:./{rel}")
+            if r.returncode == 0:
+                return r.stdout, "commit"
+    if path.is_file():
+        return path.read_text(errors="replace"), "working_tree"
+    return None, "working_tree"
+
+
+def call_sites(coverage, source_dir, function_name) -> list:
     """Each call site of `function_name` under `source_dir`, with its coverage.
 
-    Returns (sites, source), where each site is a dict with `path` (relative to
-    the coverage's root), `line`, `text`, `caller` and `hits`, and `source` says
-    where the lines were read: the commit the coverage was measured on when the
-    repository has it, otherwise the working tree, whose lines may have moved.
+    A file the coverage covers is searched as it was measured, so its line
+    numbers match the counts; any other file is searched in the working tree,
+    and has no counts. Each site is a dict with `path` (relative to the
+    coverage's root), `line`, `text`, `caller`, `hits`, and `read`: "measured",
+    "commit" or "working_tree" for a covered file (see measured_text), and
+    "uncovered" otherwise.
     """
     root = coverage_root(coverage, source_dir)
-    commit = coverage.get("metadata", {}).get("source_commit")
-    rel_dir = os.path.relpath(os.path.realpath(source_dir), os.path.realpath(root))
+    real_root = os.path.realpath(root)
+    rel_dir = os.path.relpath(os.path.realpath(source_dir), real_root)
     inside = not (rel_dir == ".." or rel_dir.startswith(".." + os.sep))
 
-    if inside and _commit_available(root, commit):
-        found = _sites_at_commit(root, rel_dir, commit, function_name)
-        source = {"kind": "commit", "commit": commit}
+    on_disk = {os.path.relpath(os.path.realpath(p), real_root): p
+               for p in Path(source_dir).rglob("*.f90")}
+    covered_here = {rel for rel in coverage["files"]
+                    if inside and rel.endswith(".f90")
+                    and (rel_dir == "." or rel.startswith(rel_dir + os.sep))}
 
-        def read(path):
-            return _git(root, "show", f"{commit}:{path}").stdout
-    else:
-        found = [(os.path.relpath(os.path.realpath(p), os.path.realpath(root)), n, t)
-                 for p, n, t in find_call_sites(str(source_dir), function_name)]
-        source = {"kind": "working_tree", "commit": commit}
-
-        def read(path):
-            return (root / path).read_text(errors="replace")
-
-    sites, texts = [], {}
-    for path, line_no, text in sorted(found):
-        if path not in texts:
-            texts[path] = read(path)
-        sites.append({
-            "path": path, "line": line_no, "text": text.strip(),
-            "caller": enclosing_procedure(texts[path], line_no),
-            "hits": line_hits(coverage, path, line_no),
-        })
-    return sites, source
+    sites = []
+    for rel in sorted(set(on_disk) | covered_here):
+        if rel in coverage["files"]:
+            text, read = measured_text(coverage, root, rel)
+        else:
+            try:
+                text, read = on_disk[rel].read_text(errors="replace"), "uncovered"
+            except (OSError, UnicodeDecodeError):
+                continue
+        if text is None:
+            continue
+        for line_no, line in enumerate(text.split("\n"), 1):
+            if line_calls(line, function_name):
+                sites.append({
+                    "path": rel, "line": line_no, "text": line.strip(),
+                    "caller": enclosing_procedure(text, line_no),
+                    "hits": line_hits(coverage, rel, line_no),
+                    "read": read,
+                })
+    return sites

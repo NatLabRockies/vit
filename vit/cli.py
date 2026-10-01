@@ -386,26 +386,23 @@ def _find_with_coverage(function_name, source_dir, coverage_file):
     from . import coverage as cov
 
     data = cov.load(coverage_file)
-    sites, source = cov.call_sites(data, source_dir, function_name)
-    commit = (source["commit"] or "")[:12]
-    if source["kind"] == "commit":
-        where = f"the source at {commit}, where the coverage was measured"
-    elif commit:
-        where = (f"the working tree. The coverage was measured at {commit}, which this "
-                 f"repository does not have, so lines may have moved")
-    else:
-        where = ("the working tree. The coverage records no commit, so lines may have "
-                 "moved since it was measured")
-
+    sites = cov.call_sites(data, source_dir, function_name)
     if not sites:
-        print(f"No call sites found for '{function_name}' in {source_dir}, "
-              f"reading {where}.")
+        print(f"No call sites found for '{function_name}' in {source_dir}.")
         return 1
-    print(f"{len(sites)} call site(s) for '{function_name}', line numbers from {where}:")
+
+    print(f"{len(sites)} call site(s) for '{function_name}'. Line numbers are those of the "
+          f"source the coverage was measured on, except where marked:")
+    notes = {"commit": "read at the recorded commit; this coverage file predates "
+                       "per-file records",
+             "working_tree": "measured source not available here; read from the working "
+                             "tree, whose lines may not match the counts"}
     for site in sites:
         caller = f" in {site['caller']}" if site["caller"] else ""
         print(f"  {site['path']}:{site['line']}{caller}")
         print(f"    {site['text']}")
+        if site["read"] in notes:
+            print(f"    ({notes[site['read']]})")
         if not site["hits"]:
             print("    no test case runs this line")
         for case, count in _by_count(site["hits"]):
@@ -438,6 +435,9 @@ def cmd_coverage(args):
               f"{len(meta['test_cases'])} test cases, {report['gcov_files']} gcov files")
         print(f"  source root: {meta['source_root']}, commit "
               + (meta["source_commit"] or "not recorded (not a git repository)"))
+        if report["stored_text"]:
+            print(f"  {len(report['stored_text'])} file(s) differ from that commit; the "
+                  f"measured text is stored in the coverage file")
         if report["cases_without_data"]:
             print(f"  test cases with no gcov files: {', '.join(report['cases_without_data'])}")
         if report["outside_root"]:
@@ -458,6 +458,12 @@ def cmd_coverage(args):
         print(f"No test case runs {location}:{line}.")
         return 1
     print(f"{location}:{line}")
+    if location in data["files"]:
+        text, read = cov.measured_text(data, cov.coverage_root(data, "."), location)
+        lines = (text or "").split("\n")
+        if text is not None and int(line) <= len(lines):
+            marker = "" if read in ("measured", "commit") else "  (working tree; may differ)"
+            print(f"  {lines[int(line) - 1].strip()}{marker}")
     for case, count in _by_count(hits):
         print(f"  {case}: {count}")
     return 0

@@ -1,9 +1,10 @@
 """Line coverage per test case (vit/coverage.py): import, lookup, and the CLI.
 
-Coverage line numbers belong to the source it was measured on. The test that
-matters most here is the one that edits the working tree after measuring: the
-lookup must still read the call site's line at the recorded commit, or every
-count it reports belongs to some other line.
+Coverage line numbers belong to the source it was measured on, which need not
+be any commit: a project that measures pre-integration source restores old
+versions of some files into a newer checkout. The tests that matter most edit
+the tree after measuring, and require the lookup to read the measured lines,
+or every count it reports belongs to some other line.
 """
 
 import gzip
@@ -113,11 +114,17 @@ def test_import_reports_what_it_left_out(project, gcov_dir):
     assert report["filtered"] == {"src/physics.f90"}
 
 
-def test_import_records_the_commit_measured(project, gcov_dir, tmp_path):
-    data, _ = cov.import_gcov(gcov_dir, project)
+def test_import_records_the_content_measured(project, gcov_dir, tmp_path):
+    data, report = cov.import_gcov(gcov_dir, project)
     head = subprocess.run(["git", "-C", str(project), "rev-parse", "HEAD"],
                           capture_output=True, text=True).stdout.strip()
+    blob = subprocess.run(["git", "-C", str(project), "hash-object", "src/physics.f90"],
+                          capture_output=True, text=True).stdout.strip()
     assert data["metadata"]["source_commit"] == head
+    entry = data["files"]["src/physics.f90"]
+    assert entry["blob"] == blob
+    assert "source" not in entry, "the commit holds this content; no need to store it"
+    assert report["stored_text"] == []
 
     plain = tmp_path / "plain"
     plain.mkdir()
@@ -142,31 +149,61 @@ def test_line_hits_needs_a_unique_file():
     assert cov.line_hits(data, "a/types.f90", 5) == {}
 
 
-def test_call_sites_are_read_at_the_measured_commit(project, gcov_dir):
+def test_call_sites_are_read_as_measured(project, gcov_dir):
     """Lines inserted after measuring must not shift the lookup."""
     data, _ = cov.import_gcov(gcov_dir, project)
     edited = project / "src" / "physics.f90"
     edited.write_text("! added after the coverage run\n" * 4 + PHYSICS)
 
-    sites, source = cov.call_sites(data, project / "src", "drag")
+    sites = cov.call_sites(data, project / "src", "drag")
 
-    assert source["kind"] == "commit"
-    assert [(s["path"], s["line"], s["caller"]) for s in sites] == [
-        ("src/physics.f90", 10, "step"), ("src/physics.f90", 15, "settle")]
+    assert [(s["path"], s["line"], s["caller"], s["read"]) for s in sites] == [
+        ("src/physics.f90", 10, "step", "measured"),
+        ("src/physics.f90", 15, "settle", "measured")]
     assert sites[0]["hits"] == {"long": 500, "short": 3}
     assert sites[1]["hits"] == {"short": 1}
 
 
-def test_call_sites_fall_back_to_the_working_tree(project, gcov_dir):
-    """Without the measured commit, the working tree is read, and the result
-    says so: its lines may have moved."""
+def test_measured_on_a_tree_that_differs_from_its_commit(project, gcov_dir):
+    """Measured on old source restored into a newer checkout, then the newer
+    version restored: the commit never held the measured content, so import
+    stores it, and the lookup still reads the measured lines."""
+    integrated = "! wrapper\n" * 4 + PHYSICS
+    path = project / "src" / "physics.f90"
+    path.write_text(integrated)
+    git(project, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-am", "integrate")
+    path.write_text(PHYSICS)                       # the reset, before the coverage run
+
+    data, report = cov.import_gcov(gcov_dir, project)
+    assert report["stored_text"] == ["src/physics.f90"]
+    assert data["files"]["src/physics.f90"]["source"] == PHYSICS
+
+    git(project, "checkout", "-q", "--", "src/physics.f90")   # back to integrated
+    sites = cov.call_sites(data, project / "src", "drag")
+    assert [(s["line"], s["read"]) for s in sites] == [(10, "measured"), (15, "measured")]
+    assert sites[0]["hits"] == {"long": 500, "short": 3}
+
+
+def test_an_entry_without_a_blob_is_read_at_the_recorded_commit(project, gcov_dir):
+    """Coverage files written before per-file records name only a commit."""
     data, _ = cov.import_gcov(gcov_dir, project)
+    for entry in data["files"].values():
+        entry.pop("blob", None)
+    (project / "src" / "physics.f90").write_text("! later\n" * 3 + PHYSICS)
+
+    sites = cov.call_sites(data, project / "src", "drag")
+    assert [(s["line"], s["read"]) for s in sites] == [(10, "commit"), (15, "commit")]
+
+
+def test_without_any_record_the_working_tree_is_read_and_marked(project, gcov_dir):
+    data, _ = cov.import_gcov(gcov_dir, project)
+    for entry in data["files"].values():
+        entry.pop("blob", None)
     data["metadata"]["source_commit"] = "0" * 40
 
-    sites, source = cov.call_sites(data, project / "src", "drag")
-
-    assert source["kind"] == "working_tree"
-    assert [s["line"] for s in sites] == [10, 15]
+    sites = cov.call_sites(data, project / "src", "drag")
+    assert [(s["line"], s["read"]) for s in sites] == [(10, "working_tree"),
+                                                      (15, "working_tree")]
 
 
 # --------------------------------------------------------------------------
@@ -194,10 +231,12 @@ def test_cli_import_find_and_line(project, gcov_dir, tmp_path):
     assert r.returncode == 0, r.stderr
     assert "src/physics.f90:10 in step" in r.stdout
     assert "src/physics.f90:3" not in r.stdout, "the definition is not a call site"
+    assert "(measured source not available" not in r.stdout
     assert "Most executions: long runs src/physics.f90:10 500 times." in r.stdout
 
     r = vit(tmp_path, "coverage", "line", "src/physics.f90:15", "--coverage", str(out))
     assert r.returncode == 0
+    assert "v = drag(v)" in r.stdout
     assert "short: 1" in r.stdout
     r = vit(tmp_path, "coverage", "line", "src/physics.f90:4", "--coverage", str(out))
     assert r.returncode == 1
