@@ -7,9 +7,11 @@ Automates:
 3. Generating include.ini for module discovery
 4. Cleaning stale artifacts
 5. Running KGen with the correct build/run commands
-6. Wrapping --cmd-build in a script that prepares the instrumented tree
-   (see build_state_capture_wrapper -- nine steps, not one)
+6. Giving KGen a build script that prepares the instrumented tree, and a run
+   script, each recording every step's outcome
+   (generate_state_capture_build_script, vit/extract_steps.py)
 7. Managing the resulting kernel/ and state/ directories
+8. Naming the step that failed, when one does
 
 Encodes lessons learned from ROSCO debugging:
 - KGen pragmas must use underscores: begin_callsite / end_callsite
@@ -36,6 +38,7 @@ import warnings
 from pathlib import Path
 from typing import Optional
 
+from vit import extract_steps
 from vit.confirm import Assumption, print_assumption
 
 
@@ -629,13 +632,50 @@ def sweep_stale_pragmas(source_dir: str) -> list[str]:
             if remove_kgen_pragma(str(p))]
 
 
+# Identifiers only KGen's instrumentation declares: the state-capture
+# variables and routines at the call site, and the kw_externs_in_* writers in
+# the modules it uses. VIT's own pragma (`!$kgen begin_callsite`) does not match.
+_KGEN_INSTRUMENTATION = re.compile(r"\bkgen_\w+|\bkw_externs_in_\w+", re.IGNORECASE)
+
+
+def settle_kgen_org(source_dir: str) -> tuple[list[str], list[str]]:
+    """Resolve KGen's `.kgen_org` source backups anywhere under source_dir.
+
+    KGen's state Makefile backs up each source it instruments to
+    `<file>.kgen_org` and moves the backup back after the build. When a step
+    fails first, the backup stays: KGen's `recover` target restores the
+    source from its own copy in state/ and leaves the backup beside it. No
+    backup may survive into the next extraction, because `save` keeps an
+    existing one and the build then moves it over the source.
+
+    A backup is deleted, except when the file it backs up still holds KGen's
+    instrumentation and the backup does not: then the extraction stopped
+    before `recover` ran, the backup is the only clean copy, and the file is
+    restored from it. Deleting every backup unconditionally, as this used to,
+    discarded that copy.
+
+    Returns:
+        (backups removed, files restored from their backups)
+    """
+    removed, restored = [], []
+    for backup in _project_files(source_dir, ("*.kgen_org",)):
+        original = backup.with_name(backup.name[:-len(".kgen_org")])
+        try:
+            if (original.exists()
+                    and _KGEN_INSTRUMENTATION.search(original.read_text(errors="replace"))
+                    and not _KGEN_INSTRUMENTATION.search(backup.read_text(errors="replace"))):
+                shutil.copy2(backup, original)
+                restored.append(str(original))
+        except OSError:
+            pass
+        backup.unlink()
+        removed.append(str(backup))
+    return removed, restored
+
+
 def remove_stale_kgen_org(source_dir: str) -> list[str]:
-    """Delete KGen's `.kgen_org` source backups anywhere under source_dir."""
-    removed = []
-    for path in _project_files(source_dir, ("*.kgen_org",)):
-        path.unlink()
-        removed.append(str(path))
-    return removed
+    """Resolve KGen's `.kgen_org` backups under source_dir; return those removed."""
+    return settle_kgen_org(source_dir)[0]
 
 
 def generate_include_ini(
@@ -739,7 +779,12 @@ def clean_kgen_artifacts(working_dir: str = ".") -> list[str]:
     strace_path = os.path.join(working_dir, "strace.log")
     if not os.path.exists(strace_path):
         Path(strace_path).write_text("# dummy — VIT provides include.ini\n")
-        removed.append(f"Created dummy {strace_path}")
+
+    # The build wrapper's old location; it is now .vit/extract/build.sh.
+    old_wrapper = os.path.join(working_dir, ".vit_build_wrapper.sh")
+    if os.path.exists(old_wrapper):
+        os.remove(old_wrapper)
+        removed.append(old_wrapper)
 
     # Remove elapsedtime/ directory — KGen stores ETime profiling data here
     # and reuses it across extractions, which can embed the wrong function
@@ -852,21 +897,30 @@ def generate_state_capture_build_script(
     dll_persistence: dict = None,
     state_dir: str = "state",
     add_source_cmd: str = "",
+    steps_directory: str = "",
 ) -> str:
     """
-    Generate a shell script that wraps the build command for state capture.
+    Generate the script KGen runs as its build command during state capture.
 
     KGen leaves an instrumented source tree that will not build, or will build
-    and then silently capture nothing. This wrapper is what makes it work. It
-    has grown well past its original job -- nine steps, not the one the module
-    docstring used to claim -- so they are enumerated here with provenance,
-    because a comment that undersells what code does is how bugs hide in it
-    (see dev note 202608071058 for the FC_0 case).
+    and then silently capture nothing. This script is what makes it work. Its
+    steps are enumerated here with provenance, because a comment that
+    undersells what code does is how bugs hide in it (see dev note
+    202608071058 for the FC_0 case).
+
+    Every step runs through `vit_step` (vit/extract_steps.py), which records
+    how it ended in `.vit/extract/steps.jsonl` and keeps its output in
+    `.vit/extract/<step>.log`, so `vit extract` names the step that failed.
+    Before, a step that failed under `set -e` stopped the script without a
+    word, the reconfigure's output went to /dev/null, and a failed install was
+    ignored: with a program that loads the installed library, the run then
+    used the old one and captured nothing.
 
     Steps, and whose problem each one is:
 
-      1.  Copy kgen_utils.f90 from kernel/ into the source tree.
-      2.  sed it into CMakeLists.txt, then reconfigure (step 3).
+      copy_kgen_utils, add_kgen_utils
+          Copy kgen_utils.f90 from kernel/ into the source tree and add it to
+          the build file; `reconfigure` then makes CMake see it.
           [KGen gap, correctly ours] KGen instruments code with calls to
           kgen_utils functions (kgen_init_vars, kgen_check_save, ...) but never
           arranges for kgen_utils.f90 to be compiled. On Linux a shared library
@@ -876,8 +930,9 @@ def generate_state_capture_build_script(
           --auto-allocate rejected (dev note 202605011207) -- so a build-command
           wrapper is the right shape, not debt.
 
-      2b. sed assumed-size array actuals into explicit sections at kw_* call
-          sites.
+      assumed_size
+          Rewrite assumed-size array actuals into explicit sections at kw_*
+          call sites.
           [KGen code-generator bug -- STILL A WORKAROUND, fix scoped not made]
           KGen emits write subroutines with assumed-shape DIMENSION(:) dummies
           while passing assumed-size (*) actuals, which is invalid Fortran. We
@@ -894,31 +949,35 @@ def generate_state_capture_build_script(
           source. Do it the next time extraction is exercised, not as a
           drive-by. See dev note 202608071141.
 
-      2c. Reset project SAVE guards between scenarios.
+      persistence_resets, remove_resets
+          Reset project SAVE guards between scenarios, and remove the resets
+          from the source when the script exits, whether or not it succeeded.
           [Ours, config-driven] Python ctypes may not truly dlclose() a Fortran
           shared library, so SAVE variables persist across scenario boundaries.
           Which guards to reset is per-project, configured in vit.yaml under
           kgen.dll_persistence. KGen's own SAVE arrays do NOT need this -- each
           extraction phase is a separate subprocess.
 
-      2d. Touch Fortran sources so cmake recompiles them.
+      touch_sources
+          Touch the Fortran sources so CMake recompiles them.
 
-      2e. Transplant kw_* subroutines across cmake target boundaries.
+      cross_module
+          Transplant kw_* subroutines across CMake target boundaries.
           [KGen limitation, correctly ours] KGen follows USE chains and
           instruments files outside the build target. Those files are never
           compiled, so their kw_* subroutines surface as unresolved symbols.
           Fixing upstream would require KGen to model build-system target
-          boundaries; same objection as step 2.
+          boundaries; same objection as add_kgen_utils.
 
-      3.  Reconfigure cmake if CMakeLists.txt changed. Required: cmake caches
-          its source list, so patching without reconfiguring means
-          `cmake --build .` silently uses the old list and never compiles
-          kgen_utils.f90.
+      reconfigure
+          Re-run CMake's configure step. Required: CMake caches its source
+          list, so patching without reconfiguring means `cmake --build .`
+          silently uses the old list and never compiles kgen_utils.f90.
 
-      4.  Run the real build, then the install step if any.
-      5.  Strip the tagged persistence lines, restoring the source tree.
+      build, install
+          The project's build command, then its install command if any.
 
-    What the step-2 patch assumes: the build file lists sources one per line,
+    What add_kgen_utils assumes: the build file lists sources one per line,
     and has a `src/` directory beside it. It inserts `src/kgen_utils.f90` after
     the first line that is a single Fortran source path, and copies the file
     into that `src/`. A build file with no such line stops the build with an
@@ -926,7 +985,7 @@ def generate_state_capture_build_script(
     directory the inserted entry names a file that is not there, and the build
     fails.
 
-    The script is written to a temp file and returned as a command.
+    The script is written to `.vit/extract/build.sh` and its path returned.
 
     Args:
         build_cmd: Original build command
@@ -934,10 +993,14 @@ def generate_state_capture_build_script(
         cmake_file: Path to CMakeLists.txt (for cmake projects)
         source_dir: Directory containing Fortran source files
         kernel_dir: Where KGen puts kernel/ (for finding kgen_utils.f90)
+        steps_directory: Where steps are recorded (default `.vit/extract`)
 
     Returns:
         Path to the generated script
     """
+    directory = steps_directory or extract_steps.steps_dir()
+    os.makedirs(directory, exist_ok=True)
+
     # Find where kgen_utils.f90 will be
     kgen_utils_src = os.path.join(os.path.abspath(kernel_dir), "kgen_utils.f90")
 
@@ -957,55 +1020,64 @@ def generate_state_capture_build_script(
         kgen_utils_dest = os.path.join(os.getcwd(), "kgen_utils.f90")
 
     cmake_file_abs = os.path.abspath(cmake_file) if cmake_file else ""
+    source_dir_abs = os.path.abspath(source_dir) if source_dir else ""
+    build_dir_abs = os.path.abspath(build_dir) if build_dir else ""
 
-    script_lines = [
+    lines = [
         "#!/bin/bash",
-        "set -e",
-        "",
-        "# VIT: State capture build wrapper",
-        "# Prepares the KGen-instrumented tree so the build links and capture",
-        "# actually produces state. See build_state_capture_wrapper's docstring",
-        "# for all nine steps and which are KGen's problem vs ours.",
+        "# VIT: state capture build script. KGen's state Makefile runs it as the",
+        "# build command, with the instrumented sources in place. Each step's",
+        "# outcome is recorded in $VIT_STEPS/steps.jsonl and its output kept in",
+        "# $VIT_STEPS/<step>.log. See generate_state_capture_build_script.",
         "",
         f'KGEN_UTILS_SRC="{kgen_utils_src}"',
         f'KGEN_UTILS_DEST="{kgen_utils_dest}"',
         f'CMAKE_FILE="{cmake_file_abs}"',
-        "",
-        "# Diagnostics are opt-in: export VIT_WRAPPER_LOG=/path/to/log to enable.",
-        "# Worth doing when capture reports no state data -- several failures here",
-        "# are silent by construction (a shared library links with unresolved",
-        "# symbols, so the build succeeds and only the capture comes back empty).",
-        'VIT_LOG="${VIT_WRAPPER_LOG:-/dev/null}"',
-        'echo "VIT_WRAPPER: invoked at $(date), cwd=$(pwd)" >> "$VIT_LOG"',
-        'echo "VIT_WRAPPER: KGEN_UTILS_SRC=$KGEN_UTILS_SRC exists=$([ -f $KGEN_UTILS_SRC ] && echo YES || echo NO)" >> "$VIT_LOG"',
-        "",
-        "# Step 1: Copy kgen_utils.f90 into source tree (if it exists)",
-        'if [ -f "$KGEN_UTILS_SRC" ]; then',
-        '    cp "$KGEN_UTILS_SRC" "$KGEN_UTILS_DEST"',
-        "    # (kgen_utils.f90 copied as-is, no modifications needed)",
-        '    echo "VIT: Copied kgen_utils.f90 to source tree"',
-        '    echo "VIT_WRAPPER: copied kgen_utils.f90 to $KGEN_UTILS_DEST" >> "$VIT_LOG"',
+        *extract_steps.shell_prelude(directory),
         "",
     ]
+    # (step name, function body); a body that runs a command from vit.yaml
+    # starts with `set +e` so the command keeps its own exit status.
+    steps = []
 
-    # Step 2: Patch CMakeLists.txt if cmake project
+    steps.append(("copy_kgen_utils", [
+        'if [ ! -f "$KGEN_UTILS_SRC" ]; then',
+        '    echo "VIT ERROR: KGen did not write $KGEN_UTILS_SRC" >&2',
+        '    exit 1',
+        'fi',
+        'cp "$KGEN_UTILS_SRC" "$KGEN_UTILS_DEST"',
+        'echo "VIT: copied kgen_utils.f90 to $KGEN_UTILS_DEST"',
+    ]))
+
     if cmake_file_abs:
-        build_dir_abs = os.path.abspath(build_dir) if build_dir else ""
-        script_lines.extend([
-            '    # Patch CMakeLists.txt to include kgen_utils.f90 (only once)',
-            '    if [ -f "$CMAKE_FILE" ]; then',
-            '        # Backup only if no backup exists (wrapper may run multiple times)',
-            '        if [ ! -f "${CMAKE_FILE}.vit_backup" ]; then',
-            '            cp "$CMAKE_FILE" "${CMAKE_FILE}.vit_backup"',
-            '        fi',
-            '        # Add kgen_utils.f90 only if not already present',
-            '        if ! grep -q "kgen_utils.f90" "$CMAKE_FILE"; then',
-        ])
+        body = [
+            # `cmake_file` was configured, so its absence is a misconfiguration
+            # and not a reason to carry on. Skipping quietly here produced the
+            # same empty capture as a failed sed, one step earlier.
+            'if [ ! -f "$CMAKE_FILE" ]; then',
+            '    echo "VIT ERROR: cmake_file is configured but $CMAKE_FILE does not exist." >&2',
+            '    exit 1',
+            'fi',
+            '# Back up only once: the script may run more than once.',
+            'if [ ! -f "${CMAKE_FILE}.vit_backup" ]; then',
+            '    cp "$CMAKE_FILE" "${CMAKE_FILE}.vit_backup"',
+            'fi',
+            'if grep -q "kgen_utils.f90" "$CMAKE_FILE"; then',
+            '    echo "VIT: $CMAKE_FILE already lists kgen_utils.f90"',
+            '    exit 0',
+            'fi',
+        ]
         if add_source_cmd:
             # An explicit override, for a build file the default cannot match.
             # A heuristic that can be replaced is a heuristic; one that cannot
             # is a requirement on every future codebase.
-            script_lines.append(f'            ( {add_source_cmd} )')
+            body.extend([
+                f'( {add_source_cmd} ) || {{',
+                '    rc=$?',
+                '    echo "VIT ERROR: kgen.add_source_cmd failed with exit code $rc." >&2',
+                '    exit $rc',
+                '}',
+            ])
         else:
             # Insert after the first Fortran source entry in the list.
             #
@@ -1014,9 +1086,9 @@ def generate_state_capture_build_script(
             # names free of digits, hyphens and dots. It is widened here to any
             # path and any Fortran extension -- but widening a heuristic is not
             # the fix, because the next layout will break it too.
-            script_lines.append(
-                r"""            sed -i -E '0,/^([[:space:]]*"?[A-Za-z0-9_.\/${}-]+\.([fF]|[fF]9[05]|[fF]0[38])"?)$/s//\1\n    src\/kgen_utils.f90/' "$CMAKE_FILE" """)
-        script_lines.extend([
+            body.append(
+                r"""sed -i -E '0,/^([[:space:]]*"?[A-Za-z0-9_.\/${}-]+\.([fF]|[fF]9[05]|[fF]0[38])"?)$/s//\1\n    src\/kgen_utils.f90/' "$CMAKE_FILE" """)
+        body.extend([
             # THE FIX THAT MATTERS. The success message below used to print
             # unconditionally, so a sed that matched nothing announced that it
             # had patched the file. The build then succeeded, the shared library
@@ -1024,69 +1096,41 @@ def generate_state_capture_build_script(
             # permits that), the simulation ran, and the only symptom was an
             # empty capture reported as "No state data captured" -- with nothing
             # pointing back here. See dev note 202608071141.
-            '            if ! grep -q "kgen_utils.f90" "$CMAKE_FILE"; then',
-            '                echo "VIT ERROR: could not add kgen_utils.f90 to $CMAKE_FILE." >&2',
-            '                echo "  The source list did not match the expected shape." >&2',
-            '                echo "  Set kgen.add_source_cmd in vit.yaml to a command that adds" >&2',
-            '                echo "  src/kgen_utils.f90 to this build file, e.g.:" >&2',
-            r'''                echo "    add_source_cmd: sed -i '/^set(SOURCES/a\\    src/kgen_utils.f90' \\"\$CMAKE_FILE\\"" >&2''',
-            '                exit 1',
-            '            fi',
-            '            echo "VIT: Patched CMakeLists.txt to include kgen_utils.f90"',
+            'if ! grep -q "kgen_utils.f90" "$CMAKE_FILE"; then',
+            '    echo "VIT ERROR: could not add kgen_utils.f90 to $CMAKE_FILE." >&2',
+            '    echo "  The source list did not match the expected shape." >&2',
+            '    echo "  Set kgen.add_source_cmd in vit.yaml to a command that adds" >&2',
+            '    echo "  src/kgen_utils.f90 to this build file, e.g.:" >&2',
+            r'''    echo "    add_source_cmd: sed -i '/^set(SOURCES/a\\    src/kgen_utils.f90' \"\$CMAKE_FILE\"" >&2''',
+            '    exit 1',
+            'fi',
+            'echo "VIT: added kgen_utils.f90 to $CMAKE_FILE"',
         ])
-        # Reconfigure cmake so it picks up the new source file.
-        # cmake caches its source list internally — patching CMakeLists.txt
-        # without reconfiguring means `cmake --build .` silently uses the
-        # old source list and never compiles kgen_utils.f90.
-        # This is critical for incremental build commands (cmake --build .)
-        # as opposed to full clean builds (rm -rf * && cmake .. && cmake --build .).
-        if build_dir_abs:
-            script_lines.extend([
-                f'            echo "VIT: Reconfiguring cmake to pick up kgen_utils.f90"',
-                f'            {cmake_reconfigure_command(build_dir_abs)} > /dev/null 2>&1',
-            ])
-        script_lines.extend([
-            '        fi',
-            '    else',
-            # `cmake_file` was configured, so its absence is a misconfiguration
-            # and not a reason to carry on. Skipping quietly here produced the
-            # same empty capture as a failed sed, one step earlier.
-            '        echo "VIT ERROR: cmake_file is configured but $CMAKE_FILE does not exist." >&2',
-            '        exit 1',
-            "    fi",
-        ])
+        steps.append(("add_kgen_utils", body))
 
-    script_lines.extend([
-        "else",
-        '    echo "VIT_WRAPPER: kgen_utils.f90 not found at $KGEN_UTILS_SRC — skipping injection" >> "$VIT_LOG"',
-        "fi",
-        "",
-    ])
+    fortran_files = (f'for f90 in "{source_dir_abs}"/*.f90 "{source_dir_abs}"/*.F90; do',
+                     '    if [ ! -f "$f90" ]; then continue; fi')
 
-    # Step 2b: Patch assumed-size arrays in instrumented source.
     # KGen generates write subroutines with DIMENSION(:) (assumed-shape)
     # parameters, but assumed-size (*) arrays can't be passed to assumed-shape.
     # Fix: replace bare array names with explicit sections at kw_* call sites.
     if assumed_size_arrays and source_dir:
-        script_lines.append("# Step 2b: Patch assumed-size arrays in instrumented source")
-        source_dir_abs = os.path.abspath(source_dir)
+        body = []
         for varname, size in assumed_size_arrays.items():
             varname_lower = varname.lower()
             # Replace (varname, kgen_unit with (varname(1:N), kgen_unit in kw_* calls
             # Case-insensitive because KGen lowercases variable names
             sed_pattern = f"s/({varname_lower}, kgen_unit/({varname_lower}(1:{size}), kgen_unit/gI"
-            script_lines.extend([
-                f'for f90 in "{source_dir_abs}"/*.f90 "{source_dir_abs}"/*.F90; do',
-                f'    [ -f "$f90" ] || continue',
+            body.extend([
+                *fortran_files,
                 f"    sed -i '{sed_pattern}' \"$f90\"",
-                f'done',
-                f'echo "VIT: Patched assumed-size array {varname} with size {size}"',
+                'done',
+                f'echo "VIT: rewrote assumed-size array {varname} with size {size}"',
             ])
-        script_lines.append("")
+        steps.append(("assumed_size", body))
 
-    # Step 2c: DLL SAVE variable persistence workaround.
     # When Python's ctypes loads a Fortran shared library, dlclose() may not
-    # truly unload it — SAVE variables persist across scenario boundaries
+    # truly unload it -- SAVE variables persist across scenario boundaries
     # within a single simulation run. Project-specific SAVE guards (e.g.,
     # AlreadyInitialized) need resetting so each scenario re-initializes.
     # Resets are configured in vit.yaml under kgen.dll_persistence.
@@ -1096,137 +1140,107 @@ def generate_state_capture_build_script(
     # with fresh SAVE variables. Within a single run, KGen's invocation
     # counters naturally exceed the capture range (0:0:1-20) after the
     # first scenario, which is the desired behavior.
-    if dll_persistence and source_dir:
-        resets = dll_persistence.get("resets", [])
+    resets = (dll_persistence or {}).get("resets", []) if source_dir else []
+    resets = [r for r in resets if r.get("anchor") and r.get("code")]
+    if resets:
+        # Tag all inserted lines with !VIT_DLL_RESET so they can be removed
+        # when the script exits. Without this, sed patches accumulate in
+        # files KGen doesn't restore (e.g., DISCON.F90 when extracting from
+        # Controllers.f90).
+        tag = "!VIT_DLL_RESET"
+        body = list(fortran_files)
+        for reset in resets:
+            body.append(f"    sed -i '/{reset['anchor']}/i\\    {reset['code']} {tag}' \"$f90\"")
+        body.extend(['done', 'echo "VIT: added the SAVE variable resets to the instrumented source"'])
+        steps.append(("persistence_resets", body))
 
-        if resets:
-            source_dir_abs = os.path.abspath(source_dir)
-            # Tag all inserted lines with !VIT_DLL_RESET so they can be
-            # cleanly removed after the build. Without this, sed patches
-            # accumulate in files KGen doesn't restore (e.g., DISCON.F90
-            # when extracting from Controllers.f90).
-            tag = "!VIT_DLL_RESET"
-            script_lines.extend([
-                "# Step 2c: Reset SAVE variables (DLL persistence workaround)",
-                f'for f90 in "{source_dir_abs}"/*.f90 "{source_dir_abs}"/*.F90; do',
-                '    [ -f "$f90" ] || continue',
-            ])
-
-            # Project-specific resets (configured in vit.yaml).
-            for reset in resets:
-                anchor = reset.get("anchor", "")
-                code = reset.get("code", "")
-                if anchor and code:
-                    script_lines.append(
-                        f"    sed -i '/{anchor}/i\\    {code} {tag}' \"$f90\""
-                    )
-
-            script_lines.extend([
-                'done',
-                'echo "VIT: Patched DLL SAVE variable reset in instrumented source"',
-                "",
-            ])
-
-    # Step 2d: Touch all Fortran source files in the cmake source directory
-    # to force cmake to recompile them. KGen's state Makefile copies instrumented
-    # source files over the originals, but on Docker-mounted filesystems the
-    # timestamps may not change, causing cmake to skip recompilation.
+    # KGen's state Makefile copies instrumented source files over the
+    # originals, but on Docker-mounted filesystems the timestamps may not
+    # change, causing CMake to skip recompilation.
     if cmake_file_abs:
         cmake_src_dir = os.path.join(os.path.dirname(cmake_file_abs), "src")
-        script_lines.extend([
-            f'# Step 2d: Touch source files to force cmake recompilation',
-            f'# (Docker filesystem timestamps may not update on cp)',
+        steps.append(("touch_sources", [
             f'for f90 in "{cmake_src_dir}"/*.f90 "{cmake_src_dir}"/*.F90; do',
-            f'    [ -f "$f90" ] && touch "$f90"',
-            f'done',
-            "",
-        ])
+            '    if [ -f "$f90" ]; then touch "$f90"; fi',
+            'done',
+        ]))
 
-    # Step 2e: Fix cross-module KGen instrumentation.
-    # KGen instruments files across cmake target boundaries (following USE chains).
-    # Files outside the build target aren't compiled, so their kw_* subroutines
-    # cause unresolved symbol errors. Transplant kw_* subroutines from cross-module
-    # files into the in-target module file that defines the same Fortran MODULE.
+    # KGen instruments files across CMake target boundaries (following USE
+    # chains). Files outside the build target aren't compiled, so their kw_*
+    # subroutines cause unresolved symbol errors. Transplant them into the
+    # in-target module file that defines the same Fortran MODULE.
     if cmake_file_abs and source_dir:
         state_dir_abs = os.path.abspath(state_dir)
-        source_dir_abs = os.path.abspath(source_dir)
-        script_lines.extend([
-            "# Step 2e: Fix cross-module KGen instrumentation",
-            f'python3 -c "',
-            f'import sys; sys.path.insert(0, \\"{os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}\\")',
-            f'from vit.extract import fix_cross_module_instrumentation',
-            f'fixes = fix_cross_module_instrumentation(',
-            f'    \\"{state_dir_abs}\\",',
-            f'    \\"{cmake_file_abs}\\",',
-            f'    \\"{source_dir_abs}\\"',
-            f')',
-            f'for f in fixes: print(\\"VIT: \\" + f)',
-            f'" 2>&1 | tee -a "$VIT_LOG"',
-            "",
-        ])
+        vit_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # One line: inside the step's function, an indented continuation
+        # line would be indented Python.
+        steps.append(("cross_module", [
+            'python3 -c "import sys; '
+            f'sys.path.insert(0, \\"{vit_root}\\"); '
+            'from vit.extract import fix_cross_module_instrumentation as fix; '
+            f'fixes = fix(\\"{state_dir_abs}\\", \\"{cmake_file_abs}\\", \\"{source_dir_abs}\\"); '
+            '[print(\\"VIT: \\" + f) for f in fixes]"',
+        ]))
 
-    # Step 3: Reconfigure cmake if CMakeLists was modified (kgen_utils.f90 added).
-    # cmake caches its source list internally — patching CMakeLists.txt without
-    # reconfiguring means `cmake --build .` silently uses the old source list
-    # and never compiles kgen_utils.f90. This is essential for incremental build
-    # commands (cmake --build .) as opposed to full clean builds.
     if cmake_file_abs and build_dir:
-        build_dir_abs = os.path.abspath(build_dir)
-        script_lines.extend([
-            "# Step 3: Reconfigure cmake if CMakeLists was modified",
-            f'if [ -f "{cmake_file_abs}.vit_backup" ]; then',
-            f'    echo "VIT_WRAPPER: reconfiguring cmake" >> "$VIT_LOG"',
-            f'    {cmake_reconfigure_command(build_dir_abs)} >> "$VIT_LOG" 2>&1',
-            f'    echo "VIT_WRAPPER: cmake reconfigure exit code=$?" >> "$VIT_LOG"',
-            f'fi',
-            "",
-        ])
+        steps.append(("reconfigure", [cmake_reconfigure_command(build_dir_abs)]))
 
-    script_lines.extend([
-        "# Step 4: Run the actual build",
-        "# Temporarily disable set -e so the cleanup step always runs",
-        "set +e",
-        f"{build_cmd}",
-        "BUILD_RC=$?",
-        "set -e",
-        "",
-    ])
-
-    # Step 4: Install
+    steps.append(("build", ["set +e", build_cmd]))
     if install_cmd:
-        script_lines.extend([
-            "# Step 4: Install (inside set +e to ensure cleanup runs)",
-            f'if [ $BUILD_RC -eq 0 ]; then',
-            f"    {install_cmd} || true",
-            "fi",
+        steps.append(("install", ["set +e", install_cmd]))
+
+    for name, body in steps:
+        lines.append(f"vit_{name}() {{")
+        lines.extend(f"    {l}" for l in body)
+        lines.extend(["}", ""])
+
+    if resets:
+        # Remove the resets whether or not a step failed: the compiled
+        # program already has them, and left in the source they accumulate.
+        lines.extend([
+            "vit_remove_resets() {",
+            *[f"    {l}" for l in fortran_files],
+            "        sed -i '/!VIT_DLL_RESET/d' \"$f90\"",
+            "    done",
+            "}",
+            "trap 'vit_step remove_resets vit_remove_resets' EXIT",
             "",
         ])
 
-    # Step 5: Remove tagged DLL persistence lines from source.
-    # The compiled library already has the patches baked in. Removing them
-    # from source prevents accumulation across sequential extractions.
-    if dll_persistence and source_dir:
-        resets_cfg = dll_persistence.get("resets", [])
-        if resets_cfg:
-            source_dir_abs = os.path.abspath(source_dir)
-            script_lines.extend([
-                "# Step 5: Remove VIT_DLL_RESET tagged lines from source",
-                f'for f90 in "{source_dir_abs}"/*.f90 "{source_dir_abs}"/*.F90; do',
-                '    [ -f "$f90" ] || continue',
-                "    sed -i '/!VIT_DLL_RESET/d' \"$f90\"",
-                'done',
-                "",
-            ])
+    lines.extend(f"vit_step {name} vit_{name}" for name, _ in steps)
 
-    script_lines.extend([
-        "exit $BUILD_RC",
-    ])
-
-    # Write script
-    script_path = os.path.join(os.getcwd(), ".vit_build_wrapper.sh")
-    Path(script_path).write_text("\n".join(script_lines) + "\n")
+    script_path = os.path.join(directory, "build.sh")
+    Path(script_path).write_text("\n".join(lines) + "\n")
     os.chmod(script_path, 0o755)
+    return script_path
 
+
+def generate_state_capture_run_script(run_cmd: str, steps_directory: str = "") -> str:
+    """Generate the script KGen runs as its run command: `run_cmd`, recorded as step `run`.
+
+    The run's output is kept in `.vit/extract/run.log`, so a failed run is
+    reported with what it printed, and a run that captured nothing can be
+    read for what the instrumented program said. Written to
+    `.vit/extract/run.sh`; returns its path.
+    """
+    directory = steps_directory or extract_steps.steps_dir()
+    os.makedirs(directory, exist_ok=True)
+    lines = [
+        "#!/bin/bash",
+        "# VIT: state capture run script. KGen's state Makefile runs it as the run",
+        "# command. See generate_state_capture_run_script.",
+        *extract_steps.shell_prelude(directory),
+        "",
+        "vit_run() {",
+        "    set +e",
+        f"    {run_cmd}",
+        "}",
+        "",
+        "vit_step run vit_run",
+    ]
+    script_path = os.path.join(directory, "run.sh")
+    Path(script_path).write_text("\n".join(lines) + "\n")
+    os.chmod(script_path, 0o755)
     return script_path
 
 
@@ -1234,6 +1248,7 @@ def cleanup_kgen_utils_injection(
     cmake_file: str = "",
     source_dir: str = "",
     build_dir: str = "",
+    steps_directory: str = "",
 ) -> list[str]:
     """
     Remove kgen_utils.f90 injection after state capture is complete.
@@ -1248,17 +1263,20 @@ def cleanup_kgen_utils_injection(
     is particularly affected because it runs the build before the
     Extractor generates kernel/kgen_utils.f90.
 
+    The reconfigure is recorded as step `restore` when `steps_directory` is
+    given, so a failure is reported rather than discarded.
+
     Returns:
-        List of files cleaned up
+        List of what was restored or removed
     """
-    cleaned = []
+    restored = []
 
     # Restore CMakeLists.txt
     if cmake_file:
         backup = cmake_file + ".vit_backup"
         if os.path.exists(backup):
             shutil.move(backup, cmake_file)
-            cleaned.append(f"Restored {cmake_file}")
+            restored.append(f"Restored {cmake_file}")
 
     # Remove injected kgen_utils.f90 (check cmake src/ subdir first, then source_dir)
     removed_kgen_utils = False
@@ -1268,30 +1286,25 @@ def cleanup_kgen_utils_injection(
                           os.path.join(cmake_dir, "kgen_utils.f90")]:
             if os.path.exists(candidate):
                 os.remove(candidate)
-                cleaned.append(f"Removed {candidate}")
+                restored.append(f"Removed {candidate}")
                 removed_kgen_utils = True
                 break
     if not removed_kgen_utils and source_dir:
         injected = os.path.join(source_dir, "kgen_utils.f90")
         if os.path.exists(injected):
             os.remove(injected)
-            cleaned.append(f"Removed {injected}")
+            restored.append(f"Removed {injected}")
 
     # Reconfigure CMake to clear stale DependInfo.cmake references.
     if build_dir and os.path.isdir(build_dir):
-        subprocess.run(
-            cmake_reconfigure_command(build_dir),
-            shell=True, capture_output=True,
-        )
-        cleaned.append(f"Reconfigured CMake in {build_dir}")
+        command = cmake_reconfigure_command(build_dir)
+        if steps_directory:
+            extract_steps.run_step(steps_directory, "restore", command)
+        else:
+            subprocess.run(command, shell=True, capture_output=True)
+        restored.append(f"Reconfigured CMake in {build_dir}")
 
-    # Remove wrapper script
-    wrapper = os.path.join(os.getcwd(), ".vit_build_wrapper.sh")
-    if os.path.exists(wrapper):
-        os.remove(wrapper)
-        cleaned.append(f"Removed {wrapper}")
-
-    return cleaned
+    return restored
 
 
 def generate_kgen_command(
@@ -1590,6 +1603,9 @@ def infer_assumed_size_arrays(
     return assumptions
 
 
+KGEN_TIMEOUT = 1200  # seconds; extraction can be slow
+
+
 def run_kgen_extract(
     source_file: str,
     build_cmd: str,
@@ -1617,17 +1633,23 @@ def run_kgen_extract(
     This handles:
     1. Checking for editable pip install path conflicts
     2. Cleaning stale artifacts (strace.log, kgen.log)
-    3. Pre-building so .mod files exist for include.ini generation
+    3. Running clean_cmd and build_cmd, so .mod files exist for include.ini;
+       if either fails, KGen is not run
     4. Generating include.ini with proper module/source paths
-    5. Generating a build wrapper script that injects kgen_utils.f90
+    5. Generating the build and run scripts KGen runs during state capture
     6. Running KGen
     7. Cleaning up injected files (restoring source tree)
     8. Locating the generated kernel/ and state/ directories
+    9. Naming the step that failed, if one did (vit/extract_steps.py)
 
     Returns:
-        Dict with keys: 'success', 'kernel_dir', 'state_dir', 'cmd', 'output',
-                        'include_ini', 'cleaned', 'state_cases', 'warnings'
+        Dict with keys: 'success' (KGen generated a kernel), 'kernel_dir',
+        'state_dir', 'cmd', 'output', 'include_ini', 'cleaned', 'restored',
+        'state_cases', 'warnings', 'steps_dir', 'failure' (an
+        extract_steps.Failure, or None when every step succeeded), and
+        'restore_failure' (the same, for restoring the build afterwards)
     """
+    directory = extract_steps.steps_dir()
     result = {
         "success": False,
         "kernel_dir": None,
@@ -1636,9 +1658,14 @@ def run_kgen_extract(
         "output": "",
         "include_ini": None,
         "cleaned": [],
+        "restored": [],
         "state_cases": 0,
         "warnings": [],
+        "steps_dir": directory,
+        "failure": None,
+        "restore_failure": None,
     }
+    extract_steps.reset(directory)
 
     # Step 1: Check for editable install conflicts
     if package_name or source_dir:
@@ -1657,19 +1684,21 @@ def run_kgen_extract(
     # processes all pragmas it finds, including in .kgen_org files
     # that get restored to the source directory during state capture.
     if source_dir:
-        result["cleaned"].extend(remove_stale_kgen_org(source_dir))
+        removed, restored = settle_kgen_org(source_dir)
+        result["cleaned"].extend(removed)
+        result["warnings"].extend(
+            f"{f} still held KGen's instrumentation from an extraction that did not "
+            f"finish; it was restored from KGen's backup" for f in restored)
 
-    # Step 3: Run clean command to force full rebuild for strace
-    if clean_cmd:
-        subprocess.run(clean_cmd, shell=True, capture_output=True)
+    # Step 3: Clean, then build, so the .mod files KGen needs to resolve USE
+    # statements exist. A build that fails here fails with the instrumentation
+    # too, after KGen has spent minutes parsing; stop now and say so.
+    for step, command in (("clean", clean_cmd), ("prebuild", build_cmd)):
+        if command and extract_steps.run_step(directory, step, command) != 0:
+            result["failure"] = extract_steps.diagnose(directory, kgen_ran=False)
+            return result
 
-    # Step 4: Pre-build so .mod files exist for include.ini generation
-    # KGen needs .mod files to resolve USE statements. They may have been
-    # removed by the clean step above.
-    if build_cmd:
-        subprocess.run(build_cmd, shell=True, capture_output=True)
-
-    # Step 5: Generate include.ini with proper paths
+    # Step 4: Generate include.ini with proper paths
     if source_dir or build_dir:
         src_dirs = discover_source_dirs(source_dir) if source_dir else []
         mod_dirs = discover_mod_dirs(build_dir) if build_dir else []
@@ -1677,9 +1706,9 @@ def run_kgen_extract(
             ini_path = generate_include_ini(src_dirs, mod_dirs)
             result["include_ini"] = ini_path
 
-    # Step 6: Generate build wrapper script that injects kgen_utils.f90
-    # into the project build (KGen bug workaround)
-    wrapper_script = generate_state_capture_build_script(
+    # Step 5: The scripts KGen's state Makefile runs as its build and run
+    # commands. Each records its steps, so a failure names itself.
+    build_script = generate_state_capture_build_script(
         build_cmd=build_cmd,
         install_cmd=install_cmd,
         cmake_file=cmake_file,
@@ -1690,13 +1719,14 @@ def run_kgen_extract(
         dll_persistence=dll_persistence,
         state_dir=os.path.join(output_dir or ".", "state"),
         add_source_cmd=add_source_cmd,
+        steps_directory=directory,
     )
-    effective_build_cmd = f"bash {wrapper_script}"
+    run_script = generate_state_capture_run_script(run_cmd, steps_directory=directory)
 
     cmd = generate_kgen_command(
         source_file=source_file,
-        build_cmd=effective_build_cmd,
-        run_cmd=run_cmd,
+        build_cmd=f"bash {build_script}",
+        run_cmd=f"bash {run_script}",
         clean_cmd=clean_cmd,
         kgen_path=kgen_path,
         output_dir=output_dir,
@@ -1707,10 +1737,14 @@ def run_kgen_extract(
 
     if dry_run:
         result["output"] = f"[DRY RUN] Would execute:\n  {cmd}"
-        result["output"] += f"\n\nBuild wrapper script:\n{Path(wrapper_script).read_text()}"
+        result["output"] += f"\n\nBuild script:\n{Path(build_script).read_text()}"
+        result["output"] += f"\n\nRun script:\n{Path(run_script).read_text()}"
         return result
 
-    # Step 7: Run KGen
+    # Step 6: Run KGen
+    kgen_rc = None
+    timed_out = None
+    extract_steps.record(directory, "kgen", "started")
     try:
         proc = subprocess.run(
             cmd,
@@ -1718,8 +1752,9 @@ def run_kgen_extract(
             capture_output=True,
             text=True,
             env={**os.environ, **(env or {})},
-            timeout=1200,  # 20 minutes — extraction can be slow
+            timeout=KGEN_TIMEOUT,
         )
+        kgen_rc = proc.returncode
         result["output"] = proc.stdout + proc.stderr
 
         # Step 8: Locate output directories
@@ -1753,37 +1788,42 @@ def run_kgen_extract(
             # vit verify will restore from these backups, never create new ones.
             _create_kgen_backups(Path(result["kernel_dir"]))
 
-            if result["state_cases"] == 0:
-                result["output"] += (
-                    "\n\nWARNING: Kernel generated but no state data captured.\n"
-                    "Possible causes:\n"
-                    "  1. The simulation didn't run (check run_cmd)\n"
-                    "  2. The instrumented library wasn't installed where the simulation\n"
-                    "     loads it from. Set install_cmd in vit.yaml to copy the built\n"
-                    "     library to the install location.\n"
-                    "  3. The call site wasn't reached during the simulation run.\n"
-                    "  4. kgen_utils.f90 wasn't compiled into the shared library.\n"
-                    "     Check that the build wrapper script ran correctly.\n"
-                    "  5. An editable pip install (pip install -e .) may be pointing\n"
-                    "     to a different checkout, causing the simulation to load an\n"
-                    "     uninstrumented library. Run: pip show <package> and check\n"
-                    "     'Editable project location' matches your working directory.\n"
-                )
-
-    except subprocess.TimeoutExpired:
-        result["output"] = "ERROR: KGen extraction timed out after 1200 seconds"
+    except subprocess.TimeoutExpired as e:
+        timed_out = KGEN_TIMEOUT
+        out = [x.decode(errors="replace") if isinstance(x, bytes) else (x or "")
+               for x in (e.stdout, e.stderr)]
+        result["output"] = "".join(out) + f"\nERROR: KGen extraction timed out after {KGEN_TIMEOUT} seconds"
     except Exception as e:
         result["output"] = f"ERROR: {e}"
     finally:
-        # Step 9: Clean up kgen_utils.f90 injection (restore source tree)
-        cleanup_result = cleanup_kgen_utils_injection(
+        Path(directory, "kgen.log").write_text(result["output"])
+        extract_steps.record(directory, "kgen", "ok" if kgen_rc == 0 else "failed", kgen_rc)
+
+        # Step 7: Clean up kgen_utils.f90 injection (restore source tree)
+        result["restored"] = cleanup_kgen_utils_injection(
             cmake_file=cmake_file,
             source_dir=source_dir,
             build_dir=build_dir,
+            steps_directory=directory,
         )
-        if cleanup_result:
-            result["cleaned"].extend(cleanup_result)
+        # KGen's backups of the sources it instrumented, left beside them when
+        # a step failed before the state Makefile moved them back. After a
+        # timeout the capture may still be running, so they are left for the
+        # next extraction to settle.
+        if source_dir and timed_out is None:
+            removed, restored = settle_kgen_org(source_dir)
+            result["restored"].extend(removed)
+            result["warnings"].extend(
+                f"{f} still held KGen's instrumentation after KGen finished; "
+                f"it was restored from KGen's backup" for f in restored)
 
+    # Step 9: Name the step that failed. KGen exits 0 when its state Makefile
+    # fails, so its exit status alone says nothing about the capture.
+    generated = bool(result["kernel_dir"] and result["state_dir"]
+                     and os.path.exists(os.path.join(result["state_dir"], "Makefile")))
+    result["failure"] = extract_steps.diagnose(
+        directory, kgen_rc=kgen_rc, generated=generated, timeout=timed_out)
+    result["restore_failure"] = extract_steps.failed(directory, "restore")
     return result
 
 

@@ -916,6 +916,25 @@ def test_sweeps_skip_extraction_outputs(tmp_path, monkeypatch):
     assert "!$kgen" in golden.read_text()
 
 
+def test_a_backup_that_is_the_only_clean_copy_is_restored(tmp_path, monkeypatch):
+    """An extraction stopped before KGen's `recover` leaves the instrumented
+    source in place and the original only in `<file>.kgen_org`. Deleting every
+    backup, as the stale-artifact sweep did, discarded the original."""
+    from vit.extract import settle_kgen_org
+
+    monkeypatch.chdir(tmp_path)
+    src, nested, _ = _nested_project(tmp_path)
+    original = nested.read_text()
+    nested.write_text(original.replace("  call drag()",
+                                       "  CALL kgen_check_save(1)\n  call drag()"))
+    backup = nested.parent / "caller.f90.kgen_org"
+    backup.write_text(original)
+
+    assert settle_kgen_org(str(src)) == ([str(backup)], [str(nested)])
+    assert nested.read_text() == original
+    assert not backup.exists()
+
+
 def test_stale_kgen_org_backups_are_removed_at_any_depth(tmp_path, monkeypatch):
     from vit.extract import remove_stale_kgen_org
 

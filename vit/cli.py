@@ -716,6 +716,14 @@ def cmd_extract(args, config):
         if result["include_ini"]:
             print(f"  Generated include.ini with module search paths")
 
+        if args.dry_run:
+            if result.get("failure"):
+                for line in result["failure"].report():
+                    print(line)
+                return 1
+            print(result["output"])
+            return 0
+
         if result["success"]:
             # Move KGen's output into kernel/{function_name}/ for per-function isolation.
             # KGen deposits files directly into kernel/ (which may already contain
@@ -740,40 +748,41 @@ def cmd_extract(args, config):
                 shutil.rmtree(state_dir)
                 result["state_dir"] = None
 
-            # A kernel with no captured state cannot verify anything, so it is
-            # a failed extraction, not a successful one with a warning. It
-            # used to print a success mark and exit 0, and a caller checking
-            # the exit code went on to verify against nothing.
-            cases = result.get("state_cases", 0)
-            if cases > 0:
-                print(f"✓ Extraction successful")
-            else:
-                print(f"✗ Extraction captured no state data")
+        # A kernel with no captured state cannot verify anything, so it is a
+        # failed extraction, not a successful one with a warning. It used to
+        # print a success mark and exit 0, and a caller checking the exit code
+        # went on to verify against nothing.
+        cases = result.get("state_cases", 0)
+        failure = result.get("failure")
+        steps_dir = os.path.relpath(result["steps_dir"]) if result.get("steps_dir") else None
+        if cases > 0:
+            print(f"✓ Extraction successful")
             print(f"  Kernel: {result['kernel_dir']}")
-            if result["state_dir"]:
-                print(f"  State:  {result['state_dir']}")
-            if cases > 0:
-                print(f"  Cases:  {cases}")
-            else:
-                # Surface any build/run errors from KGen output
-                output = result.get("output", "")
-                error_lines = [
-                    l for l in output.splitlines()
-                    if any(kw in l.lower() for kw in ['error:', 'error ', 'failed', 'fatal'])
-                ]
-                if error_lines:
-                    print(f"  Build/run errors detected:")
-                    for line in error_lines[-15:]:
-                        print(f"    {line.strip()}")
-                else:
-                    print(f"  No build/run errors detected in KGen output.")
-                    print(f"  Possible causes:")
-                    print(f"    - Wrong test case (call site not reached)")
-                    print(f"    - Source not clean (integration wrappers present)")
-                    print(f"  See docs/EXTRACTION_INTERNALS.md Section 7 for debugging checklist.")
+            print(f"  Cases:  {cases}")
+            if failure:
+                # The captured calls stand, as they did before steps were
+                # recorded, and `vit verify` reads every one of them; what
+                # failed is reported, not hidden. A run that fails after the
+                # capture (KGen stops the program with exit code 0 once it
+                # has the last call) may have cut its last file short.
+                print(f"⚠ Step '{failure.step}' failed after the capture: {failure.summary}"
+                      f" (output in {failure.log})")
+        elif failure:
+            for line in failure.report():
+                print(line)
         else:
-            print(f"✗ Extraction failed")
-            print(result["output"])
+            print(f"✗ Extraction captured no state data")
+            print(f"  Every step succeeded, including the run, and no call was captured.")
+            print(f"  Possible causes:")
+            print(f"    - Wrong test case (call site not reached)")
+            print(f"    - Source not clean (integration wrappers present)")
+            print(f"  See docs/EXTRACTION_INTERNALS.md Section 7 for debugging checklist.")
+        restore_failure = result.get("restore_failure")
+        if restore_failure:
+            print(f"⚠ Restoring the build failed: {restore_failure.summary} (output in "
+                  f"{restore_failure.log}). The next build may still look for kgen_utils.f90.")
+        if steps_dir and (failure or cases == 0):
+            print(f"  Every step's record and output: {steps_dir}/")
 
     finally:
         # Always restore the original source file
