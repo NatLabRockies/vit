@@ -163,8 +163,8 @@ person's behalf.
 - **The call site must run.** KGen captures nothing from a call site the run never reaches.
 - **Extract at a call site, not a definition.** With the pragma on a module procedure's definition,
   KGen generates invalid code and captures nothing (dev note `202605010623`).
-- **Calls are counted per enclosing procedure.** Earlier work in the run can use up the capture
-  range before the behaviour you want.
+- **Calls are counted at the call site.** KGen counts executions of the extracted call site, so
+  earlier calls in the run use up the capture range before the behaviour you want.
 - **Project flags.** KGen's kernel Makefiles do not inherit the project's flags; `fortran.flags`
   supplies them.
 - **Cross-module instrumentation.** KGen can instrument files outside the CMake target; VIT moves
