@@ -164,6 +164,9 @@ def test_kgen_that_does_not_start_is_named(tmp_path, monkeypatch):
     assert result["failure"].step == "kgen"
     assert "did not generate kernel/ and state/" in result["failure"].summary
     assert any("no-kgen" in l for l in result["failure"].tail)
+    # Not kgen.log: KGen writes its own log by that name, which the docs send
+    # readers to for unresolved symbols.
+    assert result["failure"].log == os.path.join(".vit", "extract", "kgen_output.log")
 
 
 # --------------------------------------------------------------------------

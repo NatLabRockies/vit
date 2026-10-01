@@ -11,9 +11,9 @@ reconfigure printed nothing, and every other failure looked like a failed
 Every step now records how it ended, wherever it runs. Each appends a record
 to `.vit/extract/steps.jsonl` in the directory `vit extract` runs in, one
 when it starts and one when it ends, and keeps its own output in
-`.vit/extract/<step>.log`. The directory is emptied at the start of each
-extraction and kept afterwards. `diagnose` reads the records and names the
-first step that failed.
+`.vit/extract/<step>.log`; KGen's is `kgen_output.log`. The directory is
+emptied at the start of each extraction and kept afterwards. `diagnose`
+reads the records and names the first step that failed.
 """
 
 import json
@@ -28,6 +28,9 @@ from typing import Optional
 
 STEPS_DIR = os.path.join(".vit", "extract")
 RECORDS = "steps.jsonl"
+# KGen's stdout and stderr, as VIT captured them. Not `kgen.log`: KGen writes
+# its own log by that name in the directory it runs in.
+KGEN_OUTPUT = "kgen_output.log"
 
 # Every step, in the order an extraction runs them.
 STEPS = {
@@ -203,7 +206,7 @@ def diagnose(directory: str, *, kgen_ran: bool = True, kgen_rc: Optional[int] = 
     if not kgen_ran:
         return None
 
-    kgen_log = os.path.join(directory, "kgen.log")
+    kgen_log = os.path.join(directory, KGEN_OUTPUT)
     if timeout is not None:
         running = [r for r in status.values()
                    if r.get("status") == "started" and r["step"] != "kgen"]

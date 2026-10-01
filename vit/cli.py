@@ -143,7 +143,10 @@ def main():
     p_extract.add_argument("function_name", help="Function to extract")
     p_extract.add_argument("--file", "-f", help="Source file containing call site")
     p_extract.add_argument("--line", "-l", type=int, help="Line number of call site")
-    p_extract.add_argument("--dry-run", action="store_true")
+    p_extract.add_argument("--dry-run", action="store_true",
+                           help="Run the steps before KGen, including clean_cmd and build_cmd, "
+                                "then print the KGen command and the build and run scripts "
+                                "without running KGen")
     p_extract.add_argument("--run-args", help="Extra arguments to append to the run command (e.g., '--scenario 3')")
     p_extract.add_argument("--assumed-size", action="append", metavar="NAME=SIZE",
                            help="Override assumed-size array size (e.g., --assumed-size avrSWAP=3000)")

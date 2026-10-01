@@ -756,9 +756,11 @@ def clean_kgen_artifacts(working_dir: str = ".") -> list[str]:
     """
     Remove stale KGen artifacts that cause problems on re-extraction.
 
-    KGen reuses strace.log if it exists, which means it won't re-trace
-    the build. Since the include paths may have been wrong in the stale
-    strace, we must remove it so KGen generates a fresh one.
+    Removes KGen's log, model.ini, elapsedtime/ and model/, which KGen would
+    otherwise reuse with data from an earlier extraction, and the build
+    wrapper earlier versions of VIT wrote here. Writes a dummy strace.log if
+    there is none: KGen then skips its build-tracing phase, a clean and full
+    rebuild, because VIT supplies the module paths in include.ini.
 
     Returns:
         List of files removed
@@ -1749,7 +1751,7 @@ def run_kgen_extract(
     extract_steps.clear_reach_marker(os.path.join(output_dir or ".", "kernel"), function_name)
     kgen_rc = None
     timed_out = None
-    extract_steps.record(directory, "kgen", "started")
+    extract_steps.record(directory, "kgen", "started", log=extract_steps.KGEN_OUTPUT)
     try:
         proc = subprocess.run(
             cmd,
@@ -1803,8 +1805,9 @@ def run_kgen_extract(
     except Exception as e:
         result["output"] = f"ERROR: {e}"
     finally:
-        Path(directory, "kgen.log").write_text(result["output"])
-        extract_steps.record(directory, "kgen", "ok" if kgen_rc == 0 else "failed", kgen_rc)
+        Path(directory, extract_steps.KGEN_OUTPUT).write_text(result["output"])
+        extract_steps.record(directory, "kgen", "ok" if kgen_rc == 0 else "failed", kgen_rc,
+                             log=extract_steps.KGEN_OUTPUT)
 
         # Step 7: Clean up kgen_utils.f90 injection (restore source tree)
         result["restored"] = cleanup_kgen_utils_injection(
