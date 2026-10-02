@@ -979,8 +979,10 @@ def _extraction_site(args, config) -> dict:
     if line_no is None:
         return fail(f"ERROR: the call chosen from {rel}, {os.path.relpath(path(site))}:"
                     f"{site['line']} as measured, `{site['text']}`, is not in the source now, or "
-                    f"not once. `vit coverage run` measures the source again; --file and --line "
-                    f"name a call.")
+                    f"not once. The source has changed since it was measured, for example by "
+                    f"integrating a translation of the procedure that makes the call. Extract "
+                    f"from the source as measured, measure it again with `vit coverage run`, or "
+                    f"name a call with --file and --line.")
     out.update(file=path(site), line=line_no, site=site,
                chosen="only" if len(sites) == 1 else "coverage")
 

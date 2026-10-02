@@ -317,6 +317,20 @@ def test_a_call_moved_since_coverage_was_measured_is_found_by_its_text(
     assert _pragma_line(seen["marked"]) == 22
 
 
+def test_a_chosen_call_gone_from_the_source_stops_before_kgen(tmp_path, monkeypatch, capsys):
+    """Integrating a translation of step replaces its body, and its call of drag
+    with it. Found on AeroDyn: 12 of the calls chosen from its coverage are in
+    callers since integrated."""
+    config = _sites_project(tmp_path)
+    physics = tmp_path / "src" / "physics.f90"
+    physics.write_text(PHYSICS.replace("    v = v - drag(v)\n  end subroutine step",
+                                       "    call step_c(v)\n  end subroutine step"))
+    rc, seen = _extract_at(tmp_path, monkeypatch, config)
+    assert rc == 1 and not seen
+    assert ("ERROR: the call chosen from coverage.json, src/physics.f90:14 as measured, "
+            "`v = v - drag(v)`, is not in the source now, or not once.") in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("kw, message", [
     ({"case": "other"}, "ERROR: coverage.json says test case other runs none of the 3 call(s) "
                         "of drag in src, so the run would capture nothing."),

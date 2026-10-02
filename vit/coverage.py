@@ -443,15 +443,19 @@ def working_tree_line(coverage, source_dir, site, function_name) -> Optional[int
     """The line a call site (from call_sites) is on in the working tree, found by its text.
 
     The coverage numbers lines as they were measured, and the source may have
-    changed since, as when a translation is integrated. Of several identical
-    calls in the file, the one at the same position among them, if the file
-    still has as many. None if the working tree does not have the call.
+    changed since, as when a translation is integrated. The call must have the
+    same text, in the procedure of the same name: integrating a translation of
+    the caller removes its calls, and an identical call elsewhere is another
+    call site. Of several identical calls in that procedure, the one at the
+    same position among them, if it still has as many. None if the working
+    tree does not have the call.
     """
     root = coverage_root(coverage, source_dir)
 
     def same(text):
         return [n for n, line in enumerate(text.split("\n"), 1)
-                if line.strip() == site["text"] and line_calls(line, function_name)]
+                if line.strip() == site["text"] and line_calls(line, function_name)
+                and enclosing_procedure(text, n) == site["caller"]]
 
     try:
         now = same(Path(root, site["path"]).read_text(errors="replace"))
