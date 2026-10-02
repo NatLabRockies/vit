@@ -11,6 +11,7 @@ tests run the generated scripts with bash and read what they recorded.
 """
 
 import os
+import time
 import subprocess
 from pathlib import Path
 
@@ -155,6 +156,52 @@ def test_a_failing_build_stops_extraction_before_kgen(tmp_path, monkeypatch):
     assert result["failure"].step == "prebuild"
     assert result["failure"].tail == ["cannot find module"]
     assert "KGen was not run" in result["failure"].summary
+
+
+def test_kgen_is_stopped_at_kgen_timeout(tmp_path, monkeypatch):
+    """The limit is kgen.timeout, not a fixed 20 minutes: with the calls spread
+    over the run, a capture runs its test case to the end."""
+    monkeypatch.chdir(tmp_path)
+    result = run_kgen_extract(source_file=str(tmp_path / "x.f90"), build_cmd="true",
+                              run_cmd="true", kgen_path="sleep 3; true", timeout=1)
+    assert result["failure"].step == "kgen"
+    assert "stopped at its 1 s limit (kgen.timeout)" in result["failure"].summary
+
+
+def test_a_timeout_stops_everything_kgen_started(tmp_path, monkeypatch):
+    """Only the shell used to be killed. KGen ran on, finished the capture and
+    ran its state Makefile's `recover`, copying its saved original, pragma
+    included, over the source VIT had restored. Here a child of the stand-in
+    KGen writes a file after the timeout; killing KGen's process group stops it."""
+    monkeypatch.chdir(tmp_path)
+    late = tmp_path / "written_after_the_timeout"
+    result = run_kgen_extract(source_file=str(tmp_path / "x.f90"), build_cmd="true",
+                              run_cmd="true", timeout=1,
+                              kgen_path=f"(sleep 2; touch {late}) & sleep 5; true")
+    assert "1 s limit" in result["failure"].summary
+    time.sleep(2.5)
+    assert not late.exists()
+
+
+def test_kgen_backups_are_settled_after_a_timeout(tmp_path, monkeypatch):
+    """With nothing left running, a source KGen instrumented is restored from
+    its backup, as after any other failure; it used to wait for the next
+    extraction."""
+    monkeypatch.chdir(tmp_path)
+    # Given source_dir, extraction checks for editable installs; VIT's own is one.
+    monkeypatch.setattr("vit.extract.check_editable_installs", lambda *a, **k: [])
+    src = tmp_path / "src"
+    src.mkdir()
+    source = src / "m.f90"
+    source.write_text("x = 1\n")
+    # The stand-in does what the state Makefile's save and replace do, then hangs.
+    kgen = (f"cp {source} {source}.kgen_org; echo 'call kgen_init_vars()' > {source}; "
+            f"sleep 5; true")
+    result = run_kgen_extract(source_file=str(source), build_cmd="true", run_cmd="true",
+                              source_dir=str(src), kgen_path=kgen, timeout=1)
+    assert "1 s limit" in result["failure"].summary
+    assert source.read_text() == "x = 1\n"
+    assert not Path(f"{source}.kgen_org").exists()
 
 
 def test_kgen_that_does_not_start_is_named(tmp_path, monkeypatch):

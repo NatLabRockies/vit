@@ -1,7 +1,7 @@
 # Development notes
 
 Dated records of the decisions, investigations and corrections behind VIT and its two case studies,
-ROSCO and AeroDyn: 344 notes, written from February to October 2026.
+ROSCO and AeroDyn: 345 notes, written from February to October 2026.
 
 ## Naming and citing
 

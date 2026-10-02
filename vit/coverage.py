@@ -23,7 +23,7 @@ The file holds, per source file relative to the source root, per test case, the
 execution count of every line that ran:
 
     {"metadata": {"generated", "test_cases", "source_root", "source_commit",
-                  "file_count"},
+                  "file_count", "case_seconds"},
      "files": {"<path>": {"blob": "<git blob id>", "source": "<text, if needed>",
                           "test_cases": {"<case>": {"lines": {"<line>": count}}}}}}
 
@@ -36,6 +36,10 @@ repository to recover it from. Lookups read that content, so later edits do not
 shift the lines. A file without a blob id (an older coverage file) is read at
 `source_commit`; failing that, the working tree is read, and the lookup says
 whether it still matches what was measured.
+
+`vit coverage run` also records how long each case ran, in seconds, as
+`case_seconds`: with its calls spread over the run, an extraction runs its
+test case to the end, and `vit extract` says how long that will take.
 """
 
 import datetime
@@ -48,6 +52,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -831,12 +836,24 @@ def run_coverage(config, case_names=None, log=print) -> tuple:
             stale.unlink()
         command = fill(command, project_dir, build_dir)
         log(f"case {name}: {command}")
+        start = time.monotonic()
         r = _shell(command, project_dir)
+        seconds = round(time.monotonic() - start, 1)
+        log(f"  ran in {seconds:,} s")
         case_dir = gcov_dir / name
         case_dir.mkdir(parents=True)
         files = collect_gcov(gcov, build_dir, case_dir)
         results.append({"name": name, "exit_code": r.returncode, "gcov_files": files,
+                        "seconds": seconds,
                         "output_tail": _tail(r, 8) if r.returncode else ""})
 
     coverage, report = import_gcov(gcov_dir, project_dir)
+    coverage["metadata"]["case_seconds"] = {r["name"]: r["seconds"] for r in results}
     return coverage, report, results
+
+
+def case_seconds(coverage, case) -> Optional[float]:
+    """How long `case` ran when `vit coverage run` measured it, or None: a file
+    from `vit coverage import`, or from before the time was recorded, has none.
+    The run was the instrumented coverage build, so the time is approximate."""
+    return coverage.get("metadata", {}).get("case_seconds", {}).get(case)

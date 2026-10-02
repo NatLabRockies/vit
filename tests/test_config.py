@@ -105,6 +105,16 @@ class TestConfigRoundTrip:
         assert loaded.tolerance == 1e-14
         assert loaded.kind_aliases["ReKi"] == "REAL(8)"
 
+    def test_kgen_timeout(self, tmp_path):
+        """kgen.timeout bounds KGen's parse, build and run; 1200 s unless set,
+        and written only when set, so existing files do not change."""
+        path = save_config(VitConfig(config_dir=str(tmp_path)), str(tmp_path / CONFIG_FILENAME))
+        assert "timeout" not in open(path).read()
+        assert load_config(path).kgen_timeout == 1200
+        path = save_config(VitConfig(config_dir=str(tmp_path), kgen_timeout=3600),
+                           str(tmp_path / CONFIG_FILENAME))
+        assert load_config(path).kgen_timeout == 3600
+
     def test_load_missing_translations_key(self, tmp_path):
         """Config file without translations key loads with empty dict."""
         config_content = (

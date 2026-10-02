@@ -93,12 +93,13 @@ vit extract drag
 ```
 
 VIT chooses the call site, the test case to run and the calls to capture, and prints each choice
-first:
+first, with how long the case ran when coverage was measured:
 
 ```
 Call site: src/physics.f90:17 in step, the only call of drag in src.
 Test case: default, chosen from coverage.json: it runs this call 500 time(s), and 1 of the 1 lines of drag that any case runs.
 Calls to capture: 20 calls spread over the 500 the run makes: 1, 27, 54, 80, ..., 500.
+Run time: test case default ran in 0.0 s when coverage was measured; the capture runs it to the end.
 ```
 
 Of several calls, VIT takes the case that runs the most lines of the function, at the call that
@@ -231,6 +232,7 @@ It writes `vit.yaml`. Then edit it:
 | `kgen.build_cmd`, `kgen.run_cmd` | Commands that rebuild the program, and run it when extraction has no test case to run. Use absolute container paths. |
 | `kgen.install_cmd` | A command that copies the built library to where the program loads it from, if it is not loaded from the build directory. |
 | `kgen.invocation` | Which calls to capture. `auto`, the default, takes 20 spread over the run when coverage says how many calls it makes, and the first 20 otherwise; `0:0:1-20` is KGen's form for process 0, thread 0, calls 1 to 20. |
+| `kgen.timeout` | Seconds for KGen's parse, the instrumented build and the run, 1200 unless set. With the calls spread over the run, the run goes to the end of the test case; `vit extract` says how long that took under `vit coverage run`, and warns when it is more than half of this. |
 | `build_system.cmake_file` | The `CMakeLists.txt` that lists the sources, relative to the project root. |
 | `build_system.target_name` | Leave empty. `vit integrate` finds the `add_library` target that lists the source file, and stops with an error asking for this field if it cannot. |
 | `fortran.kind_aliases` | The project's kind parameters, such as `ReKi: REAL(8)`. VIT needs these to map types, and assumes none. |

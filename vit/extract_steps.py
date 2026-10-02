@@ -212,8 +212,10 @@ def diagnose(directory: str, *, kgen_ran: bool = True, kgen_rc: Optional[int] = 
                    if r.get("status") == "started" and r["step"] != "kgen"]
         if running:
             return _failure(directory, running[-1],
-                            f"still running when extraction stopped at its {timeout} s limit")
-        return Failure("kgen", f"still running when extraction stopped at its {timeout} s limit",
+                            f"still running when extraction stopped at its {timeout} s limit "
+                            f"(kgen.timeout)")
+        return Failure("kgen", f"still running when extraction stopped at its {timeout} s limit "
+                       f"(kgen.timeout)",
                        None, _relative(kgen_log), tail(kgen_log))
 
     if not generated:

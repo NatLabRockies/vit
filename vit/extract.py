@@ -33,6 +33,7 @@ Encodes lessons learned from ROSCO debugging:
 import os
 import re
 import shutil
+import signal
 import subprocess
 import warnings
 from pathlib import Path
@@ -1696,7 +1697,35 @@ def kernel_state(kernel_dir: str) -> list:
     return found
 
 
-KGEN_TIMEOUT = 1200  # seconds; extraction can be slow
+KGEN_TIMEOUT = 1200  # seconds; kgen.timeout in vit.yaml
+
+
+def _run_as_group(cmd: str, env: dict, timeout: int) -> subprocess.CompletedProcess:
+    """Run `cmd` in a process group of its own, and on timeout kill the whole group.
+
+    subprocess.run kills only the shell it started. KGen kept running: it
+    finished the capture and ran its state Makefile's `recover`, which copied
+    its saved original, VIT's pragma included, over the source VIT had already
+    restored, and the build and the run went on after VIT had reported the
+    failure. Raises subprocess.TimeoutExpired, with the output so far, once
+    nothing in the group is left.
+    """
+    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, env=env, start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            out, err = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            # A process that left the group still holds the pipes.
+            out, err = "", ""
+        raise subprocess.TimeoutExpired(cmd, timeout, output=out, stderr=err)
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 def run_kgen_extract(
@@ -1719,6 +1748,7 @@ def run_kgen_extract(
     env: Optional[dict] = None,
     function_name: str = "",
     dry_run: bool = False,
+    timeout: int = KGEN_TIMEOUT,
 ) -> dict:
     """
     Run KGen extraction with all necessary setup.
@@ -1844,14 +1874,7 @@ def run_kgen_extract(
     timed_out = None
     extract_steps.record(directory, "kgen", "started", log=extract_steps.KGEN_OUTPUT)
     try:
-        proc = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            env={**os.environ, **(env or {})},
-            timeout=KGEN_TIMEOUT,
-        )
+        proc = _run_as_group(cmd, {**os.environ, **(env or {})}, timeout)
         kgen_rc = proc.returncode
         result["output"] = proc.stdout + proc.stderr
 
@@ -1891,10 +1914,10 @@ def run_kgen_extract(
             _create_kgen_backups(Path(result["kernel_dir"]))
 
     except subprocess.TimeoutExpired as e:
-        timed_out = KGEN_TIMEOUT
+        timed_out = timeout
         out = [x.decode(errors="replace") if isinstance(x, bytes) else (x or "")
                for x in (e.stdout, e.stderr)]
-        result["output"] = "".join(out) + f"\nERROR: KGen extraction timed out after {KGEN_TIMEOUT} seconds"
+        result["output"] = "".join(out) + f"\nERROR: KGen extraction timed out after {timeout} seconds"
     except Exception as e:
         result["output"] = f"ERROR: {e}"
     finally:
@@ -1911,9 +1934,8 @@ def run_kgen_extract(
         )
         # KGen's backups of the sources it instrumented, left beside them when
         # a step failed before the state Makefile moved them back. After a
-        # timeout the capture may still be running, so they are left for the
-        # next extraction to settle.
-        if source_dir and timed_out is None:
+        # timeout too: _run_as_group has stopped everything KGen started.
+        if source_dir:
             removed, restored = settle_kgen_org(source_dir)
             result["restored"].extend(removed)
             result["warnings"].extend(

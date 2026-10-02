@@ -372,6 +372,10 @@ def test_coverage_run_end_to_end(tmp_path):
 
     r = vit(project, "coverage", "run", "--case", "once", "--case", "twice")
     assert r.returncode == 0, r.stdout + r.stderr
+    assert "  ran in " in r.stdout
+    seconds = cov.load(project / "coverage.json")["metadata"]["case_seconds"]
+    assert set(seconds) == {"once", "twice"}
+    assert all(isinstance(s, float) and s >= 0 for s in seconds.values())
     r = vit(project, "find", "drag", "--coverage")
     assert r.returncode == 0, r.stderr
     assert "src/physics.f90:17 in step" in r.stdout

@@ -264,6 +264,65 @@ def test_extract_spreads_the_calls_and_records_them(tmp_path, monkeypatch, capsy
     assert record["invocation"] == seen["invocation"]
 
 
+# --------------------------------------------------------------------------
+# How long the capture run takes (cli._run_time)
+
+def _timed(seconds, calls, name="long"):
+    return {"case": name, "calls": calls,
+            "coverage": {"metadata": {"case_seconds": {name: seconds}}}}
+
+
+def test_calls_spread_to_the_last_run_the_case_to_its_end():
+    """KGen stops the program after the last call requested: calls 1-20 stopped
+    early, calls spread to the last one do not."""
+    assert vit.cli._run_time(VitConfig(), _timed(42.0, 500), [1, 27, 500]) == [
+        "Run time: test case long ran in 42.0 s when coverage was measured; the capture runs "
+        "it to the end."]
+    assert vit.cli._run_time(VitConfig(), _timed(600.0, 38400), list(range(1, 21))) == [
+        "Run time: test case long ran in 600.0 s when coverage was measured; the capture stops "
+        "after call 20 of 38,400, about 0.3 s if the calls are spread evenly over the run."]
+
+
+def test_a_run_near_the_timeout_is_warned_of():
+    long = _timed(700.0, 500)
+    warned = vit.cli._run_time(VitConfig(), long, [1, 500])
+    assert warned[1].startswith("⚠ That is more than half of kgen.timeout (1,200 s)")
+    assert len(vit.cli._run_time(VitConfig(kgen_timeout=3600), long, [1, 500])) == 1
+
+
+def test_without_a_recorded_time_nothing_is_said():
+    """`vit coverage import` records no time."""
+    assert vit.cli._run_time(VitConfig(), {"case": "long", "calls": 500,
+                                           "coverage": {"metadata": {}}}, [1, 500]) == []
+
+
+def test_extract_says_how_long_the_run_takes(tmp_path, monkeypatch, capsys):
+    data, src = _coverage(tmp_path, {"run": {8: 500, 9: 500, 19: 500}})
+    data["metadata"]["case_seconds"] = {"run": 900.0}
+    cov.write(data, tmp_path / "coverage.json")
+    config = VitConfig(config_dir=str(tmp_path), source_dir="src", build_dir="build",
+                       coverage_cases={"run": "{build_dir}/prog"}, kgen_timeout=1500)
+    seen = {}
+
+    def fake_extract(**kwargs):
+        seen.update(kwargs)
+        return {"success": False, "kernel_dir": None, "state_dir": None, "cmd": "",
+                "output": "", "include_ini": None, "cleaned": [], "state_cases": 0,
+                "warnings": []}
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(vit.cli, "run_kgen_extract", fake_extract)
+    args = argparse.Namespace(function_name="helper", file=str(tmp_path / "src" / "m.f90"),
+                              line=9, run_args=None, assumed_size=None, dry_run=False,
+                              case=None, invocation=None)
+    vit.cli.cmd_extract(args, config)
+    out = capsys.readouterr().out
+    assert ("Run time: test case run ran in 900.0 s when coverage was measured; the capture "
+            "runs it to the end.") in out
+    assert "⚠ That is more than half of kgen.timeout (1,500 s)" in out
+    assert seen["timeout"] == 1500
+
+
 def test_a_partial_capture_is_listed_in_call_order(tmp_path):
     """Without KGen's list the kernel ran `ls`: drag.0.0.10 before drag.0.0.2."""
     from vit.extract import write_statefile_list

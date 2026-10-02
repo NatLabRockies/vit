@@ -747,6 +747,7 @@ def cmd_extract(args, config):
             add_source_cmd=config.add_source_cmd,
             function_name=args.function_name,
             dry_run=args.dry_run,
+            timeout=config.kgen_timeout,
         )
 
         # Display warnings (e.g., editable pip install conflicts)
@@ -1150,7 +1151,42 @@ def _capture_calls(args, config, case) -> tuple:
                                        args.function_name, case["case"])
     invocation, requested, why = capture_invocation(spec, case["calls"], state)
     print(f"Calls to capture: {why}.")
+    for line in _run_time(config, case, requested):
+        print(line)
     return invocation, requested
+
+
+def _run_time(config, case, requested) -> list:
+    """How long the capture run will take, from the test case's time in the
+    coverage file (coverage.case_seconds), and a warning when that leaves
+    little of kgen.timeout for KGen's parse and the instrumented build.
+
+    KGen stops the program after the last call requested. Calls 1 to 20
+    stopped most runs early; calls spread to the last one run the case to its
+    end. Stopping earlier is estimated in proportion to the calls, as if they
+    were spread evenly over the run.
+    """
+    from . import coverage as cov
+
+    seconds = (cov.case_seconds(case["coverage"], case["case"])
+               if case["coverage"] and case["case"] else None)
+    if seconds is None or not requested:
+        return []
+    calls, last = case["calls"], max(requested)
+    if calls and last < calls:
+        expect = seconds * last / calls
+        how = (f"the capture stops after call {last:,} of {calls:,}, about {expect:,.1f} s if "
+               f"the calls are spread evenly over the run")
+    else:
+        expect = seconds
+        how = "the capture runs it to the end" if calls else "the capture runs it at most to the end"
+    lines = [f"Run time: test case {case['case']} ran in {seconds:,.1f} s when coverage was "
+             f"measured; {how}."]
+    if expect > config.kgen_timeout / 2:
+        lines.append(f"⚠ That is more than half of kgen.timeout ({config.kgen_timeout:,} s), "
+                     f"which also covers KGen's parse and the instrumented build. Raise "
+                     f"kgen.timeout in vit.yaml, or name a shorter case with --case.")
+    return lines
 
 
 EXTRACTION_RECORD = "extraction.json"

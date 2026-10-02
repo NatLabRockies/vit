@@ -89,7 +89,8 @@ A failed extraction is reported like this:
 Two failures leave no failed record, and the report says where they happened. When KGen's state
 Makefile stops between steps (between `save` and the build script, or between the build script and
 the run, where it moves the original sources back), the run never starts. When extraction stops at
-its 20-minute limit, the step still running is the one named.
+its limit, `kgen.timeout` (1200 seconds unless set), it stops KGen and everything KGen started, and
+the step still running is the one named.
 
 ## 3. VIT before KGen
 
@@ -157,6 +158,19 @@ overrides the setting for one extraction.
 
 ```
 Calls to capture: 20 calls spread over the 500 the run makes: 1, 27, 54, 80, ..., 500.
+```
+
+**How long the run takes.** KGen stops the program after the last call requested. Calls 1 to 20
+stop most runs early; calls spread to the last one run the test case to its end, inside
+`kgen.timeout`, which also covers KGen's parse and the instrumented build. `vit coverage run`
+records how long each case ran, and extraction prints it: the whole case when the capture runs to
+the end, otherwise a share in proportion to the calls, as if they were spread evenly over the run.
+It warns when that is more than half of `kgen.timeout`; raise the setting, or name a shorter case
+with `--case`. The time was measured on the coverage build, so it is approximate, and a coverage
+file from `vit coverage import` has none.
+
+```
+Run time: test case default ran in 0.0 s when coverage was measured; the capture runs it to the end.
 ```
 
 **State kept between calls keeps them consecutive.** KGen captures a call's arguments and the
@@ -315,8 +329,9 @@ Whether or not KGen succeeded, VIT:
   CMake's configure step (otherwise CMake keeps looking for `kgen_utils.f90`), as step `restore`.
   If that fails, the report warns that the next build may still look for `kgen_utils.f90`.
 - settles KGen's source backups, as before KGen (section 3). A step that failed before the state
-  Makefile moved them back leaves them beside the restored sources. After a timeout VIT leaves
-  them, because the capture may still be running; the next extraction settles them.
+  Makefile moved them back leaves them beside the restored sources. After a timeout as well: VIT
+  runs KGen in a process group of its own and kills the whole group, since KGen left running
+  would finish the capture and copy its saved sources, pragma included, over the restored ones.
 - if calls were captured, moves the kernel's files into `kernel/<FuncName>/`, replacing an earlier
   kernel there. If none were, it discards them, and `kernel/<FuncName>/` from an earlier extraction
   stays as it was, captured calls included.

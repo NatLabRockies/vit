@@ -38,6 +38,7 @@ DEFAULT_CONFIG = {
         "clean_cmd": "cmake --build build --target clean",
         "install_cmd": "",  # e.g., "cp build/libdiscon.so lib/libdiscon.so"
         "invocation": "auto",  # or KGen's rank:thread:calls (vit/extract.py capture_invocation)
+        "timeout": 1200,  # seconds for KGen: its parse, the instrumented build and the run
     },
     "build_system": {
         "type": "cmake",  # or "make"
@@ -73,6 +74,9 @@ class VitConfig:
     clean_cmd: str = ""
     install_cmd: str = ""  # Post-build: copy library to where simulation loads it
     invocation: str = "auto"  # or KGen's rank:thread:calls (vit/extract.py capture_invocation)
+    # Seconds for KGen: its parse, the instrumented build and the run, which,
+    # with the calls spread over the run, goes to the end of the test case.
+    kgen_timeout: int = 1200
 
     build_type: str = "cmake"
     cmake_file: str = "CMakeLists.txt"
@@ -173,6 +177,7 @@ def load_config(config_path: Optional[str] = None) -> VitConfig:
         clean_cmd=kgen.get("clean_cmd", ""),
         install_cmd=kgen.get("install_cmd", ""),
         invocation=str(kgen.get("invocation", "auto")),
+        kgen_timeout=int(kgen.get("timeout", 1200)),
         build_type=build.get("type", "cmake"),
         cmake_file=build.get("cmake_file", "CMakeLists.txt"),
         target_name=build.get("target_name", ""),
@@ -276,6 +281,7 @@ def save_config(config: VitConfig, config_path: Optional[str] = None) -> str:
             "clean_cmd": config.clean_cmd,
             "install_cmd": config.install_cmd,
             "invocation": config.invocation,
+            **({"timeout": config.kgen_timeout} if config.kgen_timeout != 1200 else {}),
             **({"assumed_size_arrays": config.assumed_size_arrays} if config.assumed_size_arrays else {}),
             **({"dll_persistence": config.dll_persistence} if config.dll_persistence else {}),
             **({"add_source_cmd": config.add_source_cmd} if config.add_source_cmd else {}),
