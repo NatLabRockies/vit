@@ -215,6 +215,8 @@ This guide is a starting point. For a specific call site, the coverage query in 
 
 Extraction requires clean (pre-integration) source. Line numbers shift after each integration, so always find them fresh.
 
+With `coverage.file` and `coverage.cases` set in `vit.yaml`, `vit extract` does Steps 1, 3 and 7 itself: it runs the test case that runs the most lines of the function (`--case` names another) and spreads the captured calls over the run, and `vit verify` reports which of the function's lines those calls run (`docs/EXTRACTION_INTERNALS.md`, section 3). The workspace's `vit.yaml` sets neither yet; until it does, extraction runs `kgen.run_cmd` and captures its first 20 calls, as the steps below assume.
+
 **Step 1 — Query coverage data for the call site and test case:**
 ```bash
 docker exec vit-dev-openfast bash -c "cd /workspace/openfast && vit find FunctionName --coverage /workspace/vit/docs/case-studies/aerodyn/data/line_coverage.json"

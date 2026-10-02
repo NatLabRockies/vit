@@ -86,9 +86,15 @@ vit extract drag -f src/physics.f90 -l 17
 ```
 
 VIT marks the call site for KGen. KGen instruments the source, and VIT rebuilds and runs the
-program, which captures the inputs and outputs of the first 20 calls to `drag`. The result is
-`kernel/drag/`: the captured calls (`drag.0.0.1` to `drag.0.0.20`) and a standalone kernel that
-replays them. The source is restored afterwards. Extraction also leaves `.vit/extract/`, with each
+program, which captures the inputs and outputs of 20 calls to `drag`. Which 20 is printed first:
+
+```
+Calls to capture: calls 1-20: how many calls the run makes is unknown without coverage of the test case.
+```
+
+With coverage, VIT knows how many calls the run makes and spreads the 20 over them ("Going further"
+below). The result is `kernel/drag/`: the captured calls (`drag.0.0.1` to `drag.0.0.20`) and a
+standalone kernel that replays them. The source is restored afterwards. Extraction also leaves `.vit/extract/`, with each
 step's record and output, KGen's log `kgen.log`, an empty `model/` directory, `strace.log` and
 `include.ini` in the project.
 
@@ -138,6 +144,12 @@ VIT builds the kernel with your C++ in place of the Fortran and compares every o
 captured calls. Expect `✓ VERIFICATION PASSED: 20/20 passed`. It then runs a red test: it perturbs
 an input and confirms the kernel reports a mismatch. A kernel that cannot fail proves nothing, so a
 pass without a working red test is reported as `NON_DISCRIMINATING` and exits non-zero.
+
+A pass is evidence only for what the captured calls exercise, so VIT then builds the kernel's
+Fortran with coverage instrumentation, replays the calls, and reports which lines of the function
+they run: `Kernel coverage: the 20 captured call(s) run 1 of the 1 executable lines of drag.` For a
+function with branches, the lines they miss are listed. With a coverage file, the comparison is
+with the lines the full run executes.
 
 ### Integrate
 
@@ -200,7 +212,7 @@ It writes `vit.yaml`. Then edit it:
 | `project.build_dir` | The CMake build directory. Use an absolute path inside the container, such as `/build/myproject`. |
 | `kgen.build_cmd`, `kgen.run_cmd` | Commands that rebuild and run the program. Use absolute container paths. |
 | `kgen.install_cmd` | A command that copies the built library to where the program loads it from, if it is not loaded from the build directory. |
-| `kgen.invocation` | Which calls to capture. `0:0:1-20` is process 0, thread 0, calls 1 to 20. |
+| `kgen.invocation` | Which calls to capture. `auto`, the default, takes 20 spread over the run when coverage says how many calls it makes, and the first 20 otherwise; `0:0:1-20` is KGen's form for process 0, thread 0, calls 1 to 20. |
 | `build_system.cmake_file` | The `CMakeLists.txt` that lists the sources, relative to the project root. |
 | `build_system.target_name` | Leave empty. `vit integrate` finds the `add_library` target that lists the source file, and stops with an error asking for this field if it cannot. |
 | `fortran.kind_aliases` | The project's kind parameters, such as `ReKi: REAL(8)`. VIT needs these to map types, and assumes none. |
@@ -218,12 +230,14 @@ It writes `vit.yaml`. Then edit it:
   skeleton for tests of the error branches, to be filled in by an agent or by you.
   `vit sim-compare` compares simulation outputs saved as `.npz` arrays.
   [`VERIFICATION_METHODS.md`](VERIFICATION_METHODS.md) covers when to use which.
-- **Choosing a test case to extract with:** with several test cases, line coverage per case says
-  which one runs a call site, and how often. List the cases in the `coverage` section of
-  `vit.yaml`, as the example's does, then run `vit coverage run`: it builds an instrumented copy,
-  runs each case and records its coverage, and writes `coverage_procedures.md`: which procedures
-  each case calls, and which no case reaches. `vit find drag --coverage` then lists each call site
-  with the cases that run it.
+- **Coverage, and what extraction does with it:** list the test cases in the `coverage` section of
+  `vit.yaml`, as the example's does, then run `vit coverage run`. It builds an instrumented copy,
+  runs each case and records its line coverage, and writes `coverage_procedures.md`: which
+  procedures each case calls, and which no case reaches. `vit find drag --coverage` lists each
+  call site with the cases that run it. From then on, `vit extract` runs the case that runs the
+  most lines of the function (`--case` names another), and spreads the 20 captured calls over the
+  run: `Calls to capture: 20 calls spread over the 500 the run makes: 1, 27, 54, 80, ..., 500.` And
+  `vit verify` compares the lines the captured calls run with the lines the full run executes.
 - **Planning a whole code base:** `vit inventory --src src --search . --output inventory/` writes
   a work order, `inventory/work_order.md`: every procedure in the order to translate it, and, with
   `--coverage coverage.json`, how to verify each one. `--search` lets it see callers outside `src`,

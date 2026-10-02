@@ -15,32 +15,33 @@ vit extract FuncName -f caller.f90 -l LINE
 
 VIT, before KGen
    1. Find the call site; refuse a line that defines the function
-   2. Remove stale KGen pragmas from the sources
-   3. Back up the file holding the call site
-   4. Insert the KGen pragma around the call
-   5. Check for editable Python installs that could load the wrong library
-   6. Remove stale KGen artifacts, and settle KGen's source backups
-   7. Run clean_cmd, then build_cmd, so module (.mod) files exist      [clean, prebuild]
-   8. Write include.ini, KGen's module search path
-   9. Write the build script and the run script KGen runs
-  10. Assemble the KGen command
+   2. Choose the test case to run, and the calls to capture
+   3. Remove stale KGen pragmas from the sources
+   4. Back up the file holding the call site
+   5. Insert the KGen pragma around the call
+   6. Check for editable Python installs that could load the wrong library
+   7. Remove stale KGen artifacts, and settle KGen's source backups
+   8. Run clean_cmd, then build_cmd, so module (.mod) files exist      [clean, prebuild]
+   9. Write include.ini, KGen's module search path
+  10. Write the build script and the run script KGen runs
+  11. Assemble the KGen command
 
 KGen                                                                  [kgen]
-  11. Parse the sources reachable from the call site, resolving USE chains
-  12. Write kernel/ (the replay program) and state/ (instrumented sources)
-  13. Run state/Makefile: save, replace, build, run, recover          [build script, run]
+  12. Parse the sources reachable from the call site, resolving USE chains
+  13. Write kernel/ (the replay program) and state/ (instrumented sources)
+  14. Run state/Makefile: save, replace, build, run, recover          [build script, run]
 
 VIT, after KGen
-  14. Count the captured state files, and read whether the call site was reached
-  15. Undo the build-file patch: restore CMakeLists.txt, remove kgen_utils.f90, reconfigure  [restore]
-  16. Settle KGen's source backups
-  17. Move the kernel into kernel/<FuncName>/ if calls were captured, delete state/
-  18. Restore the call-site file from its backup
-  19. Report: success with the number of cases, or failure (exit 1) naming the step
+  15. Count the captured state files, and read whether the call site was reached
+  16. Undo the build-file patch: restore CMakeLists.txt, remove kgen_utils.f90, reconfigure  [restore]
+  17. Settle KGen's source backups
+  18. Move the kernel into kernel/<FuncName>/ if calls were captured, delete state/
+  19. Restore the call-site file from its backup
+  20. Report: success with the number of cases, or failure (exit 1) naming the step
 ```
 
 The names in brackets are the steps' names in the report and in `.vit/extract/` (section 2).
-`vit extract ... --dry-run` runs steps 1 to 10, including the clean and the build, then prints the
+`vit extract ... --dry-run` runs steps 1 to 11, including the clean and the build, then prints the
 KGen command and both scripts without running KGen.
 
 ## 2. Step records
@@ -107,6 +108,43 @@ definition.
 
 If it finds no call and `-l` is any other line, the line is used as given, with a warning: a call
 through a generic interface or a renamed import does not name the function either.
+
+### Choose the test case and the calls
+
+Both need the coverage file (`coverage.file`, from `vit coverage run`), which counts, per test case,
+how often each line runs. Without it, extraction runs `kgen.run_cmd` and captures calls 1 to 20.
+
+**The test case.** Among the cases that run this call, and have a command in `coverage.cases`,
+extraction runs the one that runs the most lines of the function, then the one that runs the call
+most often, then the first by name. Lines say which of the function's behaviours a case reaches;
+the number of calls does not. `--case NAME` names a case instead, and stops extraction if coverage
+says it never runs the call. The command runs from the project directory with `{build_dir}` the
+project's build directory. Given coverage but not the cases' commands, extraction runs
+`kgen.run_cmd` and names the case it would have chosen. The work order names the same case.
+
+```
+Test case: default, chosen from coverage.json: it runs this call 500 time(s), and 1 of the 1 lines of drag that any case runs.
+```
+
+**The calls.** With `kgen.invocation: auto`, the default, and the number of calls N known from the
+case's coverage of the call: every call when N is 20 or fewer; otherwise call 1 and 19 more spread
+evenly to call N, so the kernel sees the start of the run, its end and what lies between. `auto:K`
+takes K calls instead of 20. Any other value is KGen's own list, used as given; `--invocation`
+overrides the setting for one extraction.
+
+```
+Calls to capture: 20 calls spread over the 500 the run makes: 1, 27, 54, 80, ..., 500.
+```
+
+**State kept between calls keeps them consecutive.** KGen captures a call's arguments and the
+module variables it uses, but not a procedure's SAVE variables, nor locals initialised in their
+declarations or by DATA statements, which Fortran makes SAVE implicitly. A kernel replays its calls
+in order in one process, so for a function whose call tree has such state, only calls from the
+first on, consecutively, replay as they ran. VIT looks for it (`fortran_parser.save_state`) in the
+function and the procedures it calls, found by name and through generic interfaces, in the files
+the coverage covers, which are the files the build compiled; a callee no line of which runs in the
+case is left out, since its state stays initial in the run and in the kernel. If it finds any,
+`auto` captures calls 1 to 20 and says which procedure and line keep the state.
 
 ### Remove stale pragmas
 
@@ -187,7 +225,8 @@ The commands from `vit.yaml` keep their own exit status: they do not run under `
 ### The run script
 
 KGen runs the program by running a run command; VIT gives it `.vit/extract/run.sh`, which runs
-`kgen.run_cmd` as step `run`. The run's output is in `.vit/extract/run.log`.
+the test case's command, or `kgen.run_cmd`, as step `run`. The run's output is in
+`.vit/extract/run.log`.
 
 ### The KGen command
 
@@ -234,9 +273,13 @@ The program can run from any directory; the files still land in the kernel direc
 unformatted big-endian streams holding the function's inputs and outputs. After writing each, the
 program prints `Collected Kernel Input/Ouput state from: ...`.
 
-`kgen.invocation` (`0:0:1-20` by default: process 0, thread 0, calls 1 to 20) selects which calls
-are captured. KGen counts calls per call site, so earlier work in the run can use up the range.
-After the run it lists the files in `kgen_statefile.lst`.
+The calls captured are those VIT chose (section 3), given to KGen as a list of `process:thread:call`
+items. KGen counts calls per call site. Once it has the last call in the list it writes
+`kgen_statefile.lst`, the list of state files the kernel replays, and stops the program. When some
+calls never come, VIT writes the list, in call order; the kernel would otherwise list the files by
+name, call 10 before call 2. The report says how many calls were captured and why fewer: calls
+requested past the number coverage counts, or a run that made fewer calls than coverage counts, as
+when the call is in a one-line IF, which coverage counts each time the IF runs.
 
 The first time the call site runs, whether or not any call falls in the range, the instrumentation
 also writes `<project>/kernel/<FuncName>.reached`. This is a change in the KGen fork VIT depends
@@ -259,6 +302,12 @@ Whether or not KGen succeeded, VIT:
 - counts the files named `<FuncName>.N.N.N` and reports the result: `✓` with the number of cases,
   or `✗` with exit code 1. A step that failed after calls were captured, such as a run that crashed
   after its first calls were written, is reported as a warning beside the `✓`.
+- records what the kernel was captured from in `kernel/<FuncName>/extraction.json`: the test case,
+  how often it runs the call, the command and the calls requested. `vit verify` compares the
+  captured calls' coverage with that case.
+- when the calls are not consecutive from the first, checks the generated kernel for state kept
+  between calls, which finds what the source search missed, such as a procedure called through a
+  pointer, and warns with the `--invocation` that captures them consecutively.
 
 Extraction leaves `.vit/extract/`, `include.ini` and the dummy `strace.log` in the project, and
 KGen leaves its log, `kgen.log`, and an empty `model/` directory, which VIT removes at the start of
@@ -288,7 +337,7 @@ cases run this call, and how often.
 
 | # | Failure | What `vit extract` reports |
 |---|---|---|
-| F1 | Call site not reached, or not within the capture range | The run never reached the call site, or reached it and no call fell in the range; with coverage, which test cases run the call |
+| F1 | Call site not reached, or not within the capture range | The run never reached the call site, or reached it and no call was among those requested; with coverage, which test cases run the call. With coverage and the cases' commands, extraction runs a case that reaches the call |
 | F2 | Cross-module instrumentation | Step `build`: `Symbol 'kw_externs_in_...' not found in module ...`, when the build script's fix (below) does not apply; `cross_module.log` lists what it moved |
 | F3 | Stale pragmas or backups | Prevented: VIT sweeps pragmas and settles backups before each extraction |
 | F4 | `kgen_utils.f90` not added to the build | Step `add_kgen_utils`, with an error naming `kgen.add_source_cmd` |

@@ -19,10 +19,10 @@ through a shell, from directories KGen chooses, so give them absolute paths.
 | `project.build_dir` | `build` | The CMake build directory. It may be absolute, for example inside a container. |
 | `kgen.path` | `kgen` | The KGen entry point. The container image puts the KGen fork on `PATH`. |
 | `kgen.build_cmd` | | Rebuilds the program: once before KGen, on the clean source, and again with KGen's instrumentation in place. If the first build fails, extraction stops there. |
-| `kgen.run_cmd` | | Runs the program so that it reaches the call site being extracted. `vit extract --run-args` appends to it. |
+| `kgen.run_cmd` | | Runs the program so that it reaches the call site being extracted, when extraction has no test case to run (`coverage.cases`). `vit extract --run-args` appends to it. |
 | `kgen.clean_cmd` | | Cleans the build, before the first build. If it fails, extraction stops there. |
 | `kgen.install_cmd` | | Copies the built library to where the program loads it, if not from the build directory. Without it, the run can load the uninstrumented library and capture nothing. If it fails, the extraction fails. |
-| `kgen.invocation` | `0:0:1-20` | Which calls to capture: process, thread, call range. The default captures the first 20 calls, which can be dominated by start-up behaviour (dev note `202608080640`). |
+| `kgen.invocation` | `auto` | Which calls to capture. `auto` (or `auto:K` for K calls, 20 by default): with the number of calls known from the coverage of the test case, every call when there are no more than K, otherwise call 1 and K-1 more spread evenly to the last; calls 1 to K when the count is unknown, or when the function's call tree keeps state between calls (below). Anything else is KGen's `process:thread:calls` list, used as given, such as `0:0:1-20`. The first calls alone are the least representative part of a run (dev note `202608080640`). |
 | `kgen.assumed_size_arrays` | | `name: size` for assumed-size (`*`) array arguments. Without an entry, VIT infers the size and asks for confirmation (exit code 10). The size must cover every index the function touches; too small corrupts the heap silently. |
 | `kgen.dll_persistence` | | Reset statements for SAVE guards, applied between runs in one process, for a program that reloads a shared library whose SAVE state survives. |
 | `kgen.add_source_cmd` | | A command that adds `src/kgen_utils.f90` to the build file, for a build file VIT cannot patch (see "Build layout" below). |
@@ -38,11 +38,11 @@ through a shell, from directories KGen chooses, so give them absolute paths.
 | `types` | | Per derived type, `strategy: bind_c` (the default) or `strategy: view`. `vit translate` sets `view` itself for a type with ALLOCATABLE fields. |
 | `allocatable.helpers` | | Routines that allocate arrays, as `name`, `array_arg` and `size_arg` positions, for `vit analyze-types --scan-allocatable`. |
 | `shared_files` | | Shared headers and sources. VIT copies them into each kernel, and beside the integrated source after `vit integrate --apply`; `vit translate` lists the headers' declarations in its prompt. |
-| `coverage.cases` | | For `vit coverage run`: the test cases, as `name: shell command`, run from the project directory. `{build_dir}` and `{project_dir}` are replaced by quoted absolute paths. |
+| `coverage.cases` | | The test cases, as `name: shell command`, run from the project directory. `{build_dir}` and `{project_dir}` are replaced by quoted absolute paths. `vit coverage run` runs each with `{build_dir}` its coverage build; `vit extract` runs one, the case it chooses or `--case`, with `{build_dir}` the project's build. |
 | `coverage.build_dir` | `build-coverage` | The instrumented build, separate from `project.build_dir`. On macOS, an absolute path inside the container, as for `project.build_dir`. |
 | `coverage.configure_cmd`, `coverage.build_cmd` | CMake | How to configure and build with coverage. By default `cmake -S {project_dir} -B {build_dir}` with `--coverage` added to the Fortran, C, C++ and linker flags, then `cmake --build {build_dir}`. |
 | `coverage.gcov` | (matched) | The gcov to use. By default VIT finds the one from the same GCC release as the Fortran compiler CMake chose; a gcov from another release, or LLVM's, cannot read the data. |
-| `coverage.file` | `coverage.json` | Where `vit coverage run` and `import` write, and where `vit find --coverage` and `vit coverage line` read when given no file. |
+| `coverage.file` | `coverage.json` | Where `vit coverage run` and `import` write, and where `vit find --coverage` and `vit coverage line` read when given no file. `vit extract` reads it to choose the test case and the calls, and `vit verify` to compare what the captured calls run with what the full run executes. |
 | `translations` | | Written by VIT: each function's status, case counts and red-test result. |
 
 ## Commands
@@ -57,10 +57,10 @@ through a shell, from directories KGen chooses, so give them absolute paths.
 | `vit find` | Find a function's call sites; with `--coverage`, the test cases that run each, and how often | `--source-dir`, `--coverage [FILE]` |
 | `vit coverage` | Line coverage per test case. `run`: build with coverage, run the cases in `coverage.cases`, and import the result. `import`: merge existing `gcov -j` output, one directory per case. Both also write `<file>_procedures.md` beside the coverage file: each procedure reached (calls per case), not reached by any case, or not built. `procedures`: print that report. `line`: which cases run one line | `run [--case NAME]`; `import --gcov-dir DIR --source-root DIR [--output FILE] [--prefix PATH]`; `procedures [--coverage FILE] [--not-reached]`; `line FILE:LINE [--coverage FILE]` |
 | `vit parse` | Print a function's parsed signature | `-f FILE` |
-| `vit extract` | Capture a function's calls with KGen | `-f FILE -l LINE` (the call site), `--run-args`, `--assumed-size NAME=SIZE`, `--dry-run` |
+| `vit extract` | Capture a function's calls with KGen, from the test case it chooses or `--case` | `-f FILE -l LINE` (the call site), `--case NAME`, `--invocation SPEC`, `--run-args`, `--assumed-size NAME=SIZE`, `--dry-run` |
 | `vit translate` | Write the C++ scaffold and print the prompt | `-f FILE` (the definition), `--module`, `-o DIR` |
 | `vit check` | Run the defect checks on a translation | `-f FILE` (enables the checks that read the Fortran), `--list`, `--function` |
-| `vit verify` | Verify a translation against its kernel | `-f FILE`, `--kernel-dir DIR`, `--no-field-log` |
+| `vit verify` | Verify a translation against its kernel, and report which lines of the function the captured calls run | `-f FILE`, `--kernel-dir DIR`, `--no-field-log`, `--no-kernel-coverage` |
 | `vit integrate` | Plan, or with `--apply` make, the integration | `-f FILE`, `--apply`, `--dry-run`, `--reverse-copy`, `--copy-arrays ARG,...`, `--auto-allocate` |
 | `vit run` | Interface, verify and integrate in one step | see `--help` |
 | `vit interface` | Generate the Fortran↔C interface files on their own | `-f FILE`, `-o DIR` |
@@ -147,9 +147,15 @@ measures and how it can mislead.
 
 ### Verification
 
-- **A kernel samples calls.** By default it captures a function's first 20 calls
-  (`kgen.invocation`). Input-dependent defects can pass a kernel and show up only in a full run, so
-  verify, then integrate and compare full runs.
+- **A kernel samples calls.** It holds 20 calls (`kgen.invocation`): spread over the run when
+  coverage gives their number, the first 20 otherwise. `vit verify` reports which lines of the
+  function they run, against the lines the full run executes when there is a coverage file, and
+  records the summary as `kernel_coverage`. Input-dependent defects can still pass a kernel and
+  show up only in a full run, so verify, then integrate and compare full runs.
+- **Kernel coverage is measured in a build of its own,** the kernel's Fortran at `-O0` with
+  `--coverage`, never the verification's build: instrumentation changes gfortran's code generation.
+  Kernel lines are matched to the source by their text, which KGen keeps; a line that cannot be
+  matched is reported and not counted.
 - **A pass must be able to fail.** After a kernel passes, `vit verify` changes an input and expects
   a mismatch. When every input arrives behind a pointer or inside a derived type, no safe
   perturbation exists; the pass is reported as `NON_DISCRIMINATING` and exits 1. That says the
@@ -211,8 +217,16 @@ measures and how it can mislead.
 - **Extract at a call site, not a definition.** With the pragma on a module procedure's definition,
   KGen generates invalid code (dev note `202605010623`). `vit extract` never puts the pragma there:
   it uses a call within five lines of `-l`, or stops if there is none and `-l` is the definition.
-- **Calls are counted at the call site.** KGen counts executions of the extracted call site, so
-  earlier calls in the run use up the capture range before the behaviour you want.
+- **Calls are counted at the call site.** KGen counts executions of the extracted call site, and
+  `auto` takes the count from the line coverage of the call. A call in a one-line IF is counted
+  each time the IF runs, so the run can make fewer calls than requested; the report says how many
+  were captured. Coverage counts every process and thread, while KGen counts process 0, thread 0.
+- **State kept between calls.** KGen captures a call's arguments and the module variables it uses,
+  not a procedure's SAVE variables, nor locals initialised in a declaration or a DATA statement,
+  which Fortran makes SAVE implicitly. A kernel replays a function whose call tree has them
+  correctly only from the first call on, consecutively, so `auto` takes calls 1 to K for it. VIT
+  finds callees by name and through generic interfaces, and not through procedure pointers; it
+  checks the generated kernel too, and warns when its calls are not consecutive.
 - **Project flags.** KGen's kernel Makefiles do not inherit the project's flags; `fortran.flags`
   supplies them.
 - **Cross-module instrumentation.** KGen can instrument files outside the CMake target; VIT moves

@@ -8,7 +8,8 @@ studies show each method used on real code.
 
 - **Function level.** A kernel or a test harness compares the function's outputs, for specific
   inputs, with the Fortran's. It is fast and says exactly which output differs. But it covers only
-  the inputs it has: by default a kernel holds the function's first 20 calls.
+  the inputs it has: a kernel holds 20 captured calls, spread over the run when coverage gives
+  their number, and `vit verify` reports which of the function's lines they run.
 - **Program level.** After integration, the whole program runs and its outputs are compared with a
   baseline produced by the original Fortran. This covers every call, and catches differences too
   small for a kernel to notice that feedback loops amplify over many time steps.
@@ -51,6 +52,20 @@ and compares every output field.
   mismatch. If it does not, the pass proves nothing. When every input arrives behind a pointer or
   inside a derived type, VIT cannot construct a safe change; the result is `NON_DISCRIMINATING` and
   the command exits 1. Such a function then rests on the other layer.
+- **Kernel coverage.** The red test shows the comparison can fail, not that the captured calls
+  reach the function's branches. VIT then replays the calls through the Fortran built with coverage
+  instrumentation and reports which lines of the function they run, and, with a coverage file,
+  which lines the full run executes that they do not. For the quickstart's `drag` given a branch
+  that only calls after the hundredth take, captured from the first 20 calls:
+
+  ```
+  Kernel coverage: the 20 captured call(s) run 2 of the 3 lines of drag that the full run executes in case default (coverage.json).
+    Lines the full run executes and the captured calls do not (numbered as measured):
+      13: drag = 0.5_dp * 1.225_dp * cd * area * v**2
+  ```
+
+  Those lines rest on the other layer, or on a different capture: another test case (`vit extract
+  --case`), or other calls (`--invocation`).
 - **Uninitialized memory.** Captured state can contain NaN from uninitialized fields. VIT treats NaN
   as equal to NaN, and reports cases whose reference data is all NaN as skipped.
 
