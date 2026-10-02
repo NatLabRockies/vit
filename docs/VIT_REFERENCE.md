@@ -210,10 +210,15 @@ measures and how it can mislead.
 
 ### Extraction
 
-- **The call site must run.** KGen captures nothing from a call site the run never reaches. When
-  nothing is captured, `vit extract` says whether the run reached the call site, and, given line
-  coverage per test case (`coverage.file`), which cases run it; `vit find FuncName --coverage FILE`
-  lists every call site's cases.
+- **The call site must run.** KGen captures nothing from a call site the run never reaches. Given
+  line coverage per test case (`coverage.file`), `vit extract` chooses a call that a case runs, and
+  runs that case. When nothing is captured, it says whether the run reached the call site, and,
+  with coverage, which cases run it; `vit find FuncName --coverage FILE` lists every call site's
+  cases.
+- **Calls are found by name.** `vit find` and `vit extract` find a call as `CALL name` or `name(`
+  on one line, in the `.f90` files under `project.source_dir`. A call through a generic interface
+  or a renamed import, one whose name and `(` are on different continuation lines, and one in a
+  `.F90` file are not found; give such a call with `-f` and `-l`.
 - **Extract at a call site, not a definition.** With the pragma on a module procedure's definition,
   KGen generates invalid code (dev note `202605010623`). `vit extract` never puts the pragma there:
   it uses a call within five lines of `-l`, or stops if there is none and `-l` is the definition.
