@@ -419,6 +419,53 @@ def choose_case(hits: dict, lines_by_case: dict, commands) -> Optional[str]:
     return min(candidates, key=lambda c: (-lines_by_case.get(c, 0), -hits[c], c))
 
 
+def choose_call_site(sites: list, lines_by_case: dict, commands) -> Optional[tuple]:
+    """The call site to extract at, and its test case: (site, case), or None.
+
+    `sites` are call_sites'. The case is chosen as choose_case chooses it,
+    over every site: the most lines of the function, so a case that reaches
+    more of its behaviours is preferred whichever call it reaches them from.
+    The site is the one that case runs most often, then by path and line.
+    choose_case, given the site chosen, chooses the same case. Line coverage
+    does not say which of the function's lines each call site reaches; `vit
+    verify` reports the lines the captured calls missed.
+    """
+    pairs = [(site, case, n) for site in sites for case, n in site["hits"].items()
+             if n > 0 and case in commands]
+    if not pairs:
+        return None
+    site, case, _ = min(pairs, key=lambda p: (-lines_by_case.get(p[1], 0), -p[2],
+                                              p[0]["path"], p[0]["line"], p[1]))
+    return site, case
+
+
+def working_tree_line(coverage, source_dir, site, function_name) -> Optional[int]:
+    """The line a call site (from call_sites) is on in the working tree, found by its text.
+
+    The coverage numbers lines as they were measured, and the source may have
+    changed since, as when a translation is integrated. Of several identical
+    calls in the file, the one at the same position among them, if the file
+    still has as many. None if the working tree does not have the call.
+    """
+    root = coverage_root(coverage, source_dir)
+
+    def same(text):
+        return [n for n, line in enumerate(text.split("\n"), 1)
+                if line.strip() == site["text"] and line_calls(line, function_name)]
+
+    try:
+        now = same(Path(root, site["path"]).read_text(errors="replace"))
+    except OSError:
+        return None
+    if len(now) == 1:
+        return now[0]
+    measured, _ = measured_text(coverage, root, site["path"])
+    then = same(measured) if measured else []
+    if site["line"] in then and len(then) == len(now):
+        return now[then.index(site["line"])]
+    return None
+
+
 _CALLED = re.compile(r'\bCALL\s+([A-Za-z_]\w*)|\b([A-Za-z_]\w*)\s*\(', re.IGNORECASE)
 _GENERIC_OPEN = re.compile(r'^\s*INTERFACE\s+([A-Za-z_]\w*)\s*$', re.IGNORECASE)
 _GENERIC_END = re.compile(r'^\s*END\s*INTERFACE\b', re.IGNORECASE)

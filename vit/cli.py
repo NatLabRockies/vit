@@ -142,8 +142,12 @@ def main():
     # --- extract ---
     p_extract = subparsers.add_parser("extract", help="Extract function with KGen")
     p_extract.add_argument("function_name", help="Function to extract")
-    p_extract.add_argument("--file", "-f", help="Source file containing call site")
-    p_extract.add_argument("--line", "-l", type=int, help="Line number of call site")
+    p_extract.add_argument("--file", "-f",
+                           help="The file holding the call to extract at. Without --line, "
+                                "VIT chooses among the calls in this file")
+    p_extract.add_argument("--line", "-l", type=int,
+                           help="The line of the call, in --file. Without it, VIT chooses the "
+                                "call: from the coverage file, or the only one")
     p_extract.add_argument("--dry-run", action="store_true",
                            help="Run the steps before KGen, including clean_cmd and build_cmd, "
                                 "then print the KGen command and the build and run scripts "
@@ -578,24 +582,18 @@ def cmd_parse(args, config):
 
 def cmd_extract(args, config):
     """Extract function with KGen."""
-    if not args.file or not args.line:
-        # Auto-find call site
-        source_dir = config.abs_source_dir
-        sites = find_call_sites(source_dir, args.function_name)
-        if not sites:
-            print(f"No call sites found. Use --file and --line to specify manually.")
-            return 1
-
-        if len(sites) > 1:
-            print(f"Multiple call sites found. Please specify with --file and --line:")
-            for fp, ln, lt in sites:
-                print(f"  {fp}:{ln}  {lt.strip()}")
-            return 1
-
-        file_path, line_num, _ = sites[0]
+    if args.line and not args.file:
+        print("ERROR: --line needs --file, the file the line is in.")
+        return 1
+    if args.file and args.line:
+        file_path, line_num, site = args.file, args.line, {"chosen": "given", "site": None}
     else:
-        file_path = args.file
-        line_num = args.line
+        site = _extraction_site(args, config)
+        for line in site["report"]:
+            print(line)
+        if site["error"]:
+            return 1
+        file_path, line_num = site["file"], site["line"]
 
     # Verify the file exists
     if not os.path.isfile(file_path):
@@ -653,7 +651,8 @@ def cmd_extract(args, config):
             actual_line = line_num
 
         call_text = lines[actual_line - 1].strip() if 0 < actual_line <= len(lines) else ""
-        case = _extraction_case(args, config, file_path, actual_line, call_text)
+        case = _extraction_case(args, config, file_path, actual_line, call_text,
+                                site=site["site"], coverage=site.get("coverage"))
         for line in case["report"]:
             print(line)
         if case["error"]:
@@ -796,7 +795,7 @@ def cmd_extract(args, config):
             print(f"  Kernel: {result['kernel_dir']}")
             print(f"  Cases:  {cases}")
             _record_extraction(result["kernel_dir"], case, run_cmd, file_path, actual_line,
-                               invocation)
+                               invocation, site["chosen"])
             if cases < len(requested):
                 known = case["calls"]
                 if known and max(requested) > known:
@@ -879,7 +878,134 @@ def _coverage_of_call(config, file_path, call_text, function_name) -> list:
         [f"  {case}: {count}" for case, count in ranked]
 
 
-def _extraction_case(args, config, file_path, line_no, call_text) -> dict:
+def _unknown_case(named, cases) -> str:
+    listed = f"; it lists {', '.join(cases)}" if cases else ""
+    return f"ERROR: no test case {named} in coverage.cases in vit.yaml{listed}."
+
+
+SITES_LISTED = 5
+
+
+def _extraction_site(args, config) -> dict:
+    """The call site to extract at, when --line is not given.
+
+    With a coverage file, the site and the test case are chosen together
+    (coverage.choose_call_site): the case that runs the most lines of the
+    function, at the call it runs most often. `--file` limits the choice to
+    one file, and `--case` to one case. The site is found in the source as
+    measured, then in the working tree by its text. Without coverage, the
+    only call by name, if there is one; several are listed, for --file and
+    --line to name one. The choice used to be made by hand, from `vit find
+    --coverage`, and every document gave the call site.
+
+    Returns {file, line, site, coverage, chosen, report, error}: `site` is the
+    call_sites entry chosen and `coverage` the coverage read; `chosen` is
+    "only" or "coverage"; `report` is what to print.
+    """
+    from . import coverage as cov
+
+    out = {"file": None, "line": None, "site": None, "coverage": None, "chosen": None,
+           "report": [], "error": False}
+    name = args.function_name
+    source_dir = config.abs_source_dir
+    given = os.path.realpath(args.file) if args.file else None
+    where = f"in {os.path.relpath(args.file if args.file else source_dir)}"
+    coverage_file = config.abs_path(config.coverage_file)
+    rel = os.path.relpath(coverage_file)
+
+    def fail(*lines):
+        out["report"].extend(lines)
+        out["error"] = True
+        return out
+
+    none_found = (f"ERROR: no call of {name} found {where}. A call through a generic interface "
+                  f"or a renamed import does not name it; give it with --file and --line.")
+    data = None
+    if os.path.exists(coverage_file):
+        try:
+            data = cov.load(coverage_file)
+        except (OSError, ValueError, KeyError) as e:
+            out["report"].append(f"⚠ {rel} could not be read: {e}")
+
+    if data is None:
+        sites = [s for s in find_call_sites(source_dir, name)
+                 if given is None or os.path.realpath(s[0]) == given]
+        if not sites:
+            return fail(none_found)
+        if len(sites) > 1:
+            return fail(f"ERROR: {len(sites)} calls of {name} {where}; give one with --file and "
+                        f"--line. With coverage of the test cases (`vit coverage run`), vit "
+                        f"extract chooses one.",
+                        *(f"  {os.path.relpath(fp)}:{ln}  {text.strip()}" for fp, ln, text in sites))
+        file_path, line_no, _ = sites[0]
+        out.update(file=file_path, line=line_no, chosen="only")
+        out["report"].append(f"Call site: {os.path.relpath(file_path)}:{line_no}, the only call "
+                             f"of {name} {where}.")
+        return out
+
+    out["coverage"] = data
+    root = cov.coverage_root(data, source_dir)
+
+    def path(site):
+        return os.path.join(root, site["path"])
+
+    sites = [s for s in cov.call_sites(data, source_dir, name)
+             if given is None or os.path.realpath(path(s)) == given]
+    if not sites:
+        return fail(none_found)
+    named = getattr(args, "case", None)
+    cases = config.coverage_cases
+    if named and named not in cases:
+        return fail(_unknown_case(named, cases))
+    lines_by_case, _ = cov.function_lines_by_case(data, source_dir, name)
+    # Without a command for any case that runs a call, extraction runs
+    # kgen.run_cmd, and _extraction_case says which case to add.
+    chosen = (cov.choose_call_site(sites, lines_by_case, {named} if named else cases)
+              or (None if named else cov.choose_call_site(
+                  sites, lines_by_case, {c for s in sites for c in s["hits"]})))
+    if chosen is None:
+        who = f"test case {named} runs none" if named else "no test case runs any"
+        return fail(f"ERROR: {rel} says {who} of the {len(sites)} call(s) of {name} {where}, "
+                    f"so the run would capture nothing. `vit find {name} --coverage` lists them. "
+                    f"If the source changed since it was measured, `vit coverage run` measures it "
+                    f"again; --file and --line extract at a call regardless.")
+    site, case = chosen
+    line_no = cov.working_tree_line(data, source_dir, site, name)
+    if line_no is None:
+        return fail(f"ERROR: the call chosen from {rel}, {os.path.relpath(path(site))}:"
+                    f"{site['line']} as measured, `{site['text']}`, is not in the source now, or "
+                    f"not once. `vit coverage run` measures the source again; --file and --line "
+                    f"name a call.")
+    out.update(file=path(site), line=line_no, site=site,
+               chosen="only" if len(sites) == 1 else "coverage")
+
+    def shown(s, n):
+        caller = f" in {s['caller']}" if s["caller"] else ""
+        return f"{os.path.relpath(path(s))}:{n}{caller}"
+
+    moved = f" (line {site['line']} as measured)" if line_no != site["line"] else ""
+    if len(sites) == 1:
+        out["report"].append(f"Call site: {shown(site, line_no)}{moved}, the only call of "
+                             f"{name} {where}.")
+        return out
+    out["report"].append(f"Call site: {shown(site, line_no)}{moved}, chosen from {rel}: of the "
+                         f"{len(sites)} calls of {name} {where}, the one test case {case} runs "
+                         f"most often.")
+    others = []
+    for s in [s for s in sites if s is not site][:SITES_LISTED]:
+        runs = {c: n for c, n in s["hits"].items() if n}
+        top = min(runs, key=lambda c: (-runs[c], c)) if runs else None
+        others.append(f"{shown(s, s['line'])} ({top}: {runs[top]:,})" if top
+                      else f"{shown(s, s['line'])} (no test case runs it)")
+    more = len(sites) - 1 - len(others)
+    out["report"].append("  Others, as measured: " + "; ".join(others)
+                         + (f"; and {more} more (`vit find {name} --coverage`)" if more else "")
+                         + ".")
+    return out
+
+
+def _extraction_case(args, config, file_path, line_no, call_text, site=None,
+                     coverage=None) -> dict:
     """The test case extraction runs, and how often it runs this call.
 
     With `--case NAME`, that case from coverage.cases. Without it, given a
@@ -889,6 +1015,10 @@ def _extraction_case(args, config, file_path, line_no, call_text) -> dict:
     project directory, as `vit coverage run` runs it, with {build_dir} the
     project's build directory. Choosing a case used to mean reading `vit find
     --coverage`, editing kgen.run_cmd, and restoring it afterwards.
+
+    `site` is the call site as _extraction_site chose it from `coverage`,
+    the coverage it read; its counts are used as they are, since a site
+    chosen from coverage needs no finding again.
 
     Returns {case, command, calls, report, error}: `calls` is how many times
     the case runs this call, or None when unknown; `report` is what to print.
@@ -908,20 +1038,19 @@ def _extraction_case(args, config, file_path, line_no, call_text) -> dict:
         return f"cd {shlex.quote(str(project_dir))} && {filled}"
 
     if named and named not in cases:
-        listed = f"; it lists {', '.join(cases)}" if cases else ""
-        out["report"].append(f"ERROR: no test case {named} in coverage.cases in vit.yaml{listed}.")
+        out["report"].append(_unknown_case(named, cases))
         out["error"] = True
         return out
 
     coverage_file = config.abs_path(config.coverage_file)
     rel = os.path.relpath(coverage_file)
     hits, lines_by_case, any_lines = None, {}, 0
-    if os.path.exists(coverage_file) and config.abs_source_dir:
+    if (coverage or os.path.exists(coverage_file)) and config.abs_source_dir:
         try:
-            data = cov.load(coverage_file)
+            data = coverage or cov.load(coverage_file)
             out["coverage"] = data
-            hits = cov.call_site_hits(data, config.abs_source_dir, args.function_name,
-                                      file_path, call_text, line_no)
+            hits = site["hits"] if site else cov.call_site_hits(
+                data, config.abs_source_dir, args.function_name, file_path, call_text, line_no)
             if hits is not None:
                 lines_by_case, any_lines = cov.function_lines_by_case(
                     data, config.abs_source_dir, args.function_name)
@@ -996,13 +1125,16 @@ def _capture_calls(args, config, case) -> tuple:
 EXTRACTION_RECORD = "extraction.json"
 
 
-def _record_extraction(kernel_dir, case, run_cmd, file_path, line_no, invocation) -> None:
+def _record_extraction(kernel_dir, case, run_cmd, file_path, line_no, invocation,
+                       site_chosen) -> None:
     """What a kernel was captured from, kept beside it: `vit verify` compares its
-    coverage with the case it came from."""
+    coverage with the case it came from. `site_chosen` says how the call site
+    was found: given, the only one, or chosen from coverage."""
     import json
 
     record = {"case": case["case"], "calls_in_case": case["calls"], "run_cmd": run_cmd,
-              "call_site": f"{file_path}:{line_no}", "invocation": invocation}
+              "call_site": f"{file_path}:{line_no}", "call_site_chosen": site_chosen,
+              "invocation": invocation}
     Path(kernel_dir, EXTRACTION_RECORD).write_text(json.dumps(record, indent=2) + "\n")
 
 
