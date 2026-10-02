@@ -64,8 +64,8 @@ and compares every output field.
       13: drag = 0.5_dp * 1.225_dp * cd * area * v**2
   ```
 
-  Those lines rest on the other layer, or on a different capture: another test case (`vit extract
-  --case`), or other calls (`--invocation`).
+  Those lines rest on the other layer, or on a different capture: another call site (`vit extract
+  -f FILE -l LINE`), another test case (`--case`), or other calls (`--invocation`).
 - **Uninitialized memory.** Captured state can contain NaN from uninitialized fields. VIT treats NaN
   as equal to NaN, and reports cases whose reference data is all NaN as skipped.
 

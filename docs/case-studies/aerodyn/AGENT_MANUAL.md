@@ -72,7 +72,10 @@ VIT configuration: `openfast/vit.yaml`. Its `project.source_dir` is the broad `m
 ```bash
 # 1. Extract (inside vit-dev-openfast container, from /workspace/openfast)
 #    Requires clean source — run reset_to_clean.sh first if source has integration wrappers
-vit extract FuncName -f modules/aerodyn/src/File.f90 -l LINE
+#    With coverage.file and coverage.cases in vit.yaml, VIT chooses the call site and test case:
+vit extract FuncName
+#    Until vit.yaml sets them, name a CALL line (Extraction Workflow, Step 5):
+#    vit extract FuncName -f modules/aerodyn/src/File.f90 -l LINE
 
 # 2. Generate scaffold (on clean or integrated source — detects callees from original Fortran)
 vit translate FuncName -f modules/aerodyn/src/File.f90 --module ModuleName
@@ -215,7 +218,7 @@ This guide is a starting point. For a specific call site, the coverage query in 
 
 Extraction requires clean (pre-integration) source. Line numbers shift after each integration, so always find them fresh.
 
-With `coverage.file` and `coverage.cases` set in `vit.yaml`, `vit extract` does Steps 1, 3 and 7 itself: it runs the test case that runs the most lines of the function (`--case` names another) and spreads the captured calls over the run, and `vit verify` reports which of the function's lines those calls run (`docs/EXTRACTION_INTERNALS.md`, section 3). The workspace's `vit.yaml` sets neither yet; until it does, extraction runs `kgen.run_cmd` and captures its first 20 calls, as the steps below assume.
+With `coverage.file` and `coverage.cases` set in `vit.yaml`, `vit extract FunctionName` does Steps 1, 3 and 7, and Step 5's choice of call site, itself: it chooses the call site and the test case that runs the most lines of the function (`-f` and `-l`, and `--case`, name others), and spreads the captured calls over the run, and `vit verify` reports which of the function's lines those calls run (`docs/EXTRACTION_INTERNALS.md`, section 3). For `DBEMT_ReInit`, Step 5's example, it chooses the same call, in `BEMT_ReInit`, with `ad_BAR_SineMotion_UA4_DBEMT3`, which runs 18 of the 19 lines of the function that any case runs; `ad_BAR_CombinedCases`, the most executions, runs 13. The workspace's `vit.yaml` sets neither yet; until it does, extraction runs `kgen.run_cmd` and captures its first 20 calls, as the steps below assume.
 
 **Step 1 — Query coverage data for the call site and test case:**
 ```bash

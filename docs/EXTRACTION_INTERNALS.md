@@ -11,10 +11,10 @@ report does not settle.
 ## 1. Overview
 
 ```
-vit extract FuncName -f caller.f90 -l LINE
+vit extract FuncName                (or -f caller.f90 -l LINE, to name the call)
 
 VIT, before KGen
-   1. Find the call site; refuse a line that defines the function
+   1. Find the call site: chosen from coverage, or given; refuse a line that defines the function
    2. Choose the test case to run, and the calls to capture
    3. Remove stale KGen pragmas from the sources
    4. Back up the file holding the call site
@@ -95,9 +95,32 @@ its 20-minute limit, the step still running is the one named.
 
 ### Find the call site
 
+Without `-l`, VIT chooses the call. With the coverage file (`coverage.file`, from `vit coverage
+run`), which counts how often each line runs in each test case, it reads the calls of the function
+in `project.source_dir` as the coverage measured them, and keeps those a test case runs. It chooses
+the case as below, over all of them, and the call that case runs most often, then the first by path
+and line; given that call, the case chosen below is the same. A call in a file the build did not
+compile, or one no case runs, is never chosen. The call is then found by its text in the source as
+it is now, since integrating a translation edits the source after it was measured; of identical
+calls in one file, the one at the same position among them. `-f FILE` without `-l` limits the
+choice to the calls in that file, and `--case NAME` to the calls that case runs. When no case runs
+any of them, or the source no longer has the call, extraction stops before KGen. For a variant of
+the quickstart with three calls of `drag` and two test cases:
+
+```
+Call site: src/physics.f90:14 in step, chosen from coverage.json: of the 3 calls of drag in src, the one test case long runs most often.
+  Others, as measured: src/driver.f90:6 in spin (short: 900); src/physics.f90:19 in warmup (short: 50).
+```
+
+Line coverage says which lines of the function run in each case, not from which call. If the
+captured calls miss lines the full run executes, `vit verify` lists them
+([`VERIFICATION_METHODS.md`](VERIFICATION_METHODS.md) section 1), and `-f` and `-l` extract at
+another call. Without a coverage file, VIT uses the only call of the function in
+`project.source_dir`, and stops if there is none or more than one, listing them.
+
 With `-f` and `-l`, VIT uses them, re-finding the call within a few lines if earlier edits shifted
-it. Without them, it searches `project.source_dir` and stops if it finds no call site, or more than
-one.
+it. A call VIT cannot find by name needs them: one through a generic interface or a renamed import,
+or one whose name and `(` are on different continuation lines.
 
 **Extract at a call site, never at the definition.** With the pragma around a module procedure's
 definition, KGen's parent block is the module itself and the generated code does not compile. The
@@ -111,8 +134,7 @@ through a generic interface or a renamed import does not name the function eithe
 
 ### Choose the test case and the calls
 
-Both need the coverage file (`coverage.file`, from `vit coverage run`), which counts, per test case,
-how often each line runs. Without it, extraction runs `kgen.run_cmd` and captures calls 1 to 20.
+Both need the coverage file. Without it, extraction runs `kgen.run_cmd` and captures calls 1 to 20.
 
 **The test case.** Among the cases that run this call, and have a command in `coverage.cases`,
 extraction runs the one that runs the most lines of the function, then the one that runs the call
@@ -337,7 +359,7 @@ cases run this call, and how often.
 
 | # | Failure | What `vit extract` reports |
 |---|---|---|
-| F1 | Call site not reached, or not within the capture range | The run never reached the call site, or reached it and no call was among those requested; with coverage, which test cases run the call. With coverage and the cases' commands, extraction runs a case that reaches the call |
+| F1 | Call site not reached, or not within the capture range | The run never reached the call site, or reached it and no call was among those requested; with coverage, which test cases run the call. With coverage and the cases' commands, extraction chooses a call and a case that runs it |
 | F2 | Cross-module instrumentation | Step `build`: `Symbol 'kw_externs_in_...' not found in module ...`, when the build script's fix (below) does not apply; `cross_module.log` lists what it moved |
 | F3 | Stale pragmas or backups | Prevented: VIT sweeps pragmas and settles backups before each extraction |
 | F4 | `kgen_utils.f90` not added to the build | Step `add_kgen_utils`, with an error naming `kgen.add_source_cmd` |
@@ -350,6 +372,7 @@ cases run this call, and how often.
 | F11 | macOS host mount | Step `build` or `prebuild`: an error copying a `.mod` file. Keep the build directory inside the container (`docker/README.md`) |
 | F12 | The plain build fails | Step `prebuild` (or `clean`), before KGen runs |
 | F13 | KGen fails to parse or generate | Step `kgen`, with the end of KGen's output |
+| F14 | No call site to choose | Refused before KGen runs: no call names the function; several do, and there is no coverage file (they are listed); no test case runs any; or the source no longer has the call coverage chose |
 
 ### F2 in detail
 
@@ -371,7 +394,7 @@ The report and `.vit/extract/` settle most failures. When they do not:
 
 1. **Read the step's whole log.** The report shows the last lines; `.vit/extract/<step>.log` has
    all of them (KGen's are in `kgen_output.log`), and `steps.jsonl` shows which steps ran.
-2. **See the command.** `vit extract FuncName -f file -l LINE --dry-run` prints the KGen command and
+2. **See the command.** `vit extract FuncName --dry-run` prints the KGen command and
    both scripts, after running the clean and the build. Check the paths, the defines and the test
    case.
 3. **Generate without building.** Run KGen with no-op commands to get `kernel/` and `state/` for

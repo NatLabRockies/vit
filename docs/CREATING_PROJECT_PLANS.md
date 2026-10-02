@@ -209,9 +209,9 @@ fraction of the first count.
 program's test cases in the `coverage` section of `vit.yaml` and run `vit coverage run`: it builds
 an instrumented copy, runs each case and records which lines each reaches. `vit find FUNC
 --coverage` then answers "which test case runs this function's call sites, and how often?"
-without tracing code paths by hand. With it, `vit extract` runs the test case that runs the most
-of the function and spreads the captured calls over the run, and `vit verify` reports which of the
-function's lines they run. Each run also writes the procedures no test case reaches,
+without tracing code paths by hand. With it, `vit extract` chooses the call site and runs the test
+case that runs the most of the function, spreading the captured calls over the run, and `vit
+verify` reports which of the function's lines they run. Each run also writes the procedures no test case reaches,
 beside the coverage file. For each of those, add a test case that reaches it, or plan another
 verification method:
 [`VERIFICATION_METHODS.md`](VERIFICATION_METHODS.md) says which, and `vit reachability` settles

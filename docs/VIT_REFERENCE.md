@@ -42,7 +42,7 @@ through a shell, from directories KGen chooses, so give them absolute paths.
 | `coverage.build_dir` | `build-coverage` | The instrumented build, separate from `project.build_dir`. On macOS, an absolute path inside the container, as for `project.build_dir`. |
 | `coverage.configure_cmd`, `coverage.build_cmd` | CMake | How to configure and build with coverage. By default `cmake -S {project_dir} -B {build_dir}` with `--coverage` added to the Fortran, C, C++ and linker flags, then `cmake --build {build_dir}`. |
 | `coverage.gcov` | (matched) | The gcov to use. By default VIT finds the one from the same GCC release as the Fortran compiler CMake chose; a gcov from another release, or LLVM's, cannot read the data. |
-| `coverage.file` | `coverage.json` | Where `vit coverage run` and `import` write, and where `vit find --coverage` and `vit coverage line` read when given no file. `vit extract` reads it to choose the test case and the calls, and `vit verify` to compare what the captured calls run with what the full run executes. |
+| `coverage.file` | `coverage.json` | Where `vit coverage run` and `import` write, and where `vit find --coverage` and `vit coverage line` read when given no file. `vit extract` reads it to choose the call site, the test case and the calls, and `vit verify` to compare what the captured calls run with what the full run executes. |
 | `translations` | | Written by VIT: each function's status, case counts and red-test result. |
 
 ## Commands
@@ -52,12 +52,12 @@ through a shell, from directories KGen chooses, so give them absolute paths.
 
 | Command | Purpose | Notable options |
 |---|---|---|
-| `vit init` | Write a starter `vit.yaml` | `--name`, `--source-dir`, `--build-cmd`, `--run-cmd` |
+| `vit init` | Write a starter `vit.yaml`, and say to list the test cases and run `vit coverage run` | `--name`, `--source-dir`, `--build-cmd`, `--run-cmd` |
 | `vit inventory` | Inventory a code base for planning: procedures, call graph, types, module graph, uncalled procedures, line counts, the exceptions to leaf-first ordering (`ordering.json`), and the work order (`work_order.md`): every in-scope procedure in the order to translate it, with its verification route when `--coverage` is given. Needs fparser (`pip install 'vit[inventory]'`) | `--src`, `--output`, `--deps`, `--search`, `--generated-marker`, `--entry-point`, `--entry-points-file`, `--coverage`, `--overrides` |
 | `vit find` | Find a function's call sites; with `--coverage`, the test cases that run each, and how often | `--source-dir`, `--coverage [FILE]` |
 | `vit coverage` | Line coverage per test case. `run`: build with coverage, run the cases in `coverage.cases`, and import the result. `import`: merge existing `gcov -j` output, one directory per case. Both also write `<file>_procedures.md` beside the coverage file: each procedure reached (calls per case), not reached by any case, or not built. `procedures`: print that report. `line`: which cases run one line | `run [--case NAME]`; `import --gcov-dir DIR --source-root DIR [--output FILE] [--prefix PATH]`; `procedures [--coverage FILE] [--not-reached]`; `line FILE:LINE [--coverage FILE]` |
 | `vit parse` | Print a function's parsed signature | `-f FILE` |
-| `vit extract` | Capture a function's calls with KGen, from the test case it chooses or `--case` | `-f FILE -l LINE` (the call site), `--case NAME`, `--invocation SPEC`, `--run-args`, `--assumed-size NAME=SIZE`, `--dry-run` |
+| `vit extract` | Capture a function's calls with KGen, at the call site and from the test case it chooses from coverage | `-f FILE -l LINE` (a call site; `-f` alone limits the choice to that file), `--case NAME`, `--invocation SPEC`, `--run-args`, `--assumed-size NAME=SIZE`, `--dry-run` |
 | `vit translate` | Write the C++ scaffold and print the prompt | `-f FILE` (the definition), `--module`, `-o DIR` |
 | `vit check` | Run the defect checks on a translation | `-f FILE` (enables the checks that read the Fortran), `--list`, `--function` |
 | `vit verify` | Verify a translation against its kernel, and report which lines of the function the captured calls run | `-f FILE`, `--kernel-dir DIR`, `--no-field-log`, `--no-kernel-coverage` |
