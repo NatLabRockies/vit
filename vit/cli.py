@@ -378,6 +378,11 @@ def cmd_init(args, config):
     )
     print(f"Created {path}")
     print("Edit this file to configure your project settings.")
+    print("Then list your test cases in it, under coverage.cases as `name: command`, and run "
+          "`vit coverage run`.\nvit extract chooses the call site, the test case and the calls "
+          "to capture from what it records;\nwithout it, extraction captures the first 20 calls "
+          "of kgen.run_cmd, and a function called\nfrom more than one place needs --file and "
+          "--line.")
     return 0
 
 
