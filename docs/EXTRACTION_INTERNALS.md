@@ -115,8 +115,9 @@ Call site: src/physics.f90:14 in step, chosen from coverage.json: of the 3 calls
 Line coverage says which lines of the function run in each case, not from which call. If the
 captured calls miss lines the full run executes, `vit verify` lists them
 ([`VERIFICATION_METHODS.md`](VERIFICATION_METHODS.md) section 1), and `-f` and `-l` extract at
-another call. Without a coverage file, VIT uses the only call of the function in
-`project.source_dir`, and stops if there is none or more than one, listing them.
+another call. `vit find FuncName --coverage` prints the same choice without extracting. Without a
+coverage file, VIT uses the only call of the function in `project.source_dir`, and stops if there
+is none or more than one, listing them.
 
 With `-f` and `-l`, VIT uses them, re-finding the call within a few lines if earlier edits shifted
 it. A call VIT cannot find by name needs them: one through a generic interface or a renamed import,

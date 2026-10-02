@@ -261,7 +261,9 @@ def test_cli_import_find_and_line(project, gcov_dir, tmp_path):
     assert "src/physics.f90:10 in step" in r.stdout
     assert "src/physics.f90:3" not in r.stdout, "the definition is not a call site"
     assert "(measured source not available" not in r.stdout
-    assert "Most executions: long runs src/physics.f90:10 500 times." in r.stdout
+    assert ("vit extract would choose src/physics.f90:10 in step, with test case long: it runs "
+            "this call 500 time(s), and 1 of the 1 lines of drag that any case runs.") in r.stdout
+    assert "coverage.cases in vit.yaml has no command for long" in r.stdout
 
     r = vit(tmp_path, "coverage", "line", "src/physics.f90:15", "--coverage", str(out))
     assert r.returncode == 0

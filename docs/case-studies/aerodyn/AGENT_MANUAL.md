@@ -218,13 +218,13 @@ This guide is a starting point. For a specific call site, the coverage query in 
 
 Extraction requires clean (pre-integration) source. Line numbers shift after each integration, so always find them fresh.
 
-With `coverage.file` and `coverage.cases` set in `vit.yaml`, `vit extract FunctionName` does Steps 1, 3 and 7, and Step 5's choice of call site, itself: it chooses the call site and the test case that runs the most lines of the function (`-f` and `-l`, and `--case`, name others), and spreads the captured calls over the run, and `vit verify` reports which of the function's lines those calls run (`docs/EXTRACTION_INTERNALS.md`, section 3). For `DBEMT_ReInit`, Step 5's example, it chooses the same call, in `BEMT_ReInit`, with `ad_BAR_SineMotion_UA4_DBEMT3`, which runs 18 of the 19 lines of the function that any case runs; `ad_BAR_CombinedCases`, the most executions, runs 13. The workspace's `vit.yaml` sets neither yet; until it does, extraction runs `kgen.run_cmd` and captures its first 20 calls, as the steps below assume.
+With `coverage.file` and `coverage.cases` set in `vit.yaml`, `vit extract FunctionName` does Steps 1, 3 and 7, and Step 5's choice of call site, itself: it chooses the call site and the test case that runs the most lines of the function (`-f` and `-l`, and `--case`, name others), and spreads the captured calls over the run, and `vit verify` reports which of the function's lines those calls run (`docs/EXTRACTION_INTERNALS.md`, section 3). For `DBEMT_ReInit`, Step 5's example, it chooses the same call, in `BEMT_ReInit` (by the tie-break: that case runs both calls once), with `ad_BAR_SineMotion_UA4_DBEMT3`, which runs 18 of the 19 lines of the function that any case runs; `ad_BAR_CombinedCases`, the most executions, runs 13. The workspace's `vit.yaml` sets neither yet; until it does, extraction runs `kgen.run_cmd` and captures its first 20 calls, as the steps below assume.
 
 **Step 1 — Query coverage data for the call site and test case:**
 ```bash
 docker exec vit-dev-openfast bash -c "cd /workspace/openfast && vit find FunctionName --coverage /workspace/vit/docs/case-studies/aerodyn/data/line_coverage.json"
 ```
-This lists every call site (file:line, and the procedure it is in) with the test cases that run it and how often, and ends with the call site and test case with the most executions. Pick that pair unless there is a reason not to. Its line numbers are those of the source the coverage was measured on, and it marks any it could not read that way; if the clean source of Step 2 differs, `vit find FunctionName` there gives the same call's current line. **Do not manually trace code paths to guess test cases** — the coverage data is definitive (see dev note `202604250803`).
+This lists every call site (file:line, and the procedure it is in) with the test cases that run it and how often, and ends with the call site and test case `vit extract` would choose: the case that runs the most lines of the function, at the call that case runs most often (`docs/EXTRACTION_INTERNALS.md`, section 3). Use that pair unless there is a reason not to. (Until 2026-10-01 it ended with the pair with the most executions, which for 28 of the 147 AeroDyn procedures with several calls a case runs is another case; see dev note `202610012159`.) Its line numbers are those of the source the coverage was measured on, and it marks any it could not read that way; if the clean source of Step 2 differs, `vit find FunctionName` there gives the same call's current line. **Do not manually trace code paths to guess test cases** — the coverage data is definitive (see dev note `202604250803`).
 
 If coverage data doesn't exist yet, generate it (once, ~10 min):
 ```bash
@@ -250,18 +250,21 @@ cd /workspace/openfast && vit extract FunctionName -f modules/aerodyn/src/Caller
 ```
 **CRITICAL: The `-f` file and `-l` line must point to a CALL site (where the function is called from), NOT the function definition.** KGen requires the pragma to be inside a subroutine scope. When the pragma wraps a module-level subroutine definition, KGen's parentblock becomes the MODULE (not a subroutine), and it places `INTENT(IN/OUT)` declarations at module scope — invalid Fortran, and nothing is captured.
 
-Use the output of Step 1 to pick the call site. For example, to extract `DBEMT_ReInit`, Step 1 shows (abridged):
+Use the output of Step 1 to pick the call site. For example, to extract `DBEMT_ReInit`, Step 1 shows (abridged; each call has the same six cases):
 ```
 2 call site(s) for 'DBEMT_ReInit'. Line numbers are those of the source the coverage was measured on, except where marked:
   modules/aerodyn/src/BEMT.f90:778 in BEMT_ReInit
     call DBEMT_ReInit(p%DBEMT, x%DBEMT, OtherState%DBEMT, misc%DBEMT)
     ad_BAR_CombinedCases: 4
+    ad_BAR_SineMotion_UA4_DBEMT3: 1
   modules/aerodyn/src/DBEMT.f90:231 in DBEMT_Init
     call DBEMT_ReInit(p, x,OtherState,m)
     ad_BAR_CombinedCases: 3
-Most executions: ad_BAR_CombinedCases runs modules/aerodyn/src/BEMT.f90:778 4 times.
+    ad_BAR_SineMotion_UA4_DBEMT3: 1
+vit extract would choose modules/aerodyn/src/BEMT.f90:778 in BEMT_ReInit, with test case ad_BAR_SineMotion_UA4_DBEMT3: it runs this call 1 time(s), and 18 of the 19 lines of DBEMT_ReInit that any case runs.
+  coverage.cases in vit.yaml has no command for ad_BAR_SineMotion_UA4_DBEMT3; until it has, vit extract runs kgen.run_cmd.
 ```
-Use `-f modules/aerodyn/src/BEMT.f90 -l 778`, not `-f modules/aerodyn/src/DBEMT.f90 -l 236` (the definition). See dev note `202605010526` for the full diagnosis.
+That case runs each call once, so the call in `BEMT_ReInit` is chosen by the tie-break, the first by path. Use `-f modules/aerodyn/src/BEMT.f90 -l 778`, not `-f modules/aerodyn/src/DBEMT.f90 -l 236` (the definition), and make `ad_BAR_SineMotion_UA4_DBEMT3` the test case in Step 3. See dev note `202605010526` for the full diagnosis.
 
 **Step 6 — Restore integrated source:**
 ```bash

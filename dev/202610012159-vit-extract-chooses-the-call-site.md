@@ -1,7 +1,7 @@
 # vit extract Chooses the Call Site
 
 **Date:** 2026-10-01
-**Status:** completed
+**Status:** completed. Follow-up the same day, in the commit after this note's: `vit find --coverage` ends with this choice instead of the call and case with the most executions, and the AeroDyn manual's Step 1, `VERIFICATION_METHODS.md` (whose work-order case was still "the case that calls it most") and the AeroDyn plan were brought into line.
 **Scope:** `vit extract` (the call site when `-l` is not given), `vit init`, the order of `GETTING_STARTED.md`, and the documents that gave a call site
 
 ## Why

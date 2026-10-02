@@ -83,8 +83,8 @@ reads the file to choose where to capture and what, and verification to say what
 missed. It also writes `coverage_procedures.md`: which procedures each case calls, and which none
 reaches.
 
-`vit find drag --coverage` lists each call of `drag` with the cases that run it: here one, in
-`step`, which `default` runs 500 times.
+`vit find drag --coverage` lists each call of `drag` with the cases that run it, and the call and
+case extraction would choose: here one call, in `step`, which `default` runs 500 times.
 
 ### Extract
 

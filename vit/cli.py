@@ -409,7 +409,8 @@ def cmd_find(args, config):
     source_dir = args.source_dir or config.abs_source_dir
     if getattr(args, "coverage", None) is not None:
         return _find_with_coverage(args.function_name, source_dir,
-                                   args.coverage or config.abs_path(config.coverage_file))
+                                   args.coverage or config.abs_path(config.coverage_file),
+                                   config.coverage_cases)
     sites = find_call_sites(source_dir, args.function_name)
 
     if not sites:
@@ -427,8 +428,12 @@ def _by_count(hits):
     return sorted(hits.items(), key=lambda kv: (-kv[1], kv[0]))
 
 
-def _find_with_coverage(function_name, source_dir, coverage_file):
-    """Call sites with the test cases that reach each (vit/coverage.py)."""
+def _find_with_coverage(function_name, source_dir, coverage_file, cases):
+    """Call sites with the test cases that reach each (vit/coverage.py), and the
+    call and case `vit extract` would choose (_choose_extraction_site). It used
+    to end with the call and case with the most executions, the rule agents
+    picked by, which on AeroDyn's coverage names another case for 28 of the
+    147 procedures with several calls a case runs."""
     from . import coverage as cov
 
     data = cov.load(coverage_file)
@@ -453,12 +458,22 @@ def _find_with_coverage(function_name, source_dir, coverage_file):
             print("    no test case runs this line")
         for case, count in _by_count(site["hits"]):
             print(f"    {case}: {count}")
-    ranked = [(count, case, site) for site in sites for case, count in site["hits"].items()]
-    if ranked:
-        count, case, site = max(ranked, key=lambda t: t[0])
-        print(f"Most executions: {case} runs {site['path']}:{site['line']} {count} times.")
-    else:
+    lines_by_case, any_lines = cov.function_lines_by_case(data, source_dir, function_name)
+    chosen = _choose_extraction_site(sites, lines_by_case, cases)
+    if chosen is None:
         print("No test case runs any of these call sites.")
+        return 0
+    site, case = chosen
+    caller = f" in {site['caller']}" if site["caller"] else ""
+    text = (f"vit extract would choose {site['path']}:{site['line']}{caller}, with test case "
+            f"{case}: it runs this call {site['hits'][case]:,} time(s)")
+    if any_lines:
+        text += (f", and {lines_by_case.get(case, 0)} of the {any_lines} lines of "
+                 f"{function_name} that any case runs")
+    print(text + ".")
+    if case not in cases:
+        print(f"  coverage.cases in vit.yaml has no command for {case}; until it has, vit "
+              f"extract runs kgen.run_cmd.")
     return 0
 
 
@@ -891,6 +906,19 @@ def _unknown_case(named, cases) -> str:
 SITES_LISTED = 5
 
 
+def _choose_extraction_site(sites, lines_by_case, cases, named=None):
+    """The call site and test case `vit extract` chooses, or None
+    (coverage.choose_call_site): among the cases with a command in
+    coverage.cases, or the one named. Given none of those that runs a call,
+    among every case, since extraction then runs kgen.run_cmd and says which
+    case to add. `vit find --coverage` prints the same choice."""
+    from . import coverage as cov
+
+    return (cov.choose_call_site(sites, lines_by_case, {named} if named else cases)
+            or (None if named else cov.choose_call_site(
+                sites, lines_by_case, {c for s in sites for c in s["hits"]})))
+
+
 def _extraction_site(args, config) -> dict:
     """The call site to extract at, when --line is not given.
 
@@ -963,11 +991,7 @@ def _extraction_site(args, config) -> dict:
     if named and named not in cases:
         return fail(_unknown_case(named, cases))
     lines_by_case, _ = cov.function_lines_by_case(data, source_dir, name)
-    # Without a command for any case that runs a call, extraction runs
-    # kgen.run_cmd, and _extraction_case says which case to add.
-    chosen = (cov.choose_call_site(sites, lines_by_case, {named} if named else cases)
-              or (None if named else cov.choose_call_site(
-                  sites, lines_by_case, {c for s in sites for c in s["hits"]})))
+    chosen = _choose_extraction_site(sites, lines_by_case, cases, named)
     if chosen is None:
         who = f"test case {named} runs none" if named else "no test case runs any"
         return fail(f"ERROR: {rel} says {who} of the {len(sites)} call(s) of {name} {where}, "

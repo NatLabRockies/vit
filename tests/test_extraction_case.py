@@ -303,6 +303,23 @@ def test_file_and_case_limit_the_choice(tmp_path, monkeypatch, capsys, file, cas
     assert seen["run_cmd"].endswith(f"/simulate --{run}")
 
 
+@pytest.mark.parametrize("case", [None, "short"])
+def test_vit_find_names_the_choice_vit_extract_makes(tmp_path, monkeypatch, capsys, case):
+    """`vit find --coverage` ended with the call and case with the most
+    executions, which agents picked by; it now prints extraction's choice."""
+    config = _sites_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    cases = {case: config.coverage_cases[case]} if case else config.coverage_cases
+    vit.cli._find_with_coverage("drag", str(tmp_path / "src"), str(tmp_path / "coverage.json"),
+                                cases)
+    found = capsys.readouterr().out.strip().split("\n")[-1]
+    rc, seen = _extract_at(tmp_path, monkeypatch, config, case=case)
+    out = capsys.readouterr().out
+    site = out.split("Call site: ")[1].split(",")[0]
+    assert rc == 0
+    assert found.startswith(f"vit extract would choose {site}, with test case {case or 'long'}:")
+
+
 def test_a_call_moved_since_coverage_was_measured_is_found_by_its_text(
         tmp_path, monkeypatch, capsys):
     """Integrating a translation edits the source after it was measured."""
