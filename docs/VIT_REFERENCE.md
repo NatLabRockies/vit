@@ -63,7 +63,6 @@ through a shell, from directories KGen chooses, so give them absolute paths.
 | `vit check` | Run the defect checks on a translation | `-f FILE` (enables the checks that read the Fortran), `--list`, `--function` |
 | `vit verify` | Verify a translation against its kernel, and report which lines of the function the captured calls run | `-f FILE`, `--kernel-dir DIR`, `--no-field-log`, `--no-kernel-coverage` |
 | `vit integrate` | Plan, or with `--apply` make, the integration | `-f FILE`, `--apply`, `--dry-run`, `--reverse-copy`, `--copy-arrays ARG,...`, `--auto-allocate` |
-| `vit run` | Interface, verify and integrate in one step | see `--help` |
 | `vit interface` | Generate the Fortran↔C interface files on their own | `-f FILE`, `-o DIR` |
 | `vit analyze-types` | Report which derived types can cross to C; apply fixes | `--fix {character,logical,complex,bind_c}`, `--type`, `--field`, `--length`, `--rewrite`, `--apply`, `--scan-allocatable` |
 | `vit test-validate` | Generate a test harness for branches no run reaches | `-f FILE`, `--module`, `--run`, `--force` |

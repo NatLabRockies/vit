@@ -9,7 +9,6 @@ Usage:
     vit verify <function>           Build and run KGen kernel verification
     vit integrate <function>        Generate codebase integration plan
     vit sim-compare <base> <int>    Compare simulation arrays (non-KGen verification)
-    vit run <function> <cpp_file>   Full pipeline (interface → verify → integrate)
     vit analyze-types               Analyze derived types for C compatibility
 """
 
@@ -238,19 +237,6 @@ def main():
     p_simcmp.add_argument("--tolerance", type=float, default=0.0,
                           help="Max allowed absolute difference (0.0 = exact match)")
 
-    # --- run (full pipeline) ---
-    p_run = subparsers.add_parser("run", help="Full pipeline: interface → verify → integrate")
-    p_run.add_argument("function_name", help="Function to translate")
-    p_run.add_argument("cpp_file", help="Path to C++ implementation")
-    p_run.add_argument("--file", "-f", help="Fortran source file")
-    p_run.add_argument("--kernel-dir", help="KGen kernel/ directory")
-    p_run.add_argument("--skip-verify", action="store_true")
-    p_run.add_argument("--no-field-log", action="store_true",
-                       help="Suppress per-field value logging")
-    p_run.add_argument("--no-kernel-coverage", action="store_true",
-                       help="Do not measure which lines of the function the captured calls run")
-    p_run.add_argument("--apply", action="store_true")
-
     # --- status ---
     p_status = subparsers.add_parser("status", help="Show translation status")
 
@@ -354,8 +340,6 @@ def _dispatch(args, config, parser):
         return cmd_integrate(args, config)
     elif args.command == "sim-compare":
         return cmd_sim_compare(args, config)
-    elif args.command == "run":
-        return cmd_run(args, config)
     elif args.command == "status":
         return cmd_status(args, config)
     elif args.command == "analyze-types":
@@ -1882,109 +1866,12 @@ def cmd_sim_compare(args, config):
     return 0 if result.passed else 1
 
 
-def cmd_run(args, config):
-    """Full pipeline: parse → verify → integrate."""
-    print(f"═══ VIT Full Pipeline: {args.function_name} ═══\n")
-
-    # Step 1: Parse signature
-    print("Step 1: Parsing function signature...")
-    if args.file:
-        sig = find_function_in_file(args.file, args.function_name)
-    else:
-        sig = _find_function_in_project(args.function_name, config)
-    _print_signature(sig)
-
-    derived_types = _build_registry(sig, config)
-
-    # Step 2: Verify (if kernel dir exists and not skipped)
-    if not args.skip_verify:
-        kernel_dir = args.kernel_dir
-        if not kernel_dir:
-            for candidate in [f"kernel/{args.function_name}", "kernel",
-                              f"{args.function_name}/kernel"]:
-                if os.path.isdir(candidate):
-                    kernel_dir = candidate
-                    break
-
-        if kernel_dir and os.path.isdir(kernel_dir):
-            field_log = not getattr(args, 'no_field_log', False)
-
-            print(f"\nStep 2: KGen kernel verification ({kernel_dir})...")
-            setup_result = setup_kernel_cpp(
-                kernel_dir=kernel_dir,
-                sig=sig,
-                cpp_impl_path=args.cpp_file,
-                kind_aliases=config.kind_aliases,
-                field_log=field_log,
-                derived_types=derived_types,
-                fortran_flags=config.fortran_flags,
-                source_dir=config.abs_source_dir,
-                fortran_compiler=config.fortran_compiler,
-                shared_files=config.shared_files,
-            )
-
-            if not setup_result["success"]:
-                print(f"✗ Kernel setup failed: {setup_result['errors']}")
-                return 1
-
-            verify_result = run_kernel_verify(kernel_dir, tolerance=config.tolerance,
-                                              field_log=field_log, sig=sig)
-            print(_format_verify_summary(verify_result))
-
-            if field_log and verify_result.field_data:
-                csv_path = os.path.join(kernel_dir, "verify_fields.csv")
-                print(f"  Field log: {csv_path} ({len(verify_result.field_data)} entries)")
-
-            if not verify_result.success:
-                print("Aborting pipeline — verification must pass before integration.")
-                return 1
-            _kernel_coverage(args, config, sig, kernel_dir)
-        else:
-            print("\nStep 2: Skipped (no kernel/ directory found)")
-            print("  Run 'vit extract' first for verified integration")
-
-    # Step 3: Generate integration plan
-    print(f"\nStep 3: Generating integration plan...")
-    cmake_file = config.abs_cmake_file if config.build_type == "cmake" else None
-
-    plan = generate_integration_plan(
-        sig=sig,
-        cpp_impl_path=args.cpp_file,
-        source_file=sig.source_file,
-        cmake_file=cmake_file,
-        target_name=config.target_name,
-        kind_aliases=config.kind_aliases,
-        derived_types=derived_types,
-    )
-
-    print(plan.to_markdown())
-
-    if args.apply:
-        print("\nStep 4: Applying integration...")
-        result = apply_integration_plan(plan)
-        for action in result["applied"]:
-            print(f"  {action}")
-
-        if result["success"]:
-            print("\n═══ ✓ Pipeline complete ═══")
-            record_translation(config, args.function_name, "integrated", {
-                "cpp_file": args.cpp_file,
-                "verified": not args.skip_verify,
-            })
-        else:
-            print("\n═══ ✗ Integration had errors — review manually ═══")
-            return 1
-    else:
-        print("\nRun with --apply to apply these changes.")
-
-    return 0
-
-
 def cmd_status(args, config):
     """Show translation status."""
     if not config.translations:
         print("No translations recorded yet.")
-        print("Use 'vit run <function> <cpp_file>' to translate and verify functions.")
+        print("'vit verify' records a function's result here, and 'vit integrate --apply' "
+              "its integration.")
         return 0
 
     print(f"Project: {config.project_name}")

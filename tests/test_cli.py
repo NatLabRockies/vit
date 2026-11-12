@@ -55,6 +55,16 @@ def _subcommands() -> list:
     return m.group(1).split(",")
 
 
+def test_there_is_no_vit_run():
+    """`vit run` was removed (dev note `202611111904`): its verification had no
+    red test and recorded "verified" when it had skipped verifying, and its
+    integration lacked `vit integrate`'s options and shared-file sync."""
+    assert "run" not in _subcommands()
+    r = _run("run", "drag", "drag.cpp")
+    assert r.returncode != 0
+    assert "invalid choice: 'run'" in r.stderr
+
+
 def test_the_installed_entry_point_runs():
     r = _run("--help")
     assert r.returncode == 0, r.stderr[-800:]

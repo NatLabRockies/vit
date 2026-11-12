@@ -82,7 +82,6 @@ decision itself. [`docs/VIT_REFERENCE.md`](docs/VIT_REFERENCE.md) describes both
 | `vit check` | Run the defect checks on a translation (`--list` shows them) |
 | `vit verify` | Verify a translation against its kernel |
 | `vit integrate` | Plan, or with `--apply` make, the changes that integrate a translation |
-| `vit run` | Verify and integrate in one step |
 | `vit interface` | Generate the Fortran↔C interface files on their own |
 | `vit analyze-types` | Report which derived types can cross to C, and apply fixes |
 | `vit test-validate` | Generate a test harness for branches no run reaches |
