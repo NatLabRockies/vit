@@ -21,7 +21,8 @@ import time
 from pathlib import Path
 
 from . import telemetry
-from .config import load_config, init_config, record_translation, save_config
+from .config import (load_config, init_config, record_translation, record_verification,
+                     latest_verification, translation_stage, file_sha256, save_config)
 from .derived_type_parser import build_derived_type_registry
 from .fortran_parser import find_function_in_file, FortranSignature
 from .interface_gen import (
@@ -1318,13 +1319,18 @@ def cmd_translate(args, config):
         from .kernel_verify import detect_callees
         from .fortran_parser import find_function_in_file as _find_func
         from .integrate import _generate_c_declaration
-        known_funcs = set(config.translations.keys())
+        # Only an integrated callee's `_c` entry point is in the build; a
+        # callee that is only verified, or failed, would link in the kernel,
+        # which bridges every callee, and fail in the build.
+        integrated = {name for name, entry in config.translations.items()
+                      if entry.get("status") == "integrated"}
+        known_funcs = integrated
         callee_names = detect_callees(fortran_text, args.function_name,
                                        known_functions=known_funcs)
         if callee_names:
             decls = []
             for cname in callee_names:
-                if cname not in config.translations:
+                if cname not in integrated:
                     continue
                 # Find the callee's signature to generate its _c declaration
                 for pattern in ("**/*.f90", "**/*.F90"):
@@ -1571,6 +1577,12 @@ def cmd_verify(args, config):
     derived_types = _build_registry(sig, config)
     field_log = not getattr(args, 'no_field_log', False)
 
+    # Every result is recorded, with the C++ it was for: a result that was not
+    # a pass used to leave an earlier pass standing (dev note 202611111904).
+    tested = {"cpp_file": _recorded_path(config, args.cpp_file),
+              "cpp_sha256": file_sha256(args.cpp_file),
+              "kernel_dir": kernel_dir}
+
     print(f"Setting up C++ verification in {kernel_dir}...")
     setup_result = setup_kernel_cpp(
         kernel_dir=kernel_dir,
@@ -1590,6 +1602,8 @@ def cmd_verify(args, config):
         print(f"✗ Setup failed:")
         for err in setup_result["errors"]:
             print(f"  {err}")
+        record_verification(config, args.function_name, "setup_failed", {
+            **tested, "errors": [str(e) for e in setup_result["errors"]]})
         return 1
 
     print(f"  Modified {len(setup_result['files_modified'])} files")
@@ -1617,34 +1631,43 @@ def cmd_verify(args, config):
                   f"{verify_result.passed_cases} case(s) compared IDENTICAL, and the "
                   f"kernel did not report a mismatch when the translation was "
                   f"deliberately changed. The pass is not evidence.")
-            record_translation(config, args.function_name, "non_discriminating", {
-                "cases_passed": verify_result.passed_cases,
-                "cpp_file": args.cpp_file,
-                "kernel_dir": kernel_dir,
-                "red_test": red["verdict"],
-                "red_test_detail": red["message"],
-            })
+            record_verification(config, args.function_name, "non_discriminating", {
+                **tested, **_case_counts(verify_result),
+                "red_test": red["verdict"], "red_test_detail": red["message"]})
             return 1
 
-        extras = {
-            "cases_passed": verify_result.passed_cases,
-            "cases_total": verify_result.total_cases - verify_result.skipped_cases,
-            "cases_skipped": verify_result.skipped_cases,
-            "cpp_file": args.cpp_file,
-            "kernel_dir": kernel_dir,
-            "red_test": red["verdict"],
-            "red_test_detail": red["message"],
-        }
+        extras = {**tested, **_case_counts(verify_result),
+                  "red_test": red["verdict"], "red_test_detail": red["message"]}
         covered = _kernel_coverage(args, config, sig, kernel_dir)
         if covered:
             extras["kernel_coverage"] = covered
-        record_translation(config, args.function_name, "verified", extras)
+        record_verification(config, args.function_name, "passed", extras)
     else:
         for detail in verify_result.details:
             if detail["status"] == "FAILED":
                 print(f"  FAILED: {detail['line']}")
+        record_verification(config, args.function_name, "failed", {
+            **tested, **_case_counts(verify_result)})
 
     return 0 if verify_result.success else 1
+
+
+def _case_counts(result) -> dict:
+    """A verification's case counts, as the translation record keeps them."""
+    return {"cases_passed": result.passed_cases,
+            "cases_failed": result.failed_cases,
+            "cases_total": result.total_cases - result.skipped_cases,
+            "cases_skipped": result.skipped_cases}
+
+
+def _recorded_path(config, path: str) -> str:
+    """A path as vit.yaml records it: relative to vit.yaml's directory when it
+    is inside it, so `vit status` finds it from there; otherwise absolute."""
+    resolved = Path(path).resolve()
+    try:
+        return str(resolved.relative_to(Path(config.config_dir).resolve()))
+    except ValueError:
+        return str(resolved)
 
 
 def _kernel_coverage(args, config, sig, kernel_dir):
@@ -1832,6 +1855,13 @@ def cmd_integrate(args, config):
 
     print(plan.to_markdown())
 
+    # Integration does not refuse C++ that has not passed: a function verified
+    # by the full run (`--reverse-copy`) has no kernel pass, and a flag passed
+    # every time would check nothing. It says so, and records what it followed.
+    evidence, warning = _integration_evidence(config, args.function_name, args.cpp_file)
+    if warning:
+        print(f"\n⚠ {warning}")
+
     if args.apply:
         print("\nApplying integration plan...")
         result = apply_integration_plan(plan, dry_run=args.dry_run)
@@ -1845,7 +1875,7 @@ def cmd_integrate(args, config):
 
         if result["success"]:
             print("\n✓ Integration applied successfully")
-            extras = {"cpp_file": args.cpp_file}
+            extras = {"cpp_file": args.cpp_file, "integrated_after": evidence}
             if reverse_copy:
                 extras["verification"] = "simulation"
             record_translation(config, args.function_name, "integrated", extras)
@@ -1853,6 +1883,27 @@ def cmd_integrate(args, config):
             print("\n✗ Some patches could not be applied. Review manually.")
 
     return 0
+
+
+def _integration_evidence(config, function_name: str, cpp_file: str) -> tuple:
+    """`(integrated_after, warning)`: the latest verification of this C++, and
+    what to say when it is not a pass. integrated_after is the result, or
+    `changed` when the C++ is not the one that passed, or `none`."""
+    latest = latest_verification(config.translations.get(function_name, {}))
+    if latest is None:
+        return "none", (f"{function_name} has no verification recorded. Run vit verify first, "
+                        f"or compare the full run with vit sim-compare; vit status will "
+                        f"list it until a verification passes.")
+    result = latest.get("result")
+    if result != "passed":
+        return result, (f"The latest vit verify of {function_name} was "
+                        f"{result.upper().replace('_', ' ')}. Integrating C++ that has not "
+                        f"passed; vit status will report it.")
+    if latest.get("cpp_sha256") and file_sha256(cpp_file) != latest["cpp_sha256"]:
+        return "changed", (f"{cpp_file} is not the C++ that passed vit verify "
+                           f"({latest.get('cpp_file')}, {latest.get('at', '')[:10]}). Run vit "
+                           f"verify on it before integrating.")
+    return "passed", None
 
 
 def cmd_sim_compare(args, config):
@@ -1867,7 +1918,11 @@ def cmd_sim_compare(args, config):
 
 
 def cmd_status(args, config):
-    """Show translation status."""
+    """Show each function's stage and its latest verification.
+
+    Exits 1 when any function's latest verification is not a pass of the C++
+    as it is now, so a script or an agent can use it as a check.
+    """
     if not config.translations:
         print("No translations recorded yet.")
         print("'vit verify' records a function's result here, and 'vit integrate --apply' "
@@ -1878,26 +1933,61 @@ def cmd_status(args, config):
     print(f"Translations: {len(config.translations)}")
     print()
 
-    for name, info in config.translations.items():
-        status = info.get("status", "unknown")
-        if status == "verified":
-            cases = info.get("cases_passed", "?")
-            total = info.get("cases_total", "?")
-            print(f"  ✓ {name}: verified ({cases}/{total} cases)")
-        elif status == "integrated":
-            if "cases_passed" in info:
-                v_str = (f" (verified {info['cases_passed']}/"
-                         f"{info.get('cases_total', '?')} cases)")
-            elif info.get("verified", False):
-                v_str = " (verified)"
-            else:
-                v_str = " (unverified)"
-            print(f"  ✓ {name}: integrated{v_str}")
-        else:
-            print(f"  ? {name}: {status}")
+    not_passing = 0
+    for name, entry in config.translations.items():
+        mark, text, ok = _verification_summary(entry, config)
+        print(f"  {mark} {name}: {translation_stage(entry)} — {text}")
+        not_passing += not ok
 
+    if not_passing:
+        print(f"\n{not_passing} function(s) whose latest verification is not a pass of "
+              f"the C++ as it is now.")
+        return 1
     return 0
 
+
+_RED_TEST_FAILURES = {
+    "not_discriminating": "the kernel did not report a mismatch when the translation was "
+                          "deliberately changed",
+    "not_constructed": "no deliberately wrong translation could be built, so the kernel "
+                       "was never shown able to fail",
+}
+
+
+def _verification_summary(entry: dict, config) -> tuple:
+    """`(mark, text, ok)` for one function in `vit status`.
+
+    `ok` is False when the latest verification did not pass, or passed for C++
+    that has changed or gone since. An entry with no verification recorded is
+    `?` and ok: there is no evidence either way, and the campaign records
+    written before VIT kept one are all of this kind.
+    """
+    latest = latest_verification(entry)
+    if latest is None:
+        if entry.get("verification") == "simulation":
+            return "?", "no kernel verification recorded (integrated to be verified by simulation)", True
+        return "?", "no verification recorded", True
+
+    result = latest.get("result")
+    when = f" ({latest['at'][:10]})" if latest.get("at") else ""
+    cases = f"{latest.get('cases_passed', '?')}/{latest.get('cases_total', '?')} cases"
+    if result == "failed":
+        return "✗", f"last verify FAILED, {cases}{when}", False
+    if result == "setup_failed":
+        return "✗", f"last verify could not set up the kernel{when}", False
+    if result != "passed":
+        why = _RED_TEST_FAILURES.get(latest.get("red_test"), "the kernel was not shown able to fail")
+        return "✗", f"last verify NON_DISCRIMINATING: {why}{when}", False
+
+    if latest.get("legacy") or not latest.get("cpp_sha256"):
+        return "✓", f"verified {cases} (recorded before VIT fingerprinted the C++)", True
+    cpp = latest.get("cpp_file", "")
+    current = file_sha256(config.abs_path(cpp))
+    if current is None:
+        return "!", f"{cpp} is missing; it verified {cases}{when}", False
+    if current != latest["cpp_sha256"]:
+        return "!", f"{cpp} has changed since it verified {cases}{when}", False
+    return "✓", f"verified {cases}, red test demonstrated{when}", True
 
 def cmd_analyze_types(args, config):
     """Analyze derived types for C compatibility."""

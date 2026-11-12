@@ -1,6 +1,6 @@
 # Running the Getting-Started Path on a New Project: Four Defects, Fixed, and a macOS Mount Hazard
 **Date:** 2026-09-30
-**Status:** completed (one defect left open; see the end)
+**Status:** completed (one defect left open; see the end). Fixed 2026-11-11: dev note `202611111904`.
 **Scope:** `GETTING_STARTED.md` rewrite, `examples/quickstart`, `vit extract`, `vit init`, `vit integrate`, `vit status`
 
 ## Why

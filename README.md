@@ -87,7 +87,7 @@ decision itself. [`docs/VIT_REFERENCE.md`](docs/VIT_REFERENCE.md) describes both
 | `vit test-validate` | Generate a test harness for branches no run reaches |
 | `vit sim-compare` | Compare simulation outputs saved as `.npz` arrays |
 | `vit reachability` | Settle whether a procedure is called, by removing it and rebuilding |
-| `vit status` | Show the translation status recorded in `vit.yaml` |
+| `vit status` | Show each function's stage and latest verification; exits 1 if any is not a pass |
 
 `vit <command> --help` lists each command's options. [`docs/VIT_REFERENCE.md`](docs/VIT_REFERENCE.md)
 covers the configuration file and the known limitations.

@@ -1,15 +1,15 @@
 # Proposal: The Verification Record Keeps the Latest Result
 
 **Date:** 2026-11-11
-**Status:** in-progress (decided 2026-11-11; `vit run` removed, the rest not yet implemented)
+**Status:** completed
 **Scope:** `record_translation` and the `translations` section of `vit.yaml`; `vit verify`, `vit integrate`, `vit status`; `vit run`, removed; the callees `vit translate` offers
 
 ## Why
 
 Dev note `202609302022` left one defect open: a later verification that fails, or that cannot
 discriminate, does not change what `vit status` reports. It was reported twice on 2026-09-30 and
-never decided; the author asked for a full proposal. This note is that proposal, with the author's
-decisions at the end. It is completed, with what was done, when the rest is implemented.
+never decided; the author asked for a full proposal. This note is that proposal, the author's
+decisions, and what was done.
 
 ## What the code does now
 
@@ -213,17 +213,39 @@ The author's, on 2026-11-11:
   every time, and a flag passed every time checks nothing.
 - **C. `vit run`:** removed (3). Proposed instead: verifying with `vit verify`'s code.
 - **D. `vit translate`:** offers only `integrated` callees (6).
-- **E. Commits:** not yet decided.
+- **E. Commits:** two, each pushed: the removal of `vit run` with this proposal (`9d91853`), then
+  the rest with this note's completion.
 
-## Done so far
+## What was done
 
-- `vit run` removed: the subcommand, `cmd_run`, its dispatch, and its line in `vit/cli.py`'s
+- `vit run` removed (`9d91853`): the subcommand, `cmd_run`, its dispatch, and its line in `vit/cli.py`'s
   docstring. With no translations recorded, `vit status` used to say "Use 'vit run …'"; it now
   names `vit verify` and `vit integrate --apply`. Its rows in `README.md` and `VIT_REFERENCE.md`
   are gone. Dev notes that mention it are left as written.
 - `tests/test_cli.py::test_there_is_no_vit_run`: `run` is not in `vit --help`, and `vit run` exits
-  with argparse's "invalid choice". It fails with `cmd_run` restored. The suite: 1131 passed, 1
-  skipped.
+  with argparse's "invalid choice". It fails with `cmd_run` restored.
+- The record, in the commit that completes this note, as proposed in 1, 2 and 4 to 6:
+  `record_verification`, `latest_verification`, `translation_stage` and `file_sha256` in
+  `vit/config.py`; `cmd_verify` records every result, a setup failure with its errors; `vit status`
+  and `vit integrate` as above; `vit translate` offers only integrated callees. The C++ is recorded
+  relative to `vit.yaml`'s directory when it is inside it, so `vit status` finds it from anywhere.
+  Two details the proposal did not name: `integrated_after` can also be `changed`, and a result
+  recorded over an older entry drops its top-level verification fields.
+- `tests/test_verification_record.py`: the tests listed above, plus the C++ found from another
+  directory and the old fields replaced. Each of six faults, put in one at a time, fails at least
+  one test: failures not recorded, the fingerprint ignored, callees not filtered, the stage lowered
+  by a failure, an older entry's red test ignored, and `vit status` always exiting 0. The suite:
+  1146 passed, 1 skipped.
+- In the container, on the quickstart, with this checkout over the image's VIT: a pass (`✓`, exit
+  0); the translation broken (`0.6` for `0.5`) and verified again (`✗ … FAILED, 0/20`, exit 1); the
+  plan for integrating it (the warning); fixed, verified, integrated, rebuilt (identical to the
+  baseline; `✓ drag: integrated`, exit 0); broken again after integration (`✗ drag: integrated`,
+  exit 1); and a pass followed by an edit (`! … has changed`, exit 1, and the integration warning).
+  NON_DISCRIMINATING was not produced there; the tests drive it with the red test stubbed.
+- Documents: `GETTING_STARTED.md` (what `vit status` reports, and when it exits 1), `README.md`,
+  and `VIT_REFERENCE.md` (the `translations` and `vit status` rows, exit code 1, a section "The
+  translation record", and the callees `vit translate` offers). Dev note `202609302022`'s status
+  line points here.
 
 ## References
 

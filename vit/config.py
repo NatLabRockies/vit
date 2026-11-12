@@ -416,6 +416,86 @@ def record_translation(config: VitConfig, function_name: str,
     save_config(config)
 
 
+#: What `vit verify` can conclude. Only `passed` is evidence: the cases matched
+#: and the red test showed the kernel can fail.
+VERIFY_RESULTS = ("passed", "failed", "non_discriminating", "setup_failed")
+
+#: Verification fields that entries written before `last_verify` keep at the
+#: top level, where a later result that did not pass never replaced them.
+_LEGACY_VERIFY_FIELDS = ("cases_passed", "cases_total", "cases_skipped",
+                         "red_test", "red_test_detail", "kernel_coverage",
+                         "kernel_dir")
+
+
+def record_verification(config: VitConfig, function_name: str,
+                        result: str, details: dict) -> None:
+    """Record the latest `vit verify` of a function, whatever its result.
+
+    An entry holds two facts. `status` is how far the function has got
+    (translated, verified, integrated) and never goes down: a verification
+    that fails does not take integrated C++ out of the build. `last_verify` is
+    the latest verification, and every run replaces it. The two used to be
+    one `status` that never went down, so a later failure or NON_DISCRIMINATING
+    result left an earlier pass standing, and `vit status` reported it (dev
+    note 202611111904).
+    """
+    if result not in VERIFY_RESULTS:
+        raise ValueError(f"unknown verification result: {result}")
+    from datetime import datetime, timezone
+
+    entry = {k: v for k, v in config.translations.get(function_name, {}).items()
+             if k not in _LEGACY_VERIFY_FIELDS}
+    rank = _STATUS_RANK.get(entry.get("status"), -1)
+    floor = "verified" if result == "passed" else "translated"
+    if rank < _STATUS_RANK[floor]:
+        entry["status"] = floor
+    entry["last_verify"] = {
+        "result": result,
+        "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        **details,
+    }
+    config.translations[function_name] = entry
+    save_config(config)
+
+
+def latest_verification(entry: dict) -> Optional[dict]:
+    """The latest verification recorded in a function's entry, or None.
+
+    Entries written before `last_verify` are read, not rewritten: verification
+    fields at the top level of a `verified` or `integrated` entry are a pass,
+    unless their red test says otherwise, and the status `non_discriminating`
+    is that result. They carry `legacy: True` and no fingerprint of the C++.
+    """
+    if isinstance(entry.get("last_verify"), dict):
+        return entry["last_verify"]
+    status = entry.get("status")
+    fields = {k: entry[k] for k in _LEGACY_VERIFY_FIELDS if k in entry}
+    if status == "non_discriminating":
+        return {"result": "non_discriminating", "legacy": True, **fields}
+    if status in ("verified", "integrated") and "cases_passed" in entry:
+        passed = entry.get("red_test") in (None, "demonstrated")
+        return {"result": "passed" if passed else "non_discriminating",
+                "legacy": True, **fields}
+    return None
+
+
+def translation_stage(entry: dict) -> str:
+    """How far a function has got: translated, verified or integrated."""
+    status = entry.get("status")
+    if _STATUS_RANK.get(status, -1) < _STATUS_RANK["translated"]:
+        return "translated"
+    return status
+
+
+def file_sha256(path: str) -> Optional[str]:
+    """The SHA-256 of a file's bytes, or None when it cannot be read."""
+    import hashlib
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def _load_config_fallback(config_path: str) -> VitConfig:
     """Simple fallback config parser when PyYAML isn't available."""
     # Just return defaults with the right config_dir

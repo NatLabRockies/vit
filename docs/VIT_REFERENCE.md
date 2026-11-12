@@ -44,7 +44,7 @@ through a shell, from directories KGen chooses, so give them absolute paths.
 | `coverage.configure_cmd`, `coverage.build_cmd` | CMake | How to configure and build with coverage. By default `cmake -S {project_dir} -B {build_dir}` with `--coverage` added to the Fortran, C, C++ and linker flags, then `cmake --build {build_dir}`. |
 | `coverage.gcov` | (matched) | The gcov to use. By default VIT finds the one from the same GCC release as the Fortran compiler CMake chose; a gcov from another release, or LLVM's, cannot read the data. |
 | `coverage.file` | `coverage.json` | Where `vit coverage run` and `import` write, and where `vit find --coverage` and `vit coverage line` read when given no file. `vit extract` reads it to choose the call site, the test case and the calls, and `vit verify` to compare what the captured calls run with what the full run executes. |
-| `translations` | | Written by VIT: each function's status, case counts and red-test result. |
+| `translations` | | Written by VIT: each function's stage and latest verification ([below](#the-translation-record)). |
 
 ## Commands
 
@@ -68,7 +68,7 @@ through a shell, from directories KGen chooses, so give them absolute paths.
 | `vit test-validate` | Generate a test harness for branches no run reaches | `-f FILE`, `--module`, `--run`, `--force` |
 | `vit sim-compare` | Compare simulation outputs saved as `.npz` arrays | `--tolerance` |
 | `vit reachability` | Settle whether a procedure is called, by removing it and rebuilding | `-f FILE` |
-| `vit status` | Show the recorded translation status | |
+| `vit status` | Show each function's stage and latest verification; exit 1 if any is not a pass of the C++ as it is now | |
 
 `-f` names the file with the function's **definition**, except for `vit extract`, where it names the
 file with the **call site**.
@@ -78,7 +78,7 @@ file with the **call site**.
 | Code | Meaning | Written to disk |
 |---|---|---|
 | 0 | Success | the changes made |
-| 1 | Failure. Among others: a step of `vit extract` failed, or it captured no state; `vit verify` found a mismatch, or the pass was `NON_DISCRIMINATING` (below); `vit check` reported findings | nothing beyond diagnostics |
+| 1 | Failure. Among others: a step of `vit extract` failed, or it captured no state; `vit verify` found a mismatch, or the pass was `NON_DISCRIMINATING` (below); `vit check` reported findings; `vit status` lists a function whose latest verification is not a pass | nothing beyond diagnostics |
 | 2 | `vit check`: the translation or the Fortran file does not exist | nothing |
 | 10 | Confirmation needed | nothing |
 | 11 | Manual rewrite needed | nothing |
@@ -106,6 +106,38 @@ block with each location.
 **The agent's part:** read each flagged line in context, propose a rewrite, wait for approval, and
 re-run with `--rewrite 'file:line=replacement'`. An agent must never approve a rewrite on the
 person's behalf.
+
+## The translation record
+
+`vit verify` and `vit integrate --apply` record each function in `vit.yaml` under `translations`.
+An entry holds two things:
+
+- **`status`, the stage:** `translated`, `verified` or `integrated`. It never goes down: a
+  verification that fails does not take integrated C++ out of the build.
+- **`last_verify`, the latest verification,** replaced by every `vit verify`, whatever the result:
+  `result` (`passed`, `failed`, `non_discriminating` or `setup_failed`), `at`, the C++ verified
+  (`cpp_file`, `cpp_sha256`), the kernel, the case counts, and the red test's verdict. `passed`
+  means the cases matched and the red test showed the kernel can fail.
+
+`vit status` prints one line for each function:
+
+| Mark | Meaning |
+|---|---|
+| `✓` | The latest verification passed, for the C++ as it is now |
+| `✗` | It failed, was `NON_DISCRIMINATING`, or could not set up the kernel |
+| `!` | It passed, and the C++ has changed or gone since |
+| `?` | No verification is recorded |
+
+It exits 1 when any line is `✗` or `!`.
+
+`vit integrate` does not refuse C++ that has not passed: a function checked by the full run
+(`--reverse-copy`) has no kernel pass. It prints a warning when the latest verification is not a
+pass of the `.cpp` it is given, and records what it followed as `integrated_after` (`passed`,
+`changed`, `none`, or the result).
+
+Entries written before `last_verify` are read as they are and rewritten the next time VIT records
+the function: verification fields at the top level of an entry are its latest verification, with no
+fingerprint of the C++, and an entry with none shows `?`.
 
 ## Telemetry
 
@@ -201,8 +233,9 @@ measures and how it can mislead.
   parameters, even when the arrays are the same length.
 - **Calls between translations.** A Fortran caller reaches the C++ through the Fortran wrapper and
   its `_c` function; a C++ caller calls the `_c` function directly. `vit integrate --apply` keeps the
-  shared `vit_translated.h` of `extern "C"` declarations, and `vit translate` puts already-translated
-  callees' signatures in the prompt.
+  shared `vit_translated.h` of `extern "C"` declarations, and `vit translate` puts integrated
+  callees' signatures in the prompt. A callee that is only verified is left out: its `_c` function is
+  not yet in the build.
 - **Callee bridges in kernels.** When the function being verified calls an already-translated
   function, VIT generates a `BIND(C)` bridge for it in the kernel (`vit_kernel_callees.h`), makes
   callees hidden by a `PRIVATE` default visible, and passes view arguments through a module-level

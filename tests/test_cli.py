@@ -335,8 +335,8 @@ def test_status_reports_an_integrated_function_as_verified(capsys):
     })
     assert vit.cli.cmd_status(None, config) == 0
     out = capsys.readouterr().out
-    assert "drag: integrated (verified 20/20 cases)" in out
-    assert "lift: integrated (unverified)" in out
+    assert "drag: integrated — verified 20/20 cases" in out
+    assert "lift: integrated — no verification recorded" in out
 
 
 def test_shared_files_are_synced_beside_the_integrated_source(tmp_path):

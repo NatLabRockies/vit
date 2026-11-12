@@ -190,7 +190,9 @@ vit status
 
 The program now runs your C++, and all 500 steps must match the baseline byte for byte. The kernel
 checked 20 calls in isolation; the full run checks every call, and everything computed from it.
-`vit status` reports `drag: integrated (verified 20/20 cases)`.
+`vit status` reports `✓ drag: integrated — verified 20/20 cases, red test demonstrated`, with the
+date. It records the latest verification, not the best: if a later `vit verify` fails, or the C++
+changes after it passed, `vit status` marks the function and exits 1.
 
 To start over, remove `~/vit-quickstart` and copy the example again. To stop the container:
 `docker rm -f vit-quickstart`.
